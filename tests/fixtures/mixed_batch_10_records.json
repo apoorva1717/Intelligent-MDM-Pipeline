@@ -1,0 +1,105 @@
+{
+  "records": [
+    {
+      "record_id": "BSP_2000001",
+      "name1": "Massachusetts Institute of Technology",
+      "name2": null,
+      "name3": null,
+      "contact": "Dr. Jane Smith",
+      "city": "Cambridge",
+      "state": "MA",
+      "country": "US"
+    },
+    {
+      "record_id": "BSP_2000002",
+      "name1": "UCLA",
+      "name2": "Dept of Chemistry",
+      "name3": null,
+      "contact": "Dr. John Doe",
+      "city": "Los Angeles",
+      "state": "CA",
+      "country": "US"
+    },
+    {
+      "record_id": "BSP_2000003",
+      "name1": "Pfizer Inc",
+      "name2": "Analytical Sciences",
+      "name3": null,
+      "contact": null,
+      "city": "New York",
+      "state": "NY",
+      "country": "US"
+    },
+    {
+      "record_id": "BSP_2000004",
+      "name1": "Stanford University",
+      "name2": null,
+      "name3": null,
+      "contact": "Dr. Alice Johnson",
+      "city": "Stanford",
+      "state": "CA",
+      "country": "US"
+    },
+    {
+      "record_id": "BSP_2000005",
+      "name1": "Johns Hopkins University",
+      "name2": "Dept of Radiology",
+      "name3": null,
+      "contact": "Dr. Robert Chen",
+      "city": "Baltimore",
+      "state": "MD",
+      "country": "US"
+    },
+    {
+      "record_id": "BSP_2000006",
+      "name1": "Novartis",
+      "name2": null,
+      "name3": null,
+      "contact": null,
+      "city": "Basel",
+      "country": "CH"
+    },
+    {
+      "record_id": "BSP_2000007",
+      "name1": "Some Unknown Lab",
+      "name2": null,
+      "name3": null,
+      "contact": null,
+      "city": "Boston",
+      "state": "MA",
+      "country": "US"
+    },
+    {
+      "record_id": "BSP_2000008",
+      "name1": "MIT",
+      "name2": "Department of Physics",
+      "name3": null,
+      "contact": null,
+      "city": "Cambridge",
+      "state": "MA",
+      "country": "US"
+    },
+    {
+      "record_id": "BSP_2000009",
+      "name1": "University of California Los Angeles",
+      "name2": null,
+      "name3": null,
+      "contact": null,
+      "city": "Los Angeles",
+      "state": "CA",
+      "country": "US"
+    },
+    {
+      "record_id": "BSP_2000010",
+      "name1": null,
+      "name2": null,
+      "name3": null,
+      "contact": "Dr. Nobody",
+      "city": "Nowhere",
+      "country": "US"
+    }
+  ],
+  "options": {
+    "max_concurrency": 3
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "records": [
+    {
+      "record_id": "BSP_1000006",
+      "name1": "Some Unknown Lab",
+      "name2": null,
+      "name3": null,
+      "contact": null,
+      "street": "123 Research Dr",
+      "city": "Boston",
+      "state": "MA",
+      "zip": "02101",
+      "country": "US"
+    }
+  ],
+  "options": {
+    "max_concurrency": 1
+  }
+}

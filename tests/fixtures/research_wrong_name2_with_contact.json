@@ -1,0 +1,19 @@
+{
+  "records": [
+    {
+      "record_id": "BSP_1000002",
+      "name1": "Massachusetts Institute of Technology",
+      "name2": "Dept of AI",
+      "name3": null,
+      "contact": "Dr. Jane Smith",
+      "street": "77 Massachusetts Ave",
+      "city": "Cambridge",
+      "state": "MA",
+      "zip": "02139",
+      "country": "US"
+    }
+  ],
+  "options": {
+    "max_concurrency": 1
+  }
+}

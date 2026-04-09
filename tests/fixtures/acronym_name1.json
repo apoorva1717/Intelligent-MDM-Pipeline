@@ -1,0 +1,19 @@
+{
+  "records": [
+    {
+      "record_id": "BSP_1000005",
+      "name1": "UCLA",
+      "name2": null,
+      "name3": null,
+      "contact": null,
+      "street": "405 Hilgard Ave",
+      "city": "Los Angeles",
+      "state": "CA",
+      "zip": "90095",
+      "country": "US"
+    }
+  ],
+  "options": {
+    "max_concurrency": 1
+  }
+}

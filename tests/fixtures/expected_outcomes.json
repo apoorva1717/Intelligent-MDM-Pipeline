@@ -1,0 +1,56 @@
+{
+  "research_missing_name2_with_contact": {
+    "record_id": "BSP_1000001",
+    "expected_tier_used": 2,
+    "expected_tier2_mode": "2A_population",
+    "expected_contact_used": true,
+    "expected_name2_changed": true,
+    "expected_flag_for_review": false,
+    "expected_enrichment_status": "enriched"
+  },
+  "research_wrong_name2_with_contact": {
+    "record_id": "BSP_1000002",
+    "expected_tier_used": 2,
+    "expected_tier2_mode": "2A_verification",
+    "expected_contact_used": true,
+    "expected_name2_changed": true,
+    "expected_flag_for_review": true,
+    "expected_enrichment_status": "enriched"
+  },
+  "research_no_contact_name2_present": {
+    "record_id": "BSP_1000003",
+    "expected_tier_used": 2,
+    "expected_tier2_mode": "2B",
+    "expected_contact_used": false,
+    "expected_name2_changed": true,
+    "expected_flag_for_review": true,
+    "expected_enrichment_status": "enriched"
+  },
+  "company_with_name2": {
+    "record_id": "BSP_1000004",
+    "expected_tier_used": 2,
+    "expected_tier2_mode": "2B",
+    "expected_contact_used": false,
+    "expected_name2_changed": true,
+    "expected_flag_for_review": true,
+    "expected_enrichment_status": "enriched"
+  },
+  "acronym_name1": {
+    "record_id": "BSP_1000005",
+    "expected_tier_used": 2,
+    "expected_tier2_mode": "2B",
+    "expected_contact_used": false,
+    "expected_name2_changed": false,
+    "expected_flag_for_review": true,
+    "expected_enrichment_status": "enriched"
+  },
+  "fully_blank_name2_no_contact": {
+    "record_id": "BSP_1000006",
+    "expected_tier_used": 3,
+    "expected_tier2_mode": null,
+    "expected_contact_used": false,
+    "expected_name2_changed": false,
+    "expected_flag_for_review": true,
+    "expected_enrichment_status": "unresolved"
+  }
+}
