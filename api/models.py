@@ -64,7 +64,7 @@ class EnrichmentResult(BaseModel):
     source: Literal[
         "ROR", "ROR+child", "contact_lookup_found",
         "contact_lookup_corrected", "dept_search", "LLM",
-        "web_search", "passthrough", "none",
+        "llm_canonical", "web_search", "passthrough", "none",
     ] = "none"
     ror_id: Optional[str] = None
     source_url: Optional[str] = None

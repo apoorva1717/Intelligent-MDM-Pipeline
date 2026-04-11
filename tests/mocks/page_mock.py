@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 
-from search.page_fetcher import PageFetcher
+from search.page_fetcher import PageContent, PageFetcher
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,6 @@ class MockPageFetcher(PageFetcher):
         """Return mock page text matched by URL substring."""
         url_lower = url.lower()
 
-        # Simulate timeout for specific test URLs
         if "timeout" in url_lower or "error" in url_lower:
             logger.info("[MOCK] Page fetch: simulated timeout for %s", url[:80])
             return None
@@ -95,3 +94,21 @@ class MockPageFetcher(PageFetcher):
 
         logger.info("[MOCK] Page fetch: no mock for %s — returning None", url[:80])
         return None
+
+    async def fetch_page_content(self, url: str) -> PageContent | None:
+        """Return mock structured page content built from the flat mock text."""
+        text = await self.fetch_page_text(url)
+        if text is None:
+            return None
+        # For mocks, we approximate: the first line-or-80-chars acts as
+        # the page title / h1, and the whole thing is body text.
+        approx_title = text.split(".")[0][:200]
+        from urllib.parse import urlparse
+        return PageContent(
+            url=url,
+            url_path=urlparse(url).path or "",
+            page_title=approx_title,
+            h1=approx_title,
+            breadcrumb="",
+            body_text=text,
+        )

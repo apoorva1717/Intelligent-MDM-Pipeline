@@ -107,7 +107,7 @@ class Settings:
 
     # Page fetching
     max_page_content_chars: int = field(
-        default_factory=lambda: int(os.getenv("MAX_PAGE_CONTENT_CHARS", "3000"))
+        default_factory=lambda: int(os.getenv("MAX_PAGE_CONTENT_CHARS", "1500"))
     )
     page_fetch_timeout_seconds: int = field(
         default_factory=lambda: int(os.getenv("PAGE_FETCH_TIMEOUT_SECONDS", "10"))

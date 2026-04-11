@@ -168,6 +168,7 @@ _COUNTRY_TO_ISO: dict[str, str] = {
 _ABBREV_MAP: dict[str, str] = {
     r"\bDept\.?(?=\s|$)": "Department",
     r"\bUniv\.?(?=\s|$)": "University",
+    r"\bUni(?=\s|$)": "University",
     r"\bLab\.?(?=\s|$)": "Laboratory",
     r"\bInst\.?(?=\s|$)": "Institute",
     r"\bCtr\.?(?=\s|$)": "Center",
@@ -203,6 +204,210 @@ def expand_abbreviations(text: str | None) -> str | None:
     for pattern, replacement in _COMPILED_ABBREVS:
         result = pattern.sub(replacement, result)
     return result.strip()
+
+
+# Unit-type canonicalisation — maps every variant wording to the
+# "X of Y" construction.  Keyed by the unit word; the tuple is
+# (regex for suffix form, regex for prefix form).  Applied after
+# abbreviation expansion, so "Dept" has already become "Department".
+_UNIT_CANONICAL_FORMS: list[tuple[str, str]] = [
+    ("Department", "of"),
+    ("Division", "of"),
+    ("School", "of"),
+    ("Faculty", "of"),
+    ("College", "of"),
+    ("Institute", "of"),
+    ("Center", "for"),
+    ("Centre", "for"),
+    ("Laboratory", "of"),
+]
+
+
+# Specific unit words — these name the actual organizational unit
+# a person belongs to.  Parent-level words (School, College, Faculty)
+# are handled separately because they usually describe the enclosing
+# institution rather than the person's specific affiliation.
+_SPECIFIC_UNIT_WORDS = {"Department", "Division", "Institute", "Center", "Centre", "Laboratory"}
+_PARENT_UNIT_WORDS = {"School", "College", "Faculty"}
+
+
+def is_unit_construction(text: str | None) -> bool:
+    """Return True if *text* is (or can be canonicalised into) a
+    recognised academic unit construction — e.g. 'Department of X',
+    'Division of X', 'School of X', 'Chemistry Department'.
+
+    Used to reject bare subject words ('Anesthesia', 'Chemistry')
+    and job-title phrases ('Professor of Anesthesia') which are NOT
+    department names.
+    """
+    if not text or not text.strip():
+        return False
+    cleaned = (expand_abbreviations(text) or text).strip()
+
+    if re.match(r"^(?:professor|prof|dr|doctor|lecturer|chair|dean|director)\b",
+                cleaned, re.IGNORECASE):
+        return False
+
+    unit_words = [u for u, _ in _UNIT_CANONICAL_FORMS]
+    unit_alt = "|".join(unit_words)
+
+    prefix_re = re.compile(
+        rf"^(?:{unit_alt})\s+(?:of|for)\s+\S+",
+        re.IGNORECASE,
+    )
+    suffix_re = re.compile(
+        rf"^\S.*\s+(?:{unit_alt})\b\.?$",
+        re.IGNORECASE,
+    )
+    return bool(prefix_re.match(cleaned) or suffix_re.match(cleaned))
+
+
+def is_specific_unit_construction(text: str | None) -> bool:
+    """Return True only if *text* is a SPECIFIC unit construction —
+    i.e. Department/Division/Institute/Center/Laboratory of X.
+
+    Rejects parent-level enclosing units like 'School of Medicine'
+    or 'College of Engineering' which are almost never the answer
+    to 'which department does this person work in'.
+    """
+    if not is_unit_construction(text):
+        return False
+    cleaned = (expand_abbreviations(text) or text).strip()
+
+    # Check which unit word this construction uses
+    for unit in _SPECIFIC_UNIT_WORDS:
+        if re.match(rf"^{unit}\s+(?:of|for)\s+", cleaned, re.IGNORECASE):
+            return True
+        if re.match(rf"^\S.*\s+{unit}\b\.?$", cleaned, re.IGNORECASE):
+            return True
+    return False
+
+
+def canonicalise_unit_name(text: str | None) -> str | None:
+    """Normalise academic unit names to the 'Unit of/for Subject' form.
+
+    Examples:
+        "Chemistry Department"           → "Department of Chemistry"
+        "Department of Chemistry"        → "Department of Chemistry"
+        "Dept of Chemistry"              → "Department of Chemistry"
+        "Radiology Dept"                 → "Department of Radiology"
+        "Biology Division"               → "Division of Biology"
+        "Medicine School"                → "School of Medicine"
+        "Cancer Research Center"         → "Center for Cancer Research"
+
+    Rules:
+    1. Expands abbreviations first (Dept → Department, etc.).
+    2. If the text already starts with "<Unit> of/for ...", returns as-is.
+    3. If the text ends with a known unit word, rewrites as
+       "<Unit> <connector> <rest>".
+    4. Otherwise returns the text unchanged.
+    """
+    if not text or not text.strip():
+        return text
+
+    cleaned = expand_abbreviations(text) or text
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,;.-")
+    if not cleaned:
+        return text
+
+    for unit, connector in _UNIT_CANONICAL_FORMS:
+        # Already canonical: "Department of X" / "Center for X"
+        prefix_re = re.compile(
+            rf"^{unit}\s+(?:of|for)\s+",
+            re.IGNORECASE,
+        )
+        if prefix_re.match(cleaned):
+            # Normalise the unit-word casing only
+            return prefix_re.sub(f"{unit} {connector} ", cleaned, count=1)
+
+    for unit, connector in _UNIT_CANONICAL_FORMS:
+        # Suffix form: "X Department", "X Division", ...
+        suffix_re = re.compile(
+            rf"^(.+?)\s+{unit}\b\.?$",
+            re.IGNORECASE,
+        )
+        m = suffix_re.match(cleaned)
+        if m:
+            subject = m.group(1).strip(" ,;.-")
+            if subject:
+                return f"{unit} {connector} {subject}"
+
+    return cleaned
+
+
+def strip_address_fragments(
+    name: str | None,
+    street: str | None = None,
+    city: str | None = None,
+    state: str | None = None,
+    zip_code: str | None = None,
+) -> str | None:
+    """Remove address fragments that leaked into a name field.
+
+    Uses the record's own structured address fields to detect and
+    strip substrings — no hardcoded street-suffix lists. All matches
+    are whole-word (``\\b``-bounded) so short codes like "FL" cannot
+    match inside "Florida".
+
+    Conservatism rules (to avoid destroying legitimate names that
+    happen to share words with the city/state):
+      * ``street`` and ``zip`` are always stripped when present — they
+        are unambiguous address noise.
+      * ``city`` and ``state`` are stripped ONLY if ``street`` or
+        ``zip`` was also present in the name (i.e. the address is
+        clearly leaking as a group), AND removal still leaves a
+        non-empty residue.
+
+    Examples:
+        "Johns Hopkins Hospital 600 N Wolfe St" + street "600 N Wolfe St"
+            → "Johns Hopkins Hospital"
+        "Stanford Uni" + city "Stanford"
+            → "Stanford Uni"  (unchanged — no street/zip in name)
+        "University of Florida" + state "FL"
+            → "University of Florida"  (unchanged — word-bounded)
+    """
+    if not name or not name.strip():
+        return name
+
+    original = name.strip()
+
+    def _strip_fragment(text: str, frag: str) -> str:
+        pattern = re.compile(r"\b" + re.escape(frag) + r"\b", re.IGNORECASE)
+        return pattern.sub(" ", text)
+
+    result = original
+    address_like_hit = False
+
+    # Always strip street and zip (unambiguous noise)
+    if street and street.strip():
+        before = result
+        result = _strip_fragment(result, street.strip())
+        if result != before:
+            address_like_hit = True
+    if zip_code and zip_code.strip():
+        before = result
+        result = _strip_fragment(result, zip_code.strip())
+        if result != before:
+            address_like_hit = True
+
+    # Strip standalone long digit runs (street numbers not in `street` field)
+    if re.search(r"\b\d{3,}\b", result):
+        address_like_hit = True
+        result = re.sub(r"\b\d{3,}\b", " ", result)
+
+    # Only strip city/state if we already saw address-like content
+    if address_like_hit:
+        for frag in (city, state):
+            if frag and frag.strip():
+                candidate = _strip_fragment(result, frag.strip())
+                # Require the residue to still be non-trivial
+                residue = re.sub(r"\s+", " ", candidate).strip(" ,;.-")
+                if residue:
+                    result = candidate
+
+    # Collapse whitespace and trim trailing punctuation
+    result = re.sub(r"\s+", " ", result).strip(" ,;.-")
+    return result if result else original
 
 
 def country_to_iso_code(country: str | None) -> str | None:

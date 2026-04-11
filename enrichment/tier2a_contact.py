@@ -16,11 +16,28 @@ from config import Settings
 from llm.openai_client import OpenAIClient
 from llm.prompts import TIER2A_SYSTEM_PROMPT, TIER2A_USER_PROMPT_TEMPLATE
 from search.base import SearchClient, SearchResult
-from search.page_fetcher import PageFetcher
+from search.page_fetcher import PageContent, PageFetcher
 from utils.cache import BatchCache
 from utils.text_utils import is_blank, score_search_result
 
 logger = logging.getLogger(__name__)
+
+
+_NULLISH_STRINGS = {"null", "none", "n/a", "na", "nil", "undefined", "not recorded"}
+
+
+def _clean_llm_string(value: object) -> str | None:
+    """Return a cleaned LLM string field or None.
+
+    Guards against the common LLM failure of returning the literal
+    string 'null' / 'none' / 'n/a' instead of JSON null.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in _NULLISH_STRINGS:
+        return None
+    return text
 
 
 @dataclass
@@ -74,12 +91,39 @@ async def run_tier2a(
         logger.info("[%s] Tier 2A: no candidate pages found", record_id)
         return result
 
+    # Step 2b — Defensive name verification on the SERP result itself.
+    # Google will return near-miss profiles ('Sarah Knox' for
+    # 'Sarah Chen') when the domain has no exact match. Reject any
+    # candidate whose URL / title / snippet does not contain BOTH
+    # the first name and the surname of the contact. This is purely
+    # deterministic and costs nothing (no page fetch, no LLM call).
+    verified = _filter_candidates_by_name(candidates, contact)
+    logger.info(
+        "[%s] Tier 2A: name-verified %d of %d candidates",
+        record_id, len(verified), len(candidates),
+    )
+    if not verified:
+        return result
+
     # Step 3 — Fetch pages and extract with LLM (try top 3)
-    for candidate in candidates[:3]:
-        page_text = await page_fetcher.fetch_page_text(candidate.url)
-        if not page_text:
+    for candidate in verified[:3]:
+        page_content = await page_fetcher.fetch_page_content(candidate.url)
+        if page_content is None or page_content.is_empty():
             logger.info("[%s] Tier 2A: page fetch failed for %s", record_id, candidate.url[:80])
             continue
+
+        # Build a merged page text blob that prepends the authoritative
+        # elements (title / h1 / breadcrumb / url path). Profile pages
+        # like "Sarah Chen | Anesthesia" often name the department ONLY
+        # in the <title> — if we pass only body prose to the LLM the
+        # department disappears.
+        page_blob = (
+            f"URL path: {page_content.url_path}\n"
+            f"Title: {page_content.page_title}\n"
+            f"H1: {page_content.h1}\n"
+            f"Breadcrumb: {page_content.breadcrumb}\n"
+            f"Body: {page_content.body_text}"
+        )
 
         # Step 4 — LLM extraction
         try:
@@ -87,7 +131,7 @@ async def run_tier2a(
                 llm_client, contact, institution,
                 name2 or "not recorded",
                 name3 or "not recorded",
-                page_text,
+                page_blob,
             )
         except Exception:
             logger.exception("[%s] Tier 2A: LLM extraction failed", record_id)
@@ -106,9 +150,9 @@ async def run_tier2a(
         # Person found with acceptable confidence — apply Mode A or B logic
         result.source_url = candidate.url
         result.confidence = llm_confidence
-        official_dept = extraction.get("official_dept")
-        official_group = extraction.get("official_group")
-        result.title = extraction.get("title")
+        official_dept = _clean_llm_string(extraction.get("official_dept"))
+        official_group = _clean_llm_string(extraction.get("official_group"))
+        result.title = _clean_llm_string(extraction.get("title"))
 
         if mode == "2A_population":
             # MODE A: populate name2 from discovered department
@@ -134,13 +178,118 @@ async def run_tier2a(
     return result
 
 
+_HONORIFICS = {
+    "dr", "dr.", "prof", "prof.", "professor",
+    "mr", "mr.", "mrs", "mrs.", "ms", "ms.", "mx", "mx.",
+}
+_NAME_SUFFIXES = {"md", "md.", "phd", "phd.", "msc", "msc.",
+                  "jr", "jr.", "sr", "sr.", "ii", "iii", "iv"}
+
+
+def _extract_first_and_last(contact: str) -> tuple[str, str] | None:
+    """Return (first_name, surname) from a contact string, or None.
+
+    Both honorifics and academic suffixes are stripped. The first
+    remaining token is the given name; the last is the surname.
+    """
+    clean = _clean_contact_name(contact)
+    if not clean:
+        return None
+    parts = clean.split()
+    if len(parts) < 2:
+        return None
+    return parts[0], parts[-1]
+
+
+def _name_appears_in_text(first: str, last: str, text: str) -> bool:
+    """True if *text* contains both *first* and *last* as whole words.
+
+    The check is whitespace-insensitive enough to handle URL slugs
+    (sarah.chen, sarah-chen, sarah_chen, sarahchen) because the text
+    is normalised: ``.``, ``-``, ``_``, ``/`` are turned into spaces
+    before matching. Matching is case-insensitive.
+    """
+    if not first or not last or not text:
+        return False
+    import re
+    normalised = re.sub(r"[._\-/]+", " ", text.lower())
+    first_l = first.lower()
+    last_l = last.lower()
+    has_first = bool(re.search(rf"\b{re.escape(first_l)}\b", normalised))
+    has_last = bool(re.search(rf"\b{re.escape(last_l)}\b", normalised))
+    # Also accept the concatenated slug form 'sarahchen' / 'chensarah'
+    if not (has_first and has_last):
+        if (first_l + last_l) in normalised.replace(" ", ""):
+            return True
+        if (last_l + first_l) in normalised.replace(" ", ""):
+            return True
+        return False
+    return True
+
+
+def _filter_candidates_by_name(
+    candidates: list[SearchResult],
+    contact: str,
+) -> list[SearchResult]:
+    """Drop SERP candidates whose url/title/snippet do not contain
+    BOTH the contact's first name and surname as whole words.
+
+    This catches the common failure where Google returns near-miss
+    profiles (e.g. 'Sarah Knox' for a 'Sarah Chen' query) on domains
+    that have no exact match for the queried name.
+    """
+    names = _extract_first_and_last(contact)
+    if not names:
+        # Single-token name — cannot verify, fall back to trusting SERP.
+        return candidates
+    first, last = names
+    out: list[SearchResult] = []
+    for sr in candidates:
+        haystack = " ".join([sr.url or "", sr.title or "", sr.snippet or ""])
+        if _name_appears_in_text(first, last, haystack):
+            out.append(sr)
+    return out
+
+
+def _clean_contact_name(contact: str) -> str:
+    """Strip honorifics and academic suffixes from a contact name.
+
+    'Prof. Sarah Chen'   → 'Sarah Chen'
+    'Dr Robert Kim, MD'  → 'Robert Kim'
+    'Jane Smith PhD'     → 'Jane Smith'
+    """
+    if not contact:
+        return ""
+    # Normalise commas to spaces so 'Robert Kim, MD' tokenises cleanly
+    raw = contact.replace(",", " ")
+    tokens = [t for t in raw.split() if t]
+
+    # Drop leading honorifics
+    while tokens and tokens[0].lower() in _HONORIFICS:
+        tokens.pop(0)
+
+    # Drop trailing academic suffixes
+    while tokens and tokens[-1].lower() in _NAME_SUFFIXES:
+        tokens.pop()
+
+    return " ".join(tokens)
+
+
 def _build_queries(contact: str, institution: str, domain: str | None) -> list[str]:
-    """Build primary and fallback SERP queries for contact lookup."""
-    queries = []
+    """Build a single SERP query for contact lookup.
+
+    Contact honorifics are stripped so the quoted name matches the
+    page text verbatim. We run exactly ONE query — the on-domain
+    quoted-name search — and rely on the top results. This is the
+    lowest-cost way to find an institutional profile page. If it
+    returns nothing, the contact path is unrecoverable without more
+    calls, so we fall through rather than fan out.
+    """
+    clean = _clean_contact_name(contact) or contact
     if domain:
-        queries.append(f'"{contact}" "{institution}" site:{domain}')
-    queries.append(f'"{contact}" "{institution}" faculty staff profile')
-    return queries
+        return [f'"{clean}" site:{domain}']
+    # No domain (Tier1 didn't find one) — single off-domain query
+    return [f'"{clean}" "{institution}"']
 
 
 async def _search_and_rank(

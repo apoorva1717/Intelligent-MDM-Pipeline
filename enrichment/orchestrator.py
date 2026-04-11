@@ -28,8 +28,8 @@ from api.models import (
 )
 from config import Settings
 from enrichment.tier1_ror import RORClient, clear_ror_cache
+from enrichment.tier2_canonical import run_tier2_canonical
 from enrichment.tier2a_contact import Tier2AResult, run_tier2a
-from enrichment.tier2b_dept import Tier2BResult, run_tier2b
 from enrichment.tier3_llm import Tier3Result, run_tier3
 from llm.openai_client import OpenAIClient
 from search.base import SearchClient
@@ -37,7 +37,13 @@ from search.duckduckgo_client import DuckDuckGoClient
 from search.page_fetcher import PageFetcher
 from search.serpapi_client import SerpAPIClient
 from utils.cache import BatchCache
-from utils.text_utils import country_to_iso_code, extract_domain, is_blank
+from utils.text_utils import (
+    canonicalise_unit_name,
+    country_to_iso_code,
+    expand_abbreviations,
+    is_blank,
+    strip_address_fragments,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +93,26 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
         val = result.get(field)
         if val is not None and not str(val).strip():
             result[field] = None
+
+    # Canonicalise academic unit names on name2/name3 only. name1
+    # (the institution) is never a "Department of X", so we leave
+    # it alone. This collapses "Chemistry Department",
+    # "Dept of Chemistry", "Department of Chemistry" all to
+    # "Department of Chemistry".
+    for field in ("name2_enriched", "name3_enriched"):
+        val = result.get(field)
+        if val:
+            canonical = canonicalise_unit_name(val)
+            if canonical and canonical != val:
+                result[field] = canonical
+
+    # Passthrough: if no tier enriched name3 but the record had one,
+    # retain the original value. Enrichment should never silently
+    # drop user-supplied fields.
+    if result.get("name3_enriched") is None:
+        original_n3 = result.get("name3_original")
+        if original_n3 and str(original_n3).strip():
+            result["name3_enriched"] = str(original_n3).strip()
 
     result["name1_changed"] = bool(
         result.get("name1_enriched")
@@ -156,24 +182,16 @@ def _apply_tier2a(result: dict, tier2a: Tier2AResult, mode: str) -> None:
 
     if tier2a.name2_enriched and tier2a.name2_enriched.strip():
         result["name2_enriched"] = tier2a.name2_enriched.strip()
-    if tier2a.name3_enriched and tier2a.name3_enriched.strip():
+    # Only populate name3 if the input record originally had one.
+    # Tier 2A opportunistically extracts groups/programs from the
+    # contact's page — but we should not introduce a name3 the user
+    # didn't ask for.
+    if (
+        tier2a.name3_enriched and tier2a.name3_enriched.strip()
+        and result.get("name3_original")
+        and str(result["name3_original"]).strip()
+    ):
         result["name3_enriched"] = tier2a.name3_enriched.strip()
-
-
-def _apply_tier2b(result: dict, tier2b: Tier2BResult) -> None:
-    """Transfer Tier 2B outcome into the result dict."""
-    result["tier_used"] = 2
-    result["tier2_mode"] = "2B"
-    result["source"] = tier2b.source
-    result["source_url"] = tier2b.source_url
-    result["confidence"] = tier2b.confidence
-    result["flag_for_review"] = tier2b.flag_for_review
-    result["flag_reason"] = tier2b.flag_reason
-    result["enrichment_status"] = tier2b.enrichment_status
-    result["name2_match_result"] = tier2b.name2_match
-
-    if tier2b.name2_enriched and tier2b.name2_enriched.strip():
-        result["name2_enriched"] = tier2b.name2_enriched.strip()
 
 
 def _apply_tier3(result: dict, tier3: Tier3Result) -> None:
@@ -192,72 +210,6 @@ def _apply_tier3(result: dict, tier3: Tier3Result) -> None:
             result["name2_enriched"] = tier3.name2_suggestion.strip()
         if tier3.name3_suggestion and tier3.name3_suggestion.strip():
             result["name3_enriched"] = tier3.name3_suggestion.strip()
-
-
-# ── Web search name1 resolution (Tier 1B) ─────────────────────────────────────
-
-_RESEARCH_DOMAIN_PATTERNS = (
-    ".edu", ".ac.", ".gov", ".gov.", ".ac.uk", ".ac.jp", ".edu.au",
-    ".edu.br", ".ac.in", ".ac.nz", ".ac.za",
-)
-
-
-def _infer_record_type_from_domain(domain: str | None) -> str:
-    """Heuristic: .edu / .ac.* / .gov → research_institution, else company."""
-    if not domain:
-        return "unknown"
-    domain_lower = domain.lower()
-    for pattern in _RESEARCH_DOMAIN_PATTERNS:
-        if pattern in domain_lower:
-            return "research_institution"
-    return "company"
-
-
-async def _web_resolve_name1(
-    name1: str,
-    city: str | None,
-    state: str | None,
-    search_client: SearchClient,
-    cache: BatchCache,
-) -> dict[str, Any]:
-    """Use web search to resolve name1 when ROR has no match.
-
-    Searches for the quoted org name, scores results by title similarity,
-    and extracts the domain from the best-matching result.  Returns a dict
-    with ``found``, ``domain``, ``source_url``, and ``record_type``.
-    """
-    location = " ".join(filter(None, [city, state]))
-    queries = [f'"{name1}"']
-    if location:
-        queries.append(f'"{name1}" {location}')
-
-    best_url: str | None = None
-    best_score = 0.0
-
-    for query in queries:
-        cached = cache.get_serp(query)
-        if cached is not None:
-            results = cached
-        else:
-            results = await search_client.search(query, num_results=5)
-            cache.set_serp(query, results)
-
-        for sr in results:
-            score = fuzz.partial_ratio(name1.lower(), sr.title.lower())
-            if score > best_score:
-                best_score = score
-                best_url = sr.url
-
-    if best_url and best_score >= 50:
-        domain = extract_domain(best_url)
-        return {
-            "found": True,
-            "domain": domain,
-            "source_url": best_url,
-            "record_type": _infer_record_type_from_domain(domain),
-        }
-
-    return {"found": False}
 
 
 # ── Orchestrator ──────────────────────────────────────────────────────────────
@@ -372,8 +324,27 @@ class Orchestrator:
                 # Resolve country to ISO alpha-2 for the ROR query filter
                 country_code = country_to_iso_code(record.country)
 
+                # Clean address fragments that leaked into name1 using
+                # the record's own structured address fields. No hardcoded
+                # street-suffix lists.
+                name1_cleaned = strip_address_fragments(
+                    record.name1,
+                    street=record.street,
+                    city=record.city,
+                    state=record.state,
+                    zip_code=record.zip,
+                ) or record.name1.strip()
+
+                if name1_cleaned != record.name1.strip():
+                    logger.info({
+                        "record_id": record.record_id,
+                        "step": "tier1_name1_cleaned",
+                        "original": record.name1,
+                        "cleaned": name1_cleaned,
+                    })
+
                 ror_parent = await self._ror_client.call(
-                    record.name1.strip(),
+                    name1_cleaned,
                     country_code=country_code,
                     country=record.country,
                     city=record.city,
@@ -383,7 +354,7 @@ class Orchestrator:
                 logger.info({
                     "record_id": record.record_id,
                     "step": "tier1_ror_parent",
-                    "query": record.name1.strip(),
+                    "query": name1_cleaned,
                     "country": record.country,
                     "country_filter": country_code,
                     "matched": ror_parent["matched"],
@@ -415,8 +386,15 @@ class Orchestrator:
                     # ── Child match for name2 (local fuzzy against parent's children) ──
                     if record.name2 and record.name2.strip():
                         children = ror_parent.get("children", [])
+                        # Expand abbreviations ("Dept of X" → "Department of X")
+                        # so the fuzzy match against ROR's canonical children
+                        # is deterministic and reliable.
+                        name2_for_match = (
+                            expand_abbreviations(record.name2.strip())
+                            or record.name2.strip()
+                        )
                         child_match = _match_child_locally(
-                            record.name2.strip(), children,
+                            name2_for_match, children,
                         )
 
                         logger.info({
@@ -441,63 +419,88 @@ class Orchestrator:
                             return EnrichmentResult(**result)
 
                 else:
-                    # ── TIER 1B: Web search fallback for name1 ────────────
-                    web_res = await _web_resolve_name1(
-                        record.name1.strip(),
-                        record.city, record.state,
-                        self._search_client, cache,
-                    )
-
+                    # ── ROR miss: pass through cleaned name1 and let
+                    # Tier 3 (LLM inference) propose corrections. No
+                    # SerpAPI call here — the previous web-resolve step
+                    # cost 1-2 SerpAPI calls per failed ROR match for
+                    # the sole purpose of discovering a domain, which
+                    # Tier 2 doesn't need anyway when ROR fails.
                     logger.info({
                         "record_id": record.record_id,
-                        "step": "tier1b_web_resolve",
-                        "found": web_res["found"],
-                        "domain": web_res.get("domain"),
-                        "record_type": web_res.get("record_type"),
-                        "source_url": web_res.get("source_url"),
+                        "step": "tier1_ror_miss_passthrough",
+                        "name1_cleaned": name1_cleaned,
                     })
-
-                    # Always pass through name1 — better than leaving it None
-                    result["name1_enriched"] = record.name1.strip()
-                    result["source"] = "web_search" if web_res["found"] else "passthrough"
+                    result["name1_enriched"] = name1_cleaned
+                    result["source"] = "passthrough"
                     result["confidence"] = "low"
                     result["tier_used"] = 1
+                    result["record_type"] = "unknown"
+                    institution_domain = None
 
-                    if web_res["found"]:
-                        institution_domain = web_res.get("domain")
-                        result["source_url"] = web_res.get("source_url")
-                        result["record_type"] = web_res.get("record_type", "unknown")
-                    else:
-                        result["record_type"] = "unknown"
-                        institution_domain = None
+            name2_already_filled = bool(record.name2 and record.name2.strip())
+            has_dept_signal = (
+                name2_already_filled
+                or bool(record.contact and record.contact.strip())
+            )
 
-            # ── TIER 2A: CONTACT LOOKUP ──────────────────────────────────
+            # ── TIER 2 (canonical): LLM-only canonicalization ──────────
+            # Runs when name2 is present and Tier 1 child matching did
+            # not resolve it. Zero SerpAPI calls. Only accepts
+            # high-confidence results.
+            if (
+                name2_already_filled
+                and result["record_type"] == "research_institution"
+                and result.get("name1_enriched")
+            ):
+                canonical = await run_tier2_canonical(
+                    record_id=record.record_id,
+                    institution=result["name1_enriched"],
+                    name2=record.name2,  # type: ignore[arg-type]
+                    llm_client=self._llm_client,
+                )
+                logger.info({
+                    "record_id": record.record_id,
+                    "step": "tier2_canonical_result",
+                    "found": canonical.success,
+                    "confidence": canonical.confidence,
+                    "name2_enriched": canonical.name2_enriched,
+                })
+                if canonical.success and canonical.name2_enriched:
+                    result["name2_enriched"] = canonical.name2_enriched
+                    result["tier_used"] = 2
+                    result["source"] = "llm_canonical"
+                    result["confidence"] = "high"
+                    result["name2_match_result"] = "not_applicable"
+                    result["enrichment_status"] = "enriched"
+                    result["flag_for_review"] = True
+                    result["flag_reason"] = "LLM canonical form — verify"
+                    result = finalise(result, start)
+                    return EnrichmentResult(**result)
 
-            can_do_2a = (
-                result["record_type"] == "research_institution"
+            # ── TIER 2A (contact lookup): 1 SerpAPI call, gated ────────
+            # Runs only when name2 is null and we have a contact plus
+            # an official domain. A single quoted-name on-domain query.
+            # SERP candidates are deterministically filtered so only
+            # results whose URL/title/snippet contain BOTH the first
+            # name and the surname of the contact reach the page fetch
+            # / LLM step. That blocks near-miss matches like
+            # 'Sarah Knox' for a 'Sarah Chen' query.
+            can_do_contact_lookup = (
+                not name2_already_filled
+                and result["record_type"] == "research_institution"
                 and bool(record.contact and record.contact.strip())
                 and bool(institution_domain)
             )
 
             logger.info({
                 "record_id": record.record_id,
-                "step": "tier2a_decision",
-                "attempting": can_do_2a,
-                "record_type": result["record_type"],
-                "has_contact": bool(record.contact and record.contact.strip()),
-                "has_domain": bool(institution_domain),
-                "reason": (
-                    "attempting" if can_do_2a
-                    else f"skipped — record_type is {result['record_type']}"
-                    if result["record_type"] != "research_institution"
-                    else "skipped — no contact"
-                    if not (record.contact and record.contact.strip())
-                    else "skipped — no domain"
-                ),
+                "step": "tier_contact_decision",
+                "attempting": can_do_contact_lookup,
+                "name2_already_filled": name2_already_filled,
             })
 
-            if can_do_2a:
-                mode = "population" if not record.name2 else "verification"
+            if can_do_contact_lookup:
+                mode = "population"
                 tier2a_result = await run_tier2a(
                     record_id=record.record_id,
                     contact=record.contact,  # type: ignore[arg-type]
@@ -514,53 +517,35 @@ class Orchestrator:
 
                 logger.info({
                     "record_id": record.record_id,
-                    "step": "tier2a_result",
+                    "step": "tier_contact_result",
                     "found": tier2a_result.success,
-                    "mode": mode,
                     "confidence": tier2a_result.confidence,
                     "name2_enriched": tier2a_result.name2_enriched,
                 })
 
                 if tier2a_result.success:
+                    # If Tier 2A returned a bare subject like "Anesthesia"
+                    # (the page title abbreviates the unit wording), run
+                    # it through Tier 2 canonicalization so the final
+                    # answer matches the institution's full official
+                    # form (e.g. "Department of Anesthesia and
+                    # Perioperative Care"). Zero extra SerpAPI cost.
+                    if tier2a_result.name2_enriched:
+                        canon = await run_tier2_canonical(
+                            record_id=record.record_id,
+                            institution=result["name1_enriched"] or record.name1 or "",
+                            name2=tier2a_result.name2_enriched,
+                            llm_client=self._llm_client,
+                        )
+                        if canon.success and canon.name2_enriched:
+                            logger.info({
+                                "record_id": record.record_id,
+                                "step": "tier_contact_canonicalised",
+                                "before": tier2a_result.name2_enriched,
+                                "after": canon.name2_enriched,
+                            })
+                            tier2a_result.name2_enriched = canon.name2_enriched
                     _apply_tier2a(result, tier2a_result, mode)
-                    result = finalise(result, start)
-                    return EnrichmentResult(**result)
-
-            # ── TIER 2B: DEPT SEARCH ─────────────────────────────────────
-
-            if not is_blank(record.name1):
-                logger.info({
-                    "record_id": record.record_id,
-                    "step": "tier2b_start",
-                    "name1": result["name1_enriched"] or record.name1,
-                    "name2": record.name2,
-                    "record_type": result["record_type"],
-                })
-
-                tier2b_result = await run_tier2b(
-                    record_id=record.record_id,
-                    name1=result["name1_enriched"] or record.name1 or "",
-                    name2=record.name2,
-                    record_type=result["record_type"],
-                    city=record.city,
-                    state=record.state,
-                    domain=institution_domain,
-                    search_client=self._search_client,
-                    page_fetcher=self._page_fetcher,
-                    llm_client=self._llm_client,
-                    cache=cache,
-                    settings=self._settings,
-                )
-
-                logger.info({
-                    "record_id": record.record_id,
-                    "step": "tier2b_result",
-                    "found": tier2b_result.success,
-                    "confidence": tier2b_result.confidence,
-                })
-
-                if tier2b_result.success:
-                    _apply_tier2b(result, tier2b_result)
                     result = finalise(result, start)
                     return EnrichmentResult(**result)
 
@@ -590,6 +575,26 @@ class Orchestrator:
             # Last resort: if nothing enriched name1, pass through the original
             if not result.get("name1_enriched") and not is_blank(record.name1):
                 result["name1_enriched"] = record.name1.strip()
+
+            # Rule: if the input had no name2 and no contact, there is no
+            # signal from which to infer a department — name2_enriched
+            # must remain empty regardless of what any tier produced.
+            if not has_dept_signal:
+                result["name2_enriched"] = None
+
+            # Rule: name2_enriched should never echo name1_enriched.
+            if (
+                result.get("name2_enriched")
+                and result.get("name1_enriched")
+                and result["name2_enriched"].strip().lower()
+                    == result["name1_enriched"].strip().lower()
+            ):
+                logger.info({
+                    "record_id": record.record_id,
+                    "step": "name2_equals_name1_dropped",
+                    "value": result["name2_enriched"],
+                })
+                result["name2_enriched"] = None
 
             result = finalise(result, start)
             return EnrichmentResult(**result)

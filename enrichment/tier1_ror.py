@@ -20,7 +20,7 @@ from typing import Any
 import httpx
 from rapidfuzz import fuzz
 
-from utils.text_utils import extract_domain
+from utils.text_utils import expand_abbreviations, extract_domain
 
 logger = logging.getLogger(__name__)
 
@@ -42,27 +42,75 @@ def clear_ror_cache() -> None:
 def _compute_name_score(query: str, org_names: list[dict[str, Any]]) -> float:
     """Score how well *query* matches any of the organisation's name variants.
 
-    Returns a float 0.0–1.0.  An exact or substring match against any
-    variant (including acronyms) yields 1.0; otherwise the best of
-    ``token_sort_ratio`` and ``partial_ratio`` is returned — the latter
-    handles abbreviations like "Univ" matching "University".
+    Strategy:
+    1. Exact match against any variant → 1.0.
+    2. Token-subset match: every significant (≥4-char) query token
+       appears as a whole word in a variant → 1.0.  Allows "Stanford"
+       to match "Stanford University".
+    3. Length-guarded substring match (shorter side ≥60% of longer).
+    4. Fuzz ratios (token_sort_ratio always; partial_ratio only when
+       length-guarded, so tiny acronyms like "UNI" can't produce a
+       false 1.0 against long unrelated names).
+
+    Short acronym variants (≤4 chars) are excluded from fuzz scoring:
+    they only contribute via exact-match in step 1.  This prevents
+    ROR's acronym variants (e.g. "UNI" for University of Northern
+    Iowa) from matching any query that happens to contain those
+    letters.
     """
     query_lower = query.strip().lower()
-    all_values = [n["value"].lower() for n in org_names]
+    if not query_lower:
+        return 0.0
 
+    all_values = [n["value"].lower() for n in org_names if n.get("value")]
+
+    # Step 1: exact match against any variant (acronyms allowed here)
     for val in all_values:
-        if query_lower == val or query_lower in val or val in query_lower:
+        if query_lower == val:
             return 1.0
 
+    query_tokens = set(query_lower.split())
+    significant_query_tokens = {t for t in query_tokens if len(t) >= 4}
+
+    # Scoring excludes short acronym-like variants to avoid false positives
+    scoring_values = [v for v in all_values if len(v) >= 5]
+    if not scoring_values:
+        return 0.0
+
+    def _length_ok(a: str, b: str) -> bool:
+        shorter = min(len(a), len(b))
+        longer = max(len(a), len(b))
+        return longer > 0 and shorter / longer >= 0.6
+
     best = 0.0
-    for val in all_values:
-        ratio = max(
-            fuzz.token_sort_ratio(query_lower, val),
-            fuzz.partial_ratio(query_lower, val),
-        ) / 100.0
-        if ratio > best:
-            best = ratio
+    for val in scoring_values:
+        val_tokens = set(val.split())
+
+        # Step 2: all significant query tokens appear as whole words
+        if significant_query_tokens and significant_query_tokens.issubset(val_tokens):
+            return 1.0
+
+        # Step 3: length-guarded substring
+        if _length_ok(query_lower, val) and (query_lower in val or val in query_lower):
+            return 1.0
+
+        # Step 4a: token_sort_ratio (always safe — symmetric)
+        token_ratio = fuzz.token_sort_ratio(query_lower, val) / 100.0
+        if token_ratio > best:
+            best = token_ratio
+
+        # Step 4b: partial_ratio only when lengths are comparable
+        if _length_ok(query_lower, val):
+            partial = fuzz.partial_ratio(query_lower, val) / 100.0
+            if partial > best:
+                best = partial
+
     return best
+
+
+def _score_org(query: str, org: dict[str, Any]) -> float:
+    """Wrapper: extract org names and compute match score."""
+    return _compute_name_score(query, org.get("names", []))
 
 
 def _extract_org_fields(org: dict[str, Any]) -> dict[str, Any]:
@@ -235,13 +283,61 @@ async def call_ror(
                 logger.info("ROR: 0 items for '%s' across both strategies", name[:80])
                 return _no_match()
 
-            org = q_data["items"][0]
+            # Score ALL items and pick the best. Expand abbreviations
+            # in the query first so 'Stanford Uni' exact-matches
+            # 'Stanford University' rather than tying with every other
+            # variant that contains 'Stanford'. Prefer exact display
+            # name match over mere token-subset matches.
+            expanded_query = expand_abbreviations(name) or name
+            exp_lower = expanded_query.strip().lower()
+
+            def _rank_key(item: dict) -> tuple:
+                s = _score_org(expanded_query, item)
+                s2 = _score_org(name, item)
+                score = max(s, s2)
+
+                # Inspect all name variants for an EXACT match against
+                # the expanded query — that's the strongest signal and
+                # beats any token-subset score.
+                exact_match = 0
+                display_name = ""
+                for ne in item.get("names", []):
+                    val = (ne.get("value") or "").strip().lower()
+                    if val == exp_lower:
+                        exact_match = 1
+                    if "ror_display" in ne.get("types", []):
+                        display_name = ne.get("value") or ""
+                if not display_name and item.get("names"):
+                    display_name = item["names"][0].get("value", "")
+
+                # Tiebreaker: prefer display name with closest token
+                # count to the expanded query.
+                token_diff = abs(
+                    len(display_name.split()) - len(expanded_query.split())
+                )
+
+                # (exact_match desc, score desc, token_diff asc)
+                return (exact_match, score, -token_diff)
+
+            ranked = sorted(q_data["items"][:10], key=_rank_key, reverse=True)
+            best_org = ranked[0] if ranked else None
+            best_score = 0.0
+            if best_org:
+                best_score = max(
+                    _score_org(expanded_query, best_org),
+                    _score_org(name, best_org),
+                )
+
+            if best_org is None:
+                return _no_match()
+
+            org = best_org
             fields = _extract_org_fields(org)
-            score = _compute_name_score(name, fields["org_names"])
+            score = best_score
 
             if score < threshold:
                 logger.info(
-                    "ROR query: score %.2f below threshold %.2f for '%s' (top: '%s')",
+                    "ROR query: best score %.2f below threshold %.2f for '%s' (best: '%s')",
                     score, threshold, name[:60],
                     fields["official_name"] or "?",
                 )

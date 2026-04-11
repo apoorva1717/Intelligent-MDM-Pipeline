@@ -1,4 +1,4 @@
-"""Tests for Tier 2B department search, including regex extraction fallback."""
+"""Tests for Tier 2B department search via SERP + LLM extraction."""
 
 from __future__ import annotations
 
@@ -10,13 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import Settings
-from enrichment.tier2b_dept import (
-    _extract_all_dept_names,
-    _extract_department_from_text,
-    _extract_from_snippets,
-    run_tier2b,
-)
-from search.base import SearchResult
+from enrichment.tier2b_dept import run_tier2b
 from tests.mocks.openai_mock import MockOpenAIClient
 from tests.mocks.page_mock import MockPageFetcher
 from tests.mocks.serp_mock import MockSearchClient
@@ -95,8 +89,6 @@ class TestTier2B:
             cache=cache,
             settings=settings,
         )
-        # Generic mock results may or may not yield extraction
-        # At minimum, should not raise
         assert isinstance(result.success, bool)
 
     @pytest.mark.asyncio
@@ -118,131 +110,3 @@ class TestTier2B:
         )
         if result.success:
             assert result.flag_for_review is True
-
-
-class TestRegexExtraction:
-    """Tests for regex-based department extraction (no LLM needed)."""
-
-    def test_extract_department_of(self):
-        text = "Welcome to the Department of Chemistry and Biochemistry at UCLA."
-        results = _extract_all_dept_names(text)
-        assert any("Chemistry" in r for r in results)
-
-    def test_extract_school_of(self):
-        text = "Stanford School of Medicine is a leading institution."
-        results = _extract_all_dept_names(text)
-        assert any("School of Medicine" in r for r in results)
-
-    def test_extract_institute_of(self):
-        text = "The Koch Institute for Integrative Cancer Research at MIT."
-        results = _extract_all_dept_names(text)
-        assert any("Institute for Integrative Cancer Research" in r for r in results)
-
-    def test_extract_division_of(self):
-        text = "Division of Engineering and Applied Science, Caltech."
-        results = _extract_all_dept_names(text)
-        assert any("Division of Engineering" in r for r in results)
-
-    def test_extract_center_for(self):
-        text = "Center for Nanoscale Materials at Argonne National Lab."
-        results = _extract_all_dept_names(text)
-        assert any("Center for Nanoscale Materials" in r for r in results)
-
-    def test_extract_no_matches(self):
-        text = "This text has no department-like names at all."
-        results = _extract_all_dept_names(text)
-        assert results == []
-
-    def test_extract_from_text_with_name2(self):
-        page = "Stanford University. The School of Medicine is world-renowned."
-        result = _extract_department_from_text("Stanford University", "School of Medicine", page)
-        assert result is not None
-        assert "School of Medicine" in result
-
-    def test_extract_from_text_fuzzy_name2(self):
-        page = "MIT. The Department of Chemistry and Chemical Biology offers graduate programs."
-        result = _extract_department_from_text("MIT", "Chemistry Dept", page)
-        assert result is not None
-        assert "Chemistry" in result
-
-    def test_extract_from_text_no_name2(self):
-        page = "UCLA. Department of Chemistry and Biochemistry. Faculty research."
-        result = _extract_department_from_text("UCLA", None, page)
-        assert result is not None
-        assert "Chemistry" in result
-
-    def test_snippet_extraction(self):
-        candidates = [
-            SearchResult(
-                title="Stanford School of Medicine — About Us",
-                url="https://med.stanford.edu/about",
-                snippet="Stanford School of Medicine is a world-renowned institution.",
-            ),
-        ]
-        hit = _extract_from_snippets(candidates, "Stanford University", "School of Medicine")
-        assert hit is not None
-        dept_name, url, match_type = hit
-        assert "School of Medicine" in dept_name
-
-    def test_snippet_extraction_no_match(self):
-        candidates = [
-            SearchResult(
-                title="Generic Page",
-                url="https://example.com",
-                snippet="Nothing relevant here at all.",
-            ),
-        ]
-        hit = _extract_from_snippets(candidates, "MIT", "Department of Physics")
-        assert hit is None
-
-    # ── Suffix-style pattern tests ─────────────────────────────────────
-
-    def test_extract_facility_suffix(self):
-        text = "The NMR Facility at University of Florida houses spectrometers."
-        results = _extract_all_dept_names(text)
-        assert any("NMR Facility" in r for r in results)
-
-    def test_extract_lab_suffix(self):
-        text = "Welcome to the Biomolecular NMR Lab at AMRIS."
-        results = _extract_all_dept_names(text)
-        assert any("NMR Lab" in r for r in results)
-
-    def test_extract_center_suffix(self):
-        text = "The Proteomics Center provides mass spectrometry services."
-        results = _extract_all_dept_names(text)
-        assert any("Proteomics Center" in r for r in results)
-
-    def test_extract_core_suffix(self):
-        text = "Submit samples to the Genomics Core for sequencing."
-        results = _extract_all_dept_names(text)
-        assert any("Genomics Core" in r for r in results)
-
-    def test_extract_unit_suffix(self):
-        text = "The Structural Biology Unit investigates protein folding."
-        results = _extract_all_dept_names(text)
-        assert any("Biology Unit" in r for r in results)
-
-    def test_extract_from_text_nmr_facility(self):
-        page = "University of Florida. The NMR Facility provides analytical services."
-        result = _extract_department_from_text("University of Florida", "NMR Facility", page)
-        assert result is not None
-        assert "NMR Facility" in result
-
-    def test_extract_from_text_biomolecular_lab(self):
-        page = "AMRIS at University of Florida. Biomolecular NMR Lab for structural biology."
-        result = _extract_department_from_text("University of Florida", "Biomolecular NMR Lab", page)
-        assert result is not None
-        assert "NMR Lab" in result
-
-    def test_snippet_extraction_facility(self):
-        candidates = [
-            SearchResult(
-                title="NMR Facility — AMRIS | University of Florida",
-                url="https://amris.ufl.edu/",
-                snippet="The NMR Facility at UF provides services for NMR spectroscopy.",
-            ),
-        ]
-        hit = _extract_from_snippets(candidates, "University of Florida", "NMR Facility")
-        assert hit is not None
-        dept_name, url, match_type = hit
-        assert "NMR Facility" in dept_name
