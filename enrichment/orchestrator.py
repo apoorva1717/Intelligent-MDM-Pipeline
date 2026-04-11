@@ -27,6 +27,13 @@ from api.models import (
     EnrichmentSummary,
 )
 from config import Settings
+from enrichment.company_canonical import run_company_canonical
+from enrichment.overflow_check import run_overflow_check
+from enrichment.preprocess import (
+    find_suspicious_plain_names,
+    llm_classify_plain_names_async,
+    preprocess_record,
+)
 from enrichment.tier1_ror import RORClient, clear_ror_cache
 from enrichment.tier2_canonical import run_tier2_canonical
 from enrichment.tier2a_contact import Tier2AResult, run_tier2a
@@ -42,6 +49,8 @@ from utils.text_utils import (
     country_to_iso_code,
     expand_abbreviations,
     is_blank,
+    is_granular_unit,
+    looks_like_research_institution,
     strip_address_fragments,
 )
 
@@ -52,6 +61,8 @@ logger = logging.getLogger(__name__)
 
 def _init_result(record: EnrichmentRecord) -> dict[str, Any]:
     """Create a blank result dict with originals populated."""
+    # Map the legacy single 'street' input into street1 if street1 is blank.
+    street1_original = record.street1 or record.street
     return {
         "record_id": record.record_id,
         "name1_original": record.name1,
@@ -63,6 +74,21 @@ def _init_result(record: EnrichmentRecord) -> dict[str, Any]:
         "name1_changed": False,
         "name2_changed": False,
         "name3_changed": False,
+        "contact_original": record.contact,
+        "contact_enriched": None,
+        "contact_changed": False,
+        "email_original": record.email,
+        "email_enriched": None,
+        "email_changed": False,
+        "street1_original": street1_original,
+        "street1_enriched": None,
+        "street1_changed": False,
+        "street2_original": record.street2,
+        "street2_enriched": None,
+        "street2_changed": False,
+        "street3_original": record.street3,
+        "street3_enriched": None,
+        "street3_changed": False,
         "record_type": "unknown",
         "tier_used": 1,
         "tier2_mode": None,
@@ -72,6 +98,7 @@ def _init_result(record: EnrichmentRecord) -> dict[str, Any]:
         "source_url": None,
         "contact_used": False,
         "name2_match_result": "not_applicable",
+        "use_cases_triggered": [],
         "flag_for_review": False,
         "flag_reason": None,
         "enrichment_status": "failed",
@@ -99,35 +126,51 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # it alone. This collapses "Chemistry Department",
     # "Dept of Chemistry", "Department of Chemistry" all to
     # "Department of Chemistry".
+    # UC 5 scope: never canonicalise granular units (lab/group/
+    # centre/facility) — leave them verbatim.
     for field in ("name2_enriched", "name3_enriched"):
         val = result.get(field)
-        if val:
+        if val and not is_granular_unit(val):
             canonical = canonicalise_unit_name(val)
             if canonical and canonical != val:
                 result[field] = canonical
 
-    # Passthrough: if no tier enriched name3 but the record had one,
-    # retain the original value. Enrichment should never silently
-    # drop user-supplied fields.
-    if result.get("name3_enriched") is None:
-        original_n3 = result.get("name3_original")
-        if original_n3 and str(original_n3).strip():
-            result["name3_enriched"] = str(original_n3).strip()
+    preprocess_cleared = result.get("_preprocess_cleared") or set()
 
-    result["name1_changed"] = bool(
-        result.get("name1_enriched")
-        and result["name1_enriched"] != result.get("name1_original")
-    )
-    result["name2_changed"] = bool(
-        result.get("name2_enriched")
-        and result["name2_enriched"] != result.get("name2_original")
-    )
-    result["name3_changed"] = bool(
-        result.get("name3_enriched")
-        and result["name3_enriched"] != result.get("name3_original")
-    )
+    # Passthrough: if no tier enriched name2/name3 but the record had
+    # one, retain the original value — UNLESS preprocessing deliberately
+    # cleared the field (e.g. extracted an email, address, contact
+    # name). Enrichment must never silently drop user-supplied fields
+    # but must also respect preprocessing's decision to empty a field.
+    for field in ("name2", "name3"):
+        if result.get(f"{field}_enriched") is None and field not in preprocess_cleared:
+            orig = result.get(f"{field}_original")
+            if orig and str(orig).strip():
+                result[f"{field}_enriched"] = str(orig).strip()
+
+    # Passthrough for contact / email / street fields: any field that
+    # preprocessing / tiers did not touch retains its original value
+    # in the enriched slot. This means "enriched" always reflects the
+    # final state after the pipeline runs, not only what changed.
+    for base in ("contact", "email", "street1", "street2", "street3"):
+        if result.get(f"{base}_enriched") is None:
+            orig = result.get(f"{base}_original")
+            if orig and str(orig).strip():
+                result[f"{base}_enriched"] = str(orig).strip()
+
+    # Compute all changed flags.
+    def _changed(field: str) -> bool:
+        enr = result.get(f"{field}_enriched")
+        orig = result.get(f"{field}_original")
+        return bool(enr and enr != orig)
+
+    for f in ("name1", "name2", "name3", "contact", "email",
+              "street1", "street2", "street3"):
+        result[f"{f}_changed"] = _changed(f)
 
     result["duration_ms"] = int((time.monotonic() - start) * 1000)
+    # Strip transient non-schema keys before pydantic validation.
+    result.pop("_preprocess_cleared", None)
     return result
 
 
@@ -316,30 +359,149 @@ class Orchestrator:
                 result = finalise(result, start)
                 return EnrichmentResult(**result)
 
+            # ── UC 0: Name 1 overflow check ──────────────────────────
+            # Single LLM call. If Name1 + Name2 read as ONE continuous
+            # organisation name, flag the record and return immediately
+            # — no other tier runs, no auto-correction. Flagged records
+            # go to manual review.
+            if (
+                record.name1 and record.name1.strip()
+                and record.name2 and record.name2.strip()
+            ):
+                overflow = await run_overflow_check(
+                    record_id=record.record_id,
+                    name1=record.name1,
+                    name2=record.name2,
+                    llm_client=self._llm_client,
+                )
+                if overflow.is_overflow:
+                    logger.info({
+                        "record_id": record.record_id,
+                        "step": "uc0_overflow_flagged",
+                        "confidence": overflow.confidence,
+                        "reasoning": overflow.reasoning,
+                    })
+                    # Pass through originals untouched. Flag only.
+                    result["name1_enriched"] = record.name1.strip()
+                    result["name2_enriched"] = record.name2.strip()
+                    result["record_type"] = "unknown"
+                    result["tier_used"] = 1
+                    result["source"] = "pattern_match"
+                    result["confidence"] = overflow.confidence
+                    result["enrichment_status"] = "unresolved"
+                    result["flag_for_review"] = True
+                    result["flag_reason"] = (
+                        f"UC 0: possible Name 1 overflow into Name 2 — "
+                        f"{overflow.reasoning}"
+                    )
+                    result["use_cases_triggered"] = [0]
+                    result = finalise(result, start)
+                    return EnrichmentResult(**result)
+
+            # ── PREPROCESS (UC 6, 7, 8, 9): deterministic cleanup ─────
+            # Pulls emails, addresses, contact-person names, and AP
+            # references out of name fields and moves them to the
+            # correct slots. LLM is only called for plain-name
+            # candidates (UC 7 Pattern B2) when the pattern is
+            # suspicious — no title, no org signals, 2-3 capitalised
+            # words.
+            suspicious = find_suspicious_plain_names(
+                record.name1, record.name2, record.name3,
+            )
+            person_verdicts = await llm_classify_plain_names_async(
+                self._llm_client, suspicious,
+            ) if suspicious else {}
+
+            pre = preprocess_record(
+                name1=record.name1,
+                name2=record.name2,
+                name3=record.name3,
+                contact=record.contact,
+                email=record.email,
+                street1=result["street1_original"],
+                street2=record.street2,
+                street3=record.street3,
+                llm_person_verdicts=person_verdicts,
+            )
+
+            if pre.use_cases:
+                logger.info({
+                    "record_id": record.record_id,
+                    "step": "preprocess",
+                    "use_cases": pre.use_cases,
+                    "flags": pre.flags,
+                })
+            for uc in pre.use_cases:
+                if uc not in result["use_cases_triggered"]:
+                    result["use_cases_triggered"].append(uc)
+
+            # Track which name fields were touched by preprocessing
+            # so finalise() does not restore the original value for a
+            # field that was intentionally cleared (e.g. the entire
+            # name3 was an email that got moved to the email slot).
+            preprocess_cleared: set[str] = set()
+            for base, pre_val, orig in (
+                ("name1", pre.name1, record.name1),
+                ("name2", pre.name2, record.name2),
+                ("name3", pre.name3, record.name3),
+            ):
+                if (orig and orig.strip()) and (pre_val is None or not pre_val.strip()):
+                    preprocess_cleared.add(base)
+            result["_preprocess_cleared"] = preprocess_cleared
+
+            # If preprocessing populated any contact/email/street/name
+            # field, record the enriched value now. (Final passthrough
+            # in finalise() will retain originals for untouched fields.)
+            if pre.contact is not None and pre.contact != result["contact_original"]:
+                result["contact_enriched"] = pre.contact
+            if pre.email is not None and pre.email != result["email_original"]:
+                result["email_enriched"] = pre.email
+            for slot in ("street1", "street2", "street3"):
+                v = getattr(pre, slot)
+                if v is not None and v != result[f"{slot}_original"]:
+                    result[f"{slot}_enriched"] = v
+
+            # From here on, the tiers work with the PREPROCESSED names.
+            pp_name1 = pre.name1
+            pp_name2 = pre.name2
+            pp_name3 = pre.name3
+            pp_contact = pre.contact
+            pp_street1 = pre.street1
+
+            # Flag if preprocessing triggered a conflict
+            if "contact-conflict" in pre.flags or "email-conflict" in pre.flags or "street-slots-full" in pre.flags:
+                result["flag_for_review"] = True
+                result["flag_reason"] = "; ".join(
+                    f for f in pre.flags
+                    if "conflict" in f or "slots-full" in f
+                )
+
             institution_domain: str | None = None
 
             # ── TIER 1: ROR ──────────────────────────────────────────────
 
-            if not is_blank(record.name1):
+            if not is_blank(pp_name1):
                 # Resolve country to ISO alpha-2 for the ROR query filter
                 country_code = country_to_iso_code(record.country)
 
-                # Clean address fragments that leaked into name1 using
-                # the record's own structured address fields. No hardcoded
-                # street-suffix lists.
+                # Clean any residual address fragments that leaked into
+                # name1 using the record's own structured address fields
+                # (preprocessing may have already pulled some out; this
+                # is a second defensive pass that uses pp_street1 in
+                # case preprocessing moved content there).
                 name1_cleaned = strip_address_fragments(
-                    record.name1,
-                    street=record.street,
+                    pp_name1,
+                    street=pp_street1 or record.street,
                     city=record.city,
                     state=record.state,
                     zip_code=record.zip,
-                ) or record.name1.strip()
+                ) or (pp_name1 or "").strip()
 
-                if name1_cleaned != record.name1.strip():
+                if name1_cleaned != (pp_name1 or "").strip():
                     logger.info({
                         "record_id": record.record_id,
                         "step": "tier1_name1_cleaned",
-                        "original": record.name1,
+                        "original": pp_name1,
                         "cleaned": name1_cleaned,
                     })
 
@@ -383,15 +545,32 @@ class Orchestrator:
                     )
                     institution_domain = ror_parent.get("domain")
 
+                    # Mark Tier 1 success and UC 2/3 triggered.
+                    result["enrichment_status"] = "enriched"
+                    if 2 not in result["use_cases_triggered"]:
+                        result["use_cases_triggered"].append(2)
+                    if 3 not in result["use_cases_triggered"]:
+                        result["use_cases_triggered"].append(3)
+
+                    # If there's no name2 and no contact, Tier 1 is
+                    # the final answer — return immediately rather
+                    # than letting Tier 3 LLM overwrite the canonical
+                    # ROR name with a fabricated variant.
+                    if not (pp_name2 and pp_name2.strip()) and not (
+                        pp_contact and pp_contact.strip()
+                    ):
+                        result = finalise(result, start)
+                        return EnrichmentResult(**result)
+
                     # ── Child match for name2 (local fuzzy against parent's children) ──
-                    if record.name2 and record.name2.strip():
+                    if pp_name2 and pp_name2.strip():
                         children = ror_parent.get("children", [])
                         # Expand abbreviations ("Dept of X" → "Department of X")
                         # so the fuzzy match against ROR's canonical children
                         # is deterministic and reliable.
                         name2_for_match = (
-                            expand_abbreviations(record.name2.strip())
-                            or record.name2.strip()
+                            expand_abbreviations(pp_name2.strip())
+                            or pp_name2.strip()
                         )
                         child_match = _match_child_locally(
                             name2_for_match, children,
@@ -419,43 +598,133 @@ class Orchestrator:
                             return EnrichmentResult(**result)
 
                 else:
-                    # ── ROR miss: pass through cleaned name1 and let
-                    # Tier 3 (LLM inference) propose corrections. No
-                    # SerpAPI call here — the previous web-resolve step
-                    # cost 1-2 SerpAPI calls per failed ROR match for
-                    # the sole purpose of discovering a domain, which
-                    # Tier 2 doesn't need anyway when ROR fails.
+                    # ── ROR miss ─────────────────────────────────────
+                    # If the name LOOKS like a research institution
+                    # (University / College / Hospital / Medical School
+                    # / School of X, etc.) we do NOT call the company
+                    # canonical LLM, which would return a legal entity
+                    # name like 'President and Fellows of Harvard
+                    # College' for 'Harvard Medical School'. Pass
+                    # through the original and flag for review instead.
+                    looks_research = looks_like_research_institution(name1_cleaned)
+
                     logger.info({
                         "record_id": record.record_id,
-                        "step": "tier1_ror_miss_passthrough",
+                        "step": "tier1_ror_miss",
                         "name1_cleaned": name1_cleaned,
+                        "looks_research": looks_research,
                     })
-                    result["name1_enriched"] = name1_cleaned
-                    result["source"] = "passthrough"
-                    result["confidence"] = "low"
-                    result["tier_used"] = 1
-                    result["record_type"] = "unknown"
+
+                    if looks_research:
+                        result["name1_enriched"] = name1_cleaned
+                        result["source"] = "passthrough"
+                        result["confidence"] = "low"
+                        result["tier_used"] = 1
+                        result["record_type"] = "research_institution"
+                        result["enrichment_status"] = "unresolved"
+                        result["flag_for_review"] = True
+                        result["flag_reason"] = (
+                            "Research-institution name not found in ROR — "
+                            "left unchanged for manual review"
+                        )
+                        institution_domain = None
+                        # Short-circuit if no name2/contact to process.
+                        if not (pp_name2 and pp_name2.strip()) and not (
+                            pp_contact and pp_contact.strip()
+                        ):
+                            result = finalise(result, start)
+                            return EnrichmentResult(**result)
+                        # Otherwise fall through to Tier 2/3 for name2.
+                        company_res = None
+                    else:
+                        company_res = await run_company_canonical(
+                            record_id=record.record_id,
+                            name1=name1_cleaned,
+                            city=record.city,
+                            state=record.state,
+                            country=record.country,
+                            llm_client=self._llm_client,
+                        )
+
+                    if company_res and company_res.success and company_res.name1_enriched:
+                        result["name1_enriched"] = company_res.name1_enriched
+                        result["source"] = "llm_canonical"
+                        result["confidence"] = "high"
+                        result["record_type"] = "company"
+                        result["tier_used"] = 2
+                        if 2 not in result["use_cases_triggered"]:
+                            result["use_cases_triggered"].append(2)
+                        if 3 not in result["use_cases_triggered"]:
+                            result["use_cases_triggered"].append(3)
+                        result["enrichment_status"] = "enriched"
+                        result["flag_for_review"] = True
+                        result["flag_reason"] = "LLM canonical company name — verify"
+
+                        # If no name2, we're done — return immediately
+                        # so Tier 3 doesn't overwrite the canonical name.
+                        if not (pp_name2 and pp_name2.strip()):
+                            result = finalise(result, start)
+                            return EnrichmentResult(**result)
+                    elif company_res is not None:
+                        # Company canonical was attempted but failed.
+                        result["name1_enriched"] = name1_cleaned
+                        result["source"] = "passthrough"
+                        result["confidence"] = "low"
+                        result["tier_used"] = 1
+                        result["record_type"] = "unknown"
+                    # else: research-institution passthrough already set above
+
                     institution_domain = None
 
-            name2_already_filled = bool(record.name2 and record.name2.strip())
+            name2_already_filled = bool(pp_name2 and pp_name2.strip())
             has_dept_signal = (
                 name2_already_filled
-                or bool(record.contact and record.contact.strip())
+                or bool(pp_contact and pp_contact.strip())
             )
 
-            # ── TIER 2 (canonical): LLM-only canonicalization ──────────
-            # Runs when name2 is present and Tier 1 child matching did
-            # not resolve it. Zero SerpAPI calls. Only accepts
-            # high-confidence results.
+            # ── TIER 2 (canonical — UC 5): LLM-only canonicalization ───
+            # Runs for BOTH research institutions and companies when
+            # name2 is present and Tier 1 child matching did not
+            # resolve it. Zero SerpAPI calls.
+            # UC 5 scope: only accept dept/div/school/college/faculty.
+            # Reject lab/group/centre/facility canonicalisations AND
+            # short-circuit — the original name2 is left unchanged in
+            # that case (out of scope rule).
+            # Also skip when preprocessing already normalised name2
+            # to a pattern_match value like "Accounts Payable" — that's
+            # not a department to canonicalise.
+            is_ap_normalised = (
+                (pp_name2 or "").strip().lower() == "accounts payable"
+            )
+
+            # AP records are handled entirely by preprocessing. Don't
+            # run the LLM canonicaliser on them, don't run Tier 3, and
+            # don't fabricate departments — just write the normalised
+            # value through and return. This preserves both the
+            # "Accounts Payable" label and any contact extracted
+            # earlier from the Attn prefix.
+            if is_ap_normalised:
+                result["name2_enriched"] = pp_name2
+                result["tier_used"] = 2
+                result["source"] = "pattern_match"
+                result["confidence"] = "high"
+                result["enrichment_status"] = "enriched"
+                result["flag_for_review"] = True
+                result["flag_reason"] = "Accounts Payable record — verify"
+                if 6 not in result["use_cases_triggered"]:
+                    result["use_cases_triggered"].append(6)
+                result = finalise(result, start)
+                return EnrichmentResult(**result)
+
             if (
                 name2_already_filled
-                and result["record_type"] == "research_institution"
+                and result["record_type"] in ("research_institution", "company")
                 and result.get("name1_enriched")
             ):
                 canonical = await run_tier2_canonical(
                     record_id=record.record_id,
                     institution=result["name1_enriched"],
-                    name2=record.name2,  # type: ignore[arg-type]
+                    name2=pp_name2,  # type: ignore[arg-type]
                     llm_client=self._llm_client,
                 )
                 logger.info({
@@ -466,16 +735,58 @@ class Orchestrator:
                     "name2_enriched": canonical.name2_enriched,
                 })
                 if canonical.success and canonical.name2_enriched:
-                    result["name2_enriched"] = canonical.name2_enriched
-                    result["tier_used"] = 2
-                    result["source"] = "llm_canonical"
-                    result["confidence"] = "high"
-                    result["name2_match_result"] = "not_applicable"
-                    result["enrichment_status"] = "enriched"
-                    result["flag_for_review"] = True
-                    result["flag_reason"] = "LLM canonical form — verify"
-                    result = finalise(result, start)
-                    return EnrichmentResult(**result)
+                    # UC 5 scope filter: reject granular units AND
+                    # short-circuit — leave original unchanged, do not
+                    # fall through to Tier 3 which would overwrite.
+                    if is_granular_unit(canonical.name2_enriched):
+                        logger.info({
+                            "record_id": record.record_id,
+                            "step": "tier2_canonical_rejected_scope",
+                            "name2_rejected": canonical.name2_enriched,
+                            "reason": "lab/group/centre/facility out of scope for UC 5",
+                        })
+                        result["name2_enriched"] = pp_name2
+                        result["tier_used"] = 2
+                        result["source"] = "passthrough"
+                        result["confidence"] = "low"
+                        result["enrichment_status"] = "unresolved"
+                        result["flag_for_review"] = True
+                        result["flag_reason"] = (
+                            "name2 is a lab/group/centre/facility — out of "
+                            "scope for canonicalisation, left unchanged"
+                        )
+                        result = finalise(result, start)
+                        return EnrichmentResult(**result)
+                    else:
+                        result["name2_enriched"] = canonical.name2_enriched
+                        result["tier_used"] = 2
+                        result["source"] = "llm_canonical"
+                        result["confidence"] = "high"
+                        result["name2_match_result"] = "not_applicable"
+                        result["enrichment_status"] = "enriched"
+                        result["flag_for_review"] = True
+                        result["flag_reason"] = "LLM canonical form — verify"
+                        if 5 not in result["use_cases_triggered"]:
+                            result["use_cases_triggered"].append(5)
+                        result = finalise(result, start)
+                        return EnrichmentResult(**result)
+
+                # Canonical didn't return a confident answer — leave
+                # name2 as-is, don't let Tier 3 fabricate something
+                # else. For companies, this also avoids the Pfizer
+                # "Global Research" → "Pfizer Global R&D" fabrication.
+                result["name2_enriched"] = pp_name2
+                result["tier_used"] = 2
+                result["source"] = "passthrough"
+                result["confidence"] = "low"
+                result["enrichment_status"] = "unresolved"
+                result["flag_for_review"] = True
+                result["flag_reason"] = (
+                    "name2 could not be canonicalised with high "
+                    "confidence — left unchanged"
+                )
+                result = finalise(result, start)
+                return EnrichmentResult(**result)
 
             # ── TIER 2A (contact lookup): 1 SerpAPI call, gated ────────
             # Runs only when name2 is null and we have a contact plus
@@ -488,7 +799,7 @@ class Orchestrator:
             can_do_contact_lookup = (
                 not name2_already_filled
                 and result["record_type"] == "research_institution"
-                and bool(record.contact and record.contact.strip())
+                and bool(pp_contact and pp_contact.strip())
                 and bool(institution_domain)
             )
 
@@ -503,11 +814,11 @@ class Orchestrator:
                 mode = "population"
                 tier2a_result = await run_tier2a(
                     record_id=record.record_id,
-                    contact=record.contact,  # type: ignore[arg-type]
-                    institution=result["name1_enriched"] or record.name1 or "",
+                    contact=pp_contact,  # type: ignore[arg-type]
+                    institution=result["name1_enriched"] or pp_name1 or "",
                     domain=institution_domain,
-                    name2=record.name2,
-                    name3=record.name3,
+                    name2=pp_name2,
+                    name3=pp_name3,
                     search_client=self._search_client,
                     page_fetcher=self._page_fetcher,
                     llm_client=self._llm_client,
@@ -524,30 +835,49 @@ class Orchestrator:
                 })
 
                 if tier2a_result.success:
-                    # If Tier 2A returned a bare subject like "Anesthesia"
-                    # (the page title abbreviates the unit wording), run
-                    # it through Tier 2 canonicalization so the final
-                    # answer matches the institution's full official
-                    # form (e.g. "Department of Anesthesia and
-                    # Perioperative Care"). Zero extra SerpAPI cost.
-                    if tier2a_result.name2_enriched:
-                        canon = await run_tier2_canonical(
-                            record_id=record.record_id,
-                            institution=result["name1_enriched"] or record.name1 or "",
-                            name2=tier2a_result.name2_enriched,
-                            llm_client=self._llm_client,
-                        )
-                        if canon.success and canon.name2_enriched:
-                            logger.info({
-                                "record_id": record.record_id,
-                                "step": "tier_contact_canonicalised",
-                                "before": tier2a_result.name2_enriched,
-                                "after": canon.name2_enriched,
-                            })
-                            tier2a_result.name2_enriched = canon.name2_enriched
-                    _apply_tier2a(result, tier2a_result, mode)
-                    result = finalise(result, start)
-                    return EnrichmentResult(**result)
+                    # UC 4 scope: reject lab/group/centre/facility
+                    # canonicalisations. If the raw Tier 2A answer is
+                    # itself granular, skip the upgrade and the result.
+                    if (
+                        tier2a_result.name2_enriched
+                        and is_granular_unit(tier2a_result.name2_enriched)
+                    ):
+                        logger.info({
+                            "record_id": record.record_id,
+                            "step": "tier_contact_rejected_scope",
+                            "reason": "lab/group/centre/facility out of scope",
+                            "rejected": tier2a_result.name2_enriched,
+                        })
+                    else:
+                        # Canonicalise bare-subject answers like
+                        # "Anesthesia" → full institutional name.
+                        if tier2a_result.name2_enriched:
+                            canon = await run_tier2_canonical(
+                                record_id=record.record_id,
+                                institution=result["name1_enriched"] or pp_name1 or "",
+                                name2=tier2a_result.name2_enriched,
+                                llm_client=self._llm_client,
+                            )
+                            if canon.success and canon.name2_enriched:
+                                if is_granular_unit(canon.name2_enriched):
+                                    logger.info({
+                                        "record_id": record.record_id,
+                                        "step": "tier_contact_canonical_rejected_scope",
+                                        "rejected": canon.name2_enriched,
+                                    })
+                                else:
+                                    logger.info({
+                                        "record_id": record.record_id,
+                                        "step": "tier_contact_canonicalised",
+                                        "before": tier2a_result.name2_enriched,
+                                        "after": canon.name2_enriched,
+                                    })
+                                    tier2a_result.name2_enriched = canon.name2_enriched
+                        _apply_tier2a(result, tier2a_result, mode)
+                        if 4 not in result["use_cases_triggered"]:
+                            result["use_cases_triggered"].append(4)
+                        result = finalise(result, start)
+                        return EnrichmentResult(**result)
 
             # ── TIER 3: LLM INFERENCE ────────────────────────────────────
 
@@ -558,11 +888,11 @@ class Orchestrator:
 
             tier3_result: Tier3Result = await run_tier3(
                 record_id=record.record_id,
-                name1=record.name1,
-                name2=record.name2,
-                name3=record.name3,
-                contact=record.contact,
-                street=record.street,
+                name1=pp_name1,
+                name2=pp_name2,
+                name3=pp_name3,
+                contact=pp_contact,
+                street=pp_street1 or record.street,
                 city=record.city,
                 state=record.state,
                 zip_code=record.zip,
@@ -572,14 +902,28 @@ class Orchestrator:
 
             _apply_tier3(result, tier3_result)
 
-            # Last resort: if nothing enriched name1, pass through the original
-            if not result.get("name1_enriched") and not is_blank(record.name1):
-                result["name1_enriched"] = record.name1.strip()
+            # Last resort: if nothing enriched name1, pass through the preprocessed original
+            if not result.get("name1_enriched") and not is_blank(pp_name1):
+                result["name1_enriched"] = (pp_name1 or "").strip()
 
             # Rule: if the input had no name2 and no contact, there is no
             # signal from which to infer a department — name2_enriched
             # must remain empty regardless of what any tier produced.
             if not has_dept_signal:
+                result["name2_enriched"] = None
+
+            # Rule: if preprocessing stripped name2 down to empty
+            # (because it was actually a contact / email / address /
+            # AP reference), do not let Tier 3 fabricate a replacement.
+            if (
+                record.name2 and record.name2.strip()
+                and not (pp_name2 and pp_name2.strip())
+            ):
+                logger.info({
+                    "record_id": record.record_id,
+                    "step": "name2_cleared_by_preprocess",
+                    "original": record.name2,
+                })
                 result["name2_enriched"] = None
 
             # Rule: name2_enriched should never echo name1_enriched.

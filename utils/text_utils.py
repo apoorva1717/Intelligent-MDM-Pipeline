@@ -231,6 +231,94 @@ _SPECIFIC_UNIT_WORDS = {"Department", "Division", "Institute", "Center", "Centre
 _PARENT_UNIT_WORDS = {"School", "College", "Faculty"}
 
 
+_RESEARCH_NAME_SIGNALS_RE = re.compile(
+    r"\b(?:University|College|Institute|Hospital|Clinic|Research|"
+    r"Medical\s+School|School\s+of|Faculty\s+of|College\s+of|"
+    r"Laboratory|Observatory|Academy|"
+    r"Health\s+System|Health\s+Center|Regional\s+Health|"
+    r"Medical\s+Center|Cancer\s+Center|"
+    r"Schule|Universit[aä]t|Université|Universidade)\b",
+    re.IGNORECASE,
+)
+
+
+def looks_like_research_institution(name: str | None) -> bool:
+    """Heuristic: does *name* read as a research institution?
+
+    Used to route ROR-miss cases. Research-institution names that
+    didn't match ROR should NOT be passed to the company canonical
+    LLM (which would return a legal entity name like 'President and
+    Fellows of Harvard College'). They should pass through and be
+    flagged for manual review instead.
+    """
+    if not name or not name.strip():
+        return False
+    return bool(_RESEARCH_NAME_SIGNALS_RE.search(name))
+
+
+def is_granular_unit(text: str | None) -> bool:
+    """Return True when *text* names a unit that is too granular for
+    UC 5 scope — labs, groups, centres, or facilities.
+
+    UC 5 explicitly excludes these: department/division/school/college/
+    faculty are the only levels a present Name2 may be corrected to.
+    If the LLM canonicalises 'NMR Lab' to 'NMR Facility', we must not
+    overwrite — leave the original name2 as-is.
+
+    Important: if the name is already an in-scope construction
+    (starts with 'Department of', 'Division of', 'School of',
+    'College of', or 'Faculty of'), it is NEVER granular regardless
+    of what words follow in the subject. Example:
+    'Department of Pathology, Immunology and Laboratory Medicine' is
+    a department, not a laboratory, even though the word 'laboratory'
+    appears inside it.
+    """
+    if not text or not text.strip():
+        return False
+    cleaned = (expand_abbreviations(text) or text).strip()
+    lowered = cleaned.lower()
+
+    import re as _re
+
+    # In-scope heads are never granular, regardless of subject content.
+    if _re.match(
+        r"^(?:department|division|school|college|faculty)\s+(?:of|for)\s+",
+        lowered,
+    ):
+        return False
+
+    # Granular head constructions — the unit word is the HEAD.
+    # Form 1: "X Laboratory" / "X Lab" / "X Facility" / "X Group" /
+    #         "X Center" / "X Core" (unit word as suffix).
+    # Form 2: "Laboratory of X" / "Center for X" / "Centre for X"
+    #         (unit word as prefix, no department/division qualifier
+    #         before it).
+    granular_words = [
+        "laboratory", "laboratories",
+        "lab",
+        "facility", "facilities",
+        "center", "centre",
+        "core",
+    ]
+    # Group is handled specially — "NMR Group" is granular, but
+    # "Research Group" inside "Department of X Research Group" was
+    # already filtered by the in-scope check above.
+    suffix_words = granular_words + ["group"]
+
+    for word in suffix_words:
+        # Suffix form: "… X Laboratory", "… NMR Lab"
+        if _re.search(rf"\b\S+\s+{word}\b\.?$", lowered):
+            return True
+
+    # Prefix form: "Laboratory of X" (only when not preceded by a
+    # dept/div/etc. qualifier — handled by the early return above).
+    for word in granular_words:
+        if _re.match(rf"^{word}\s+(?:of|for)\s+", lowered):
+            return True
+
+    return False
+
+
 def is_unit_construction(text: str | None) -> bool:
     """Return True if *text* is (or can be canonicalised into) a
     recognised academic unit construction — e.g. 'Department of X',

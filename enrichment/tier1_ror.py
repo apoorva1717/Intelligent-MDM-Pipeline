@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
 
 import httpx
@@ -39,30 +40,63 @@ def clear_ror_cache() -> None:
     _ror_cache.clear()
 
 
+_DASH_RE = re.compile(r"[\u2010-\u2015\-]+")
+
+
+def _normalise_for_tokens(text: str) -> str:
+    """Normalise text for tokenisation.
+
+    Replaces hyphens / en-dashes / em-dashes with spaces so that
+    'University of Wisconsin–Madison' tokenises to
+    {'university', 'of', 'wisconsin', 'madison'} rather than
+    treating 'wisconsin–madison' as a single token.
+    """
+    return _DASH_RE.sub(" ", text.lower())
+
+
+# Name types that represent the canonical display / label of the org.
+# Subset matches are only trusted against these — aliases often name
+# parent organisations or include historical variants that cause
+# false positives.
+_CANONICAL_NAME_TYPES = {"ror_display", "label"}
+
+
 def _compute_name_score(query: str, org_names: list[dict[str, Any]]) -> float:
     """Score how well *query* matches any of the organisation's name variants.
 
     Strategy:
     1. Exact match against any variant → 1.0.
-    2. Token-subset match: every significant (≥4-char) query token
-       appears as a whole word in a variant → 1.0.  Allows "Stanford"
-       to match "Stanford University".
-    3. Length-guarded substring match (shorter side ≥60% of longer).
-    4. Fuzz ratios (token_sort_ratio always; partial_ratio only when
-       length-guarded, so tiny acronyms like "UNI" can't produce a
-       false 1.0 against long unrelated names).
+    2. Token-subset match on a CANONICAL name (ror_display/label):
+       every significant (≥4-char) query token appears as a whole
+       word → 1.0.  Aliases are excluded from this rule because they
+       often reference the parent org and cause child entries to
+       wrongly score 1.0 (e.g. CIMSS has an alias 'University of
+       Wisconsin Madison Cooperative Institute ...').
+    3. Length-guarded substring match (shorter side ≥60% of longer)
+       against canonical names only.
+    4. Fuzz ratios across all variants (token_sort_ratio always;
+       partial_ratio only when length-guarded).
 
-    Short acronym variants (≤4 chars) are excluded from fuzz scoring:
-    they only contribute via exact-match in step 1.  This prevents
-    ROR's acronym variants (e.g. "UNI" for University of Northern
-    Iowa) from matching any query that happens to contain those
-    letters.
+    Short acronym variants (≤4 chars) are excluded from fuzz scoring.
+    Hyphens and en/em dashes are normalised to spaces so
+    'University of Wisconsin–Madison' tokenises correctly.
     """
-    query_lower = query.strip().lower()
+    query_lower = _normalise_for_tokens(query.strip())
     if not query_lower:
         return 0.0
 
-    all_values = [n["value"].lower() for n in org_names if n.get("value")]
+    # Partition variants into canonical (ror_display/label) vs alias.
+    canonical_values: list[str] = []
+    all_values: list[str] = []
+    for n in org_names:
+        val = n.get("value")
+        if not val:
+            continue
+        norm = _normalise_for_tokens(val)
+        all_values.append(norm)
+        types = set(n.get("types") or [])
+        if types & _CANONICAL_NAME_TYPES:
+            canonical_values.append(norm)
 
     # Step 1: exact match against any variant (acronyms allowed here)
     for val in all_values:
@@ -72,45 +106,105 @@ def _compute_name_score(query: str, org_names: list[dict[str, Any]]) -> float:
     query_tokens = set(query_lower.split())
     significant_query_tokens = {t for t in query_tokens if len(t) >= 4}
 
-    # Scoring excludes short acronym-like variants to avoid false positives
+    # Scoring values: exclude short acronym-like variants for fuzz
     scoring_values = [v for v in all_values if len(v) >= 5]
     if not scoring_values:
         return 0.0
 
-    def _length_ok(a: str, b: str) -> bool:
+    def _length_ok(a: str, b: str, ratio: float = 0.6) -> bool:
         shorter = min(len(a), len(b))
         longer = max(len(a), len(b))
-        return longer > 0 and shorter / longer >= 0.6
+        return longer > 0 and shorter / longer >= ratio
 
-    best = 0.0
-    for val in scoring_values:
+    # Step 2 + 3: subset and substring only against CANONICAL names.
+    # The substring rule is tight (≥90% length similarity) to prevent
+    # a short canonical name from matching a longer query that merely
+    # contains it — e.g. "Regional Health" inside "LAKELAND REGIONAL
+    # HEALTH" should NOT produce a perfect score.
+    for val in canonical_values:
         val_tokens = set(val.split())
-
-        # Step 2: all significant query tokens appear as whole words
         if significant_query_tokens and significant_query_tokens.issubset(val_tokens):
             return 1.0
-
-        # Step 3: length-guarded substring
-        if _length_ok(query_lower, val) and (query_lower in val or val in query_lower):
+        if _length_ok(query_lower, val, ratio=0.9) and (
+            query_lower in val or val in query_lower
+        ):
             return 1.0
 
-        # Step 4a: token_sort_ratio (always safe — symmetric)
+    # Step 4: token_sort_ratio against CANONICAL names only.
+    # Aliases are excluded here because short sibling aliases like
+    # "SIU School of Medicine" share 3 of 4 tokens with "Yale School
+    # of Medicine" and score 0.85, causing a false match. The
+    # canonical ror_display is the only form we trust for fuzzy
+    # scoring — aliases contribute only via exact-match in step 1.
+    #
+    # Distinctive-token guard: the query contains domain words
+    # ("regional", "health", "medical", "center", "research") that
+    # appear in dozens of unrelated orgs. A fuzzy match ≥0.8 is
+    # trustworthy only if the matched variant also shares a
+    # DISTINCTIVE token (length ≥5, not a common domain word) with
+    # the query. Otherwise orgs like "Newman Regional Health" would
+    # match "Lakeland Regional Health" at 0.83.
+    canonical_scoring = [v for v in canonical_values if len(v) >= 5]
+    best = 0.0
+    for val in canonical_scoring:
         token_ratio = fuzz.token_sort_ratio(query_lower, val) / 100.0
+        if token_ratio <= best:
+            continue
+        # Distinctive-token check
+        q_distinctive = {t for t in query_tokens if len(t) >= 5 and t not in _COMMON_DOMAIN_WORDS}
+        v_tokens = set(val.split())
+        if q_distinctive and not (q_distinctive & v_tokens):
+            # No distinctive token shared — cap at 0.7 so it cannot
+            # cross the 0.8 match threshold.
+            token_ratio = min(token_ratio, 0.7)
         if token_ratio > best:
             best = token_ratio
 
-        # Step 4b: partial_ratio only when lengths are comparable
-        if _length_ok(query_lower, val):
-            partial = fuzz.partial_ratio(query_lower, val) / 100.0
-            if partial > best:
-                best = partial
-
     return best
+
+
+_COMMON_DOMAIN_WORDS = {
+    "regional", "health", "medical", "center", "centre", "research",
+    "hospital", "clinic", "system", "systems", "services", "care",
+    "university", "college", "institute", "school", "department",
+    "division", "faculty", "laboratory", "group", "company", "inc",
+    "corporation", "corp", "ltd", "llc", "international", "national",
+    "american", "united", "global",
+}
 
 
 def _score_org(query: str, org: dict[str, Any]) -> float:
     """Wrapper: extract org names and compute match score."""
     return _compute_name_score(query, org.get("names", []))
+
+
+_ROR_COUNTRY_SUFFIX_RE = re.compile(
+    r"\s*\(\s*(?:United States|USA|United Kingdom|UK|Germany|France|"
+    r"Japan|China|Canada|Australia|Switzerland|Netherlands|Spain|"
+    r"Italy|Sweden|Denmark|Norway|Finland|Belgium|Austria|Ireland|"
+    r"Poland|Israel|Singapore|Brazil|India|Mexico|New Zealand|"
+    r"South Korea|Russia|Portugal|Czech Republic|Greece|Turkey|"
+    r"South Africa|Hong Kong|Taiwan)\s*\)\s*$",
+    re.IGNORECASE,
+)
+
+# ROR sometimes appends a full ", City, State, Country" tail to the
+# display name — e.g. "Merck & Co., Inc., Rahway, NJ, USA". Strip it
+# back to the clean legal name.
+_ROR_ADDRESS_SUFFIX_RE = re.compile(
+    r",\s*[A-Z][A-Za-z .'-]+,\s*[A-Z]{2},\s*(?:USA|United States|"
+    r"UK|United Kingdom|Canada|Germany|France|Japan|Australia|"
+    r"Switzerland|Netherlands|China|India|Brazil|Italy|Spain|Sweden)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _strip_ror_country_suffix(name: str | None) -> str | None:
+    if not name:
+        return name
+    cleaned = _ROR_COUNTRY_SUFFIX_RE.sub("", name)
+    cleaned = _ROR_ADDRESS_SUFFIX_RE.sub("", cleaned)
+    return cleaned.strip() or name
 
 
 def _extract_org_fields(org: dict[str, Any]) -> dict[str, Any]:
@@ -124,6 +218,12 @@ def _extract_org_fields(org: dict[str, Any]) -> dict[str, Any]:
             break
     if not display_name and org_names:
         display_name = org_names[0]["value"]
+
+    # ROR sometimes appends a country suffix to disambiguate orgs with
+    # the same name in different countries — e.g. "Pfizer (United
+    # States)". Strip it for downstream consumers; the canonical
+    # company name is cleaner without it.
+    display_name = _strip_ror_country_suffix(display_name)
 
     website = next(
         (link["value"] for link in org.get("links", [])

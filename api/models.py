@@ -18,7 +18,15 @@ class EnrichmentRecord(BaseModel):
     name2: Optional[str] = None
     name3: Optional[str] = None
     contact: Optional[str] = None
+    email: Optional[str] = None
+    # Legacy single-street field kept for backwards compatibility. New
+    # callers should populate street1/2/3 directly. If ``street`` is
+    # provided and ``street1`` is not, the orchestrator treats it as
+    # street1.
     street: Optional[str] = None
+    street1: Optional[str] = None
+    street2: Optional[str] = None
+    street3: Optional[str] = None
     city: Optional[str] = None
     state: Optional[str] = None
     zip: Optional[str] = None
@@ -46,6 +54,8 @@ class EnrichmentRequest(BaseModel):
 class EnrichmentResult(BaseModel):
     """Enrichment outcome for one record."""
     record_id: str
+
+    # Name fields
     name1_original: Optional[str] = None
     name2_original: Optional[str] = None
     name3_original: Optional[str] = None
@@ -55,8 +65,27 @@ class EnrichmentResult(BaseModel):
     name1_changed: bool = False
     name2_changed: bool = False
     name3_changed: bool = False
-    # FIX(Bug 1): added "unknown" — ROR non-match yields unknown instead of
-    # relying on keyword classifier that defaulted everything to "company".
+
+    # Contact / email (extracted or passed through)
+    contact_original: Optional[str] = None
+    contact_enriched: Optional[str] = None
+    contact_changed: bool = False
+    email_original: Optional[str] = None
+    email_enriched: Optional[str] = None
+    email_changed: bool = False
+
+    # Street fields (extracted or passed through)
+    street1_original: Optional[str] = None
+    street1_enriched: Optional[str] = None
+    street1_changed: bool = False
+    street2_original: Optional[str] = None
+    street2_enriched: Optional[str] = None
+    street2_changed: bool = False
+    street3_original: Optional[str] = None
+    street3_enriched: Optional[str] = None
+    street3_changed: bool = False
+
+    # Classification & provenance
     record_type: Literal["research_institution", "company", "unknown"] = "unknown"
     tier_used: Literal[1, 2, 3] = 1
     tier2_mode: Optional[Literal["2A_population", "2A_verification", "2B"]] = None
@@ -64,12 +93,17 @@ class EnrichmentResult(BaseModel):
     source: Literal[
         "ROR", "ROR+child", "contact_lookup_found",
         "contact_lookup_corrected", "dept_search", "LLM",
-        "llm_canonical", "web_search", "passthrough", "none",
+        "llm_canonical", "SERP+LLM", "pattern_match",
+        "web_search", "passthrough", "none",
     ] = "none"
     ror_id: Optional[str] = None
     source_url: Optional[str] = None
     contact_used: bool = False
     name2_match_result: Literal["exact", "partial", "no_match", "not_applicable", "unknown"] = "not_applicable"
+
+    # Which use cases (0-9) fired for this record
+    use_cases_triggered: List[int] = Field(default_factory=list)
+
     flag_for_review: bool = False
     flag_reason: Optional[str] = None
     enrichment_status: Literal["enriched", "verified", "unresolved", "failed"] = "failed"

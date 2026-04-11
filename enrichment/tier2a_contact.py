@@ -86,7 +86,7 @@ async def run_tier2a(
     queries = _build_queries(contact, institution, domain)
 
     # Step 2 — Search and filter for people pages
-    candidates = await _search_and_rank(queries, search_client, cache)
+    candidates = await _search_and_rank(queries, search_client, cache, contact=contact)
     if not candidates:
         logger.info("[%s] Tier 2A: no candidate pages found", record_id)
         return result
@@ -113,11 +113,17 @@ async def run_tier2a(
             continue
 
         # Build a merged page text blob that prepends the authoritative
-        # elements (title / h1 / breadcrumb / url path). Profile pages
-        # like "Sarah Chen | Anesthesia" often name the department ONLY
-        # in the <title> — if we pass only body prose to the LLM the
-        # department disappears.
+        # elements (url host / url path / title / h1 / breadcrumb /
+        # body). Profile pages like "Sarah Chen | Anesthesia" often
+        # name the department ONLY in the <title>. Department subdomains
+        # like "ortho.ufl.edu" or "anesthesia.ucsf.edu" carry the
+        # department identity in the URL itself — feed the full URL
+        # host to the LLM so it can use it when the body doesn't
+        # explicitly name the department.
+        from urllib.parse import urlparse as _up
+        parsed_url = _up(candidate.url)
         page_blob = (
+            f"URL host: {parsed_url.netloc}\n"
             f"URL path: {page_content.url_path}\n"
             f"Title: {page_content.page_title}\n"
             f"H1: {page_content.h1}\n"
@@ -296,8 +302,23 @@ async def _search_and_rank(
     queries: list[str],
     search_client: SearchClient,
     cache: BatchCache,
+    contact: str | None = None,
 ) -> list[SearchResult]:
-    """Execute SERP queries and rank results by people-page signals."""
+    """Execute SERP queries and rank results by people-page signals.
+
+    Ranking priorities (highest wins):
+      1. URL path slug contains BOTH the contact's first name and
+         surname — this is an exact identity match on a profile page
+         (e.g. ``ortho.ufl.edu/darlene-bailey`` for contact
+         "Darlene Bailey"). Beats every generic people-page signal.
+      2. Snippet starts with the contact's full name — suggests a
+         profile/bio page rather than a list of names.
+      3. Generic people-page URL signals ("people", "faculty",
+         "profile", "staff", "directory", "team", ...).
+
+    This ordering prevents roster pages (which share a "team" URL
+    signal) from outranking the actual profile page.
+    """
     all_results: list[SearchResult] = []
     seen_urls: set[str] = set()
 
@@ -314,8 +335,31 @@ async def _search_and_rank(
                 seen_urls.add(r.url)
                 all_results.append(r)
 
-    # Score and sort by relevance to people/faculty pages
-    scored = [(score_search_result(r.url, r.snippet), r) for r in all_results]
+    names = _extract_first_and_last(contact) if contact else None
+
+    def _rank(sr: SearchResult) -> int:
+        score = score_search_result(sr.url, sr.snippet)
+        if names:
+            first, last = names
+            # Exact name in URL path (the identity slug). This must
+            # beat all other signals so we fetch the real profile
+            # before any list/roster pages.
+            import re as _re
+            path_norm = _re.sub(
+                r"[._\-/]+", " ", (sr.url or "").lower()
+            )
+            if (
+                _re.search(rf"\b{_re.escape(first.lower())}\b", path_norm)
+                and _re.search(rf"\b{_re.escape(last.lower())}\b", path_norm)
+            ):
+                score += 100
+            # Title starts with the full name — likely a profile page.
+            title_lower = (sr.title or "").strip().lower()
+            if title_lower.startswith(f"{first} {last}".lower()):
+                score += 20
+        return score
+
+    scored = [(_rank(r), r) for r in all_results]
     scored.sort(key=lambda x: x[0], reverse=True)
     return [r for _, r in scored[:3]]
 

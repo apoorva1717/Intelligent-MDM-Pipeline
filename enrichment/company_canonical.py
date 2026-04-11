@@ -1,0 +1,78 @@
+"""LLM-only canonicalisation of company name1 — UC 2/3 for companies.
+
+Zero SerpAPI calls. Single LLM call. Only accepts high-confidence
+answers. Falls through silently on any uncertainty.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+
+from llm.openai_client import OpenAIClient
+from llm.prompts import (
+    COMPANY_CANONICAL_SYSTEM_PROMPT,
+    COMPANY_CANONICAL_USER_PROMPT_TEMPLATE,
+)
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CompanyCanonicalResult:
+    success: bool = False
+    name1_enriched: str | None = None
+    confidence: str = "none"
+
+
+async def run_company_canonical(
+    record_id: str,
+    name1: str,
+    city: str | None,
+    state: str | None,
+    country: str | None,
+    llm_client: OpenAIClient,
+) -> CompanyCanonicalResult:
+    result = CompanyCanonicalResult()
+    if not name1 or not name1.strip():
+        return result
+
+    user_prompt = COMPANY_CANONICAL_USER_PROMPT_TEMPLATE.format(
+        name1=name1,
+        city=city or "unknown",
+        state=state or "unknown",
+        country=country or "unknown",
+    )
+
+    try:
+        extraction = await llm_client.extract_json(
+            COMPANY_CANONICAL_SYSTEM_PROMPT, user_prompt,
+        )
+    except Exception as exc:
+        logger.info("[%s] Company canonical: LLM failed: %s", record_id, exc)
+        return result
+
+    official_name = extraction.get("official_name")
+    confidence = (extraction.get("confidence") or "low").lower()
+
+    if not official_name or not str(official_name).strip():
+        return result
+    cleaned = str(official_name).strip()
+    if cleaned.lower() in {"null", "none", "n/a", "na"}:
+        return result
+    if confidence != "high":
+        logger.info(
+            "[%s] Company canonical: rejecting '%s' (confidence=%s)",
+            record_id, cleaned, confidence,
+        )
+        return result
+
+    result.success = True
+    result.name1_enriched = cleaned
+    result.confidence = confidence
+
+    logger.info(
+        "[%s] Company canonical: '%s' → '%s' (high)",
+        record_id, name1, cleaned,
+    )
+    return result
