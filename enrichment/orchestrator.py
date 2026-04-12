@@ -570,40 +570,30 @@ class Orchestrator:
                         result = finalise(result, start)
                         return EnrichmentResult(**result)
 
-                    # ── Child match for name2 (local fuzzy against parent's children) ──
-                    if pp_name2 and pp_name2.strip():
-                        children = ror_parent.get("children", [])
-                        # Expand abbreviations ("Dept of X" → "Department of X")
-                        # so the fuzzy match against ROR's canonical children
-                        # is deterministic and reliable.
-                        name2_for_match = (
-                            expand_abbreviations(pp_name2.strip())
-                            or pp_name2.strip()
+                    # ── Child match for name2 and name3 ──────────────
+                    children = ror_parent.get("children", [])
+                    for field_key, field_val in [("name2", pp_name2), ("name3", pp_name3)]:
+                        if not (field_val and field_val.strip()):
+                            continue
+                        val_for_match = (
+                            expand_abbreviations(field_val.strip())
+                            or field_val.strip()
                         )
                         child_match = _match_child_locally(
-                            name2_for_match, children,
+                            val_for_match, children,
                         )
-
                         logger.info({
                             "record_id": record.record_id,
-                            "step": "tier1_child_local_match",
-                            "name2": record.name2,
+                            "step": f"tier1_child_local_match_{field_key}",
+                            field_key: field_val,
                             "num_children": len(children),
                             "best_child": child_match.get("name") if child_match else None,
                             "best_score": child_match.get("score") if child_match else 0,
                         })
-
                         if child_match:
                             child_name = child_match["name"]
                             if child_name and child_name.strip():
-                                result["name2_enriched"] = child_name.strip()
-                            result["name2_match_result"] = (
-                                "exact" if child_match["score"] >= 90 else "partial"
-                            )
-                            result["source"] = "ROR+child"
-                            result["enrichment_status"] = "enriched"
-                            result = finalise(result, start)
-                            return EnrichmentResult(**result)
+                                result[f"{field_key}_enriched"] = child_name.strip()
 
                 else:
                     # ── ROR miss ─────────────────────────────────────
@@ -690,29 +680,17 @@ class Orchestrator:
                 or bool(pp_contact and pp_contact.strip())
             )
 
-            # ── TIER 2 (canonical — UC 5): LLM-only canonicalization ───
-            # Runs for BOTH research institutions and companies when
-            # name2 is present and Tier 1 child matching did not
-            # resolve it. Zero SerpAPI calls.
-            # UC 5 scope: only accept dept/div/school/college/faculty.
-            # Reject lab/group/centre/facility canonicalisations AND
-            # short-circuit — the original name2 is left unchanged in
-            # that case (out of scope rule).
-            # Also skip when preprocessing already normalised name2
-            # to a pattern_match value like "Accounts Payable" — that's
-            # not a department to canonicalise.
-            is_ap_normalised = (
-                (pp_name2 or "").strip().lower() == "accounts payable"
+            # ── AP short-circuit: handled entirely by preprocessing ──
+            # Check both name2 and name3 for AP normalisation. If any
+            # AP field is present, return immediately.
+            any_ap = any(
+                (getattr(pre, f) or "").strip().lower() == "accounts payable"
+                for f in ("name1", "name2", "name3")
             )
-
-            # AP records are handled entirely by preprocessing. Don't
-            # run the LLM canonicaliser on them, don't run Tier 3, and
-            # don't fabricate departments — just write the normalised
-            # value through and return. This preserves both the
-            # "Accounts Payable" label and any contact extracted
-            # earlier from the Attn prefix.
-            if is_ap_normalised:
-                result["name2_enriched"] = pp_name2
+            if any_ap:
+                for f, pp_val in [("name2", pp_name2), ("name3", pp_name3)]:
+                    if pp_val and pp_val.strip():
+                        result[f"{f}_enriched"] = pp_val.strip()
                 result["tier_used"] = 2
                 result["source"] = "pattern_match"
                 result["confidence"] = "high"
@@ -724,75 +702,80 @@ class Orchestrator:
                 result = finalise(result, start)
                 return EnrichmentResult(**result)
 
-            if (
-                name2_already_filled
-                and result["record_type"] in ("research_institution", "company")
+            # ── TIER 2 (canonical — UC 5): LLM canonicalization ──────
+            # Runs the same logic for BOTH name2 and name3: child match
+            # first (already done above), then Tier 2 canonical LLM,
+            # then UC 5 scope filter. Zero SerpAPI calls.
+            # Uses a shared helper to avoid duplication.
+            can_canonical = (
+                result["record_type"] in ("research_institution", "company")
                 and result.get("name1_enriched")
-            ):
+            )
+            any_canonical_ran = False
+            for field_key, pp_val in [("name2", pp_name2), ("name3", pp_name3)]:
+                if not (pp_val and pp_val.strip()):
+                    continue
+                # Already resolved by child match above?
+                if result.get(f"{field_key}_enriched"):
+                    continue
+                if not can_canonical:
+                    continue
+
                 canonical = await run_tier2_canonical(
                     record_id=record.record_id,
                     institution=result["name1_enriched"],
-                    name2=pp_name2,  # type: ignore[arg-type]
+                    name2=pp_val,  # type: ignore[arg-type]
                     llm_client=self._llm_client,
                 )
                 logger.info({
                     "record_id": record.record_id,
-                    "step": "tier2_canonical_result",
+                    "step": f"tier2_canonical_result_{field_key}",
                     "found": canonical.success,
                     "confidence": canonical.confidence,
-                    "name2_enriched": canonical.name2_enriched,
+                    "enriched": canonical.name2_enriched,
                 })
+                any_canonical_ran = True
+
                 if canonical.success and canonical.name2_enriched:
-                    # UC 5 scope filter: reject granular units AND
-                    # short-circuit — leave original unchanged, do not
-                    # fall through to Tier 3 which would overwrite.
+                    # UC 5 scope filter: reject granular units.
                     if is_granular_unit(canonical.name2_enriched):
                         logger.info({
                             "record_id": record.record_id,
-                            "step": "tier2_canonical_rejected_scope",
-                            "name2_rejected": canonical.name2_enriched,
-                            "reason": "lab/group/centre/facility out of scope for UC 5",
+                            "step": f"tier2_canonical_rejected_scope_{field_key}",
+                            "rejected": canonical.name2_enriched,
                         })
-                        result["name2_enriched"] = pp_name2
-                        result["tier_used"] = 2
-                        result["source"] = "passthrough"
-                        result["confidence"] = "low"
-                        result["enrichment_status"] = "unresolved"
-                        result["flag_for_review"] = True
-                        result["flag_reason"] = (
-                            "name2 is a lab/group/centre/facility — out of "
-                            "scope for canonicalisation, left unchanged"
-                        )
-                        result = finalise(result, start)
-                        return EnrichmentResult(**result)
+                        result[f"{field_key}_enriched"] = pp_val
                     else:
-                        result["name2_enriched"] = canonical.name2_enriched
-                        result["tier_used"] = 2
-                        result["source"] = "llm_canonical"
-                        result["confidence"] = "high"
-                        result["name2_match_result"] = "not_applicable"
-                        result["enrichment_status"] = "enriched"
-                        result["flag_for_review"] = True
-                        result["flag_reason"] = "LLM canonical form — verify"
+                        result[f"{field_key}_enriched"] = canonical.name2_enriched
                         if 5 not in result["use_cases_triggered"]:
                             result["use_cases_triggered"].append(5)
-                        result = finalise(result, start)
-                        return EnrichmentResult(**result)
+                else:
+                    # LLM not confident — passthrough original
+                    result[f"{field_key}_enriched"] = pp_val
 
-                # Canonical didn't return a confident answer — leave
-                # name2 as-is, don't let Tier 3 fabricate something
-                # else. For companies, this also avoids the Pfizer
-                # "Global Research" → "Pfizer Global R&D" fabrication.
-                result["name2_enriched"] = pp_name2
+            # If canonical ran on any field, return now so Tier 3
+            # doesn't overwrite with fabricated values.
+            if any_canonical_ran and name2_already_filled:
                 result["tier_used"] = 2
-                result["source"] = "passthrough"
-                result["confidence"] = "low"
-                result["enrichment_status"] = "unresolved"
-                result["flag_for_review"] = True
-                result["flag_reason"] = (
-                    "name2 could not be canonicalised with high "
-                    "confidence — left unchanged"
+                has_enriched = any(
+                    result.get(f"{f}_enriched") and result.get(f"{f}_enriched") != getattr(record, f)
+                    for f in ("name2", "name3")
                 )
+                if has_enriched:
+                    result["source"] = "llm_canonical"
+                    result["confidence"] = "high"
+                    result["enrichment_status"] = "enriched"
+                    result["flag_for_review"] = True
+                    result["flag_reason"] = "LLM canonical form — verify"
+                else:
+                    result["source"] = "passthrough"
+                    result["confidence"] = "low"
+                    result["enrichment_status"] = "unresolved"
+                    result["flag_for_review"] = True
+                    result["flag_reason"] = (
+                        "name2/name3 could not be canonicalised with "
+                        "high confidence — left unchanged"
+                    )
                 result = finalise(result, start)
                 return EnrichmentResult(**result)
 
