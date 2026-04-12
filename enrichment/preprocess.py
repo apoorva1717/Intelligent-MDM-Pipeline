@@ -132,6 +132,12 @@ _ADDRESS_PATTERNS = [
         rf"\b\d+\s+(?:{_DIRECTION}\s+)?{_STREET_TOKEN}(?:\s+{_STREET_TOKEN})*\s+(?:{_STREET_SUFFIXES})\b\.?",
         re.IGNORECASE,
     ),
+    # Bare street names without house number:
+    # "NW 2nd Ave", "S Main St", "E 42nd Street", "North Wolfe Road"
+    re.compile(
+        rf"^\s*(?:{_DIRECTION}\s+)?{_STREET_TOKEN}(?:\s+{_STREET_TOKEN})*\s+(?:{_STREET_SUFFIXES})\s*$",
+        re.IGNORECASE,
+    ),
     # "Suite 400", "Ste 400", "Unit 12", "Floor 3", "Bldg 4", "Room 12"
     re.compile(r"\b(?:Suite|Ste|Unit|Floor|Bldg|Building|Room|Rm)\s*\.?\s*[\w\-]+\b", re.IGNORECASE),
     # "PO Box 12345", "P.O. Box 12345", "Post Office Box 12345",
@@ -158,6 +164,25 @@ def _extract_addresses(text: str) -> tuple[list[str], str]:
             result = (result[: m.start()] + result[m.end():])
     result = re.sub(r"\s+", " ", result).strip(" ,;/|-")
     return found, result
+
+
+# ---------------------------------------------------------------------------
+# UC 10 — Opaque code / meaningless identifier detection
+# ---------------------------------------------------------------------------
+
+# Matches values that are clearly internal codes, not names:
+# - Pure digits (5+): "800000070"
+# - Letter prefix + digits (5+): "B800000070", "X12345"
+# - Letter(s) + digits with optional dashes: "SAP-123456", "BP-00042"
+_OPAQUE_CODE_RE = re.compile(
+    r"^\s*[A-Za-z]{0,4}[-]?\d{5,}\s*$",
+)
+
+
+def _is_opaque_code(text: str) -> bool:
+    if not text:
+        return False
+    return bool(_OPAQUE_CODE_RE.match(text.strip()))
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +417,15 @@ def preprocess_record(
             setattr(res, slot, addr)
             res.note(9, f"extracted address to {slot} from {field_name}")
         setattr(res, field_name, cleaned or None)
+
+    # ---------------------------------------------------------------
+    # UC 10 — Opaque code / meaningless identifier clearing
+    # ---------------------------------------------------------------
+    for field_name in ("name2", "name3"):
+        val = getattr(res, field_name)
+        if val and _is_opaque_code(val):
+            res.note(10, f"{field_name} cleared — opaque code {val!r}")
+            setattr(res, field_name, None)
 
     # ---------------------------------------------------------------
     # UC 7 — Contact extraction
