@@ -435,18 +435,26 @@ class Orchestrator:
                 if uc not in result["use_cases_triggered"]:
                     result["use_cases_triggered"].append(uc)
 
-            # Track which name fields were touched by preprocessing
-            # so finalise() does not restore the original value for a
-            # field that was intentionally cleared (e.g. the entire
-            # name3 was an email that got moved to the email slot).
+            # Track which name fields were touched by preprocessing.
+            # "cleared" = field was non-empty and is now None/empty.
+            # "changed" = field value is different (includes cleared).
+            # Both types prevent finalise() from restoring the original.
             preprocess_cleared: set[str] = set()
             for base, pre_val, orig in (
                 ("name1", pre.name1, record.name1),
                 ("name2", pre.name2, record.name2),
                 ("name3", pre.name3, record.name3),
             ):
-                if (orig and orig.strip()) and (pre_val is None or not pre_val.strip()):
+                orig_stripped = (orig or "").strip()
+                pre_stripped = (pre_val or "").strip()
+                if orig_stripped and not pre_stripped:
                     preprocess_cleared.add(base)
+                elif orig_stripped and pre_stripped and orig_stripped != pre_stripped:
+                    # Preprocessing changed (but didn't clear) the value
+                    # — write it as the enriched value now so finalise()
+                    # doesn't overwrite it with the original. Example:
+                    # "Accounts Payable Dept" → "Accounts Payable".
+                    result[f"{base}_enriched"] = pre_stripped
             result["_preprocess_cleared"] = preprocess_cleared
 
             # If preprocessing populated any contact/email/street/name

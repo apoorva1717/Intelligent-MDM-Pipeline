@@ -132,10 +132,14 @@ _ADDRESS_PATTERNS = [
         rf"\b\d+\s+(?:{_DIRECTION}\s+)?{_STREET_TOKEN}(?:\s+{_STREET_TOKEN})*\s+(?:{_STREET_SUFFIXES})\b\.?",
         re.IGNORECASE,
     ),
-    # "Suite 400", "Ste 400", "Unit 12", "Floor 3", "Bldg 4"
-    re.compile(r"\b(?:Suite|Ste|Unit|Floor|Bldg|Building)\s*\.?\s*[\w\-]+\b", re.IGNORECASE),
-    # PO Box 12345
-    re.compile(r"\bP\.?\s*O\.?\s*Box\s+\w+\b", re.IGNORECASE),
+    # "Suite 400", "Ste 400", "Unit 12", "Floor 3", "Bldg 4", "Room 12"
+    re.compile(r"\b(?:Suite|Ste|Unit|Floor|Bldg|Building|Room|Rm)\s*\.?\s*[\w\-]+\b", re.IGNORECASE),
+    # "PO Box 12345", "P.O. Box 12345", "Post Office Box 12345",
+    # bare "Box 100", "Mail Box 5", "Mailbox 42"
+    re.compile(
+        r"\b(?:P\.?\s*O\.?\s*Box|Post\s+Office\s+Box|Mail\s*Box|Mailbox|Box)\s+\w+\b",
+        re.IGNORECASE,
+    ),
 ]
 
 
