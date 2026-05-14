@@ -105,6 +105,7 @@ class EnrichmentResult(BaseModel):
     ror_id: Optional[str] = None
     source_url: Optional[str] = None
     domain: Optional[str] = None
+    website_url: Optional[str] = None
     contact_used: bool = False
     name2_match_result: Literal["exact", "partial", "no_match", "not_applicable", "unknown"] = "not_applicable"
 

@@ -246,6 +246,38 @@ COMPANY_CANONICAL_USER_PROMPT_TEMPLATE = (
 
 
 # ---------------------------------------------------------------------------
+# Website inference — LLM-only (Path C in website resolver)
+# ---------------------------------------------------------------------------
+
+WEBSITE_INFERENCE_SYSTEM_PROMPT = (
+    "You return the official corporate website URL for a company. "
+    "Return valid JSON only. Never guess or hallucinate URLs."
+)
+
+WEBSITE_INFERENCE_USER_PROMPT_TEMPLATE = (
+    "Given the following company information, provide the official "
+    "website URL.\n\n"
+    "Company: {name1}\n"
+    "City: {city}\n"
+    "State: {state}\n"
+    "Country: {country}\n\n"
+    "Return JSON:\n"
+    "{{\n"
+    '  "website_url": "str or null",\n'
+    '  "confidence": "high|medium|low"\n'
+    "}}\n\n"
+    "Rules:\n"
+    "1. Return the official corporate website URL only when you are "
+    "confident the company is well-known and the URL is correct.\n"
+    "2. If you are not confident or the company is obscure, return "
+    "JSON null for website_url.\n"
+    "3. Do not guess or hallucinate URLs. Use JSON null, never the "
+    'string "null" or "UNKNOWN".\n'
+    "4. Format: https://www.example.com (include scheme)."
+)
+
+
+# ---------------------------------------------------------------------------
 # Tier 3 — LLM inference (last resort)
 # ---------------------------------------------------------------------------
 

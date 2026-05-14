@@ -62,6 +62,17 @@ _KNOWN_AFFILIATIONS: dict[str, dict[str, Any]] = {
 }
 
 # Curated department results for Tier 2B, keyed by institution fragment
+# Curated company → website map for the website inference prompt
+# (Path C). Anything not present here returns null (LLM "UNKNOWN").
+_KNOWN_WEBSITES: dict[str, str] = {
+    "fisher scientific": "https://www.fishersci.com",
+    "thermo fisher": "https://www.thermofisher.com",
+    "merck": "https://www.merck.com",
+    "pfizer": "https://www.pfizer.com",
+    "novartis": "https://www.novartis.com",
+}
+
+
 _KNOWN_DEPARTMENTS: dict[str, dict[str, Any]] = {
     "mit": {"official_name": "Department of Chemistry", "confidence": "medium"},
     "massachusetts institute of technology": {"official_name": "Department of Chemistry", "confidence": "medium"},
@@ -101,6 +112,10 @@ class MockOpenAIClient:
             return self._mock_tier2b(user_prompt, prompt_lower)
         elif "research unit (a lab" in prompt_lower:
             return self._mock_lab_parent(user_prompt, prompt_lower)
+        elif "provide the official website url" in prompt_lower:
+            return self._mock_website_inference(user_prompt, prompt_lower)
+        elif "user-supplied company name:" in prompt_lower:
+            return self._mock_company_canonical(user_prompt, prompt_lower)
         elif "infer official org and dept" in prompt_lower:
             return self._mock_tier3(user_prompt, prompt_lower)
 
@@ -193,6 +208,48 @@ class MockOpenAIClient:
             "confidence": "low",
             "reasoning": "Mock: no parent dept mapping",
         }
+
+    def _mock_company_canonical(
+        self, user_prompt: str, prompt_lower: str,
+    ) -> dict[str, Any]:
+        """Mock company name1 canonicalisation.
+
+        Returns a high-confidence canonical name for any company whose
+        name fragment is in ``_KNOWN_WEBSITES`` (treated as our list of
+        well-known companies); otherwise null.
+        """
+        company = (self._extract_field(user_prompt, "User-supplied company name:") or "").lower()
+        for key in _KNOWN_WEBSITES:
+            if key in company:
+                # Echo back a cleaned form of the input — the mock is
+                # not concerned with deeper canonicalisation.
+                return {
+                    "official_name": self._extract_field(
+                        user_prompt, "User-supplied company name:",
+                    ).strip(),
+                    "confidence": "high",
+                    "reasoning": f"Mock: canonicalised {company}",
+                }
+        return {
+            "official_name": None,
+            "confidence": "low",
+            "reasoning": "Mock: unknown company",
+        }
+
+    def _mock_website_inference(
+        self, user_prompt: str, prompt_lower: str,
+    ) -> dict[str, Any]:
+        """Mock Path C — company website inference.
+
+        Returns a known URL for any company whose name matches a key
+        in ``_KNOWN_WEBSITES``; otherwise null (the LLM equivalent of
+        "I don't know").
+        """
+        company = (self._extract_field(user_prompt, "Company:") or "").lower()
+        for key, url in _KNOWN_WEBSITES.items():
+            if key in company:
+                return {"website_url": url, "confidence": "high"}
+        return {"website_url": None, "confidence": "low"}
 
     def _mock_tier3(self, user_prompt: str, prompt_lower: str) -> dict[str, Any]:
         """Mock Tier 3 LLM inference."""

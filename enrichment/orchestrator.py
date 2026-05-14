@@ -41,6 +41,10 @@ from enrichment.tier1_ror import RORClient, clear_ror_cache
 from enrichment.tier2_canonical import run_tier2_canonical
 from enrichment.tier2a_contact import Tier2AResult, run_tier2a
 from enrichment.tier3_llm import Tier3Result, run_tier3
+from enrichment.website_resolver import (
+    infer_website_via_llm,
+    resolve_website_via_serp,
+)
 from llm.openai_client import OpenAIClient, install_httpx_aclose_noise_filter
 from search.base import SearchClient
 from search.duckduckgo_client import DuckDuckGoClient
@@ -104,6 +108,7 @@ def _init_result(record: EnrichmentRecord) -> dict[str, Any]:
         "ror_id": None,
         "source_url": None,
         "domain": None,
+        "website_url": None,
         "contact_used": False,
         "name2_match_result": "not_applicable",
         "use_cases_triggered": [],
@@ -222,7 +227,20 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # Strip transient non-schema keys before pydantic validation.
     result.pop("_preprocess_cleared", None)
     result.pop("_dba_values", None)
+    result.pop("_pp_name1", None)
     return result
+
+
+def _flag_website_review(result: dict[str, Any], reason: str) -> None:
+    """Mark a result for manual review because the website needs
+    verification. Preserves any pre-existing ``flag_reason`` (which
+    came from earlier tiers) by appending instead of overwriting."""
+    result["flag_for_review"] = True
+    existing = result.get("flag_reason")
+    if existing and reason not in existing:
+        result["flag_reason"] = f"{existing}; {reason}"
+    elif not existing:
+        result["flag_reason"] = reason
 
 
 # ── Child matching helper ─────────────────────────────────────────────────────
@@ -411,6 +429,81 @@ class Orchestrator:
                 except Exception as exc:  # noqa: BLE001
                     logger.info("LLM client aclose failed (non-fatal): %s", exc)
 
+    async def _maybe_resolve_website_bc(
+        self,
+        record: EnrichmentRecord,
+        result: dict[str, Any],
+        cache: BatchCache,
+    ) -> None:
+        """Run Path B (SERP) for any record type, then Path C (LLM)
+        as a fallback. Idempotent — safe to call from any return path.
+
+        Path A (ROR's links[].website) is written inline in the Tier 1
+        block as soon as ROR matches; this helper handles the
+        post-ROR fallback for both research institutions and
+        companies. Confidence semantics:
+
+        * Path B high   → ``website_url``, no website-specific flag.
+        * Path B low    → ``website_url`` + flag for review.
+        * Path C        → ``website_url`` + flag for review.
+        """
+        if result.get("website_url"):
+            return
+        pp_name1 = result.get("_pp_name1")
+        if not pp_name1 or not pp_name1.strip():
+            return
+
+        rec_type = result.get("record_type")
+        # Path B runs for any record type; the resolver builds the
+        # appropriate query shape and applies TLD-based confidence.
+        serp_res = await resolve_website_via_serp(
+            record_id=record.record_id,
+            name1=pp_name1,
+            city=record.city,
+            state=record.state,
+            country=record.country,
+            record_type=rec_type,
+            search_client=self._search_client,
+            cache=cache,
+        )
+        if serp_res.url:
+            result["website_url"] = serp_res.url
+            if serp_res.confidence != "high":
+                _flag_website_review(
+                    result,
+                    "Website resolved by SERP with low confidence — "
+                    "verify",
+                )
+            return
+
+        # Path C: LLM fallback when SERP returned nothing usable.
+        llm_res = await infer_website_via_llm(
+            record_id=record.record_id,
+            name1=pp_name1,
+            city=record.city,
+            state=record.state,
+            country=record.country,
+            llm_client=self._llm_client,
+        )
+        if llm_res.url:
+            result["website_url"] = llm_res.url
+            _flag_website_review(
+                result,
+                "Website inferred by LLM — verify",
+            )
+
+    async def _finalise_and_return(
+        self,
+        result: dict[str, Any],
+        start: float,
+        record: EnrichmentRecord,
+        cache: BatchCache,
+    ) -> EnrichmentResult:
+        """Resolve website (B/C if needed), finalise, and return."""
+        await self._maybe_resolve_website_bc(record, result, cache)
+        result = finalise(result, start)
+        return EnrichmentResult(**result)
+
     async def _enrich_single(
         self,
         record: EnrichmentRecord,
@@ -424,8 +517,7 @@ class Orchestrator:
         try:
             if options.dry_run:
                 result["enrichment_status"] = "unresolved"
-                result = finalise(result, start)
-                return EnrichmentResult(**result)
+                return await self._finalise_and_return(result, start, record, cache)
 
             # ── UC 0: Name 1 overflow check ──────────────────────────
             # Single LLM call. If Name1 + Name2 read as ONE continuous
@@ -469,8 +561,7 @@ class Orchestrator:
                         f"{overflow.reasoning}"
                     )
                     result["use_cases_triggered"] = [0]
-                    result = finalise(result, start)
-                    return EnrichmentResult(**result)
+                    return await self._finalise_and_return(result, start, record, cache)
 
             # ── PREPROCESS (UC 6, 7, 8, 9): deterministic cleanup ─────
             # Pulls emails, addresses, contact-person names, and AP
@@ -567,6 +658,9 @@ class Orchestrator:
             pp_name3 = pre.name3
             pp_contact = pre.contact
             pp_street1 = pre.street1
+            # Stash for the post-Tier-1 website resolver. Read by
+            # _maybe_resolve_website_bc at every return path.
+            result["_pp_name1"] = pp_name1
 
             # Stash the dept-lookup precondition signals BEFORE Tier 1
             # so that finalise() — invoked by every return path
@@ -658,6 +752,11 @@ class Orchestrator:
                     if institution_domain:
                         result["domain"] = institution_domain
 
+                    # Path A: ROR's links[] website is authoritative.
+                    ror_website = ror_parent.get("website")
+                    if ror_website:
+                        result["website_url"] = ror_website
+
                     # Mark Tier 1 success and UC 2/3 triggered.
                     result["enrichment_status"] = "enriched"
                     if 2 not in result["use_cases_triggered"]:
@@ -672,8 +771,9 @@ class Orchestrator:
                     if not (pp_name2 and pp_name2.strip()) and not (
                         pp_contact and pp_contact.strip()
                     ):
-                        result = finalise(result, start)
-                        return EnrichmentResult(**result)
+                        return await self._finalise_and_return(
+                            result, start, record, cache,
+                        )
 
                     # ── Child match for name2 and name3 ──────────────
                     children = ror_parent.get("children", [])
@@ -735,8 +835,9 @@ class Orchestrator:
                         if not (pp_name2 and pp_name2.strip()) and not (
                             pp_contact and pp_contact.strip()
                         ):
-                            result = finalise(result, start)
-                            return EnrichmentResult(**result)
+                            return await self._finalise_and_return(
+                                result, start, record, cache,
+                            )
                         # Otherwise fall through to Tier 2/3 for name2.
                         company_res = None
                     else:
@@ -766,8 +867,9 @@ class Orchestrator:
                         # If no name2, we're done — return immediately
                         # so Tier 3 doesn't overwrite the canonical name.
                         if not (pp_name2 and pp_name2.strip()):
-                            result = finalise(result, start)
-                            return EnrichmentResult(**result)
+                            return await self._finalise_and_return(
+                                result, start, record, cache,
+                            )
                     elif company_res is not None:
                         # Company canonical was attempted but failed.
                         result["name1_enriched"] = name1_cleaned
@@ -802,8 +904,7 @@ class Orchestrator:
                 result["flag_reason"] = "Accounts Payable record — verify"
                 if 6 not in result["use_cases_triggered"]:
                     result["use_cases_triggered"].append(6)
-                result = finalise(result, start)
-                return EnrichmentResult(**result)
+                return await self._finalise_and_return(result, start, record, cache)
 
             # ── UC 13: Lab/group/centre → parent department resolution ─
             # When the input Name2 names a granular research unit (lab,
@@ -864,8 +965,7 @@ class Orchestrator:
                         )
                     if 13 not in result["use_cases_triggered"]:
                         result["use_cases_triggered"].append(13)
-                    result = finalise(result, start)
-                    return EnrichmentResult(**result)
+                    return await self._finalise_and_return(result, start, record, cache)
                 # else: fall through to existing tier 2 canonical /
                 # 2A / 2B / 3 — the granular Name2 will be handled by
                 # the existing scope filters there.
@@ -952,8 +1052,9 @@ class Orchestrator:
                         "name2/name3 could not be canonicalised with "
                         "high confidence — left unchanged"
                     )
-                result = finalise(result, start)
-                return EnrichmentResult(**result)
+                return await self._finalise_and_return(
+                    result, start, record, cache,
+                )
 
             # ── TIER 2A (contact lookup): 1 SerpAPI call, gated ────────
             # Runs only when name2 is null and we have a contact plus
@@ -1044,8 +1145,9 @@ class Orchestrator:
                         _apply_tier2a(result, tier2a_result, mode)
                         if 4 not in result["use_cases_triggered"]:
                             result["use_cases_triggered"].append(4)
-                        result = finalise(result, start)
-                        return EnrichmentResult(**result)
+                        return await self._finalise_and_return(
+                            result, start, record, cache,
+                        )
 
             # ── TIER 3: LLM INFERENCE ────────────────────────────────────
 
@@ -1108,8 +1210,7 @@ class Orchestrator:
                 })
                 result["name2_enriched"] = None
 
-            result = finalise(result, start)
-            return EnrichmentResult(**result)
+            return await self._finalise_and_return(result, start, record, cache)
 
         except Exception as exc:
             logger.error({
@@ -1119,8 +1220,9 @@ class Orchestrator:
             })
             result["enrichment_status"] = "failed"
             result["error"] = str(exc)
-            result = finalise(result, start)
-            return EnrichmentResult(**result)
+            return await self._finalise_and_return(
+                result, start, record, cache,
+            )
 
     @staticmethod
     def _build_summary(results: list[EnrichmentResult], batch_ms: int) -> EnrichmentSummary:

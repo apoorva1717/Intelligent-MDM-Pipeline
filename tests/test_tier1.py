@@ -113,3 +113,51 @@ class TestTier1ROR:
         assert result["matched"] is True
         assert result["official_name"] == "University of Florida"
         assert len(result["children"]) > 0
+
+
+class TestNameScoring:
+    """Unit tests for the local name-scoring guard rails."""
+
+    def test_acronym_mismatch_capped(self) -> None:
+        """'EMSL Analytical, Inc.' must not match 'ASL Analytical'.
+
+        Production bug: ROR returned ASL Analytical (ror.org/03w5ry680)
+        as the chosen affiliation match for EMSL — the shared
+        'Analytical' token dominates token_sort_ratio (~0.9), masking
+        the one-letter difference in the leading acronym. The
+        identifier-token guard caps such matches below threshold.
+        """
+        from enrichment.tier1_ror import _score_org
+
+        asl_org = {
+            "names": [
+                {"value": "ASL Analytical", "types": ["ror_display", "label"]},
+                {"value": "ASL Analytical, Inc.", "types": ["alias"]},
+            ],
+        }
+        score = _score_org("EMSL Analytical, Inc.", asl_org)
+        assert score < 0.8, f"EMSL→ASL should be capped, got {score}"
+
+    def test_matching_acronym_still_scores_high(self) -> None:
+        """Legitimate matches with the same acronym still score 1.0."""
+        from enrichment.tier1_ror import _score_org
+
+        asl_org = {
+            "names": [
+                {"value": "ASL Analytical", "types": ["ror_display", "label"]},
+                {"value": "ASL Analytical, Inc.", "types": ["alias"]},
+            ],
+        }
+        assert _score_org("ASL Analytical, Inc.", asl_org) == 1.0
+
+    def test_acronym_alias_exact_match_unaffected(self) -> None:
+        """Acronym-only queries still match via alias exact match (step 1)."""
+        from enrichment.tier1_ror import _score_org
+
+        ucla_org = {
+            "names": [
+                {"value": "University of California, Los Angeles", "types": ["ror_display", "label"]},
+                {"value": "UCLA", "types": ["alias", "acronym"]},
+            ],
+        }
+        assert _score_org("UCLA", ucla_org) == 1.0

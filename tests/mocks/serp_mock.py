@@ -89,6 +89,13 @@ _NAME1_RESULTS: dict[str, list[dict[str, str]]] = {
             "snippet": "Research Lab Inc provides analytical testing and quality control services.",
         },
     ],
+    "thermo fisher scientific": [
+        {
+            "title": "Thermo Fisher Scientific — Official Site",
+            "url": "https://www.thermofisher.com/",
+            "snippet": "Thermo Fisher Scientific is the world leader in serving science.",
+        },
+    ],
 }
 
 # Generic fallback for any institution query

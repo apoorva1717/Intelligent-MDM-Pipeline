@@ -42,6 +42,26 @@ def clear_ror_cache() -> None:
 
 
 _DASH_RE = re.compile(r"[\u2010-\u2015\-]+")
+_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*")
+
+
+def _extract_identifier_tokens(text: str) -> set[str]:
+    """Short all-caps tokens that act as distinguishing identifiers.
+
+    Acronyms like 'EMSL', 'ASL', 'NASA', 'IBM' (length 2-5, originally
+    all-uppercase) are the part of a name that separates otherwise
+    similar organisations \u2014 'EMSL Analytical' vs 'ASL Analytical'
+    share the descriptive 'Analytical' suffix and differ only by their
+    leading acronym. Token-sort fuzz weights the long shared word
+    heavily and produces ~0.9 similarity, crossing the match
+    threshold; treating these acronyms as required tokens catches the
+    mismatch. Returned tokens are lowercased.
+    """
+    tokens: set[str] = set()
+    for tok in _WORD_RE.findall(text):
+        if 2 <= len(tok) <= 5 and tok.isupper():
+            tokens.add(tok.lower())
+    return tokens
 
 
 def _normalise_for_tokens(text: str) -> str:
@@ -145,18 +165,27 @@ def _compute_name_score(query: str, org_names: list[dict[str, Any]]) -> float:
     # DISTINCTIVE token (length ≥5, not a common domain word) with
     # the query. Otherwise orgs like "Newman Regional Health" would
     # match "Lakeland Regional Health" at 0.83.
+    #
+    # Identifier-token guard: short all-caps acronyms in the query
+    # (e.g. "EMSL", "ASL") are the distinguishing element when the
+    # rest of the name is descriptive — every such acronym must
+    # appear in the candidate's tokens, or the score is capped.
+    q_identifiers = _extract_identifier_tokens(query)
     canonical_scoring = [v for v in canonical_values if len(v) >= 5]
     best = 0.0
     for val in canonical_scoring:
         token_ratio = fuzz.token_sort_ratio(query_lower, val) / 100.0
         if token_ratio <= best:
             continue
+        v_tokens = set(val.split())
         # Distinctive-token check
         q_distinctive = {t for t in query_tokens if len(t) >= 5 and t not in _COMMON_DOMAIN_WORDS}
-        v_tokens = set(val.split())
         if q_distinctive and not (q_distinctive & v_tokens):
             # No distinctive token shared — cap at 0.7 so it cannot
             # cross the 0.8 match threshold.
+            token_ratio = min(token_ratio, 0.7)
+        # Identifier-token check
+        if q_identifiers and not q_identifiers.issubset(v_tokens):
             token_ratio = min(token_ratio, 0.7)
         if token_ratio > best:
             best = token_ratio
@@ -208,6 +237,19 @@ def _strip_ror_country_suffix(name: str | None) -> str | None:
     return cleaned.strip() or name
 
 
+def extract_website_from_ror(ror_org: dict[str, Any]) -> str | None:
+    """Extract the official website URL from a ROR organisation dict.
+
+    Returns the first ``links[]`` entry whose ``type == 'website'``,
+    or None if none is present. ROR's website link is the
+    authoritative org homepage — write directly to ``website_url``.
+    """
+    for link in ror_org.get("links", []) or []:
+        if link.get("type") == "website" and link.get("value"):
+            return link["value"]
+    return None
+
+
 def _extract_org_fields(org: dict[str, Any]) -> dict[str, Any]:
     """Extract common fields (name, website, types, children, country) from an org dict."""
     org_names = org.get("names", [])
@@ -226,11 +268,7 @@ def _extract_org_fields(org: dict[str, Any]) -> dict[str, Any]:
     # company name is cleaner without it.
     display_name = _strip_ror_country_suffix(display_name)
 
-    website = next(
-        (link["value"] for link in org.get("links", [])
-         if link.get("type") == "website"),
-        None,
-    )
+    website = extract_website_from_ror(org)
     domain = extract_domain(website) if website else None
 
     org_types = [t.lower() for t in org.get("types", [])]
@@ -340,24 +378,42 @@ async def call_ror(
 
             if chosen and chosen.get("score", 0.0) >= threshold:
                 org = chosen["organization"]
-                fields = _extract_org_fields(org)
-                score = chosen["score"]
-
-                result: dict[str, Any] = {
-                    "matched": True,
-                    "score": score,
-                    **{k: v for k, v in fields.items() if k != "org_names"},
-                    "query_used": name,
-                    "affiliation_used": affiliation_string,
-                    "country_filter": country_code,
-                    "strategy": "affiliation",
-                }
-                _ror_cache[cache_key] = result
-                logger.info(
-                    "ROR affiliation matched '%s' → '%s' (score=%.2f)",
-                    affiliation_string[:80], fields["official_name"], score,
+                # Re-validate locally — ROR's affiliation scorer is
+                # fuzzy enough to return e.g. "ASL Analytical" as a
+                # confident match for "EMSL Analytical, Inc." (the
+                # shared 'Analytical' token dominates the score). The
+                # local check applies the identifier-token guard that
+                # ROR's scorer lacks.
+                expanded_name = expand_abbreviations(name) or name
+                local_score = max(
+                    _score_org(name, org),
+                    _score_org(expanded_name, org),
                 )
-                return result
+                if local_score < threshold:
+                    logger.info(
+                        "ROR affiliation chosen '%s' rejected by local "
+                        "rescore (%.2f < %.2f), falling through to query",
+                        (org.get("names") or [{}])[0].get("value", "?")[:60],
+                        local_score, threshold,
+                    )
+                else:
+                    fields = _extract_org_fields(org)
+                    score = chosen["score"]
+                    result: dict[str, Any] = {
+                        "matched": True,
+                        "score": score,
+                        **{k: v for k, v in fields.items() if k != "org_names"},
+                        "query_used": name,
+                        "affiliation_used": affiliation_string,
+                        "country_filter": country_code,
+                        "strategy": "affiliation",
+                    }
+                    _ror_cache[cache_key] = result
+                    logger.info(
+                        "ROR affiliation matched '%s' → '%s' (score=%.2f)",
+                        affiliation_string[:80], fields["official_name"], score,
+                    )
+                    return result
 
             logger.info(
                 "ROR affiliation no confident match for '%s' (chosen=%s, score=%.2f), trying query",
