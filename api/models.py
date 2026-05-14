@@ -17,6 +17,7 @@ class EnrichmentRecord(BaseModel):
     name1: Optional[str] = None
     name2: Optional[str] = None
     name3: Optional[str] = None
+    care_of: Optional[str] = None
     contact: Optional[str] = None
     email: Optional[str] = None
     # Legacy single-street field kept for backwards compatibility. New
@@ -65,6 +66,11 @@ class EnrichmentResult(BaseModel):
     name1_changed: bool = False
     name2_changed: bool = False
     name3_changed: bool = False
+
+    # c/o (extracted from prefixed Name 2 or passed through)
+    care_of_original: Optional[str] = None
+    care_of_enriched: Optional[str] = None
+    care_of_changed: bool = False
 
     # Contact / email (extracted or passed through)
     contact_original: Optional[str] = None

@@ -78,6 +78,9 @@ def _init_result(record: EnrichmentRecord) -> dict[str, Any]:
         "name1_changed": False,
         "name2_changed": False,
         "name3_changed": False,
+        "care_of_original": record.care_of,
+        "care_of_enriched": None,
+        "care_of_changed": False,
         "contact_original": record.contact,
         "contact_enriched": None,
         "contact_changed": False,
@@ -153,11 +156,12 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
             if orig and str(orig).strip():
                 result[f"{field}_enriched"] = str(orig).strip()
 
-    # Passthrough for contact / email / street fields: any field that
-    # preprocessing / tiers did not touch retains its original value
-    # in the enriched slot. This means "enriched" always reflects the
-    # final state after the pipeline runs, not only what changed.
-    for base in ("contact", "email", "street1", "street2", "street3"):
+    # Passthrough for care_of / contact / email / street fields: any
+    # field that preprocessing / tiers did not touch retains its
+    # original value in the enriched slot. This means "enriched"
+    # always reflects the final state after the pipeline runs, not
+    # only what changed.
+    for base in ("care_of", "contact", "email", "street1", "street2", "street3"):
         if result.get(f"{base}_enriched") is None:
             orig = result.get(f"{base}_original")
             if orig and str(orig).strip():
@@ -179,7 +183,7 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
         orig = result.get(f"{field}_original")
         return bool(enr and enr != orig)
 
-    for f in ("name1", "name2", "name3", "contact", "email",
+    for f in ("name1", "name2", "name3", "care_of", "contact", "email",
               "street1", "street2", "street3"):
         result[f"{f}_changed"] = _changed(f)
 
@@ -542,9 +546,12 @@ class Orchestrator:
                 if getattr(pre, f)
             }
 
-            # If preprocessing populated any contact/email/street/name
-            # field, record the enriched value now. (Final passthrough
-            # in finalise() will retain originals for untouched fields.)
+            # If preprocessing populated any care_of/contact/email/
+            # street/name field, record the enriched value now. (Final
+            # passthrough in finalise() will retain originals for
+            # untouched fields.)
+            if pre.care_of is not None and pre.care_of != result["care_of_original"]:
+                result["care_of_enriched"] = pre.care_of
             if pre.contact is not None and pre.contact != result["contact_original"]:
                 result["contact_enriched"] = pre.contact
             if pre.email is not None and pre.email != result["email_original"]:

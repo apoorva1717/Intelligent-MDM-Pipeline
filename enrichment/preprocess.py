@@ -1,24 +1,25 @@
-"""Deterministic preprocessing — UC 6, 7, 8, 9.
+"""Deterministic preprocessing — UC 6, 7, 8, 9, 10, 11, 12, 14, 15.
 
 Runs BEFORE any network/LLM call and is entirely pattern-based. The
 preprocessing stage cleans up name fields by pulling out content that
 clearly belongs elsewhere (emails, addresses, contact names, AP
-references) and moving it to the correct field. No SerpAPI, no ROR,
-no LLM on the hot path. An optional LLM person-vs-org classifier is
-only called when a name-like token pattern is found with no title
-prefix and no other signals.
+references, c/o + ATTN routing) and moving it to the correct field.
+No SerpAPI, no ROR, no LLM on the hot path. An optional LLM person-
+vs-org classifier is only called when a name-like token pattern is
+found with no title prefix and no other signals.
 
 The shape of the returned dict mirrors the mutable subset of an
 ``EnrichmentRecord``:
     {
       "name1": ..., "name2": ..., "name3": ...,
-      "contact": ..., "email": ...,
+      "care_of": ..., "contact": ..., "email": ...,
       "street1": ..., "street2": ..., "street3": ...,
     }
 plus bookkeeping:
     {
-      "use_cases": [6, 7, 8, 9],
+      "use_cases": [6, 7, 8, 9, 15, ...],
       "flags": [("reason string"), ...],
+      "trigger_dept_lookup": True if UC 15 Case A fired,
     }
 """
 
@@ -40,6 +41,7 @@ class PreprocessResult:
     name1: str | None = None
     name2: str | None = None
     name3: str | None = None
+    care_of: str | None = None
     contact: str | None = None
     email: str | None = None
     street1: str | None = None
@@ -51,6 +53,11 @@ class PreprocessResult:
     # tiers must not strip the marker — if an LLM canonicalisation drops
     # it, finalise() re-prepends "DBA " to the enriched value.
     dba_fields: set[str] = field(default_factory=set)
+    # UC 15 (Case A): preprocessing extracted a person from a c/o or
+    # ATTN prefix on Name 2 and the field is now empty. Tier 2A will
+    # naturally fire on (name2=null, contact set, domain), but we
+    # surface the flag explicitly so callers / tests can assert it.
+    trigger_dept_lookup: bool = False
 
     def note(self, uc: int, reason: str) -> None:
         if uc not in self.use_cases:
@@ -225,6 +232,243 @@ def _is_opaque_code(text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# UC 15 — c/o and ATTN extraction from Name 2 (5-case classification)
+# ---------------------------------------------------------------------------
+#
+# When Name 2 carries a "c/o" or "Attn:" prefix (or is itself an email,
+# or a clear job title), the payload is routed to one of four output
+# fields based on what it looks like. Priority order:
+#
+#   D — Email          → e_mail, clear Name 2
+#   C — Department     → keep in Name 2 (prefix stripped)
+#   B — Company        → care_of, clear Name 2
+#   A — Person         → care_of (with title) + contact (without) +
+#                        clear Name 2 + flag for SERP dept lookup
+#   E — Fallback       → care_of, clear Name 2
+#
+# Cases A/B/C/E only fire when a prefix is present (otherwise the raw
+# Name 2 value is the user's department/sub-org and must not be moved).
+# Case D fires even without a prefix when the entire Name 2 value is
+# an email address. Case E also fires without a prefix when the value
+# is unambiguously a job title (ends in Manager / Director / etc.).
+
+# Anchored to the start so "c/o" inside a phrase doesn't accidentally match.
+_CO_ATTN_PREFIX_RE = re.compile(
+    r"^\s*(?:c\s*/\s*o|attn(?:ention)?|att)\s*[:\-]?\s*",
+    re.IGNORECASE,
+)
+
+# Parenthetical noise (e.g. "(guest)", "(visitor)") stripped from the
+# payload after prefix removal but before classification.
+_PARENTHETICAL_NOISE_RE = re.compile(r"\s*\([^)]*\)\s*")
+
+# Department / functional-unit signals. Match anywhere in the payload.
+_DEPT_KEYWORDS_RE = re.compile(
+    r"\b("
+    r"Department\s+of|Dept\.?\s+of|Division\s+of|"
+    r"School\s+of|College\s+of|Faculty\s+of|"
+    r"Accounts?\s+Payable|Acct?s?\.?\s+Payable|"
+    r"Purchasing|Procurement|"
+    r"Receiving|Shipping|Billing"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# "Services" as the trailing word (e.g. "Fabrication Outage Services").
+_TRAILING_SERVICES_RE = re.compile(r"\bServices\s*$", re.IGNORECASE)
+
+# Legal-entity suffixes that mark a payload as a company.
+_LEGAL_SUFFIX_RE = re.compile(
+    r"\b("
+    r"L\.?L\.?C\.?|"
+    r"Inc\.?|Incorporated|"
+    r"Corp\.?|Corporation|"
+    r"Ltd\.?|Limited|"
+    r"Co\.?|Company|"
+    r"L\.?L\.?P\.?|L\.?P\.?|"
+    r"GmbH|S\.?A\.?(?:S\.?)?|"
+    r"AG|N\.?V\.?|B\.?V\.?|"
+    r"PLC|Pty|"
+    r"P\.?C\.?"
+    r")\.?\b",
+    re.IGNORECASE,
+)
+
+# Job titles that, even without a c/o prefix, indicate the value is
+# metadata about a person rather than a sub-organisation.
+_JOB_TITLE_TAIL_RE = re.compile(
+    r"\b("
+    r"Manager|Director|Supervisor|Coordinator|Specialist|"
+    r"Officer|Lead|Head|Chair|Administrator|Analyst|"
+    r"Representative|Executive|Foreman|Assistant|"
+    r"Buyer|Planner|Controller"
+    r")\s*$",
+    re.IGNORECASE,
+)
+
+# Title prefix used for the contact-vs-care_of split (Case A).
+_TITLE_STRIP_RE = re.compile(
+    r"^\s*(?:Dr|Prof|Professor|Mr|Mrs|Ms|Mx|Sir|Ir|Engr|Rev|Hon)\.?\s+",
+    re.IGNORECASE,
+)
+
+
+def _strip_co_attn_prefix(text: str) -> tuple[str, bool]:
+    """Return (payload, had_prefix). Prefix is stripped at most once."""
+    if not text:
+        return text, False
+    m = _CO_ATTN_PREFIX_RE.match(text)
+    if not m:
+        return text.strip(), False
+    return text[m.end():].strip(), True
+
+
+def _strip_parenthetical_noise(text: str) -> str:
+    # Strips parenthetical noise like "(guest)" and tidies surrounding
+    # whitespace. Does NOT strip trailing periods — they're load-bearing
+    # for legal suffixes like "Inc." that Case B relies on.
+    cleaned = _PARENTHETICAL_NOISE_RE.sub(" ", text)
+    return re.sub(r"\s+", " ", cleaned).strip(" ,;:-")
+
+
+def _is_department_payload(text: str) -> bool:
+    if not text:
+        return False
+    if _DEPT_KEYWORDS_RE.search(text):
+        return True
+    if _is_ap_reference(text):
+        return True
+    if _TRAILING_SERVICES_RE.search(text):
+        return True
+    return False
+
+
+def _has_legal_suffix(text: str) -> bool:
+    return bool(text and _LEGAL_SUFFIX_RE.search(text))
+
+
+def _is_job_title(text: str) -> bool:
+    return bool(text and _JOB_TITLE_TAIL_RE.search(text))
+
+
+def _strip_title(name: str) -> str:
+    return _TITLE_STRIP_RE.sub("", name).strip()
+
+
+def _extract_co_attn_from_name2(
+    res: PreprocessResult,
+    llm_person_verdicts: dict[str, str],
+) -> bool:
+    """Apply the 5-case c/o + ATTN classifier to Name 2.
+
+    Mutates *res* in place. Returns True if Name 2 was rewritten or
+    cleared so the caller can skip the legacy UC 7 Pattern A loop for
+    that field.
+    """
+    val = res.name2
+    if not val or not val.strip():
+        return False
+
+    payload, had_prefix = _strip_co_attn_prefix(val)
+    payload = _strip_parenthetical_noise(payload)
+    if not payload:
+        # Prefix-only value ("Attn:") — nothing to route, just clear it.
+        if had_prefix:
+            res.name2 = None
+            res.note(15, "name2 cleared — prefix only, no payload")
+            return True
+        return False
+
+    # ── Case D: Email ────────────────────────────────────────────────
+    email_match = _EMAIL_RE.search(payload)
+    if email_match:
+        email = email_match.group(0)
+        payload_is_just_email = re.sub(r"\s+", " ", payload).strip() == email
+        if had_prefix or payload_is_just_email:
+            if res.email and res.email.strip() and res.email.strip().lower() != email.lower():
+                res.note(15, f"Case D: email '{email}' in name2 but Email already populated — flag for review")
+                res.flags.append("email-conflict")
+            else:
+                res.email = email
+                res.note(15, f"Case D: email extracted from name2 ({email})")
+            res.name2 = None
+            return True
+
+    # ── No prefix: only Case E (clear job title) fires ───────────────
+    if not had_prefix:
+        if _is_job_title(payload):
+            res.care_of = payload
+            res.name2 = None
+            res.note(15, f"Case E: job title routed to care_of ({payload!r})")
+            return True
+        return False
+
+    # ── Case C: Department / Functional Unit ─────────────────────────
+    if _is_department_payload(payload):
+        res.name2 = payload
+        res.note(15, f"Case C: department/unit kept in name2 (prefix stripped, was {val!r})")
+        return True
+
+    # ── Case B: Company ──────────────────────────────────────────────
+    if _has_legal_suffix(payload):
+        res.care_of = payload
+        res.name2 = None
+        res.note(15, f"Case B: company routed to care_of ({payload!r})")
+        return True
+
+    # ── Case A: Person ───────────────────────────────────────────────
+    # Slash-separated payload — pull the leading segment if it looks
+    # like a person name, flag the trailing remainder for manual review.
+    flagged_slash = False
+    candidate = payload
+    if "/" in payload:
+        before = payload.split("/", 1)[0].strip()
+        if before:
+            candidate = before
+            flagged_slash = True
+
+    has_title = bool(_TITLE_PREFIX_RE.match(candidate))
+    verdict_person = (
+        candidate.lower() in llm_person_verdicts
+        and llm_person_verdicts[candidate.lower()] == "person"
+    )
+    # 2-3 capitalised words, no org-signal, no job-title tail — when
+    # the user has explicitly typed a c/o or ATTN prefix the shape is
+    # strong enough evidence on its own (the LLM verdict path remains
+    # for borderline values like single-token surnames).
+    is_plain_name = (
+        bool(_PLAIN_NAME_RE.match(candidate))
+        and not _ORG_SIGNAL_RE.search(candidate)
+        and not _is_job_title(candidate)
+    )
+
+    if has_title or is_plain_name or verdict_person:
+        care_of_value = candidate
+        contact_value = _strip_title(candidate) or candidate
+        if res.contact and res.contact.strip() and res.contact.strip().lower() != contact_value.lower():
+            res.note(15, f"Case A: person '{contact_value}' in name2 but Contact already populated — flag for review")
+            res.flags.append("contact-conflict")
+        else:
+            res.contact = contact_value
+        res.care_of = care_of_value
+        res.name2 = None
+        res.trigger_dept_lookup = True
+        if flagged_slash:
+            res.flags.append(
+                f"name2 had slash-separated payload — only leading person "
+                f"name retained ({candidate!r}); remainder needs manual review"
+            )
+        res.note(15, f"Case A: person routed to care_of+contact ({candidate!r})")
+        return True
+
+    # ── Case E: Fallback ─────────────────────────────────────────────
+    res.care_of = payload
+    res.name2 = None
+    res.note(15, f"Case E: unclassified payload routed to care_of ({payload!r})")
+    return True
+
+
+# ---------------------------------------------------------------------------
 # UC 7 — Contact name extraction
 # ---------------------------------------------------------------------------
 
@@ -388,6 +632,14 @@ def preprocess_record(
     llm_person_verdicts = llm_person_verdicts or {}
 
     # ---------------------------------------------------------------
+    # UC 15 — c/o + ATTN extraction from Name 2 (5-case classifier).
+    # Runs FIRST so the legacy UC 7 Pattern A loop and UC 6 AP
+    # normalisation see the already-routed state. Touches Name 2,
+    # care_of, contact, email only — Name 1 / Name 3 are untouched.
+    # ---------------------------------------------------------------
+    name2_handled_by_co_attn = _extract_co_attn_from_name2(res, llm_person_verdicts)
+
+    # ---------------------------------------------------------------
     # UC 7 Pattern A (Attn prefix) — runs BEFORE UC 6 so that a field
     # like "Accounts Payable - ATTN: Christina Boske" yields both
     # contact="Christina Boske" AND name2="Accounts Payable". If UC 6
@@ -401,6 +653,9 @@ def preprocess_record(
     # e.g. "Attn: FISH LAB" → NOT a contact.
     # ---------------------------------------------------------------
     for field_name in ("name1", "name2", "name3"):
+        # name2 is handled exclusively by UC 15 above (5-case classifier).
+        if field_name == "name2" and name2_handled_by_co_attn:
+            continue
         val = getattr(res, field_name)
         if not val:
             continue
@@ -603,31 +858,55 @@ def find_suspicious_plain_names(
 ) -> list[str]:
     """Return distinct plain-name candidates that need LLM classification.
 
-    A candidate is a name-field value that:
+    A candidate is a value that:
       - has no known title prefix (Dr., Prof., ...),
-      - is not an attn-prefixed string,
       - matches the 2-3 word capitalised pattern,
       - contains NO organisation signal words.
+
+    Name 2 is checked twice: once raw, and once with any leading c/o or
+    ATTN prefix stripped (so payloads like "Attn: Victoria Babinetz"
+    surface "Victoria Babinetz" as a candidate for UC 15 Case A).
     """
     out: list[str] = []
     seen: set[str] = set()
-    for val in (name1, name2, name3):
+
+    def _maybe_add(candidate: str) -> None:
+        if not candidate:
+            return
+        if _TITLE_PREFIX_RE.match(candidate):
+            return
+        if _ORG_SIGNAL_RE.search(candidate):
+            return
+        if not _PLAIN_NAME_RE.match(candidate):
+            return
+        key = candidate.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(candidate)
+
+    for field_name, val in (("name1", name1), ("name2", name2), ("name3", name3)):
         if not val:
             continue
         stripped = val.strip()
         if not stripped:
             continue
+        # Strip c/o / ATTN prefix and parenthetical noise for Name 2 so
+        # UC 15 Case A can resolve the inner person name via the LLM
+        # verdict map.
+        if field_name == "name2":
+            payload, _had_prefix = _strip_co_attn_prefix(stripped)
+            payload = _strip_parenthetical_noise(payload)
+            # Drop a slash-separated tail so "John Smith/Some Lab" still
+            # surfaces "John Smith" for classification.
+            if "/" in payload:
+                payload = payload.split("/", 1)[0].strip()
+            _maybe_add(payload)
+            continue
+        # name1 / name3 — legacy behaviour: skip if attn-prefixed.
         if _ATTN_RE.search(stripped):
             continue
-        if _TITLE_PREFIX_RE.match(stripped):
-            continue
-        if _ORG_SIGNAL_RE.search(stripped):
-            continue
-        if not _PLAIN_NAME_RE.match(stripped):
-            continue
-        if stripped.lower() not in seen:
-            seen.add(stripped.lower())
-            out.append(stripped)
+        _maybe_add(stripped)
     return out
 
 
