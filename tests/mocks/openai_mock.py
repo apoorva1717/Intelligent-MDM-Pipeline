@@ -99,6 +99,8 @@ class MockOpenAIClient:
             return self._mock_tier2a(user_prompt, prompt_lower)
         elif "extract the official department" in prompt_lower:
             return self._mock_tier2b(user_prompt, prompt_lower)
+        elif "research unit (a lab" in prompt_lower:
+            return self._mock_lab_parent(user_prompt, prompt_lower)
         elif "infer official org and dept" in prompt_lower:
             return self._mock_tier3(user_prompt, prompt_lower)
 
@@ -169,6 +171,27 @@ class MockOpenAIClient:
             "name2_match_score": match_score,
             "confidence": dept_info["confidence"],
             "reasoning": f"Found department: {dept_info['official_name']}",
+        }
+
+    def _mock_lab_parent(self, user_prompt: str, prompt_lower: str) -> dict[str, Any]:
+        """Mock UC 13 lab → parent-department extraction.
+
+        Maps known institution fragments to their canonical chemistry-
+        like parent department. Sufficient for integration tests; real
+        LLM calls would derive the parent from breadcrumbs/URL paths.
+        """
+        institution = (self._extract_field(user_prompt, "Institution:") or "").lower()
+        for inst_key, dept_info in _KNOWN_DEPARTMENTS.items():
+            if inst_key in institution:
+                return {
+                    "parent_department": dept_info["official_name"],
+                    "confidence": "high",
+                    "reasoning": f"Mock: parent dept of lab at {institution}",
+                }
+        return {
+            "parent_department": None,
+            "confidence": "low",
+            "reasoning": "Mock: no parent dept mapping",
         }
 
     def _mock_tier3(self, user_prompt: str, prompt_lower: str) -> dict[str, Any]:

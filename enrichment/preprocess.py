@@ -47,6 +47,10 @@ class PreprocessResult:
     street3: str | None = None
     use_cases: list[int] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)
+    # Names where UC 11 normalised a DBA variant to "DBA". Downstream
+    # tiers must not strip the marker — if an LLM canonicalisation drops
+    # it, finalise() re-prepends "DBA " to the enriched value.
+    dba_fields: set[str] = field(default_factory=set)
 
     def note(self, uc: int, reason: str) -> None:
         if uc not in self.use_cases:
@@ -76,7 +80,7 @@ def _is_ap_reference(text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# UC 8 — Email extraction
+# UC 8 — Email copy (non-destructive)
 # ---------------------------------------------------------------------------
 
 _EMAIL_RE = re.compile(
@@ -84,26 +88,17 @@ _EMAIL_RE = re.compile(
 )
 
 
-_EMAIL_LABEL_RE = re.compile(
-    r"\b(?:e[-\s]?mail|email|mail|contact)\s*:?\s*$",
-    re.IGNORECASE,
-)
+def _find_email(text: str) -> str | None:
+    """Return the first email found in *text*, or None.
 
-
-def _extract_email(text: str) -> tuple[str | None, str]:
-    """Return (email, text-with-email-removed)."""
+    The source string is intentionally NOT modified — UC 8 copies the
+    email into the dedicated email field but leaves the original
+    name/address field untouched (per business rule).
+    """
     if not text:
-        return None, text
+        return None
     m = _EMAIL_RE.search(text)
-    if not m:
-        return None, text
-    email = m.group(0)
-    cleaned = (text[: m.start()] + text[m.end():])
-    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,;/|:-")
-    # Also drop a leftover 'Email:' / 'E-mail' label now that its
-    # address is gone.
-    cleaned = _EMAIL_LABEL_RE.sub("", cleaned).strip(" ,;/|:-")
-    return email, cleaned
+    return m.group(0) if m else None
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +162,50 @@ def _extract_addresses(text: str) -> tuple[list[str], str]:
 
 
 # ---------------------------------------------------------------------------
+# UC 11 — DBA ("Doing Business As") normalisation
+# ---------------------------------------------------------------------------
+
+# Match any variant of the "doing business as" marker and rewrite it to
+# the canonical short form "DBA". Order matters: longest phrases first
+# so that "Doing Business As" wins over a partial "D B A" match inside it.
+_DBA_PATTERNS = [
+    # "Doing Business As" — full phrase, any case, any whitespace.
+    re.compile(r"\bdoing\s+business\s+as\b", re.IGNORECASE),
+    # "D Business As" / "D. Business As" — typo'd / split form where
+    # only the leading initial of "Doing" survives.
+    re.compile(r"\bd\.?\s+business\s+as\b", re.IGNORECASE),
+    # "D/B/A" with slashes, optional dots and inner whitespace.
+    re.compile(r"\bd\s*\.?\s*/\s*b\s*\.?\s*/\s*a\b\.?", re.IGNORECASE),
+    # "D.B.A." / "D. B. A." with dots.
+    re.compile(r"\bd\.\s*b\.\s*a\.?", re.IGNORECASE),
+    # "DBA" / "D B A" — letters with optional inner whitespace, last so
+    # the dotted/slashed forms above match first.
+    re.compile(r"\bd\s*b\s*a\b", re.IGNORECASE),
+]
+
+
+def _normalise_dba(text: str) -> tuple[str, bool]:
+    """Replace any DBA variant in *text* with the canonical "DBA".
+
+    Returns ``(normalised_text, changed)``. Surrounding text is preserved;
+    only the DBA token itself is rewritten. Collapses any double spaces
+    that result from the substitution.
+    """
+    if not text:
+        return text, False
+    result = text
+    changed = False
+    for pat in _DBA_PATTERNS:
+        new_result, n = pat.subn("DBA", result)
+        if n > 0:
+            changed = True
+            result = new_result
+    if changed:
+        result = re.sub(r"\s+", " ", result).strip(" ,;/|-")
+    return result, changed
+
+
+# ---------------------------------------------------------------------------
 # UC 10 — Opaque code / meaningless identifier detection
 # ---------------------------------------------------------------------------
 
@@ -218,6 +257,35 @@ _ORG_SIGNAL_RE = re.compile(
 _PLAIN_NAME_RE = re.compile(
     r"^\s*[A-Z][a-z\-']{1,}\s+(?:[A-Z]\.?\s+)?[A-Z][a-z\-']{1,}(?:\s+[A-Z][a-z\-']{1,})?\s*$",
 )
+
+
+_MULTI_CONTACT_SEPARATOR_RE = re.compile(
+    r"\s+(?:and|or)\s+|\s*&\s*|[;/]|\s\+\s",
+    re.IGNORECASE,
+)
+
+
+def has_multiple_contacts(contact: str | None) -> bool:
+    """Return True if *contact* names more than one person.
+
+    Detects strong separators (``and``, ``or``, ``&``, ``;``, ``/``,
+    `` + ``). A comma is more ambiguous because ``Last, First`` is a
+    legitimate single-person form, so comma triggers a multi-contact
+    verdict only when **all** comma-separated parts look like full
+    names (>= 2 tokens each).
+    """
+    if not contact:
+        return False
+    s = contact.strip()
+    if not s:
+        return False
+    if _MULTI_CONTACT_SEPARATOR_RE.search(s):
+        return True
+    if "," in s:
+        parts = [p.strip() for p in s.split(",") if p.strip()]
+        if len(parts) >= 2 and all(len(p.split()) >= 2 for p in parts):
+            return True
+    return False
 
 
 def _strip_contact_trailing_junk(name: str) -> str:
@@ -382,21 +450,24 @@ def preprocess_record(
             res.note(6, f"{field_name} normalised to Accounts Payable (was {val!r})")
 
     # ---------------------------------------------------------------
-    # UC 8 — Email extraction
+    # UC 8 — Email copy (non-destructive). Scan name and address
+    # fields for an email address. If found, copy it to the email
+    # field but DO NOT strip it from the source field.
     # ---------------------------------------------------------------
-    for field_name in ("name1", "name2", "name3"):
+    for field_name in ("name1", "name2", "name3", "street1", "street2", "street3"):
         val = getattr(res, field_name)
         if not val:
             continue
-        email_found, cleaned = _extract_email(val)
-        if email_found:
-            if res.email and res.email.strip():
+        email_found = _find_email(val)
+        if not email_found:
+            continue
+        if res.email and res.email.strip():
+            if res.email.strip().lower() != email_found.lower():
                 res.note(8, f"email present in {field_name} ({email_found}) but Email already populated — flag for review")
                 res.flags.append("email-conflict")
-            else:
-                res.email = email_found
-                res.note(8, f"extracted email from {field_name}")
-            setattr(res, field_name, cleaned or None)
+        else:
+            res.email = email_found
+            res.note(8, f"copied email from {field_name} (source field preserved)")
 
     # ---------------------------------------------------------------
     # UC 9 — Address extraction
@@ -417,6 +488,19 @@ def preprocess_record(
             setattr(res, slot, addr)
             res.note(9, f"extracted address to {slot} from {field_name}")
         setattr(res, field_name, cleaned or None)
+
+    # ---------------------------------------------------------------
+    # UC 11 — DBA normalisation (rewrite any variant to "DBA")
+    # ---------------------------------------------------------------
+    for field_name in ("name1", "name2", "name3"):
+        val = getattr(res, field_name)
+        if not val:
+            continue
+        normalised, changed = _normalise_dba(val)
+        if changed:
+            setattr(res, field_name, normalised or None)
+            res.dba_fields.add(field_name)
+            res.note(11, f"{field_name} DBA variant normalised to 'DBA' (was {val!r})")
 
     # ---------------------------------------------------------------
     # UC 10 — Opaque code / meaningless identifier clearing
@@ -445,6 +529,15 @@ def preprocess_record(
                 remaining = ""
                 reason = "llm-person"
 
+        # Defensive: never extract an Accounts Payable reference as a
+        # contact, regardless of which pattern matched. The AP detector
+        # catches "Accounts Payable", "A/P", "Accts Payable" and similar
+        # variants that are department labels, not people.
+        if extracted and _is_ap_reference(extracted):
+            extracted = None
+            remaining = val
+            reason = None
+
         if extracted:
             if res.contact and res.contact.strip():
                 res.note(7, f"contact '{extracted}' in {field_name} but Contact already populated — flag for review")
@@ -453,6 +546,41 @@ def preprocess_record(
                 res.contact = extracted
                 res.note(7, f"extracted contact from {field_name} ({reason})")
             setattr(res, field_name, remaining or None)
+
+    # ---------------------------------------------------------------
+    # UC 14 — Name-slot consolidation.
+    # If name2 is empty but name3 has a value, shift name3 → name2.
+    # The dept-lookup logic (Tier 1 ROR child match, Tier 2 canonical)
+    # operates on name2; a record with the dept in name3 and name2 blank
+    # would skip those tiers entirely. Move the value into the slot the
+    # pipeline expects.
+    # Runs after UC 7/8/9 so a name3 cleared by contact/email/address
+    # extraction is not promoted, and before UC 12 so dedup sees the
+    # post-shift state.
+    # ---------------------------------------------------------------
+    if not (res.name2 and res.name2.strip()) and res.name3 and res.name3.strip():
+        res.note(14, f"name3 -> name2 shift (name2 was empty, name3={res.name3!r})")
+        res.name2 = res.name3.strip()
+        res.name3 = None
+
+    # ---------------------------------------------------------------
+    # UC 12 — Identical duplicate name fields cleared silently.
+    # Runs LAST so that it sees the post-normalisation values
+    # (e.g. name1 and name2 both collapsed to "Accounts Payable" by
+    # UC 6 will be deduped here). Evaluate name2/name3 before
+    # name1/name2 so an all-three-equal case collapses cleanly:
+    # ("A","A","A") → name3 cleared first, then name2 cleared.
+    # No flag is added — duplicate clearing is informational only.
+    # ---------------------------------------------------------------
+    def _norm(v: str | None) -> str:
+        return re.sub(r"\s+", " ", (v or "").strip()).lower()
+
+    if res.name2 and res.name3 and _norm(res.name2) == _norm(res.name3):
+        res.note(12, f"name3 cleared — duplicate of name2 ({res.name3!r})")
+        res.name3 = None
+    if res.name1 and res.name2 and _norm(res.name1) == _norm(res.name2):
+        res.note(12, f"name2 cleared — duplicate of name1 ({res.name2!r})")
+        res.name2 = None
 
     return res
 

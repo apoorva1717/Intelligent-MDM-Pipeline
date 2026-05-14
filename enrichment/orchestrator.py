@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from typing import Any
 
@@ -28,9 +29,11 @@ from api.models import (
 )
 from config import Settings
 from enrichment.company_canonical import run_company_canonical
+from enrichment.lab_resolver import run_lab_resolver
 from enrichment.overflow_check import run_overflow_check
 from enrichment.preprocess import (
     find_suspicious_plain_names,
+    has_multiple_contacts,
     llm_classify_plain_names_async,
     preprocess_record,
 )
@@ -38,7 +41,7 @@ from enrichment.tier1_ror import RORClient, clear_ror_cache
 from enrichment.tier2_canonical import run_tier2_canonical
 from enrichment.tier2a_contact import Tier2AResult, run_tier2a
 from enrichment.tier3_llm import Tier3Result, run_tier3
-from llm.openai_client import OpenAIClient
+from llm.openai_client import OpenAIClient, install_httpx_aclose_noise_filter
 from search.base import SearchClient
 from search.duckduckgo_client import DuckDuckGoClient
 from search.page_fetcher import PageFetcher
@@ -48,6 +51,7 @@ from utils.text_utils import (
     canonicalise_unit_name,
     country_to_iso_code,
     expand_abbreviations,
+    extract_domain,
     is_blank,
     is_granular_unit,
     looks_like_research_institution,
@@ -96,6 +100,7 @@ def _init_result(record: EnrichmentRecord) -> dict[str, Any]:
         "source": "none",
         "ror_id": None,
         "source_url": None,
+        "domain": None,
         "contact_used": False,
         "name2_match_result": "not_applicable",
         "use_cases_triggered": [],
@@ -158,6 +163,16 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
             if orig and str(orig).strip():
                 result[f"{base}_enriched"] = str(orig).strip()
 
+    # UC 11 safety net: if preprocessing rewrote a DBA variant in a name
+    # field, the preprocessed value IS the canonical form. Restore it
+    # over anything a downstream tier (company_canonical, tier2_canonical,
+    # tier3) wrote — those LLMs treat DBA as noise and strip it, but the
+    # marker is user intent (legal name vs. trading name).
+    dba_values = result.get("_dba_values") or {}
+    for base, preprocessed in dba_values.items():
+        if preprocessed and result.get(f"{base}_enriched") != preprocessed:
+            result[f"{base}_enriched"] = preprocessed
+
     # Compute all changed flags.
     def _changed(field: str) -> bool:
         enr = result.get(f"{field}_enriched")
@@ -168,9 +183,41 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
               "street1", "street2", "street3"):
         result[f"{f}_changed"] = _changed(f)
 
+    # Domain fallback: if ROR didn't supply a domain but a successful
+    # tier produced an on-domain source_url, derive it from the host.
+    # Tier 2A's URLs are on-domain by construction (the contact's
+    # faculty page); Tier 2B's may be — we extract regardless and
+    # let the caller treat low-confidence sources cautiously.
+    if not result.get("domain") and result.get("source_url"):
+        derived = extract_domain(result["source_url"])
+        if derived:
+            result["domain"] = derived
+
+    # Apply the research-institution manual-review flag last so any
+    # earlier tier-specific flag_reason cannot mask it. A research
+    # institution with no actionable dept-lookup signal (no dept and
+    # no contact, or multiple contacts in the contact field) MUST be
+    # flagged for manual review.
+    has_dept_signal = result.pop("_has_dept_signal", True)
+    multi_contact = result.pop("_multi_contact", False)
+    if result.get("record_type") == "research_institution":
+        if multi_contact:
+            result["flag_for_review"] = True
+            result["flag_reason"] = (
+                "Research institution with multiple contacts — "
+                "manual review required"
+            )
+        elif not has_dept_signal:
+            result["flag_for_review"] = True
+            result["flag_reason"] = (
+                "Research institution with no department and no "
+                "contact — manual review required"
+            )
+
     result["duration_ms"] = int((time.monotonic() - start) * 1000)
     # Strip transient non-schema keys before pydantic validation.
     result.pop("_preprocess_cleared", None)
+    result.pop("_dba_values", None)
     return result
 
 
@@ -302,6 +349,9 @@ class Orchestrator:
     ) -> EnrichmentResponse:
         """Process a batch of records with concurrency control."""
         batch_start = time.perf_counter()
+        # Filter the openai+httpx+py3.13 aclose() AttributeError noise
+        # for the duration of this batch. Idempotent.
+        install_httpx_aclose_noise_filter()
         clear_ror_cache()  # fresh cache per batch to avoid stale failures
         cache = BatchCache()
         semaphore = asyncio.Semaphore(options.max_concurrency)
@@ -310,38 +360,52 @@ class Orchestrator:
             async with semaphore:
                 return await self._enrich_single(record, options, cache)
 
-        results = await asyncio.gather(
-            *[_process_with_semaphore(r) for r in records],
-            return_exceptions=True,
-        )
+        try:
+            results = await asyncio.gather(
+                *[_process_with_semaphore(r) for r in records],
+                return_exceptions=True,
+            )
 
-        final_results: list[EnrichmentResult] = []
-        for i, res in enumerate(results):
-            if isinstance(res, Exception):
-                logger.error(
-                    "Unhandled exception for record %s: %s",
-                    records[i].record_id, str(res),
-                )
-                final_results.append(EnrichmentResult(
-                    record_id=records[i].record_id,
-                    name1_original=records[i].name1,
-                    name2_original=records[i].name2,
-                    name3_original=records[i].name3,
-                    enrichment_status="failed",
-                    error=str(res),
-                ))
-            else:
-                final_results.append(res)
+            final_results: list[EnrichmentResult] = []
+            for i, res in enumerate(results):
+                if isinstance(res, Exception):
+                    logger.error(
+                        "Unhandled exception for record %s: %s",
+                        records[i].record_id, str(res),
+                    )
+                    final_results.append(EnrichmentResult(
+                        record_id=records[i].record_id,
+                        name1_original=records[i].name1,
+                        name2_original=records[i].name2,
+                        name3_original=records[i].name3,
+                        enrichment_status="failed",
+                        error=str(res),
+                    ))
+                else:
+                    final_results.append(res)
 
-        batch_ms = int((time.perf_counter() - batch_start) * 1000)
-        summary = self._build_summary(final_results, batch_ms)
+            batch_ms = int((time.perf_counter() - batch_start) * 1000)
+            summary = self._build_summary(final_results, batch_ms)
 
-        logger.info(
-            "Batch complete: %d records, %d enriched, %d failed in %dms",
-            summary.total, summary.enriched, summary.failed, batch_ms,
-        )
+            logger.info(
+                "Batch complete: %d records, %d enriched, %d failed in %dms",
+                summary.total, summary.enriched, summary.failed, batch_ms,
+            )
 
-        return EnrichmentResponse(results=final_results, summary=summary)
+            return EnrichmentResponse(results=final_results, summary=summary)
+        finally:
+            # Release the cached AsyncOpenAI HTTP client cleanly so we
+            # don't leave Python's GC to call aclose() at an arbitrary
+            # later time — that's where the
+            # `AsyncHttpxClientWrapper has no attribute '_transport'`
+            # noise comes from on Python 3.13. Mocks expose aclose
+            # only when present.
+            aclose = getattr(self._llm_client, "aclose", None)
+            if callable(aclose):
+                try:
+                    await aclose()
+                except Exception as exc:  # noqa: BLE001
+                    logger.info("LLM client aclose failed (non-fatal): %s", exc)
 
     async def _enrich_single(
         self,
@@ -364,9 +428,15 @@ class Orchestrator:
             # organisation name, flag the record and return immediately
             # — no other tier runs, no auto-correction. Flagged records
             # go to manual review.
+            # Skip when name1 and name2 are identical (case/whitespace-
+            # normalized): two equal strings are duplicates, not an
+            # overflow split. UC 12 dedup in preprocess handles them.
+            n1_norm = re.sub(r"\s+", " ", (record.name1 or "").strip()).lower()
+            n2_norm = re.sub(r"\s+", " ", (record.name2 or "").strip()).lower()
             if (
                 record.name1 and record.name1.strip()
                 and record.name2 and record.name2.strip()
+                and n1_norm != n2_norm
             ):
                 overflow = await run_overflow_check(
                     record_id=record.record_id,
@@ -455,7 +525,22 @@ class Orchestrator:
                     # doesn't overwrite it with the original. Example:
                     # "Accounts Payable Dept" → "Accounts Payable".
                     result[f"{base}_enriched"] = pre_stripped
+                elif not orig_stripped and pre_stripped:
+                    # Preprocessing populated a previously empty slot
+                    # (UC 14 name3 → name2 shift). Record the new value
+                    # so downstream tiers and finalise() see it.
+                    result[f"{base}_enriched"] = pre_stripped
             result["_preprocess_cleared"] = preprocess_cleared
+            # Names where UC 11 rewrote a DBA variant. The preprocessed
+            # value IS the canonical form — record it so finalise() can
+            # restore it if any downstream tier (company_canonical,
+            # tier2_canonical, tier3) overwrites with an LLM "cleanup"
+            # that strips the DBA marker.
+            result["_dba_values"] = {
+                f: getattr(pre, f)
+                for f in pre.dba_fields
+                if getattr(pre, f)
+            }
 
             # If preprocessing populated any contact/email/street/name
             # field, record the enriched value now. (Final passthrough
@@ -475,6 +560,17 @@ class Orchestrator:
             pp_name3 = pre.name3
             pp_contact = pre.contact
             pp_street1 = pre.street1
+
+            # Stash the dept-lookup precondition signals BEFORE Tier 1
+            # so that finalise() — invoked by every return path
+            # including Tier 1's short-circuit — can flag a research
+            # institution with no actionable signal (no dept + no
+            # contact, or multiple contacts).
+            result["_has_dept_signal"] = bool(
+                (pp_name2 and pp_name2.strip())
+                or (pp_contact and pp_contact.strip())
+            )
+            result["_multi_contact"] = has_multiple_contacts(pp_contact)
 
             # Flag if preprocessing triggered a conflict
             if "contact-conflict" in pre.flags or "email-conflict" in pre.flags or "street-slots-full" in pre.flags:
@@ -552,6 +648,8 @@ class Orchestrator:
                         else "company"
                     )
                     institution_domain = ror_parent.get("domain")
+                    if institution_domain:
+                        result["domain"] = institution_domain
 
                     # Mark Tier 1 success and UC 2/3 triggered.
                     result["enrichment_status"] = "enriched"
@@ -675,10 +773,8 @@ class Orchestrator:
                     institution_domain = None
 
             name2_already_filled = bool(pp_name2 and pp_name2.strip())
-            has_dept_signal = (
-                name2_already_filled
-                or bool(pp_contact and pp_contact.strip())
-            )
+            has_dept_signal = result["_has_dept_signal"]
+            multi_contact = result["_multi_contact"]
 
             # ── AP short-circuit: handled entirely by preprocessing ──
             # Check both name2 and name3 for AP normalisation. If any
@@ -702,6 +798,71 @@ class Orchestrator:
                 result = finalise(result, start)
                 return EnrichmentResult(**result)
 
+            # ── UC 13: Lab/group/centre → parent department resolution ─
+            # When the input Name2 names a granular research unit (lab,
+            # research group, centre, core, or facility) at a research
+            # institution whose domain we know, look up the parent
+            # academic department on the institution's site. If found:
+            # the parent department becomes Name2 and the original lab
+            # name shifts to Name3 (when Name3 is empty). On failure,
+            # fall through to the existing pipeline.
+            can_lab_resolve = (
+                result["record_type"] == "research_institution"
+                and bool(institution_domain)
+                and bool(pp_name2 and pp_name2.strip())
+                and is_granular_unit(pp_name2)
+            )
+            if can_lab_resolve:
+                lab_res = await run_lab_resolver(
+                    record_id=record.record_id,
+                    institution=result["name1_enriched"] or pp_name1 or "",
+                    lab_name=pp_name2,  # type: ignore[arg-type]
+                    domain=institution_domain,
+                    search_client=self._search_client,
+                    page_fetcher=self._page_fetcher,
+                    llm_client=self._llm_client,
+                    cache=cache,
+                    settings=self._settings,
+                )
+                logger.info({
+                    "record_id": record.record_id,
+                    "step": "uc13_lab_resolver_result",
+                    "lab": pp_name2,
+                    "parent": lab_res.parent_department,
+                    "confidence": lab_res.confidence,
+                    "url": lab_res.source_url,
+                })
+                if lab_res.success and lab_res.parent_department:
+                    name3_already_set = bool(pp_name3 and pp_name3.strip())
+                    result["name2_enriched"] = lab_res.parent_department
+                    if not name3_already_set:
+                        # Promote the original lab name to Name3.
+                        result["name3_enriched"] = pp_name2.strip()
+                    result["tier_used"] = 2
+                    result["source"] = "dept_search"
+                    result["source_url"] = lab_res.source_url
+                    result["confidence"] = lab_res.confidence
+                    result["enrichment_status"] = "enriched"
+                    result["flag_for_review"] = True
+                    if name3_already_set:
+                        result["flag_reason"] = (
+                            "Lab → parent dept resolved into Name 2; "
+                            "Name 3 already populated, lab name not "
+                            "demoted — verify manually"
+                        )
+                    else:
+                        result["flag_reason"] = (
+                            "Lab → parent dept resolved; lab moved to "
+                            "Name 3 — verify"
+                        )
+                    if 13 not in result["use_cases_triggered"]:
+                        result["use_cases_triggered"].append(13)
+                    result = finalise(result, start)
+                    return EnrichmentResult(**result)
+                # else: fall through to existing tier 2 canonical /
+                # 2A / 2B / 3 — the granular Name2 will be handled by
+                # the existing scope filters there.
+
             # ── TIER 2 (canonical — UC 5): LLM canonicalization ──────
             # Runs the same logic for BOTH name2 and name3: child match
             # first (already done above), then Tier 2 canonical LLM,
@@ -719,6 +880,14 @@ class Orchestrator:
                 if result.get(f"{field_key}_enriched"):
                     continue
                 if not can_canonical:
+                    continue
+
+                # UC 11: a name containing a DBA marker is the user's
+                # declared canonical form — skip LLM canonicalisation,
+                # which would strip the marker. finalise() also restores
+                # the preprocessed value as a safety net.
+                if field_key in (result.get("_dba_values") or {}):
+                    result[f"{field_key}_enriched"] = pp_val
                     continue
 
                 canonical = await run_tier2_canonical(
@@ -791,6 +960,7 @@ class Orchestrator:
                 not name2_already_filled
                 and result["record_type"] == "research_institution"
                 and bool(pp_contact and pp_contact.strip())
+                and not multi_contact
                 and bool(institution_domain)
             )
 

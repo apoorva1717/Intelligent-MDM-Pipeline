@@ -78,17 +78,27 @@ TIER2A_USER_PROMPT_TEMPLATE = (
     "department (e.g. a leading token before the main institution "
     "domain) — if so, infer the full canonical department name from "
     "that abbreviation.\n"
-    "3. Prefer a full unit construction ('Department of X', "
-    "'Division of X', 'School of X', 'Institute of X'). Expand any "
-    "subdomain abbreviation to the institution's actual canonical "
-    "department wording.\n"
-    "4. Reject generic role labels such as 'Research', 'Admin', "
+    "3. ALWAYS prefer the most specific academic unit available. "
+    "Granularity ranking (most to least specific):\n"
+    "     a) 'Department of X' or 'Division of X'  -- STRONGLY PREFERRED\n"
+    "     b) 'Institute of X' or 'Center for X' (peer-level)\n"
+    "     c) 'School of X', 'College of X', 'Faculty of X' (parent units -- FALLBACK ONLY)\n"
+    "   If the page mentions BOTH a department and an enclosing school/"
+    "college/faculty for this person (e.g. 'Department of Neuroscience, "
+    "College of Medicine'), return the DEPARTMENT, never the college. "
+    "A faculty member is always in a department within the college; "
+    "the college alone is too coarse for downstream lookup. Only "
+    "return a school/college/faculty when no department is "
+    "identifiable on the page.\n"
+    "4. Expand any subdomain abbreviation to the institution's actual "
+    "canonical department wording.\n"
+    "5. Reject generic role labels such as 'Research', 'Admin', "
     "'Staff', 'Faculty', 'Team', or 'Office'. They describe what the "
     "person does, not the unit they belong to. If the body contains "
     "only a role label, derive the unit from the URL host instead.\n"
-    "5. Do not return a bare subject word alone ('Anesthesia', "
+    "6. Do not return a bare subject word alone ('Anesthesia', "
     "'Chemistry') and do not return a job title ('Professor of X').\n"
-    "6. official_group may be set verbatim from the body when a "
+    "7. official_group may be set verbatim from the body when a "
     "specific research group, lab, or centre is clearly named. "
     "Otherwise null. Use JSON null, never the string 'null'."
 )
@@ -124,6 +134,51 @@ TIER2B_USER_PROMPT_TEMPLATE = (
     "names the unit. Priority order: title tag > H1 > breadcrumb > "
     "URL path.\n"
     "3. If none of the elements clearly name a unit, return null."
+)
+
+# ---------------------------------------------------------------------------
+# UC 13 — Lab/group/center → parent department resolution
+# ---------------------------------------------------------------------------
+
+LAB_PARENT_SYSTEM_PROMPT = (
+    "Data extraction assistant for MDM pipeline. You identify the "
+    "PARENT academic department of a research unit (lab, research "
+    "group, centre, core, or facility) from a page on its "
+    "institution's website. Return valid JSON only. No markdown."
+)
+
+LAB_PARENT_USER_PROMPT_TEMPLATE = (
+    "Institution: {name1}\n"
+    "Research unit (a lab/group/centre/facility): {lab_name}\n\n"
+    "Authoritative page elements (use ONLY these as your source):\n"
+    "URL path:   {url_path}\n"
+    "Title tag:  {page_title}\n"
+    "H1 heading: {h1}\n"
+    "Breadcrumb: {breadcrumb}\n\n"
+    "Return the parent academic department, division, school, "
+    "college, faculty, or institute that this research unit belongs "
+    "to.\n\n"
+    "Return JSON:\n"
+    "{{\n"
+    '  "parent_department": "str or null",\n'
+    '  "confidence": "high|medium|low",\n'
+    '  "reasoning": "str"\n'
+    "}}\n"
+    "Rules:\n"
+    "1. The parent must be an academic unit at department level or "
+    "higher: 'Department of X', 'Division of X', 'School of X', "
+    "'College of X', 'Faculty of X', or 'Institute of X'. NEVER "
+    "another lab, group, centre, core, or facility.\n"
+    "2. Look at: breadcrumb (often 'Home > Chemistry > Groups > NMR "
+    "Lab' → parent is 'Department of Chemistry'), URL path "
+    "(/chemistry/research/nmr-lab/ → 'Department of Chemistry'), and "
+    "the title/H1 if they explicitly name the parent.\n"
+    "3. confidence=high: parent is explicitly stated (in breadcrumb "
+    "or title). confidence=medium: parent is implied by URL path. "
+    "confidence=low: best guess.\n"
+    "4. If you cannot identify a clear parent academic department, "
+    "return null. Do not invent.\n"
+    "5. Use JSON null, never the string 'null'."
 )
 
 # ---------------------------------------------------------------------------
@@ -215,6 +270,26 @@ TIER3_USER_PROMPT_TEMPLATE = (
     '  "reasoning": "str",\n'
     '  "requires_verification": true\n'
     "}}\n"
-    "Rules: requires_verification always true.\n"
-    "Return null if not confident. No fabrication."
+    "Rules:\n"
+    "1. requires_verification is always true. Output is flagged for "
+    "manual review either way.\n"
+    "2. For name2_suggestion, when the institution is well-known "
+    "(e.g. Harvard Medical School, University of Florida) and the "
+    "contact's department can be plausibly inferred from public "
+    "knowledge, propose a SPECIFIC department-level guess (e.g. "
+    "'Department of Neuroscience', 'Department of Genetics'). Use "
+    "confidence='medium' for educated guesses, 'low' for shots in "
+    "the dark, 'high' only when you are certain. A best-guess "
+    "department is more useful than null.\n"
+    "3. Strongly prefer 'Department of X' or 'Division of X' over "
+    "'School of X' / 'College of X' / 'Faculty of X'. A faculty "
+    "member at 'College of Medicine' is always inside a specific "
+    "department. Only fall back to school/college/faculty when no "
+    "plausible department guess exists.\n"
+    "4. Return null for name2_suggestion only when the institution "
+    "is unknown to you or the contact has no inferrable affiliation.\n"
+    "5. Do NOT return name2_suggestion equal to name1, and do NOT "
+    "return a parent of name1 (e.g. name1='Harvard Medical School' "
+    "must not yield name2='Harvard University').\n"
+    "6. No fabrication of institutions or invented people."
 )

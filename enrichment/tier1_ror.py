@@ -18,6 +18,7 @@ import os
 import re
 from typing import Any
 
+import certifi
 import httpx
 from rapidfuzz import fuzz
 
@@ -314,7 +315,14 @@ async def call_ror(
         return r
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        # verify=certifi.where() — match the OpenAI client's pattern so
+        # ROR is immune to a bogus SSL_CERT_FILE / REQUESTS_CA_BUNDLE
+        # env var (a common Windows gotcha where a placeholder corp-CA
+        # path is set but the file doesn't exist). Without this, every
+        # ROR call fails and downstream gets `domain: null`.
+        async with httpx.AsyncClient(
+            timeout=15.0, verify=certifi.where(),
+        ) as client:
             # ── Strategy A: affiliation endpoint with location context ──
             logger.info(
                 "ROR affiliation request: '%s'", affiliation_string[:120],

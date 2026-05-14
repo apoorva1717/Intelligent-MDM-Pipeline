@@ -7,15 +7,65 @@ azure_endpoint and api_version. The rest of the code stays identical.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import re
 from typing import Any
 
+import certifi
+import httpx
 from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# AttributeError noise filter — Python 3.13 + httpx 0.28 + openai 2.x
+# ---------------------------------------------------------------------------
+# openai's `AsyncHttpxClientWrapper.__del__` schedules `aclose()` as a
+# fire-and-forget asyncio task whenever the wrapper is garbage collected.
+# In httpx 0.28+ on Python 3.13 that aclose() crashes with
+#     AttributeError: 'AsyncHttpxClientWrapper' object has no attribute '_transport'
+# Because the task is fire-and-forget, the exception is never awaited, and
+# asyncio's default handler dumps "Task exception was never retrieved" with
+# a full traceback into the logs — once per LLM call. The connection is
+# already torn down; the error is functionally harmless. We install a
+# loop-level exception handler that swallows only this specific error and
+# delegates everything else to the previous handler.
+_FILTER_INSTALLED_FLAG = "_httpx_aclose_filter_installed"
+
+
+def install_httpx_aclose_noise_filter(
+    loop: asyncio.AbstractEventLoop | None = None,
+) -> None:
+    """Idempotently install the noise filter on *loop* (or the running
+    loop if *loop* is None)."""
+    if loop is None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+    if getattr(loop, _FILTER_INSTALLED_FLAG, False):
+        return
+
+    prior = loop.get_exception_handler()
+
+    def _filtered(_loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+        exc = context.get("exception")
+        if (
+            isinstance(exc, AttributeError)
+            and "_transport" in str(exc)
+        ):
+            return
+        if prior is not None:
+            prior(_loop, context)
+        else:
+            _loop.default_exception_handler(context)
+
+    loop.set_exception_handler(_filtered)
+    setattr(loop, _FILTER_INSTALLED_FLAG, True)
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?\s*```", re.DOTALL)
 
@@ -30,6 +80,14 @@ def get_openai_client() -> AsyncOpenAI:
             azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
             api_version="2024-08-01-preview"
         )
+
+    The httpx client is constructed explicitly with ``verify=certifi.where()``
+    so that a bogus ``SSL_CERT_FILE`` env var (a common gotcha when a
+    .env file contains a placeholder corp-CA path that no longer
+    exists) cannot break TLS context construction. By providing our
+    own ``http_client``, we also bypass openai SDK's
+    ``AsyncHttpxClientWrapper``, sidestepping its noisy ``__del__``
+    aclose-as-task behaviour on Python 3.13 + httpx 0.28.
     """
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -38,20 +96,33 @@ def get_openai_client() -> AsyncOpenAI:
             "Copy .env.example to .env and add your key, "
             "then restart the server."
         )
-    return AsyncOpenAI(api_key=api_key)
+    http_client = httpx.AsyncClient(
+        verify=certifi.where(),
+        timeout=httpx.Timeout(60.0, connect=10.0),
+    )
+    return AsyncOpenAI(api_key=api_key, http_client=http_client)
 
 
 async def call_openai(
     system_prompt: str,
     user_prompt: str,
     max_tokens: int = 500,
+    client: AsyncOpenAI | None = None,
 ) -> str:
     """Call OpenAI with structured JSON output enforced.
 
-    Raises RuntimeError on failure so orchestrator can log and escalate
-    to next tier cleanly.
+    Pass ``client`` to reuse a long-lived ``AsyncOpenAI`` instance. When
+    omitted, a one-shot client is created (kept for the diagnostic
+    scripts in ``llm/test_connection.py`` and ``scripts/verify_fixes``;
+    the hot orchestrator path always supplies its cached client via
+    ``OpenAIClient``).
+
+    Raises RuntimeError on failure so the orchestrator can log and
+    escalate to the next tier cleanly.
     """
-    client = get_openai_client()
+    own_client = client is None
+    if own_client:
+        client = get_openai_client()
     try:
         response = await client.chat.completions.create(
             model=os.getenv("OPENAI_MODEL", "gpt-4o"),
@@ -66,20 +137,51 @@ async def call_openai(
         return response.choices[0].message.content
     except Exception as e:
         raise RuntimeError(f"OpenAI call failed: {str(e)}") from e
+    finally:
+        # Eagerly close one-shot clients so we don't rely on GC and
+        # trigger the Python 3.13 / httpx 0.28 aclose() AttributeError
+        # storm.
+        if own_client and client is not None:
+            try:
+                await client.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 class OpenAIClient:
     """Thin async wrapper that returns parsed JSON dicts.
 
-    Provides the extract_json() interface used by tier2a, tier2b, tier3 modules.
-    Uses the standalone call_openai() function under the hood.
+    Caches a single ``AsyncOpenAI`` instance for its lifetime so every
+    LLM call reuses the same connection pool. Avoids the
+    AsyncHttpxClientWrapper aclose() AttributeError noise that
+    otherwise floods logs (one per LLM call) on Python 3.13 + recent
+    httpx + recent openai SDK.
     """
 
     def __init__(self, settings: Any = None) -> None:
         self._model = os.getenv("OPENAI_MODEL", "gpt-4o")
         if settings and hasattr(settings, "openai_model"):
             self._model = settings.openai_model
+        # Lazy: only build the AsyncOpenAI on first use. This keeps
+        # construction cheap and avoids initialising a network client
+        # in code paths that end up using a mock instead.
+        self._client: AsyncOpenAI | None = None
         logger.info("LLM client initialised with OpenAI (model=%s)", self._model)
+
+    def _get_client(self) -> AsyncOpenAI:
+        if self._client is None:
+            self._client = get_openai_client()
+        return self._client
+
+    async def aclose(self) -> None:
+        """Close the underlying AsyncOpenAI client cleanly. Safe to
+        call multiple times; safe to call when no client was built."""
+        if self._client is not None:
+            try:
+                await self._client.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._client = None
 
     async def extract_json(
         self,
@@ -94,8 +196,12 @@ class OpenAIClient:
         Retries once if the first response is not valid JSON.
         Raises ValueError if JSON cannot be extracted after retry.
         """
+        client = self._get_client()
         for attempt in range(2):
-            raw = await call_openai(system_prompt, user_prompt, max_tokens=max_tokens)
+            raw = await call_openai(
+                system_prompt, user_prompt,
+                max_tokens=max_tokens, client=client,
+            )
             if raw is None:
                 raw = ""
 
