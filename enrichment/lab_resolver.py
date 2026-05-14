@@ -60,12 +60,22 @@ async def run_lab_resolver(
     *institution*'s website."""
     result = LabResolverResult()
 
-    if not domain or not lab_name or not institution:
+    if not lab_name or not institution:
         return result
 
-    # On-domain SERP query is the primary path; an off-domain query is
-    # NOT attempted because we want the institution's own wording.
-    query = f'"{lab_name}" site:{domain}'
+    # Bias the query toward department/parent-unit pages by adding the
+    # word "department" — these are exactly the pages that link to the
+    # lab from above and tend to surface the parent name in
+    # breadcrumb/title.
+    if domain:
+        # On-domain query — institution's own wording is best.
+        query = f'"{lab_name}" department site:{domain}'
+    else:
+        # Off-domain fallback — used when ROR didn't supply a website
+        # and Path B/C hasn't resolved one yet. Lower precision, but
+        # still useful when the institution name is distinctive.
+        query = f'"{institution}" "{lab_name}" department'
+
     cached = cache.get_serp(query)
     if cached is not None:
         results: list[SearchResult] = cached
@@ -73,16 +83,22 @@ async def run_lab_resolver(
         results = await search_client.search(query, num_results=5)
         cache.set_serp(query, results)
 
-    on_domain = [r for r in results if domain in r.url.lower()]
-    if not on_domain:
+    if domain:
+        candidates = [r for r in results if domain in r.url.lower()]
+    else:
+        # No known domain — accept whatever SERP returned, ranked by
+        # original order. The LLM extraction step is the final gate.
+        candidates = list(results)
+
+    if not candidates:
         logger.info(
-            "[%s] Lab resolver: no on-domain results for query=%r",
+            "[%s] Lab resolver: no usable results for query=%r",
             record_id, query,
         )
         return result
 
     extractions: list[dict] = []
-    for candidate in on_domain[:3]:
+    for candidate in candidates[:3]:
         page_content = await page_fetcher.fetch_page_content(candidate.url)
         if page_content is None or page_content.is_empty():
             continue

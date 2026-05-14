@@ -303,7 +303,11 @@ def is_granular_unit(text: str | None) -> bool:
     # Group is handled specially — "NMR Group" is granular, but
     # "Research Group" inside "Department of X Research Group" was
     # already filtered by the in-scope check above.
-    suffix_words = granular_words + ["group"]
+    # unit/program/programme are suffix-only (rule A-15): "Trauma
+    # Research Unit", "Alpha-1 Research Program". The prefix forms
+    # "Unit of X" / "Program of X" are not idiomatic and would
+    # over-match common phrases.
+    suffix_words = granular_words + ["group", "unit", "program", "programme"]
 
     for word in suffix_words:
         # Suffix form: "… X Laboratory", "… NMR Lab"

@@ -906,19 +906,29 @@ class Orchestrator:
                     result["use_cases_triggered"].append(6)
                 return await self._finalise_and_return(result, start, record, cache)
 
-            # ── UC 13: Lab/group/centre → parent department resolution ─
+            # ── UC 13 / Rule A-15: Lab/group/centre → parent dept ─────
             # When the input Name2 names a granular research unit (lab,
-            # research group, centre, core, or facility) at a research
-            # institution whose domain we know, look up the parent
-            # academic department on the institution's site. If found:
-            # the parent department becomes Name2 and the original lab
-            # name shifts to Name3 (when Name3 is empty). On failure,
-            # fall through to the existing pipeline.
+            # research group, centre, core, facility, unit, program),
+            # look up the parent academic department on the
+            # institution's site. If found: the parent department
+            # becomes Name2 and the original lab name shifts to Name3
+            # (when Name3 is empty).
+            #
+            # Skip when ROR child match already resolved Name2 to a
+            # non-granular (department-level) name — Tier 1's answer
+            # is authoritative and we must not overwrite it.
+            ror_child_enriched_name2 = result.get("name2_enriched")
+            ror_child_resolved = bool(
+                ror_child_enriched_name2
+                and ror_child_enriched_name2.strip().lower()
+                    != (pp_name2 or "").strip().lower()
+                and not is_granular_unit(ror_child_enriched_name2)
+            )
             can_lab_resolve = (
                 result["record_type"] == "research_institution"
-                and bool(institution_domain)
                 and bool(pp_name2 and pp_name2.strip())
                 and is_granular_unit(pp_name2)
+                and not ror_child_resolved
             )
             if can_lab_resolve:
                 lab_res = await run_lab_resolver(
@@ -966,9 +976,19 @@ class Orchestrator:
                     if 13 not in result["use_cases_triggered"]:
                         result["use_cases_triggered"].append(13)
                     return await self._finalise_and_return(result, start, record, cache)
-                # else: fall through to existing tier 2 canonical /
-                # 2A / 2B / 3 — the granular Name2 will be handled by
-                # the existing scope filters there.
+                # Granular Name2 detected but no parent could be
+                # resolved (no candidates, or LLM said null). Flag
+                # explicitly so manual review knows this is a known-
+                # granular value rather than a generic miss; then fall
+                # through to existing tier 2 canonical / 2A / 2B / 3
+                # which apply the same scope filters.
+                result["flag_for_review"] = True
+                result["flag_reason"] = (
+                    "Lab/group detected in Name 2 but parent "
+                    "department could not be determined"
+                )
+                if 13 not in result["use_cases_triggered"]:
+                    result["use_cases_triggered"].append(13)
 
             # ── TIER 2 (canonical — UC 5): LLM canonicalization ──────
             # Runs the same logic for BOTH name2 and name3: child match
