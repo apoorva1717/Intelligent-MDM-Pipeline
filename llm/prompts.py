@@ -278,6 +278,31 @@ WEBSITE_INFERENCE_USER_PROMPT_TEMPLATE = (
 
 
 # ---------------------------------------------------------------------------
+# Address Stage 1 — residual classification for street_2 / street_3
+# ---------------------------------------------------------------------------
+
+ADDRESS_RESIDUAL_SYSTEM_PROMPT = (
+    "You classify residual values found in street address fields after "
+    "deterministic extractors have already pulled out PO Box, Suite, "
+    "Building, Floor, Room, Unit, Mail Stop, c/o, and Attn patterns. "
+    "Return valid JSON only. No markdown."
+)
+
+ADDRESS_RESIDUAL_USER_PROMPT_TEMPLATE = (
+    "Classify this value from a street address field. It was found "
+    "after PO Box, Suite, Building, Floor, Room, Unit, Mail Stop, "
+    "c/o, and Attn patterns were already extracted.\n\n"
+    "Value: \"{value}\"\n"
+    "Name 1: \"{name1}\"  Street 1: \"{street}\"  "
+    "City: \"{city}\"  Country: \"{country}\"\n\n"
+    "Classify as exactly one of: STREET_ADDRESS, DEPARTMENT, "
+    "PERSON_NAME, ORG_NAME, LOGISTICS, MAIL_CODE, UNCLEAR\n"
+    "Return JSON: {{\"classification\": \"...\", "
+    "\"confidence\": 0.0-1.0}}"
+)
+
+
+# ---------------------------------------------------------------------------
 # Tier 3 — LLM inference (last resort)
 # ---------------------------------------------------------------------------
 

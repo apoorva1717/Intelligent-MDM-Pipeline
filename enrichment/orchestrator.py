@@ -28,6 +28,10 @@ from api.models import (
     EnrichmentSummary,
 )
 from config import Settings
+from enrichment.address_processing import (
+    merge_into_result as merge_address_into_result,
+    process_address,
+)
 from enrichment.company_canonical import run_company_canonical
 from enrichment.lab_resolver import run_lab_resolver
 from enrichment.overflow_check import run_overflow_check
@@ -100,6 +104,21 @@ def _init_result(record: EnrichmentRecord) -> dict[str, Any]:
         "street3_original": record.street3,
         "street3_enriched": None,
         "street3_changed": False,
+        # Address Stage 1 outputs — populated by _run_address_stage.
+        "street_cleaned": None,
+        "street_2_cleaned": None,
+        "street_3_cleaned": None,
+        "suite": None,
+        "building": None,
+        "floor": None,
+        "room": None,
+        "unit": None,
+        "mail_stop": None,
+        "po_box_extracted": None,
+        "unloading_point": None,
+        "mail_code": None,
+        "unclear_address_info": None,
+        "address_issues": [],
         "record_type": "unknown",
         "tier_used": 1,
         "tier2_mode": None,
@@ -499,10 +518,49 @@ class Orchestrator:
         record: EnrichmentRecord,
         cache: BatchCache,
     ) -> EnrichmentResult:
-        """Resolve website (B/C if needed), finalise, and return."""
+        """Resolve website (B/C if needed), run address Stage 1,
+        finalise, and return."""
         await self._maybe_resolve_website_bc(record, result, cache)
+        await self._run_address_stage(result, record)
         result = finalise(result, start)
         return EnrichmentResult(**result)
+
+    async def _run_address_stage(
+        self,
+        result: dict[str, Any],
+        record: EnrichmentRecord,
+    ) -> None:
+        """Clean, extract, route, and normalise address fields. Runs on
+        every return path so unresolved/failed records also get the
+        deterministic address cleanup. Address-stage exceptions are
+        swallowed — the name enrichment result must still surface."""
+        def _pick(base: str) -> str | None:
+            return result.get(f"{base}_enriched") or result.get(f"{base}_original")
+
+        try:
+            addr = await process_address(
+                record_id=record.record_id,
+                name1=_pick("name1"),
+                name2=_pick("name2"),
+                name3=_pick("name3"),
+                street=_pick("street1"),
+                street_2=_pick("street2"),
+                street_3=_pick("street3"),
+                city=record.city,
+                state=record.state,
+                zip_code=record.zip,
+                country=record.country,
+                po_box=None,
+                care_of_enriched=_pick("care_of"),
+                llm_client=self._llm_client,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Address Stage 1 failed for %s: %s",
+                record.record_id, exc,
+            )
+            return
+        merge_address_into_result(result, addr)
 
     async def _enrich_single(
         self,

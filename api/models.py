@@ -91,6 +91,22 @@ class EnrichmentResult(BaseModel):
     street3_enriched: Optional[str] = None
     street3_changed: bool = False
 
+    # Address Stage 1 — extracted sub-locations and routed fields
+    street_cleaned: Optional[str] = None
+    street_2_cleaned: Optional[str] = None
+    street_3_cleaned: Optional[str] = None
+    suite: Optional[str] = None
+    building: Optional[str] = None
+    floor: Optional[str] = None
+    room: Optional[str] = None
+    unit: Optional[str] = None
+    mail_stop: Optional[str] = None
+    po_box_extracted: Optional[str] = None
+    unloading_point: Optional[str] = None
+    mail_code: Optional[str] = None
+    unclear_address_info: Optional[str] = None
+    address_issues: List[str] = Field(default_factory=list)
+
     # Classification & provenance
     record_type: Literal["research_institution", "company", "unknown"] = "unknown"
     tier_used: Literal[1, 2, 3] = 1
