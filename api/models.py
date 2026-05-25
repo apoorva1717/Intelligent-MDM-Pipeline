@@ -67,6 +67,17 @@ class EnrichmentResult(BaseModel):
     name2_changed: bool = False
     name3_changed: bool = False
 
+    # Compact search handles for downstream re-querying.
+    # search_term_1 mirrors name1 (acronym preferred, domain fallback);
+    # search_term_2 mirrors name2 with the same shape — null when name2 is absent.
+    search_term_1: Optional[str] = None
+    search_term_2: Optional[str] = None
+
+    # Unit-scoped host with TLD (e.g. 'cs.mit.edu') when the source URL
+    # points to a real subdomain of the institution domain. Null when
+    # name2 is absent or the source URL is the bare institution domain.
+    department_domain: Optional[str] = None
+
     # c/o (extracted from prefixed Name 2 or passed through)
     care_of_original: Optional[str] = None
     care_of_enriched: Optional[str] = None

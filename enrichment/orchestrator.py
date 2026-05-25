@@ -17,6 +17,7 @@ import logging
 import re
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 from rapidfuzz import fuzz
 
@@ -35,6 +36,12 @@ from enrichment.address_processing import (
 from enrichment.company_canonical import run_company_canonical
 from enrichment.lab_resolver import run_lab_resolver
 from enrichment.overflow_check import run_overflow_check
+from enrichment.search_terms import (
+    clean_name2_phrase,
+    derive_acronym,
+    derive_search_terms,
+    extract_dept_core,
+)
 from enrichment.preprocess import (
     find_suspicious_plain_names,
     has_multiple_contacts,
@@ -69,6 +76,116 @@ from utils.text_utils import (
 logger = logging.getLogger(__name__)
 
 
+# ── Department-domain probe helpers ───────────────────────────────────────────
+
+# Generic words that aren't unit-distinguishing (every department has
+# them; matching on them produces false positives).
+_DEPT_GENERIC_TOKENS = {
+    "department", "dept", "school", "institute", "center", "centre",
+    "division", "faculty", "office", "group", "lab", "laboratory",
+    "of", "for", "the", "and", "in", "on", "at", "to", "a", "an", "&",
+    "research", "studies", "programme", "program",
+}
+
+# Subdomains that are administrative/cross-cutting, never a department
+# home — pre-empt the SERP probe from latching onto them.
+_GENERIC_HOST_PREFIXES = {
+    "professorships", "inside", "calendar", "news", "alumni", "admin",
+    "hr", "store", "shop", "give", "donate", "support", "events",
+    "directory", "library", "libraries", "career", "careers", "jobs",
+    "search", "secure", "my", "mail", "email", "wiki", "intranet",
+    "media", "press",
+}
+
+# Registrable domains that are third-party platforms — never represent
+# a department's web home. Used to filter no-site SERP results.
+_THIRD_PARTY_DOMAINS = {
+    "wikipedia.org", "linkedin.com", "facebook.com", "twitter.com",
+    "x.com", "youtube.com", "instagram.com", "reddit.com",
+    "researchgate.net", "scholar.google.com", "google.com",
+    "amazon.com", "indeed.com", "glassdoor.com", "pubmed.gov",
+    "ncbi.nlm.nih.gov", "nih.gov", "doi.org", "academia.edu",
+    "github.com", "github.io", "medium.com", "substack.com",
+}
+
+
+def _is_third_party_host(host: str) -> bool:
+    """True if *host*'s registrable domain is a known third-party
+    platform (Wikipedia, LinkedIn, etc.). Such hosts should never be
+    accepted as a department_domain regardless of content match."""
+    parts = host.split(".")
+    if len(parts) >= 2:
+        last_two = ".".join(parts[-2:])
+        if last_two in _THIRD_PARTY_DOMAINS:
+            return True
+    return False
+
+_TOKEN_RE = re.compile(r"[A-Za-z]{3,}")
+
+
+def _significant_dept_tokens(text: str) -> set[str]:
+    """Pull unit-distinguishing tokens from *text* (cleaned name2).
+
+    Lowercased alpha words ≥3 chars, minus generic descriptors. The
+    result is what we expect to see in a real department URL.
+    """
+    return {
+        t.lower()
+        for t in _TOKEN_RE.findall(text or "")
+        if t.lower() not in _DEPT_GENERIC_TOKENS
+    }
+
+
+def _score_dept_candidate(
+    host: str,
+    base: str,
+    path: str,
+    title: str,
+    tokens: set[str],
+    acronym: str | None,
+) -> int:
+    """Score a candidate URL host/path/title against the dept tokens
+    and acronym.
+
+    Strict rule: the host prefix MUST contain a significant token or
+    the acronym (substring match) for any positive score. Path / title
+    matches alone aren't enough — that's how parent hosts like
+    ``fas.harvard.edu`` (FAS) or ``krieger.jhu.edu`` (umbrella school)
+    were sneaking in.
+
+    +3 host_prefix substring-contains a token/acronym
+    +1 path substring-contains a token/acronym
+    +1 title substring-contains a token/acronym
+    0  generic admin host (blocklist) — capped regardless of signals
+    0  host prefix doesn't contain anything → not a department host
+    """
+    needles: set[str] = set(tokens)
+    if acronym and len(acronym) >= 2:
+        needles.add(acronym.lower())
+    if not needles:
+        return 0
+
+    host_prefix = host
+    if host.endswith("." + base):
+        host_prefix = host[: -len("." + base)]
+    first_seg = host_prefix.split(".", 1)[0]
+    if first_seg in _GENERIC_HOST_PREFIXES:
+        return 0
+
+    host_lower = host_prefix.lower()
+    if not any(n in host_lower for n in needles):
+        return 0
+
+    score = 3
+    path_lower = (path or "").lower()
+    title_lower = (title or "").lower()
+    if any(n in path_lower for n in needles):
+        score += 1
+    if any(n in title_lower for n in needles):
+        score += 1
+    return score
+
+
 # ── Result helpers ────────────────────────────────────────────────────────────
 
 def _init_result(record: EnrichmentRecord) -> dict[str, Any]:
@@ -86,6 +203,12 @@ def _init_result(record: EnrichmentRecord) -> dict[str, Any]:
         "name1_changed": False,
         "name2_changed": False,
         "name3_changed": False,
+        "search_term_1": None,
+        "search_term_2": None,
+        "department_domain": None,
+        # Internal carrier — populated when ROR returns an acronym variant.
+        # Stripped out in finalise() so it doesn't leak into the response.
+        "_ror_acronym": None,
         "care_of_original": record.care_of,
         "care_of_enriched": None,
         "care_of_changed": False,
@@ -242,11 +365,19 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
                 "contact — manual review required"
             )
 
+    # Compact search handles for downstream consumers. Runs after all
+    # name / domain fields are settled so the derivation sees final
+    # values. department_domain is written directly by the probe in
+    # the orchestrator (see _probe_department_url) — it doesn't share
+    # source_url with the tiers.
+    result["search_term_1"], result["search_term_2"] = derive_search_terms(result)
+
     result["duration_ms"] = int((time.monotonic() - start) * 1000)
     # Strip transient non-schema keys before pydantic validation.
     result.pop("_preprocess_cleared", None)
     result.pop("_dba_values", None)
     result.pop("_pp_name1", None)
+    result.pop("_ror_acronym", None)
     return result
 
 
@@ -511,6 +642,316 @@ class Orchestrator:
                 "Website inferred by LLM — verify",
             )
 
+    async def _probe_department_url(
+        self,
+        record_id: str,
+        result: dict[str, Any],
+        cache: BatchCache,
+    ) -> None:
+        """Find the unit's web host and write it to
+        ``result["department_domain"]``.
+
+        Scores every candidate host against significant tokens drawn
+        from the cleaned name2 phrase, so the probe doesn't blindly
+        accept the first non-base host (which produced wrong answers
+        like ``professorships.jhu.edu`` for Radiology or
+        ``inside.fpm.wisc.edu`` for the Candelario Lab).
+
+        Strategy:
+
+        1. **Homepage scrape** — fetch ``https://<domain>/`` /
+           ``website_url``; score each outgoing link.
+        2. **SERP fallback** — ``<cleaned_name2> site:<domain>``; score
+           each result.
+
+        Scoring per candidate (host_prefix = host with the institution
+        base stripped):
+
+        * +3 if any significant token appears in *host_prefix*
+        * +1 if any significant token appears in the URL path
+        * +1 if any significant token appears in the link text / title
+        * Generic admin hosts (``professorships``, ``inside``, ``news``,
+          …) are forcibly scored 0 so they can never win.
+
+        The highest-scoring candidate (>0) wins. Ties go to the first
+        encountered. No usable candidate → ``department_domain``
+        stays null.
+
+        Gates: research_institution + name2 present + institution
+        domain known + name2 not granular. Granular units (labs,
+        groups, centres) are skipped — they're too fine-grained for a
+        domain probe; a lab's web home requires lab_resolver, not a
+        SERP guess.
+        """
+        if result.get("record_type") != "research_institution":
+            return
+        if result.get("department_domain"):
+            return
+        base = (result.get("domain") or "").strip().lower()
+        if not base:
+            return
+        name2 = (
+            (result.get("name2_enriched") or "").strip()
+            or (result.get("name2_original") or "").strip()
+        )
+        if not name2:
+            return
+        if is_granular_unit(name2):
+            logger.info(
+                "[%s] dept domain probe: skipped (granular unit name2=%r)",
+                record_id, name2,
+            )
+            return
+
+        # Strip donor-name prefix ("Russell H. Morgan Department of
+        # Radiology and Radiological Science" → "Radiology and
+        # Radiological Science"). Without this, donor names contribute
+        # noise tokens that match unrelated faculty pages.
+        core = extract_dept_core(name2) or name2
+        cleaned = clean_name2_phrase(core) or core
+        tokens = _significant_dept_tokens(cleaned)
+        acronym = derive_acronym(cleaned)
+        if not tokens and not acronym:
+            logger.info(
+                "[%s] dept domain probe: no significant tokens/acronym "
+                "in %r (core=%r)",
+                record_id, cleaned, core,
+            )
+            return
+
+        def _host_of(url: str) -> str | None:
+            try:
+                host = (urlparse(url).hostname or "").lower()
+            except Exception:
+                return None
+            if not host:
+                return None
+            if host.startswith("www."):
+                host = host[4:]
+            if host == base:
+                return None
+            return host
+
+        # ── 0) GET-probe + verify candidate subdomains ────────────────
+        # Construct candidate subdomains from the acronym and the
+        # longest tokens, fetch each, and verify the page actually
+        # describes this department (title/h1 must mention the dept
+        # phrase or two of its significant tokens). This is what
+        # rejects ``science.mit.edu`` for "Computer Science" — that
+        # host resolves fine, but its title is "MIT School of Science"
+        # and doesn't reference "Computer Science" specifically.
+        candidates: list[str] = []
+        if acronym and 2 <= len(acronym) <= 6:
+            candidates.append(acronym.lower())
+        sorted_tokens = sorted(
+            (t for t in tokens if len(t) >= 4), key=len, reverse=True,
+        )
+        for tok in sorted_tokens[:2]:
+            tok_l = tok.lower()
+            if tok_l not in candidates:
+                candidates.append(tok_l)
+
+        hosts_to_probe = [f"{c}.{base}" for c in candidates]
+        if hosts_to_probe:
+            verified = await asyncio.gather(
+                *(self._verify_candidate_host(h, cleaned, tokens, acronym)
+                  for h in hosts_to_probe),
+                return_exceptions=True,
+            )
+            for host, ok in zip(hosts_to_probe, verified):
+                if ok is True:
+                    result["department_domain"] = host
+                    logger.info(
+                        "[%s] dept domain via verified probe: %s",
+                        record_id, host,
+                    )
+                    return
+
+        # ── 1) Homepage scrape ────────────────────────────────────────
+        homepage = result.get("website_url") or f"https://{base}/"
+        try:
+            links = await self._page_fetcher.fetch_outgoing_links(
+                homepage, base,
+            )
+        except Exception as exc:
+            logger.info(
+                "[%s] dept domain probe: homepage fetch failed (%s): %s",
+                record_id, homepage[:80], exc,
+            )
+            links = []
+
+        best_score, best_host = 0, None
+        for text, link_url in links:
+            host = _host_of(link_url)
+            if not host:
+                continue
+            try:
+                path = urlparse(link_url).path or ""
+            except Exception:
+                path = ""
+            score = _score_dept_candidate(
+                host, base, path, text, tokens, acronym,
+            )
+            if score > best_score:
+                best_score, best_host = score, host
+
+        if best_host:
+            result["department_domain"] = best_host
+            logger.info(
+                "[%s] dept domain via homepage: %s (score=%d)",
+                record_id, best_host, best_score,
+            )
+            return
+
+        # ── 2) SERP fallback (site-restricted) ────────────────────────
+        # Strict scoring picks dept subdomains of the institution
+        # (e.g. ``eecs.mit.edu`` for CS via the ``cs`` acronym
+        # substring in ``eecs``).
+        query = f"{cleaned} site:{base}"
+        cached = cache.get_serp(query)
+        if cached is not None:
+            serp_results = cached
+        else:
+            try:
+                serp_results = await self._search_client.search(
+                    query, num_results=5,
+                )
+            except Exception as exc:
+                logger.info(
+                    "[%s] dept domain probe: SERP failed: %s",
+                    record_id, exc,
+                )
+                serp_results = []
+            else:
+                cache.set_serp(query, serp_results)
+
+        best_score, best_host = 0, None
+        for sr in serp_results:
+            host = _host_of(sr.url)
+            if not host:
+                continue
+            try:
+                path = urlparse(sr.url).path or ""
+            except Exception:
+                path = ""
+            score = _score_dept_candidate(
+                host, base, path, sr.title or "", tokens, acronym,
+            )
+            if score > best_score:
+                best_score, best_host = score, host
+
+        if best_host:
+            result["department_domain"] = best_host
+            logger.info(
+                "[%s] dept domain via SERP: %s (score=%d) for name2=%r",
+                record_id, best_host, best_score, name2,
+            )
+            return
+
+        # ── 3) SERP fallback (no site:) — cross-domain departments ────
+        # Some institutions host their dept on a brand domain
+        # (hopkinsmedicine.org for JHU medical departments). The
+        # site:-filtered query above can't see those. Run an unrestricted
+        # SERP and verify each candidate by fetching the page.
+        name1 = (
+            result.get("name1_enriched") or result.get("name1_original") or ""
+        ).strip()
+        if name1:
+            query2 = f"{cleaned} {name1}"
+        else:
+            query2 = cleaned
+        cached = cache.get_serp(query2)
+        if cached is not None:
+            serp_results2 = cached
+        else:
+            try:
+                serp_results2 = await self._search_client.search(
+                    query2, num_results=5,
+                )
+            except Exception as exc:
+                logger.info(
+                    "[%s] dept domain probe: no-site SERP failed: %s",
+                    record_id, exc,
+                )
+                serp_results2 = []
+            else:
+                cache.set_serp(query2, serp_results2)
+
+        for sr in serp_results2:
+            host = _host_of(sr.url)
+            if not host:
+                continue
+            if _is_third_party_host(host):
+                continue
+            # Verify the page actually describes this dept before
+            # accepting a cross-domain host.
+            if await self._verify_candidate_host(
+                host, cleaned, tokens, acronym,
+            ):
+                result["department_domain"] = host
+                logger.info(
+                    "[%s] dept domain via cross-domain SERP: %s "
+                    "for name2=%r",
+                    record_id, host, name2,
+                )
+                return
+
+        logger.info(
+            "[%s] dept domain probe: no host matched for name2=%r "
+            "core=%r tokens=%s acronym=%r",
+            record_id, name2, core, sorted(tokens), acronym,
+        )
+
+    async def _verify_candidate_host(
+        self,
+        host: str,
+        cleaned_phrase: str,
+        tokens: set[str],
+        acronym: str | None,
+    ) -> bool:
+        """Fetch ``https://<host>/`` and verify the page actually
+        describes the department.
+
+        A page passes verification when EITHER:
+        * the full *cleaned_phrase* appears in title/h1/breadcrumb, OR
+        * at least 2 significant needles (tokens + acronym) appear there
+          (or 1 needle, when only one is available).
+
+        This rejects hosts that resolve but don't describe the dept
+        (e.g. ``science.mit.edu`` is the School of Science, not the
+        Computer Science department).
+        """
+        url = f"https://{host}/"
+        try:
+            page = await self._page_fetcher.fetch_page_content(url)
+        except Exception:
+            return False
+        if page is None or page.is_empty():
+            return False
+
+        text = " ".join([
+            (page.page_title or ""),
+            (page.h1 or ""),
+            (page.breadcrumb or ""),
+        ]).lower()
+        if not text.strip():
+            return False
+
+        if cleaned_phrase and cleaned_phrase.strip():
+            phrase = cleaned_phrase.strip().lower()
+            if len(phrase) >= 4 and phrase in text:
+                return True
+
+        needles: set[str] = set(tokens)
+        if acronym and len(acronym) >= 2:
+            needles.add(acronym.lower())
+        if not needles:
+            return False
+        matches = sum(1 for n in needles if n in text)
+        if len(needles) == 1:
+            return matches >= 1
+        return matches >= 2
+
     async def _finalise_and_return(
         self,
         result: dict[str, Any],
@@ -518,9 +959,10 @@ class Orchestrator:
         record: EnrichmentRecord,
         cache: BatchCache,
     ) -> EnrichmentResult:
-        """Resolve website (B/C if needed), run address Stage 1,
-        finalise, and return."""
+        """Resolve website (B/C if needed), probe for unit URL, run
+        address Stage 1, finalise, and return."""
         await self._maybe_resolve_website_bc(record, result, cache)
+        await self._probe_department_url(record.record_id, result, cache)
         await self._run_address_stage(result, record)
         result = finalise(result, start)
         return EnrichmentResult(**result)
@@ -795,6 +1237,12 @@ class Orchestrator:
                     official = ror_parent.get("official_name")
                     if official and official.strip():
                         result["name1_enriched"] = official.strip()
+
+                    # Carry the ROR acronym (when present) for the
+                    # search_term_1 derivation in finalise().
+                    ror_acronym = ror_parent.get("acronym")
+                    if ror_acronym and ror_acronym.strip():
+                        result["_ror_acronym"] = ror_acronym.strip()
 
                     result["ror_id"] = ror_parent["ror_id"]
                     result["tier_used"] = 1

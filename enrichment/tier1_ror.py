@@ -268,6 +268,14 @@ def _extract_org_fields(org: dict[str, Any]) -> dict[str, Any]:
     # company name is cleaner without it.
     display_name = _strip_ror_country_suffix(display_name)
 
+    acronym = None
+    for name_entry in org_names:
+        if "acronym" in name_entry.get("types", []):
+            value = (name_entry.get("value") or "").strip()
+            if value:
+                acronym = value
+                break
+
     website = extract_website_from_ror(org)
     domain = extract_domain(website) if website else None
 
@@ -291,6 +299,7 @@ def _extract_org_fields(org: dict[str, Any]) -> dict[str, Any]:
     return {
         "ror_id": org["id"],
         "official_name": display_name,
+        "acronym": acronym,
         "org_types": org_types,
         "is_research_institution": is_research,
         "domain": domain,

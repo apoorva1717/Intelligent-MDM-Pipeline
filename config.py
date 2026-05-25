@@ -10,6 +10,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 
+import certifi
 from dotenv import load_dotenv
 
 # Always attempt to load .env — the file may not exist in production
@@ -20,6 +21,38 @@ from dotenv import load_dotenv
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_ssl_env() -> None:
+    """Override bogus SSL_CERT_FILE / REQUESTS_CA_BUNDLE env vars at
+    process startup.
+
+    Windows corp environments often pre-set these to a placeholder
+    path (e.g. ``C:\\path\\to\\corp-ca-bundle.pem``) that doesn't
+    actually exist. Every library that uses ``requests`` (SerpAPI,
+    page fetching, etc.) then fails with::
+
+        OSError: Could not find a suitable TLS CA certificate bundle,
+        invalid path: …
+
+    The ROR client, OpenAI client, and PageFetcher already work
+    around this by passing ``verify=certifi.where()`` explicitly,
+    but third-party SDKs we don't control (e.g. ``serpapi``) can't
+    be patched the same way. Overriding the env vars here makes the
+    workaround global.
+    """
+    certifi_path = certifi.where()
+    for var in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
+        current = os.environ.get(var)
+        if current and not os.path.isfile(current):
+            os.environ[var] = certifi_path
+            logger.warning(
+                "%s pointed to non-existent path %r; overriding to %s",
+                var, current, certifi_path,
+            )
+
+
+_sanitize_ssl_env()
 
 
 def _bool(val: str | None, default: bool = False) -> bool:
