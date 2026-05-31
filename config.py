@@ -64,11 +64,12 @@ def _bool(val: str | None, default: bool = False) -> bool:
 # ── Environment variable validation ──────────────────────────────────────────
 
 REQUIRED_VARS = [
-    "OPENAI_API_KEY",
+    "AZURE_OPENAI_API_KEY",
+    "AZURE_OPENAI_ENDPOINT",
 ]
 
 OPTIONAL_VARS_WITH_DEFAULTS = {
-    "OPENAI_MODEL": "gpt-4o",
+    "AZURE_OPENAI_DEPLOYMENT": "gpt-5.4",
     "ROR_API_BASE": "https://api.ror.org/v2/organizations",
     "ROR_CONFIDENCE_THRESHOLD": "0.8",
     "FUZZY_MATCH_THRESHOLD": "80",
@@ -113,12 +114,10 @@ def validate_env() -> None:
 class Settings:
     """Immutable snapshot of all configuration values."""
 
-    # OpenAI — direct API (personal key for local testing)
-    # FIX(Bug 6): replaced Azure-specific settings with direct OpenAI.
-    # For production at Bruker, swap AsyncOpenAI for AsyncAzureOpenAI
-    # and add azure_endpoint / api_version in llm/openai_client.py.
-    openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
-    openai_model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-4o"))
+    # Azure OpenAI
+    openai_api_key: str = field(default_factory=lambda: os.getenv("AZURE_OPENAI_API_KEY", ""))
+    azure_openai_endpoint: str = field(default_factory=lambda: os.getenv("AZURE_OPENAI_ENDPOINT", ""))
+    openai_model: str = field(default_factory=lambda: os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-5.4"))
 
     # Search
     serpapi_key: str = field(default_factory=lambda: os.getenv("SERPAPI_KEY", ""))

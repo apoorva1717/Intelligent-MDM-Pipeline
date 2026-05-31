@@ -78,6 +78,38 @@ async def enrich_records(request: EnrichmentRequest) -> EnrichmentResponse:
     return response
 
 
+@router.get("/diag/llm")
+async def diag_llm() -> dict:
+    """Diagnostic: make one LLM call and return the raw outcome.
+
+    Use this on Azure when you can't see logs — the actual exception
+    string is returned in the HTTP response body.
+    """
+    import os
+
+    env_snapshot = {
+        "AZURE_OPENAI_ENDPOINT": os.getenv("AZURE_OPENAI_ENDPOINT", "<unset>"),
+        "AZURE_OPENAI_DEPLOYMENT": os.getenv("AZURE_OPENAI_DEPLOYMENT", "<unset>"),
+        "AZURE_OPENAI_API_KEY_present": bool(os.getenv("AZURE_OPENAI_API_KEY")),
+        "AZURE_OPENAI_API_KEY_length": len(os.getenv("AZURE_OPENAI_API_KEY", "")),
+    }
+    try:
+        from llm.openai_client import call_openai
+        raw = await call_openai(
+            system_prompt="Return valid JSON only.",
+            user_prompt='Return {"ok": true}',
+            max_tokens=50,
+        )
+        return {"status": "ok", "raw": raw, "env": env_snapshot}
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "status": "failed",
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+            "env": env_snapshot,
+        }
+
+
 @router.get("/tiers", response_model=TierConfigResponse)
 async def get_tier_config() -> TierConfigResponse:
     """Return current tier thresholds and configuration."""

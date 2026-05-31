@@ -16,7 +16,7 @@ from typing import Any
 
 import certifi
 import httpx
-from openai import AsyncOpenAI
+from openai import AsyncAzureOpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -70,16 +70,8 @@ def install_httpx_aclose_noise_filter(
 _FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?\s*```", re.DOTALL)
 
 
-def get_openai_client() -> AsyncOpenAI:
-    """Returns direct OpenAI async client for local testing.
-
-    For production at Bruker, replace with:
-        from openai import AsyncAzureOpenAI
-        return AsyncAzureOpenAI(
-            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-            api_version="2024-08-01-preview"
-        )
+def get_openai_client() -> AsyncAzureOpenAI:
+    """Returns Azure OpenAI async client.
 
     The httpx client is constructed explicitly with ``verify=certifi.where()``
     so that a bogus ``SSL_CERT_FILE`` env var (a common gotcha when a
@@ -89,29 +81,36 @@ def get_openai_client() -> AsyncOpenAI:
     ``AsyncHttpxClientWrapper``, sidestepping its noisy ``__del__``
     aclose-as-task behaviour on Python 3.13 + httpx 0.28.
     """
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
+    api_key = os.getenv("AZURE_OPENAI_API_KEY")
+    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+    api_version = "2024-08-01-preview"
+    if not api_key or not endpoint:
         raise RuntimeError(
-            "OPENAI_API_KEY is not set. "
-            "Copy .env.example to .env and add your key, "
+            "AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT must be set. "
+            "Copy .env.example to .env and add your values, "
             "then restart the server."
         )
     http_client = httpx.AsyncClient(
         verify=certifi.where(),
         timeout=httpx.Timeout(60.0, connect=10.0),
     )
-    return AsyncOpenAI(api_key=api_key, http_client=http_client)
+    return AsyncAzureOpenAI(
+        api_key=api_key,
+        azure_endpoint=endpoint,
+        api_version=api_version,
+        http_client=http_client,
+    )
 
 
 async def call_openai(
     system_prompt: str,
     user_prompt: str,
     max_tokens: int = 500,
-    client: AsyncOpenAI | None = None,
+    client: AsyncAzureOpenAI | None = None,
 ) -> str:
     """Call OpenAI with structured JSON output enforced.
 
-    Pass ``client`` to reuse a long-lived ``AsyncOpenAI`` instance. When
+    Pass ``client`` to reuse a long-lived ``AsyncAzureOpenAI`` instance. When
     omitted, a one-shot client is created (kept for the diagnostic
     scripts in ``llm/test_connection.py`` and ``scripts/verify_fixes``;
     the hot orchestrator path always supplies its cached client via
@@ -125,12 +124,12 @@ async def call_openai(
         client = get_openai_client()
     try:
         response = await client.chat.completions.create(
-            model=os.getenv("OPENAI_MODEL", "gpt-4o"),
+            model=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-5.4"),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=max_tokens,
+            max_completion_tokens=max_tokens,
             temperature=0.0,
             response_format={"type": "json_object"},
         )
@@ -151,7 +150,7 @@ async def call_openai(
 class OpenAIClient:
     """Thin async wrapper that returns parsed JSON dicts.
 
-    Caches a single ``AsyncOpenAI`` instance for its lifetime so every
+    Caches a single ``AsyncAzureOpenAI`` instance for its lifetime so every
     LLM call reuses the same connection pool. Avoids the
     AsyncHttpxClientWrapper aclose() AttributeError noise that
     otherwise floods logs (one per LLM call) on Python 3.13 + recent
@@ -159,22 +158,22 @@ class OpenAIClient:
     """
 
     def __init__(self, settings: Any = None) -> None:
-        self._model = os.getenv("OPENAI_MODEL", "gpt-4o")
+        self._model = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-5.4")
         if settings and hasattr(settings, "openai_model"):
             self._model = settings.openai_model
-        # Lazy: only build the AsyncOpenAI on first use. This keeps
+        # Lazy: only build the AsyncAzureOpenAI on first use. This keeps
         # construction cheap and avoids initialising a network client
         # in code paths that end up using a mock instead.
-        self._client: AsyncOpenAI | None = None
-        logger.info("LLM client initialised with OpenAI (model=%s)", self._model)
+        self._client: AsyncAzureOpenAI | None = None
+        logger.info("LLM client initialised with Azure OpenAI (deployment=%s)", self._model)
 
-    def _get_client(self) -> AsyncOpenAI:
+    def _get_client(self) -> AsyncAzureOpenAI:
         if self._client is None:
             self._client = get_openai_client()
         return self._client
 
     async def aclose(self) -> None:
-        """Close the underlying AsyncOpenAI client cleanly. Safe to
+        """Close the underlying AsyncAzureOpenAI client cleanly. Safe to
         call multiple times; safe to call when no client was built."""
         if self._client is not None:
             try:

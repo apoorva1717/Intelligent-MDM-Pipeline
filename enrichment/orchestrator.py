@@ -780,10 +780,17 @@ class Orchestrator:
             )
             links = []
 
-        best_score, best_host = 0, None
+        # Rank homepage links by score (high to low) and verify in
+        # order — top scorer wins only if its page is actually about
+        # this department. Without this, false positives like
+        # ``aas.princeton.edu`` for "Astrophysical Sciences" (host
+        # ``aas`` substring-contains acronym ``AS``) sneak through
+        # even when the page is African American Studies.
+        scored: list[tuple[int, str]] = []
+        seen_hosts: set[str] = set()
         for text, link_url in links:
             host = _host_of(link_url)
-            if not host:
+            if not host or host in seen_hosts:
                 continue
             try:
                 path = urlparse(link_url).path or ""
@@ -792,21 +799,25 @@ class Orchestrator:
             score = _score_dept_candidate(
                 host, base, path, text, tokens, acronym,
             )
-            if score > best_score:
-                best_score, best_host = score, host
-
-        if best_host:
-            result["department_domain"] = best_host
-            logger.info(
-                "[%s] dept domain via homepage: %s (score=%d)",
-                record_id, best_host, best_score,
-            )
-            return
+            if score > 0:
+                scored.append((score, host))
+                seen_hosts.add(host)
+        scored.sort(reverse=True)
+        for score, host in scored[:5]:
+            if await self._verify_candidate_host(
+                host, cleaned, tokens, acronym,
+            ):
+                result["department_domain"] = host
+                logger.info(
+                    "[%s] dept domain via homepage: %s (score=%d, verified)",
+                    record_id, host, score,
+                )
+                return
 
         # ── 2) SERP fallback (site-restricted) ────────────────────────
         # Strict scoring picks dept subdomains of the institution
         # (e.g. ``eecs.mit.edu`` for CS via the ``cs`` acronym
-        # substring in ``eecs``).
+        # substring in ``eecs``). Top scorer must verify before win.
         query = f"{cleaned} site:{base}"
         cached = cache.get_serp(query)
         if cached is not None:
@@ -825,10 +836,11 @@ class Orchestrator:
             else:
                 cache.set_serp(query, serp_results)
 
-        best_score, best_host = 0, None
+        scored = []
+        seen_hosts = set()
         for sr in serp_results:
             host = _host_of(sr.url)
-            if not host:
+            if not host or host in seen_hosts:
                 continue
             try:
                 path = urlparse(sr.url).path or ""
@@ -837,16 +849,21 @@ class Orchestrator:
             score = _score_dept_candidate(
                 host, base, path, sr.title or "", tokens, acronym,
             )
-            if score > best_score:
-                best_score, best_host = score, host
-
-        if best_host:
-            result["department_domain"] = best_host
-            logger.info(
-                "[%s] dept domain via SERP: %s (score=%d) for name2=%r",
-                record_id, best_host, best_score, name2,
-            )
-            return
+            if score > 0:
+                scored.append((score, host))
+                seen_hosts.add(host)
+        scored.sort(reverse=True)
+        for score, host in scored[:5]:
+            if await self._verify_candidate_host(
+                host, cleaned, tokens, acronym,
+            ):
+                result["department_domain"] = host
+                logger.info(
+                    "[%s] dept domain via SERP: %s (score=%d, verified) "
+                    "for name2=%r",
+                    record_id, host, score, name2,
+                )
+                return
 
         # ── 3) SERP fallback (no site:) — cross-domain departments ────
         # Some institutions host their dept on a brand domain

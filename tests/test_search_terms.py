@@ -228,41 +228,90 @@ class TestDeriveSearchTerms:
         st1, _ = derive_search_terms(result)
         assert st1 == "MIT"
 
-    def test_search_term_2_is_cleaned_phrase(self):
+    def test_search_term_2_uses_department_domain_subdomain(self):
         result = {
             "_ror_acronym": "MIT",
             "domain": "mit.edu",
-            "name1_enriched": "Massachusetts Institute of Technology",
+            "name1_enriched": "MIT",
             "name2_enriched": "Department of Computer Science",
             "name2_original": "Department of Computer Science",
-            "source_url": None,
+            "department_domain": "eecs.mit.edu",
         }
         _, st2 = derive_search_terms(result)
-        assert st2 == "Computer Science"
+        assert st2 == "eecs"
 
-    def test_search_term_2_parenthetical_acronym_wins(self):
+    def test_search_term_2_strips_web_prefix(self):
+        result = {
+            "_ror_acronym": None,
+            "domain": "princeton.edu",
+            "name1_enriched": "Princeton University",
+            "name2_enriched": "Department of Astrophysical Sciences",
+            "name2_original": "Department of Astrophysical Sciences",
+            "department_domain": "web.astro.princeton.edu",
+        }
+        _, st2 = derive_search_terms(result)
+        assert st2 == "astro"
+
+    def test_search_term_2_crossdomain_strips_tld(self):
+        result = {
+            "_ror_acronym": "JHU",
+            "domain": "jhu.edu",
+            "name1_enriched": "Johns Hopkins University",
+            "name2_enriched": "Department of Radiology",
+            "name2_original": "Department of Radiology",
+            "department_domain": "hopkinsmedicine.org",
+        }
+        _, st2 = derive_search_terms(result)
+        assert st2 == "hopkinsmedicine"
+
+    def test_search_term_2_falls_back_to_two_words(self):
+        # No department_domain → use first 2 significant words.
+        result = {
+            "_ror_acronym": None,
+            "domain": "harvard.edu",
+            "name1_enriched": "Harvard University",
+            "name2_enriched": "Department of Earth and Planetary Sciences",
+            "name2_original": "Department of Earth and Planetary Sciences",
+            "department_domain": None,
+        }
+        _, st2 = derive_search_terms(result)
+        assert st2 == "Earth Planetary"
+
+    def test_search_term_2_fallback_two_words_chemistry(self):
+        result = {
+            "_ror_acronym": None,
+            "domain": "ucla.edu",
+            "name1_enriched": "UCLA",
+            "name2_enriched": "Department of Chemistry and Biochemistry",
+            "name2_original": "Department of Chemistry and Biochemistry",
+            "department_domain": None,
+        }
+        _, st2 = derive_search_terms(result)
+        assert st2 == "Chemistry Biochemistry"
+
+    def test_search_term_2_fallback_single_word_dept(self):
+        result = {
+            "_ror_acronym": None,
+            "domain": "cern.ch",
+            "name1_enriched": "CERN",
+            "name2_enriched": "Department of Radiology",
+            "name2_original": "Department of Radiology",
+            "department_domain": None,
+        }
+        _, st2 = derive_search_terms(result)
+        assert st2 == "Radiology"
+
+    def test_search_term_2_paren_acronym_when_no_dept_domain(self):
         result = {
             "_ror_acronym": "MIT",
             "domain": "mit.edu",
             "name1_enriched": "MIT",
             "name2_enriched": "Computer Science and AI Lab (CSAIL)",
             "name2_original": "Computer Science and AI Lab (CSAIL)",
-            "source_url": None,
+            "department_domain": None,
         }
         _, st2 = derive_search_terms(result)
         assert st2 == "CSAIL"
-
-    def test_search_term_2_verbatim_when_no_prefix(self):
-        result = {
-            "_ror_acronym": "PFE",
-            "domain": "pfizer.com",
-            "name1_enriched": "Pfizer Inc",
-            "name2_enriched": "Analytical Sciences",
-            "name2_original": "Analytical Sciences",
-            "source_url": None,
-        }
-        _, st2 = derive_search_terms(result)
-        assert st2 == "Analytical Sciences"
 
     def test_search_term_2_title_cases_lowercase_input(self):
         result = {
@@ -271,33 +320,19 @@ class TestDeriveSearchTerms:
             "name1_enriched": "UCLA",
             "name2_enriched": "dept of chemistry",
             "name2_original": "dept of chemistry",
-            "source_url": None,
+            "department_domain": None,
         }
         _, st2 = derive_search_terms(result)
         assert st2 == "Chemistry"
 
-    def test_search_term_2_subdomain_fallback_when_phrase_empty(self):
-        # name2 strips down to nothing → fall back to source_url subdomain
-        # (prefix only — TLD and base domain are dropped).
-        result = {
-            "_ror_acronym": "MIT",
-            "domain": "mit.edu",
-            "name1_enriched": "MIT",
-            "name2_enriched": "Department of",
-            "name2_original": "Department of",
-            "source_url": "https://cs.mit.edu/people",
-        }
-        _, st2 = derive_search_terms(result)
-        assert st2 == "cs"
-
-    def test_search_term_2_none_when_name2_absent(self):
+    def test_search_term_2_none_when_name2_absent_and_no_dept_domain(self):
         result = {
             "_ror_acronym": "MIT",
             "domain": "mit.edu",
             "name1_enriched": "MIT",
             "name2_enriched": None,
             "name2_original": None,
-            "source_url": "https://cs.mit.edu/people",
+            "department_domain": None,
         }
         _, st2 = derive_search_terms(result)
         assert st2 is None

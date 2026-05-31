@@ -340,6 +340,62 @@ def derive_department_domain(
     return host
 
 
+_TERM2_STOPWORDS = {
+    "of", "for", "the", "and", "in", "on", "at", "to",
+    "a", "an", "de", "du", "des", "la", "le", "les", "&",
+}
+
+
+def _dept_domain_to_search_term(
+    dept_domain: str | None, base_domain: str | None,
+) -> str | None:
+    """Compact search handle derived from a *dept_domain* host.
+
+    Strips ``www.`` / ``web.`` prefixes, then either the institution
+    base (when *dept_domain* is a subdomain) or the TLD.
+
+    ``'cs.mit.edu'`` + base ``'mit.edu'``       → ``'cs'``
+    ``'eecs.mit.edu'`` + base ``'mit.edu'``     → ``'eecs'``
+    ``'web.astro.princeton.edu'`` + base        → ``'astro'``
+    ``'hopkinsmedicine.org'`` + base ``'jhu.edu'`` (cross-domain)
+                                                → ``'hopkinsmedicine'``
+    """
+    if not dept_domain or not dept_domain.strip():
+        return None
+    host = dept_domain.strip().lower()
+    for prefix in ("www.", "web."):
+        if host.startswith(prefix):
+            host = host[len(prefix):]
+    base = (base_domain or "").lower().strip() or None
+    if base and host.endswith("." + base):
+        stripped = host[: -len("." + base)]
+        return stripped or None
+    return strip_tld(host) or host
+
+
+def _first_two_significant_words(text: str | None) -> str | None:
+    """Take up to 2 significant words from *text* (lowercase stopwords
+    excluded) and title-case the result.
+
+    ``'Computer Science'``                   → ``'Computer Science'``
+    ``'Chemistry and Biochemistry'``         → ``'Chemistry Biochemistry'``
+    ``'Earth and Planetary Sciences'``       → ``'Earth Planetary'``
+    ``'Radiology'``                          → ``'Radiology'``
+    """
+    if not text or not text.strip():
+        return None
+    words: list[str] = []
+    for tok in re.findall(r"[A-Za-z]+", text):
+        if tok.lower() in _TERM2_STOPWORDS:
+            continue
+        words.append(tok)
+        if len(words) >= 2:
+            break
+    if not words:
+        return None
+    return _title_case_preserve_acronyms(" ".join(words))
+
+
 def derive_search_terms(
     result: dict[str, Any],
 ) -> tuple[str | None, str | None]:
@@ -351,11 +407,10 @@ def derive_search_terms(
         3. derive_acronym(name1_enriched or name1_original)
         4. None
 
-    search_term_2 (unit handle, text-phrase-shaped; null when name2 absent):
-        1. Parenthetical acronym in name2              (e.g. "(CSAIL)" → "CSAIL")
-        2. clean_name2_phrase(name2)                   (strip "Department of …" /
-                                                        "… Department", title-case)
-        3. unit_domain_or_path(source_url, domain)     (last-resort fallback)
+    search_term_2 (unit handle):
+        1. Prefix of ``result["department_domain"]``    ('eecs.mit.edu' → 'eecs')
+        2. Parenthetical acronym in name2               ('(CSAIL)' → 'CSAIL')
+        3. First 2 significant words of cleaned name2   ('Computer Science')
         4. None
     """
     ror_acronym = (result.get("_ror_acronym") or "").strip() or None
@@ -371,20 +426,22 @@ def derive_search_terms(
     else:
         search_term_1 = derive_acronym(name1)
 
-    name2_enriched = (result.get("name2_enriched") or "").strip()
-    name2_original = (result.get("name2_original") or "").strip()
-    name2 = name2_enriched or name2_original
-
     search_term_2: str | None = None
-    if name2:
-        paren = _PAREN_ACRONYM_RE.search(name2)
-        if paren:
-            search_term_2 = paren.group(1)
-        else:
-            search_term_2 = clean_name2_phrase(name2)
-            if not search_term_2:
-                search_term_2 = unit_domain_or_path(
-                    result.get("source_url"), domain
-                )
+    dept_domain = (result.get("department_domain") or "").strip()
+    if dept_domain:
+        search_term_2 = _dept_domain_to_search_term(dept_domain, domain)
+
+    if not search_term_2:
+        name2 = (
+            (result.get("name2_enriched") or "").strip()
+            or (result.get("name2_original") or "").strip()
+        )
+        if name2:
+            paren = _PAREN_ACRONYM_RE.search(name2)
+            if paren:
+                search_term_2 = paren.group(1)
+            else:
+                cleaned = clean_name2_phrase(name2) or name2
+                search_term_2 = _first_two_significant_words(cleaned)
 
     return search_term_1, search_term_2
