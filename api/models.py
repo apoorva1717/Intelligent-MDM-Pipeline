@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    model_validator,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -12,26 +18,261 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 
 class EnrichmentRecord(BaseModel):
-    """A single customer master data record to enrich."""
-    record_id: str = Field(..., description="DATAshaper Code: GroupCode_CustomerNumber")
-    name1: Optional[str] = None
-    name2: Optional[str] = None
-    name3: Optional[str] = None
-    care_of: Optional[str] = None
-    contact: Optional[str] = None
-    email: Optional[str] = None
-    # Legacy single-street field kept for backwards compatibility. New
-    # callers should populate street1/2/3 directly. If ``street`` is
-    # provided and ``street1`` is not, the orchestrator treats it as
-    # street1.
-    street: Optional[str] = None
-    street1: Optional[str] = None
-    street2: Optional[str] = None
-    street3: Optional[str] = None
-    city: Optional[str] = None
-    state: Optional[str] = None
-    zip: Optional[str] = None
-    country: Optional[str] = None
+    """A single customer master data record to enrich.
+
+    The canonical request body mirrors the SAP customer-master export
+    columns one-to-one. Each field accepts the exact spreadsheet header
+    as its JSON key (e.g. ``"Name 1"``, ``"Country/Region Key"``) via a
+    Pydantic alias. For backwards compatibility the previous snake-case
+    keys (``name1``, ``zip``, ``record_id`` …) are still accepted as
+    secondary aliases.
+
+    The enrichment pipeline reads a handful of normalised attributes
+    (``name1``, ``state``, ``zip`` …) — those are exposed as read-only
+    properties that map onto the SAP fields, so the orchestrator does
+    not need to know about the SAP column naming.
+    """
+
+    # Accept the field's own (snake_case) name in addition to the
+    # declared validation aliases.
+    model_config = ConfigDict(populate_by_name=True)
+
+    # ── Identity & administrative ────────────────────────────────────
+    customer: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Customer", "customer", "record_id"),
+        description="Customer number (primary key). Used as record_id.",
+    )
+    ecc_customer_number: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("ECC Customer Number", "ecc_customer_number"),
+    )
+    central_deletion_flag: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Central Deletion Flag", "central_deletion_flag"),
+    )
+    comments: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Comments", "comments"),
+    )
+    account_group: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Account group", "account_group"),
+    )
+    company_code: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Company Code", "company_code"),
+    )
+    sales_organization: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Sales Organization", "sales_organization"),
+    )
+    distribution_channel: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Distribution Channel", "distribution_channel"),
+    )
+    division: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Division", "division"),
+    )
+
+    # ── Name block ───────────────────────────────────────────────────
+    name_1: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Name 1", "name_1", "name1"),
+    )
+    name_2: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Name 2", "name_2", "name2"),
+    )
+    name_3: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Name 3", "name_3", "name3"),
+    )
+    name_4: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Name 4", "name_4", "name4"),
+    )
+
+    # ── Address block ────────────────────────────────────────────────
+    street_1: Optional[str] = Field(
+        default=None,
+        # ``street`` was the legacy single-street key.
+        validation_alias=AliasChoices("Street 1", "street_1", "street1", "street"),
+    )
+    house_number: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("House Number", "house_number"),
+    )
+    street_2: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Street 2", "street_2", "street2"),
+    )
+    street_3: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Street 3", "street_3", "street3"),
+    )
+    street_4: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Street 4", "street_4", "street4"),
+    )
+    street_5: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Street 5", "street_5", "street5"),
+    )
+    po_box: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("PO Box", "po_box"),
+    )
+    country_region_key: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Country/Region Key", "country_region_key", "country"),
+    )
+    postal_code: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Postal Code", "postal_code", "zip"),
+    )
+    city: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("City", "city"),
+    )
+    region: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Region", "region", "state"),
+    )
+
+    # ── Other SAP master-data columns (carried through, not enriched) ─
+    language_key: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Language Key", "language_key"),
+    )
+    reconciliation_acct: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Reconciliation acct", "reconciliation_acct"),
+    )
+    tax_jurisdiction: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Tax Jurisdiction", "tax_jurisdiction"),
+    )
+    central_delivery_block: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Central delivery block", "central_delivery_block"),
+    )
+    delivery_priority: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Delivery Priority", "delivery_priority"),
+    )
+    shipping_conditions: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Shipping Conditions", "shipping_conditions"),
+    )
+    delivering_plant: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Delivering Plant", "delivering_plant"),
+    )
+    created_on: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Created On", "created_on"),
+    )
+    created_by: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Created By", "created_by"),
+    )
+    vat_registration_no: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("VAT Registration No.", "vat_registration_no"),
+    )
+    search_term_1: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Search Term 1", "search_term_1"),
+    )
+    search_term_2: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Search Term 2", "search_term_2"),
+    )
+    terms_of_payment_contact: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Terms of Payment Contact", "terms_of_payment_contact"),
+    )
+
+    # ── Auxiliary enrichment inputs (no SAP column) ──────────────────
+    # The SAP export has no dedicated contact-person / email / c-o
+    # column, but the enrichment pipeline (Tier 2A contact lookup, c/o
+    # handling) consumes them when available. They are accepted as
+    # optional auxiliary inputs so that functionality keeps working;
+    # when absent, the same signals are recovered from the Name fields
+    # during preprocessing.
+    care_of: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("care_of", "Care Of", "c/o"),
+    )
+    contact: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("contact", "Contact"),
+    )
+    email: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("email", "Email"),
+    )
+
+    @model_validator(mode="after")
+    def _require_identifier(self) -> "EnrichmentRecord":
+        """At least one customer identifier must be present — it is used
+        as the record_id for logging and result correlation."""
+        if not ((self.customer or "").strip() or (self.ecc_customer_number or "").strip()):
+            raise ValueError(
+                "EnrichmentRecord requires 'Customer' (or 'ECC Customer Number')"
+            )
+        return self
+
+    # ── Compatibility accessors used by the enrichment pipeline ──────
+    # The orchestrator/preprocess/address code reads these normalised
+    # names; they map onto the SAP columns above.
+
+    @property
+    def record_id(self) -> str:
+        return (self.customer or self.ecc_customer_number or "").strip()
+
+    @property
+    def name1(self) -> Optional[str]:
+        return self.name_1
+
+    @property
+    def name2(self) -> Optional[str]:
+        return self.name_2
+
+    @property
+    def name3(self) -> Optional[str]:
+        return self.name_3
+
+    @property
+    def street(self) -> Optional[str]:
+        # Legacy single-street accessor → SAP "Street 1".
+        return self.street_1
+
+    @property
+    def street1(self) -> Optional[str]:
+        return self.street_1
+
+    @property
+    def street2(self) -> Optional[str]:
+        return self.street_2
+
+    @property
+    def street3(self) -> Optional[str]:
+        return self.street_3
+
+    @property
+    def state(self) -> Optional[str]:
+        return self.region
+
+    @property
+    def zip(self) -> Optional[str]:
+        return self.postal_code
+
+    @property
+    def country(self) -> Optional[str]:
+        return self.country_region_key
 
 
 class EnrichmentOptions(BaseModel):

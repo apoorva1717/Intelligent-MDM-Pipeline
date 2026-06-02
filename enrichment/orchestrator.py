@@ -1009,7 +1009,7 @@ class Orchestrator:
                 state=record.state,
                 zip_code=record.zip,
                 country=record.country,
-                po_box=None,
+                po_box=record.po_box,
                 care_of_enriched=_pick("care_of"),
                 llm_client=self._llm_client,
             )
