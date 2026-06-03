@@ -219,13 +219,10 @@ def _init_result(record: EnrichmentRecord) -> dict[str, Any]:
         "email_enriched": None,
         "email_changed": False,
         "street1_original": street1_original,
-        "street1_enriched": None,
         "street1_changed": False,
         "street2_original": record.street2,
-        "street2_enriched": None,
         "street2_changed": False,
         "street3_original": record.street3,
-        "street3_enriched": None,
         "street3_changed": False,
         # Address Stage 1 outputs — populated by _run_address_stage.
         "street_cleaned": None,

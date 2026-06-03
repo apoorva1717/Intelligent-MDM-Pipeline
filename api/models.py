@@ -297,16 +297,10 @@ class EnrichmentResult(BaseModel):
     """Enrichment outcome for one record."""
     record_id: str
 
-    # Name fields
-    name1_original: Optional[str] = None
-    name2_original: Optional[str] = None
-    name3_original: Optional[str] = None
+    # Name fields (enriched values)
     name1_enriched: Optional[str] = None
     name2_enriched: Optional[str] = None
     name3_enriched: Optional[str] = None
-    name1_changed: bool = False
-    name2_changed: bool = False
-    name3_changed: bool = False
 
     # Compact search handles for downstream re-querying.
     # search_term_1 mirrors name1 (acronym preferred, domain fallback);
@@ -320,30 +314,13 @@ class EnrichmentResult(BaseModel):
     department_domain: Optional[str] = None
 
     # c/o (extracted from prefixed Name 2 or passed through)
-    care_of_original: Optional[str] = None
     care_of_enriched: Optional[str] = None
-    care_of_changed: bool = False
 
     # Contact / email (extracted or passed through)
-    contact_original: Optional[str] = None
     contact_enriched: Optional[str] = None
-    contact_changed: bool = False
-    email_original: Optional[str] = None
     email_enriched: Optional[str] = None
-    email_changed: bool = False
 
-    # Street fields (extracted or passed through)
-    street1_original: Optional[str] = None
-    street1_enriched: Optional[str] = None
-    street1_changed: bool = False
-    street2_original: Optional[str] = None
-    street2_enriched: Optional[str] = None
-    street2_changed: bool = False
-    street3_original: Optional[str] = None
-    street3_enriched: Optional[str] = None
-    street3_changed: bool = False
-
-    # Address Stage 1 — extracted sub-locations and routed fields
+    # Address Stage 1 — cleaned streets + extracted sub-locations
     street_cleaned: Optional[str] = None
     street_2_cleaned: Optional[str] = None
     street_3_cleaned: Optional[str] = None
@@ -356,34 +333,35 @@ class EnrichmentResult(BaseModel):
     po_box_extracted: Optional[str] = None
     unloading_point: Optional[str] = None
     mail_code: Optional[str] = None
-    unclear_address_info: Optional[str] = None
-    address_issues: List[str] = Field(default_factory=list)
 
     # Classification & provenance
+    # NOTE: the fields marked ``exclude=True`` below are still populated and
+    # used internally (tier logic, batch summary counts, tests) — they are
+    # just omitted from the serialised API response to keep the output lean.
     record_type: Literal["research_institution", "company", "unknown"] = "unknown"
-    tier_used: Literal[1, 2, 3] = 1
-    tier2_mode: Optional[Literal["2A_population", "2A_verification", "2B"]] = None
-    confidence: Literal["high", "medium", "low", "none"] = "none"
+    tier_used: Literal[1, 2, 3] = Field(default=1, exclude=True)
+    tier2_mode: Optional[Literal["2A_population", "2A_verification", "2B"]] = Field(default=None, exclude=True)
+    confidence: Literal["high", "medium", "low", "none"] = Field(default="none", exclude=True)
     source: Literal[
         "ROR", "ROR+child", "contact_lookup_found",
         "contact_lookup_corrected", "dept_search", "LLM",
         "llm_canonical", "SERP+LLM", "pattern_match",
         "web_search", "passthrough", "none",
-    ] = "none"
-    ror_id: Optional[str] = None
-    source_url: Optional[str] = None
+    ] = Field(default="none", exclude=True)
+    ror_id: Optional[str] = Field(default=None, exclude=True)
+    source_url: Optional[str] = Field(default=None, exclude=True)
     domain: Optional[str] = None
     website_url: Optional[str] = None
-    contact_used: bool = False
-    name2_match_result: Literal["exact", "partial", "no_match", "not_applicable", "unknown"] = "not_applicable"
+    contact_used: bool = Field(default=False, exclude=True)
+    name2_match_result: Literal["exact", "partial", "no_match", "not_applicable", "unknown"] = Field(default="not_applicable", exclude=True)
 
     # Which use cases (0-9) fired for this record
-    use_cases_triggered: List[int] = Field(default_factory=list)
+    use_cases_triggered: List[int] = Field(default_factory=list, exclude=True)
 
     flag_for_review: bool = False
     flag_reason: Optional[str] = None
-    enrichment_status: Literal["enriched", "verified", "unresolved", "failed"] = "failed"
-    duration_ms: int = 0
+    enrichment_status: Literal["enriched", "verified", "unresolved", "failed"] = Field(default="failed", exclude=True)
+    duration_ms: int = Field(default=0, exclude=True)
     error: Optional[str] = None
 
 
