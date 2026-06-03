@@ -25,6 +25,30 @@ logger = logging.getLogger(__name__)
 REMOVE_TAGS = {"script", "style", "nav", "footer", "header", "aside", "form", "iframe"}
 
 
+def _log_fetch_failure(url: str, exc: Exception) -> None:
+    """Log a fetch failure without the alarming multi-line traceback.
+
+    Most fetch failures are *expected* and already handled by the caller
+    (return ``None``/``[]``): a guessed department subdomain that doesn't
+    resolve (DNS failure), or a publisher that blocks our user-agent
+    (HTTP 403/404). Those are logged as a single concise DEBUG line so
+    they don't drown the terminal. Anything genuinely unexpected is
+    surfaced at WARNING — still without a full stack trace, since the
+    pipeline degrades gracefully either way.
+    """
+    target = url[:120]
+    if isinstance(exc, requests.exceptions.HTTPError):
+        status = getattr(exc.response, "status_code", "?")
+        logger.debug("Page fetch skipped (HTTP %s): %s", status, target)
+    elif isinstance(exc, (requests.exceptions.ConnectionError,
+                          requests.exceptions.Timeout)):
+        # DNS failures, refused connections, timeouts — expected for
+        # probe candidates and unreachable hosts.
+        logger.debug("Page fetch skipped (unreachable): %s", target)
+    else:
+        logger.warning("Page fetch failed (%s): %s", type(exc).__name__, target)
+
+
 @dataclass
 class PageContent:
     """Structured, authoritative slices of a fetched page."""
@@ -64,8 +88,8 @@ class PageFetcher:
             return await loop.run_in_executor(
                 None, partial(self._sync_fetch_structured, url)
             )
-        except Exception:
-            logger.exception("Page fetch failed: %s", url[:120])
+        except Exception as exc:
+            _log_fetch_failure(url, exc)
             return None
 
     async def subdomain_exists(self, host: str, timeout: int = 5) -> bool:
@@ -117,8 +141,8 @@ class PageFetcher:
             return await loop.run_in_executor(
                 None, partial(self._sync_fetch_outgoing_links, url, base_domain),
             )
-        except Exception:
-            logger.exception("Outgoing link extraction failed: %s", url[:120])
+        except Exception as exc:
+            _log_fetch_failure(url, exc)
             return []
 
     def _sync_fetch_outgoing_links(
