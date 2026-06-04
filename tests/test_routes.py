@@ -419,7 +419,7 @@ class TestRoutes:
         assert "attachment" in resp.headers["content-disposition"]
 
         wb = load_workbook(io.BytesIO(resp.content))
-        assert wb.sheetnames == ["Summary", "Per Record"]
+        assert wb.sheetnames == ["Summary", "Per Record", "Remaining Issues"]
 
         summary = self._summary(wb["Summary"])
         assert summary["Records matched (joined by id)"] == 1
@@ -432,6 +432,21 @@ class TestRoutes:
         ]
         assert per_record[0][0] == "R1"
         assert "G1-CROSS-001" in (per_record[0][3] or "")  # resolved column
+
+        # Remaining Issues: one row per (code, customer) for issues still
+        # present after enrichment, naming the customer id every time.
+        remaining_ws = wb["Remaining Issues"]
+        assert [c.value for c in next(remaining_ws.iter_rows())] == [
+            "Code", "Name", "Customer",
+        ]
+        remaining = [
+            [c.value for c in row]
+            for row in remaining_ws.iter_rows(min_row=2)
+        ]
+        # Every data row carries a code and the customer id (R1 is the only
+        # record), and reconciles with the after-issue total in the summary.
+        assert all(row[0] and row[2] == "R1" for row in remaining)
+        assert len(remaining) == summary["Total issues after"]
 
     @pytest.mark.asyncio
     async def test_issues_compare_rejects_non_xlsx(self, client):

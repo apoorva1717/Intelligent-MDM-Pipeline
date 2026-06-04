@@ -144,15 +144,28 @@ def test_g2_name_009_lab_without_department():
 
 
 def test_g2_contact_008_no_contact_no_department():
-    rec = _record(**{"Name 2": "", "Contact": "", "Name 1": "Acme Corp"})
+    rec = _record(**{
+        "Name 1": "Florida State University", "Name 2": "", "Contact": "",
+    })
     assert "G2-CONTACT-008" in detect_issues(rec)
 
 
 def test_g2_contact_009_department_enrichable_from_contact():
-    rec = _record(**{"Name 2": "", "Contact": "Dr. Emily Carter"})
+    rec = _record(**{
+        "Name 1": "Florida State University", "Name 2": "",
+        "Contact": "Dr. Emily Carter",
+    })
     issues = detect_issues(rec)
     assert "G2-CONTACT-009" in issues
     assert "G2-CONTACT-008" not in issues  # mutually exclusive
+
+
+def test_g2_contact_008_not_raised_for_non_research_company():
+    # A company with no department is normal — these codes must not fire.
+    rec = _record(**{"Name 1": "Acme Corporation", "Name 2": "", "Contact": ""})
+    issues = detect_issues(rec)
+    assert "G2-CONTACT-008" not in issues
+    assert "G2-CONTACT-009" not in issues
 
 
 # ---------------------------------------------------------------------------

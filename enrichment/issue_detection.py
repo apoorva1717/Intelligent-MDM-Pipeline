@@ -318,8 +318,11 @@ def _detect_missing(
         found.add("G2-NAME-009")
 
     # G2-CONTACT-008 / -009 — department missing; routed by whether a single
-    # contact is available to enrich from.
-    if name2_blank:
+    # contact is available to enrich from. Only meaningful for research
+    # institutions, where a department is expected: a company with no Name 2
+    # is normal, not an issue. Gate on the same research-institution signal
+    # as G2-NAME-012 so these codes are not raised across the board.
+    if name2_blank and looks_like_research_institution(record.name_1):
         if is_blank(record.contact) and is_blank(record.care_of):
             found.add("G2-CONTACT-008")
         elif not is_blank(record.contact) and not has_multiple_contacts(record.contact):

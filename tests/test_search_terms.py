@@ -228,6 +228,45 @@ class TestDeriveSearchTerms:
         st1, _ = derive_search_terms(result)
         assert st1 == "MIT"
 
+    def test_falls_back_to_original_sap_term_when_underivable(self):
+        # Lowercase single-word name → no acronym, no domain → keep the
+        # original SAP Search Term 1 instead of blanking it.
+        result = {
+            "_ror_acronym": None,
+            "domain": None,
+            "name1_enriched": "acme",
+            "name2_enriched": None,
+            "name2_original": None,
+            "source_url": None,
+            "_search_term_1_original": "ACME",
+        }
+        st1, _ = derive_search_terms(result)
+        assert st1 == "ACME"
+
+    def test_falls_back_to_name_handle_when_no_original(self):
+        # No acronym/domain and no SAP original → derive a handle from the
+        # institution name so the field is never empty.
+        result = {
+            "_ror_acronym": None,
+            "domain": None,
+            "name1_enriched": "riverside diagnostics",
+            "name2_enriched": None,
+            "name2_original": None,
+            "source_url": None,
+        }
+        st1, _ = derive_search_terms(result)
+        assert st1 and st1.strip()
+        assert st1 == "Riverside Diagnostics"
+
+    def test_search_term_1_never_empty_when_name_present(self):
+        result = {
+            "name1_original": "x",
+            "name2_enriched": None,
+            "name2_original": None,
+        }
+        st1, _ = derive_search_terms(result)
+        assert st1 and st1.strip()
+
     def test_search_term_2_uses_department_domain_subdomain(self):
         result = {
             "_ror_acronym": "MIT",

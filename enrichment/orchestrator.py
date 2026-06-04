@@ -232,6 +232,9 @@ def _init_result(record: EnrichmentRecord) -> dict[str, Any]:
         "name4_changed": False,
         "search_term_1": None,
         "search_term_2": None,
+        # Original SAP Search Term 1 — used only as a last-resort fallback
+        # so the derived search_term_1 is never empty. Stripped in finalise().
+        "_search_term_1_original": record.search_term_1,
         "department_domain": None,
         # Internal carrier — populated when ROR returns an acronym variant.
         # Stripped out in finalise() so it doesn't leak into the response.
@@ -412,6 +415,7 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     result.pop("_dba_values", None)
     result.pop("_pp_name1", None)
     result.pop("_ror_acronym", None)
+    result.pop("_search_term_1_original", None)
     return result
 
 

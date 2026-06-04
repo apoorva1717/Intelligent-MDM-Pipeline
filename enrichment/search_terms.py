@@ -426,6 +426,18 @@ def derive_search_terms(
     else:
         search_term_1 = derive_acronym(name1)
 
+    # search_term_1 must never be empty: it is a required output handle and a
+    # blank value is reported as a missing-field issue (G2-VAL-007). When no
+    # acronym/domain handle could be derived, fall back — in order — to the
+    # original SAP Search Term 1, then a handle built from the institution
+    # name, then the name itself. Only stays None if there is no name at all.
+    if not (search_term_1 and search_term_1.strip()):
+        original = (result.get("_search_term_1_original") or "").strip()
+        if original:
+            search_term_1 = original
+        elif name1 and name1.strip():
+            search_term_1 = _first_two_significant_words(name1) or name1.strip()
+
     search_term_2: str | None = None
     dept_domain = (result.get("department_domain") or "").strip()
     if dept_domain:

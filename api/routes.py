@@ -337,6 +337,9 @@ def _build_comparison_xlsx(
     Sheet 1 (Summary): headline totals + a per-code Before/After/Delta table.
     Sheet 2 (Per Record): every matched record's before codes, after codes,
     which issues were resolved, and which were newly introduced.
+    Sheet 3 (Remaining Issues): for every issue still present after
+    enrichment, the customer id of each record that still has it (one row
+    per code/customer pairing).
     Comparison is over records present in BOTH files (joined by record id).
     """
     from openpyxl import Workbook
@@ -407,6 +410,19 @@ def _build_comparison_xlsx(
     )
     for row in per_record_rows:
         per_record.append(row)
+
+    # Sheet 3 — Remaining Issues. For every issue still present after
+    # enrichment, list the customer id of each record that still has it.
+    # One row per (code, customer) so the sheet can be filtered or pivoted
+    # by either column. Ordered by catalogue order, then customer id.
+    # Covers every record in the enriched file (matched + enriched-only),
+    # so no remaining issue is omitted.
+    remaining = wb.create_sheet("Remaining Issues")
+    remaining.append(["Code", "Name", "Customer"])
+    for code, name in ISSUE_CATALOGUE.items():
+        ids = sorted(rid for rid, codes in after_map.items() if code in codes)
+        for rid in ids:
+            remaining.append([code, name, rid])
 
     buffer = io.BytesIO()
     wb.save(buffer)
