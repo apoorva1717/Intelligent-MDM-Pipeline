@@ -140,8 +140,11 @@ _ADDRESS_PATTERNS = [
         rf"^\s*(?:{_DIRECTION}\s+)?{_STREET_TOKEN}(?:\s+{_STREET_TOKEN})*\s+(?:{_STREET_SUFFIXES})(?:\s+{_DIRECTION})?\s*$",
         re.IGNORECASE,
     ),
-    # "Suite 400", "Ste 400", "Unit 12", "Floor 3", "Bldg 4", "Room 12"
-    re.compile(r"\b(?:Suite|Ste|Unit|Floor|Bldg|Building|Room|Rm)\s*\.?\s*[\w\-]+\b", re.IGNORECASE),
+    # "Suite 400", "Ste 400", "Unit 12", "Floor 3", "Bldg 4", "Room 12".
+    # The marker needs a trailing word boundary and a space before its
+    # value, otherwise "Unit" matches inside "United" and "Ste" inside
+    # "Stevens", corrupting ordinary names.
+    re.compile(r"\b(?:Suite|Ste|Unit|Floor|Bldg|Building|Room|Rm)\b\.?\s+[\w\-]+\b", re.IGNORECASE),
     # "PO Box 12345", "P.O. Box 12345", "Post Office Box 12345",
     # bare "Box 100", "Mail Box 5", "Mailbox 42"
     re.compile(
@@ -312,6 +315,26 @@ def _street_person_name(value: str) -> str | None:
         return None
     m = _STREET_PERSON_RE.match(value.strip())
     return m.group(1).strip() if m else None
+
+
+# UC 16 — institution + embedded department split.
+# A trailing "Department of X" / "Division of X" phrase in Name 1.
+_DEPT_PHRASE_RE = re.compile(
+    r"\s+((?:Department|Dept\.?|Division|Div\.?)\s+(?:of|for)\s+.+)$",
+    re.IGNORECASE,
+)
+# The Name 1 prefix qualifies as an institution (so the trailing department
+# is a sub-unit to move out) only if it carries an institution keyword.
+# Jurisdictions like "United States" / "Florida" / "Wisconsin" do NOT, so
+# government agencies such as "United States Department of Agriculture" or
+# "Florida Department of Health" are left intact in Name 1.
+_INSTITUTION_PREFIX_RE = re.compile(
+    r"\b(?:University|College|Institute|Polytechnic|Hospital|Clinic|"
+    r"School|Center|Centre|Foundation|"
+    r"Laborator(?:y|ies)|Labs?|"
+    r"Inc|Incorporated|Corp|Corporation|Company|LLC|Ltd)\b",
+    re.IGNORECASE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -898,6 +921,34 @@ def preprocess_record(
                 res.contact = extracted
                 res.note(7, f"extracted contact from {field_name} ({reason})")
             setattr(res, field_name, remaining or None)
+
+    # ---------------------------------------------------------------
+    # UC 16 — Split an institution + embedded department in Name 1.
+    # "University of Miami Department of Chemistry" → name1="University
+    # of Miami", name2="Department of Chemistry". Only fires when the
+    # prefix carries an institution keyword, so government agencies
+    # ("United States Department of Agriculture", "Florida Department of
+    # Health") are left intact. The department goes to the first empty
+    # name slot; if none is free, Name 1 is left unchanged and flagged.
+    # ---------------------------------------------------------------
+    if res.name1 and res.name1.strip():
+        m = _DEPT_PHRASE_RE.search(res.name1)
+        if m:
+            prefix = res.name1[: m.start()].strip(" ,;-")
+            dept = m.group(1).strip(" ,;-")
+            if prefix and _INSTITUTION_PREFIX_RE.search(prefix):
+                target = None
+                if not (res.name2 and res.name2.strip()):
+                    target = "name2"
+                elif not (res.name3 and res.name3.strip()):
+                    target = "name3"
+                if target:
+                    setattr(res, target, dept)
+                    res.name1 = prefix
+                    res.note(16, f"split department {dept!r} from name1 to {target}")
+                else:
+                    res.flags.append("name1-embedded-department")
+                    res.note(16, f"department {dept!r} embedded in name1 but name2/name3 full")
 
     # ---------------------------------------------------------------
     # UC 13 — Name 3 residual junk cleanup. After the structured

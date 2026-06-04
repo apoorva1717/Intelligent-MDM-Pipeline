@@ -142,6 +142,12 @@ class TestRoutes:
             )
         }
 
+    @staticmethod
+    def _col(header: list, field: str) -> int:
+        """Index of a result field's column, resolved via its output header."""
+        from api.output_columns import RESPONSE_COLUMNS
+        return header.index(RESPONSE_COLUMNS[field])
+
     @pytest.mark.asyncio
     async def test_enrich_file_returns_xlsx(self, client):
         """XLSX upload is enriched and returned as an XLSX file whose columns
@@ -177,7 +183,8 @@ class TestRoutes:
 
     @pytest.mark.asyncio
     async def test_enrich_file_columns_match_response_body(self, client):
-        """The output columns are identical to the keys of a result object."""
+        """Output columns are driven by RESPONSE_COLUMNS: every key is a real
+        result field and the header row is exactly the mapping's values."""
         from api.models import EnrichmentResult
         from api.output_columns import RESPONSE_COLUMNS
 
@@ -185,10 +192,10 @@ class TestRoutes:
         resp = await client.post("/enrich/file", files=self._xlsx_upload(data))
         assert resp.status_code == 200
         header = [c.value for c in load_workbook(io.BytesIO(resp.content)).active[1]]
-        # Mapping keys mirror the serialised response fields one-to-one.
-        assert list(RESPONSE_COLUMNS.keys()) == list(
-            EnrichmentResult(record_id="x").model_dump().keys()
-        )
+        # Every mapped key is a valid serialised result field (curatable
+        # subset/order — not required to match the model one-to-one).
+        result_fields = set(EnrichmentResult(record_id="x").model_dump().keys())
+        assert set(RESPONSE_COLUMNS.keys()) <= result_fields
         assert header == list(RESPONSE_COLUMNS.values())
 
     @pytest.mark.asyncio
@@ -223,9 +230,9 @@ class TestRoutes:
         ws = load_workbook(io.BytesIO(resp.content)).active
         header = [c.value for c in ws[1]]
         row = [c.value for c in ws[2]]
-        assert row[header.index("street_cleaned")]  # first occurrence kept
-        assert row[header.index("street_2_cleaned")] is None  # duplicate dropped
-        assert row[header.index("street_3_cleaned")] is None  # duplicate dropped
+        assert row[self._col(header, "street_cleaned")]  # first occurrence kept
+        assert row[self._col(header, "street_2_cleaned")] is None  # duplicate dropped
+        assert row[self._col(header, "street_3_cleaned")] is None  # duplicate dropped
 
     @pytest.mark.asyncio
     async def test_enrich_file_dedupes_address_from_name_field(self, client):
@@ -247,8 +254,8 @@ class TestRoutes:
         ws = load_workbook(io.BytesIO(resp.content)).active
         header = [c.value for c in ws[1]]
         row = [c.value for c in ws[2]]
-        assert row[header.index("street_cleaned")]            # Street 1 kept
-        assert row[header.index("street_3_cleaned")] is None  # Name 2 dup dropped
+        assert row[self._col(header, "street_cleaned")]            # Street 1 kept
+        assert row[self._col(header, "street_3_cleaned")] is None  # Name 2 dup dropped
 
     @pytest.mark.asyncio
     async def test_enrich_file_street_junk_reaches_output(self, client):
@@ -269,11 +276,12 @@ class TestRoutes:
         ws = load_workbook(io.BytesIO(resp.content)).active
         h = [c.value for c in ws[1]]
         rows = {
-            r[h.index("record_id")]: r for r in ws.iter_rows(min_row=2, values_only=True)
+            r[self._col(h, "record_id")]: r
+            for r in ws.iter_rows(min_row=2, values_only=True)
         }
-        s2 = h.index("street_2_cleaned")
-        contact = h.index("contact_enriched")
-        email = h.index("email_enriched")
+        s2 = self._col(h, "street_2_cleaned")
+        contact = self._col(h, "contact_enriched")
+        email = self._col(h, "email_enriched")
 
         assert rows["A"][s2] == "250 CENTRAL Ave"   # connector stripped
         assert rows["B"][s2] is None                # orphan marker dropped

@@ -319,6 +319,59 @@ class TestUC13StreetPerson:
         assert res.street2 == "Dr Jane Doe"
         assert "contact-conflict" in res.flags
 
+
+# ── UC 16 — Institution + embedded department split in Name 1 ─────────────────
+
+class TestUC16DepartmentSplit:
+    @staticmethod
+    def _run(name1, name2=None, name3=None):
+        from enrichment.preprocess import preprocess_record
+        return preprocess_record(name1, name2, name3, None, None, None, None, None)
+
+    def test_institution_department_split(self):
+        res = self._run("University of Miami Department of Chemistry")
+        assert res.name1 == "University of Miami"
+        assert res.name2 == "Department of Chemistry"
+
+    def test_division_split(self):
+        res = self._run("Bruker Life Sciences, Inc. Division of Spectroscopy")
+        assert res.name1 == "Bruker Life Sciences, Inc."
+        assert res.name2 == "Division of Spectroscopy"
+
+    def test_government_agency_not_split(self):
+        # No institution keyword in the prefix → leave intact.
+        res = self._run("United States Department of Agriculture")
+        assert res.name1 == "United States Department of Agriculture"
+        assert res.name2 is None
+
+    def test_state_agency_not_split(self):
+        res = self._run("Florida Department of Health")
+        assert res.name1 == "Florida Department of Health"
+        assert res.name2 is None
+
+    def test_split_goes_to_name3_when_name2_full(self):
+        res = self._run(
+            "University of Miami Department of Chemistry", "Existing Dept",
+        )
+        # name2 occupied → department goes to the next free slot (name3).
+        assert res.name1 == "University of Miami"
+        assert res.name2 == "Existing Dept"
+        assert res.name3 == "Department of Chemistry"
+
+    def test_no_split_when_all_name_slots_full(self):
+        res = self._run(
+            "University of Miami Department of Chemistry",
+            "Existing Dept", "Another Dept",
+        )
+        # No free slot → name1 left intact, flagged for review.
+        assert res.name1 == "University of Miami Department of Chemistry"
+        assert "name1-embedded-department" in res.flags
+
+    def test_unit_substring_not_extracted_as_address(self):
+        # "Unit" inside "United" must NOT be ripped out as a sub-location.
+        res = self._run("United Technologies Corporation")
+        assert res.name1 == "United Technologies Corporation"
+
     def test_person_with_existing_contact_flagged(self):
         res = _run(
             "Some Org",
