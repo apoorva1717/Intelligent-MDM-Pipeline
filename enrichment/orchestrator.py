@@ -203,9 +203,6 @@ def _init_result(record: EnrichmentRecord) -> dict[str, Any]:
         "sales_organization": record.sales_organization,
         "distribution_channel": record.distribution_channel,
         "division": record.division,
-        "name4": record.name_4,
-        "street_4": record.street_4,
-        "street_5": record.street_5,
         "country_region_key": record.country_region_key,
         "postal_code": record.postal_code,
         "city": record.city,
@@ -224,12 +221,15 @@ def _init_result(record: EnrichmentRecord) -> dict[str, Any]:
         "name1_original": record.name1,
         "name2_original": record.name2,
         "name3_original": record.name3,
+        "name4_original": record.name4,
         "name1_enriched": None,
         "name2_enriched": None,
         "name3_enriched": None,
+        "name4_enriched": None,
         "name1_changed": False,
         "name2_changed": False,
         "name3_changed": False,
+        "name4_changed": False,
         "search_term_1": None,
         "search_term_2": None,
         "department_domain": None,
@@ -253,10 +253,16 @@ def _init_result(record: EnrichmentRecord) -> dict[str, Any]:
         "street2_changed": False,
         "street3_original": record.street3,
         "street3_changed": False,
+        "street4_original": record.street4,
+        "street4_changed": False,
+        "street5_original": record.street5,
+        "street5_changed": False,
         # Address Stage 1 outputs — populated by _run_address_stage.
         "street_cleaned": None,
         "street_2_cleaned": None,
         "street_3_cleaned": None,
+        "street_4_cleaned": None,
+        "street_5_cleaned": None,
         "suite": None,
         "building": None,
         "floor": None,
@@ -297,7 +303,8 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     FIX(Bug 8): changed flags are True only when enriched is not None
     AND enriched differs from original.
     """
-    for field in ("name1_enriched", "name2_enriched", "name3_enriched"):
+    for field in ("name1_enriched", "name2_enriched", "name3_enriched",
+                  "name4_enriched"):
         val = result.get(field)
         if val is not None and not str(val).strip():
             result[field] = None
@@ -309,7 +316,7 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # "Department of Chemistry".
     # UC 5 scope: never canonicalise granular units (lab/group/
     # centre/facility) — leave them verbatim.
-    for field in ("name2_enriched", "name3_enriched"):
+    for field in ("name2_enriched", "name3_enriched", "name4_enriched"):
         val = result.get(field)
         if val and not is_granular_unit(val):
             canonical = canonicalise_unit_name(val)
@@ -323,7 +330,7 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # cleared the field (e.g. extracted an email, address, contact
     # name). Enrichment must never silently drop user-supplied fields
     # but must also respect preprocessing's decision to empty a field.
-    for field in ("name2", "name3"):
+    for field in ("name2", "name3", "name4"):
         if result.get(f"{field}_enriched") is None and field not in preprocess_cleared:
             orig = result.get(f"{field}_original")
             if orig and str(orig).strip():
@@ -334,7 +341,8 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # original value in the enriched slot. This means "enriched"
     # always reflects the final state after the pipeline runs, not
     # only what changed.
-    for base in ("care_of", "contact", "email", "street1", "street2", "street3"):
+    for base in ("care_of", "contact", "email", "street1", "street2",
+                 "street3", "street4", "street5"):
         if result.get(f"{base}_enriched") is None:
             orig = result.get(f"{base}_original")
             if orig and str(orig).strip():
@@ -356,8 +364,8 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
         orig = result.get(f"{field}_original")
         return bool(enr and enr != orig)
 
-    for f in ("name1", "name2", "name3", "care_of", "contact", "email",
-              "street1", "street2", "street3"):
+    for f in ("name1", "name2", "name3", "name4", "care_of", "contact",
+              "email", "street1", "street2", "street3", "street4", "street5"):
         result[f"{f}_changed"] = _changed(f)
 
     # Domain fallback: if ROR didn't supply a domain but a successful
@@ -1029,6 +1037,8 @@ class Orchestrator:
                 street=_pick("street1"),
                 street_2=_pick("street2"),
                 street_3=_pick("street3"),
+                street_4=_pick("street4"),
+                street_5=_pick("street5"),
                 city=record.city,
                 state=record.state,
                 zip_code=record.zip,
@@ -1112,7 +1122,7 @@ class Orchestrator:
             # suspicious — no title, no org signals, 2-3 capitalised
             # words.
             suspicious = find_suspicious_plain_names(
-                record.name1, record.name2, record.name3,
+                record.name1, record.name2, record.name3, record.name4,
             )
             person_verdicts = await llm_classify_plain_names_async(
                 self._llm_client, suspicious,
@@ -1122,11 +1132,14 @@ class Orchestrator:
                 name1=record.name1,
                 name2=record.name2,
                 name3=record.name3,
+                name4=record.name4,
                 contact=record.contact,
                 email=record.email,
                 street1=result["street1_original"],
                 street2=record.street2,
                 street3=record.street3,
+                street4=record.street4,
+                street5=record.street5,
                 llm_person_verdicts=person_verdicts,
             )
 
@@ -1150,6 +1163,7 @@ class Orchestrator:
                 ("name1", pre.name1, record.name1),
                 ("name2", pre.name2, record.name2),
                 ("name3", pre.name3, record.name3),
+                ("name4", pre.name4, record.name4),
             ):
                 orig_stripped = (orig or "").strip()
                 pre_stripped = (pre_val or "").strip()
@@ -1188,7 +1202,7 @@ class Orchestrator:
                 result["contact_enriched"] = pre.contact
             if pre.email is not None and pre.email != result["email_original"]:
                 result["email_enriched"] = pre.email
-            for slot in ("street1", "street2", "street3"):
+            for slot in ("street1", "street2", "street3", "street4", "street5"):
                 v = getattr(pre, slot)
                 if v is not None and v != result[f"{slot}_original"]:
                     result[f"{slot}_enriched"] = v
@@ -1197,6 +1211,7 @@ class Orchestrator:
             pp_name1 = pre.name1
             pp_name2 = pre.name2
             pp_name3 = pre.name3
+            pp_name4 = pre.name4
             pp_contact = pre.contact
             pp_street1 = pre.street1
             # Stash for the post-Tier-1 website resolver. Read by
@@ -1324,7 +1339,7 @@ class Orchestrator:
 
                     # ── Child match for name2 and name3 ──────────────
                     children = ror_parent.get("children", [])
-                    for field_key, field_val in [("name2", pp_name2), ("name3", pp_name3)]:
+                    for field_key, field_val in [("name2", pp_name2), ("name3", pp_name3), ("name4", pp_name4)]:
                         if not (field_val and field_val.strip()):
                             continue
                         val_for_match = (
@@ -1547,7 +1562,7 @@ class Orchestrator:
                 and result.get("name1_enriched")
             )
             any_canonical_ran = False
-            for field_key, pp_val in [("name2", pp_name2), ("name3", pp_name3)]:
+            for field_key, pp_val in [("name2", pp_name2), ("name3", pp_name3), ("name4", pp_name4)]:
                 if not (pp_val and pp_val.strip()):
                     continue
                 # Already resolved by child match above?
@@ -1602,7 +1617,7 @@ class Orchestrator:
                 result["tier_used"] = 2
                 has_enriched = any(
                     result.get(f"{f}_enriched") and result.get(f"{f}_enriched") != getattr(record, f)
-                    for f in ("name2", "name3")
+                    for f in ("name2", "name3", "name4")
                 )
                 if has_enriched:
                     result["source"] = "llm_canonical"

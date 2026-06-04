@@ -324,9 +324,11 @@ class TestUC13StreetPerson:
 
 class TestUC16DepartmentSplit:
     @staticmethod
-    def _run(name1, name2=None, name3=None):
+    def _run(name1, name2=None, name3=None, name4=None):
         from enrichment.preprocess import preprocess_record
-        return preprocess_record(name1, name2, name3, None, None, None, None, None)
+        return preprocess_record(
+            name1, name2, name3, None, None, None, None, None, name4=name4,
+        )
 
     def test_institution_department_split(self):
         res = self._run("University of Miami Department of Chemistry")
@@ -358,12 +360,25 @@ class TestUC16DepartmentSplit:
         assert res.name2 == "Existing Dept"
         assert res.name3 == "Department of Chemistry"
 
-    def test_no_split_when_all_name_slots_full(self):
+    def test_split_goes_to_name4_when_name2_and_name3_full(self):
         res = self._run(
             "University of Miami Department of Chemistry",
             "Existing Dept", "Another Dept",
         )
-        # No free slot → name1 left intact, flagged for review.
+        # name2 and name3 occupied → department goes to name4 (the next
+        # free dept slot, which now follows the same rules as name2/name3).
+        assert res.name1 == "University of Miami"
+        assert res.name2 == "Existing Dept"
+        assert res.name3 == "Another Dept"
+        assert res.name4 == "Department of Chemistry"
+
+    def test_no_split_when_all_name_slots_full(self):
+        res = self._run(
+            "University of Miami Department of Chemistry",
+            "Existing Dept", "Another Dept", "Third Dept",
+        )
+        # No free slot (name2/name3/name4 all full) → name1 left intact,
+        # flagged for review.
         assert res.name1 == "University of Miami Department of Chemistry"
         assert "name1-embedded-department" in res.flags
 

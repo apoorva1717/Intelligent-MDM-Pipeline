@@ -4,13 +4,14 @@ Runs after name enrichment inside ``POST /enrich``. The single entry point
 is :func:`process_address`, which takes the post-name-enrichment record
 state plus an LLM client and returns an :class:`AddressResult`. No
 network or external API call is issued beyond an optional LLM residual
-classification on ambiguous values in street_2/street_3.
+classification on ambiguous values in the secondary street slots
+(street_2 … street_5).
 
 Pipeline order per record:
 
     1. Clean    — trim/collapse whitespace, strip stray punctuation
     2. Extract  — regex pulls PO Box, sub-locations, c/o, logistics,
-                  mail codes from street/street_2/street_3; splits a
+                  mail codes from street/street_2 … street_5; splits a
                   full address jammed into one field into components
     3. Cross    — flag-only checks on duplicates, conflicts, org/name
                   bleed-through (no field moves)
@@ -83,6 +84,8 @@ class AddressResult:
     street_cleaned: str | None = None
     street_2_cleaned: str | None = None
     street_3_cleaned: str | None = None
+    street_4_cleaned: str | None = None
+    street_5_cleaned: str | None = None
     suite: str | None = None
     building: str | None = None
     floor: str | None = None
@@ -530,21 +533,21 @@ def _looks_unambiguous(value: str | None) -> bool:
 
 async def _apply_residual_llm(
     res: AddressResult,
-    street_2: str | None,
-    street_3: str | None,
+    secondary: dict[str, str | None],
     name1: str | None,
     street: str | None,
     city: str | None,
     country: str | None,
     llm_client: OpenAIClient | None,
-) -> tuple[str | None, str | None]:
-    """Run residual classification on whatever remains in street_2 /
-    street_3 after extraction. Returns the possibly-mutated
-    ``(street_2, street_3)`` strings."""
+) -> dict[str, str | None]:
+    """Run residual classification on whatever remains in the secondary
+    street slots (street_2 … street_5) after extraction. ``secondary``
+    maps slot name → value; returns the same dict, possibly mutated
+    (a slot reclassified as department/mail-code/logistics is blanked)."""
     if llm_client is None:
-        return street_2, street_3
+        return secondary
 
-    for slot_name, current in (("street_2", street_2), ("street_3", street_3)):
+    for slot_name, current in list(secondary.items()):
         if not current or not current.strip():
             continue
         if _looks_unambiguous(current):
@@ -563,10 +566,7 @@ async def _apply_residual_llm(
             res.issue("G1-ADDR-011")
             if res.department_addendum is None:
                 res.department_addendum = current.strip()
-            if slot_name == "street_2":
-                street_2 = None
-            else:
-                street_3 = None
+            secondary[slot_name] = None
         elif cls == "PERSON_NAME":
             res.issue("G1-CROSS-003")
         elif cls == "ORG_NAME":
@@ -574,17 +574,11 @@ async def _apply_residual_llm(
         elif cls == "MAIL_CODE":
             if not res.mail_code:
                 res.mail_code = current.strip()
-            if slot_name == "street_2":
-                street_2 = None
-            else:
-                street_3 = None
+            secondary[slot_name] = None
         elif cls == "LOGISTICS":
             if not res.unloading_point:
                 res.unloading_point = current.strip()
-            if slot_name == "street_2":
-                street_2 = None
-            else:
-                street_3 = None
+            secondary[slot_name] = None
         elif cls == "STREET_ADDRESS":
             pass
         elif cls == "UNCLEAR":
@@ -594,7 +588,7 @@ async def _apply_residual_llm(
         else:
             res.issue("G1-ADDR-009")
 
-    return street_2, street_3
+    return secondary
 
 
 # ---------------------------------------------------------------------------
@@ -645,6 +639,8 @@ async def process_address(
     street: str | None,
     street_2: str | None,
     street_3: str | None,
+    street_4: str | None = None,
+    street_5: str | None = None,
     city: str | None,
     state: str | None,
     zip_code: str | None,
@@ -668,15 +664,19 @@ async def process_address(
     # junk (URLs, phones, emails, stray person references) so the cleaned
     # street output is never polluted, even when the orchestrator fell back
     # to the raw original street value.
-    s1 = _scrub_street(_clean(street))
-    s2 = _scrub_street(_clean(street_2))
-    s3 = _scrub_street(_clean(street_3))
+    slots: dict[str, str | None] = {
+        "s1": _scrub_street(_clean(street)),
+        "s2": _scrub_street(_clean(street_2)),
+        "s3": _scrub_street(_clean(street_3)),
+        "s4": _scrub_street(_clean(street_4)),
+        "s5": _scrub_street(_clean(street_5)),
+    }
 
     # Step 2a — full address jammed into street1 → split.
-    if s1:
-        split_street, city_inf, state_inf, zip_inf = _split_full_address(s1)
+    if slots["s1"]:
+        split_street, city_inf, state_inf, zip_inf = _split_full_address(slots["s1"])
         if city_inf or state_inf or zip_inf:
-            s1 = split_street
+            slots["s1"] = split_street
             if city_inf and not (city and city.strip()):
                 res.city_inferred = city_inf
             if state_inf and not (state and state.strip()):
@@ -687,7 +687,8 @@ async def process_address(
     po_box_present = bool(po_box and po_box.strip())
 
     # Step 2b — extractors over each street slot.
-    for slot_name, value in (("s1", s1), ("s2", s2), ("s3", s3)):
+    for slot_name in ("s1", "s2", "s3", "s4", "s5"):
+        value = slots[slot_name]
         if not value:
             continue
         work = value
@@ -723,8 +724,9 @@ async def process_address(
         if logistics and not res.unloading_point:
             res.unloading_point = logistics.strip()
 
-        # Mail codes. Bare-token form only allowed in street_2 / street_3.
-        allow_bare = slot_name in ("s2", "s3")
+        # Mail codes. Bare-token form only allowed in the secondary
+        # street slots (street_2 … street_5), never in street_1.
+        allow_bare = slot_name != "s1"
         work, code = _extract_mail_code(work, allow_bare=allow_bare)
         if code and not res.mail_code:
             res.mail_code = code
@@ -738,49 +740,47 @@ async def process_address(
             res.issue("G4-ADDR-008")
 
         # Persist the trimmed remainder back to the slot.
-        cleaned_remainder = _strip_residue(work) or None
-        if slot_name == "s1":
-            s1 = cleaned_remainder
-        elif slot_name == "s2":
-            s2 = cleaned_remainder
-        else:
-            s3 = cleaned_remainder
+        slots[slot_name] = _strip_residue(work) or None
 
     # Step 3 — cross-field checks (flag only).
     _cross_field_checks(
         res,
-        street_cleaned=s1,
-        street_2_cleaned=s2,
+        street_cleaned=slots["s1"],
+        street_2_cleaned=slots["s2"],
         name1=name1,
         name2=name2,
         name3=name3,
         po_box_present=po_box_present,
     )
 
-    # Step 4 — LLM residual classification on street_2 / street_3.
-    s2, s3 = await _apply_residual_llm(
+    # Step 4 — LLM residual classification on the secondary slots
+    # (street_2 … street_5).
+    secondary = await _apply_residual_llm(
         res,
-        street_2=s2,
-        street_3=s3,
+        {k: slots[k] for k in ("s2", "s3", "s4", "s5")},
         name1=name1,
-        street=s1,
+        street=slots["s1"],
         city=city,
         country=country,
         llm_client=llm_client,
     )
+    slots.update(secondary)
 
     # Step 5 — normalise abbreviations on the cleaned street fields.
-    res.street_cleaned = _normalise_street_value(s1)
-    res.street_2_cleaned = _normalise_street_value(s2)
-    res.street_3_cleaned = _normalise_street_value(s3)
+    res.street_cleaned = _normalise_street_value(slots["s1"])
+    res.street_2_cleaned = _normalise_street_value(slots["s2"])
+    res.street_3_cleaned = _normalise_street_value(slots["s3"])
+    res.street_4_cleaned = _normalise_street_value(slots["s4"])
+    res.street_5_cleaned = _normalise_street_value(slots["s5"])
 
     # Step 6 — dedupe identical street lines across slots. SAP exports often
-    # copy the same address line into Street 1/2/3; keep the first occurrence
+    # copy the same address line into Street 1-5; keep the first occurrence
     # and blank later slots that merely repeat it so the output does not show
-    # the same street three times. G3-ADDR-012 records that a duplicate was
+    # the same street more than once. G3-ADDR-012 records that a duplicate was
     # dropped.
     _seen: set[str] = set()
-    for _slot in ("street_cleaned", "street_2_cleaned", "street_3_cleaned"):
+    for _slot in ("street_cleaned", "street_2_cleaned", "street_3_cleaned",
+                  "street_4_cleaned", "street_5_cleaned"):
         _val = getattr(res, _slot)
         if not _val:
             continue
@@ -820,6 +820,7 @@ def merge_into_result(
     """
     for field_name in (
         "street_cleaned", "street_2_cleaned", "street_3_cleaned",
+        "street_4_cleaned", "street_5_cleaned",
         "suite", "building", "floor", "room", "unit", "mail_stop",
         "po_box_extracted", "unloading_point", "mail_code",
         "unclear_address_info",

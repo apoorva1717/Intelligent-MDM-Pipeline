@@ -240,6 +240,10 @@ class EnrichmentRecord(BaseModel):
         return self.name_3
 
     @property
+    def name4(self) -> Optional[str]:
+        return self.name_4
+
+    @property
     def street(self) -> Optional[str]:
         # Legacy single-street accessor → SAP "Street 1".
         return self.street_1
@@ -255,6 +259,14 @@ class EnrichmentRecord(BaseModel):
     @property
     def street3(self) -> Optional[str]:
         return self.street_3
+
+    @property
+    def street4(self) -> Optional[str]:
+        return self.street_4
+
+    @property
+    def street5(self) -> Optional[str]:
+        return self.street_5
 
     @property
     def state(self) -> Optional[str]:
@@ -302,9 +314,6 @@ class EnrichmentResult(BaseModel):
     sales_organization: Optional[str] = None
     distribution_channel: Optional[str] = None
     division: Optional[str] = None
-    name4: Optional[str] = None
-    street_4: Optional[str] = None
-    street_5: Optional[str] = None
     country_region_key: Optional[str] = None
     postal_code: Optional[str] = None
     city: Optional[str] = None
@@ -325,6 +334,7 @@ class EnrichmentResult(BaseModel):
     name1_enriched: Optional[str] = None
     name2_enriched: Optional[str] = None
     name3_enriched: Optional[str] = None
+    name4_enriched: Optional[str] = None
 
     # Compact search handles for downstream re-querying.
     # search_term_1 mirrors name1 (acronym preferred, domain fallback);
@@ -350,6 +360,8 @@ class EnrichmentResult(BaseModel):
     house_number: Optional[str] = None
     street_2_cleaned: Optional[str] = None
     street_3_cleaned: Optional[str] = None
+    street_4_cleaned: Optional[str] = None
+    street_5_cleaned: Optional[str] = None
     suite: Optional[str] = None
     building: Optional[str] = None
     floor: Optional[str] = None

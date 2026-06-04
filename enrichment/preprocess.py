@@ -41,12 +41,15 @@ class PreprocessResult:
     name1: str | None = None
     name2: str | None = None
     name3: str | None = None
+    name4: str | None = None
     care_of: str | None = None
     contact: str | None = None
     email: str | None = None
     street1: str | None = None
     street2: str | None = None
     street3: str | None = None
+    street4: str | None = None
+    street5: str | None = None
     use_cases: list[int] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)
     # Names where UC 11 normalised a DBA variant to "DBA". Downstream
@@ -721,6 +724,9 @@ def preprocess_record(
     street1: str | None,
     street2: str | None,
     street3: str | None,
+    name4: str | None = None,
+    street4: str | None = None,
+    street5: str | None = None,
     llm_person_verdicts: dict[str, str] | None = None,
 ) -> PreprocessResult:
     """Run all deterministic preprocessing.
@@ -731,9 +737,10 @@ def preprocess_record(
     via ``llm_person_verdicts`` (keyed by lowercased text).
     """
     res = PreprocessResult(
-        name1=name1, name2=name2, name3=name3,
+        name1=name1, name2=name2, name3=name3, name4=name4,
         contact=contact, email=email,
         street1=street1, street2=street2, street3=street3,
+        street4=street4, street5=street5,
     )
     llm_person_verdicts = llm_person_verdicts or {}
 
@@ -758,7 +765,7 @@ def preprocess_record(
     # not a contact — leave the field untouched in that case.
     # e.g. "Attn: FISH LAB" → NOT a contact.
     # ---------------------------------------------------------------
-    for field_name in ("name1", "name2", "name3"):
+    for field_name in ("name1", "name2", "name3", "name4"):
         # name2 is handled exclusively by UC 15 above (5-case classifier).
         if field_name == "name2" and name2_handled_by_co_attn:
             continue
@@ -804,7 +811,7 @@ def preprocess_record(
     # ---------------------------------------------------------------
     # UC 6 — Accounts Payable normalisation
     # ---------------------------------------------------------------
-    for field_name in ("name1", "name2", "name3"):
+    for field_name in ("name1", "name2", "name3", "name4"):
         val = getattr(res, field_name)
         if val and _is_ap_reference(val):
             setattr(res, field_name, "Accounts Payable")
@@ -818,7 +825,8 @@ def preprocess_record(
     # conflict (a DIFFERENT email already populated): keep the source
     # value intact and flag it so a reviewer can reconcile the two.
     # ---------------------------------------------------------------
-    for field_name in ("name1", "name2", "name3", "street1", "street2", "street3"):
+    for field_name in ("name1", "name2", "name3", "name4",
+                       "street1", "street2", "street3", "street4", "street5"):
         val = getattr(res, field_name)
         if not val:
             continue
@@ -847,7 +855,7 @@ def preprocess_record(
     # ---------------------------------------------------------------
     # UC 9 — Address extraction
     # ---------------------------------------------------------------
-    for field_name in ("name1", "name2", "name3"):
+    for field_name in ("name1", "name2", "name3", "name4"):
         val = getattr(res, field_name)
         if not val:
             continue
@@ -867,7 +875,7 @@ def preprocess_record(
     # ---------------------------------------------------------------
     # UC 11 — DBA normalisation (rewrite any variant to "DBA")
     # ---------------------------------------------------------------
-    for field_name in ("name1", "name2", "name3"):
+    for field_name in ("name1", "name2", "name3", "name4"):
         val = getattr(res, field_name)
         if not val:
             continue
@@ -880,7 +888,7 @@ def preprocess_record(
     # ---------------------------------------------------------------
     # UC 10 — Opaque code / meaningless identifier clearing
     # ---------------------------------------------------------------
-    for field_name in ("name2", "name3"):
+    for field_name in ("name2", "name3", "name4"):
         val = getattr(res, field_name)
         if val and _is_opaque_code(val):
             res.note(10, f"{field_name} cleared — opaque code {val!r}")
@@ -889,7 +897,7 @@ def preprocess_record(
     # ---------------------------------------------------------------
     # UC 7 — Contact extraction
     # ---------------------------------------------------------------
-    for field_name in ("name1", "name2", "name3"):
+    for field_name in ("name1", "name2", "name3", "name4"):
         val = getattr(res, field_name)
         if not val:
             continue
@@ -942,13 +950,15 @@ def preprocess_record(
                     target = "name2"
                 elif not (res.name3 and res.name3.strip()):
                     target = "name3"
+                elif not (res.name4 and res.name4.strip()):
+                    target = "name4"
                 if target:
                     setattr(res, target, dept)
                     res.name1 = prefix
                     res.note(16, f"split department {dept!r} from name1 to {target}")
                 else:
                     res.flags.append("name1-embedded-department")
-                    res.note(16, f"department {dept!r} embedded in name1 but name2/name3 full")
+                    res.note(16, f"department {dept!r} embedded in name1 but name2/name3/name4 full")
 
     # ---------------------------------------------------------------
     # UC 13 — Name 3 residual junk cleanup. After the structured
@@ -962,10 +972,15 @@ def preprocess_record(
         if cleaned3 != res.name3:
             res.note(13, f"name3 junk stripped (was {res.name3!r})")
             res.name3 = cleaned3
+    if res.name4 and res.name4.strip():
+        cleaned4 = _strip_name3_junk(res.name4)
+        if cleaned4 != res.name4:
+            res.note(13, f"name4 junk stripped (was {res.name4!r})")
+            res.name4 = cleaned4
 
     # Same residual cleanup for the street slots — URLs and phone/fax
     # numbers only (opaque codes are left alone so street numbers survive).
-    for slot in ("street1", "street2", "street3"):
+    for slot in ("street1", "street2", "street3", "street4", "street5"):
         val = getattr(res, slot)
         if not (val and val.strip()):
             continue
@@ -996,10 +1011,23 @@ def preprocess_record(
     # extraction is not promoted, and before UC 12 so dedup sees the
     # post-shift state.
     # ---------------------------------------------------------------
-    if not (res.name2 and res.name2.strip()) and res.name3 and res.name3.strip():
-        res.note(14, f"name3 -> name2 shift (name2 was empty, name3={res.name3!r})")
-        res.name2 = res.name3.strip()
-        res.name3 = None
+    # Pack the dept slots (name2, name3, name4) leftward so any gap left
+    # by a cleared field is closed and the dept lands in name2 where the
+    # tiers look for it. With only name3 populated this reduces to the
+    # original name3 -> name2 shift.
+    current = [
+        (v.strip() if v and v.strip() else None)
+        for v in (res.name2, res.name3, res.name4)
+    ]
+    packed = [v for v in current if v]
+    packed += [None] * (3 - len(packed))
+    if current != packed:
+        res.note(
+            14,
+            "name slots packed leftward "
+            f"(name2={res.name2!r}, name3={res.name3!r}, name4={res.name4!r})",
+        )
+        res.name2, res.name3, res.name4 = packed
 
     # ---------------------------------------------------------------
     # UC 12 — Identical duplicate name fields cleared silently.
@@ -1013,6 +1041,16 @@ def preprocess_record(
     def _norm(v: str | None) -> str:
         return re.sub(r"\s+", " ", (v or "").strip()).lower()
 
+    # Clear later slots first so an all-equal case collapses cleanly.
+    if res.name3 and res.name4 and _norm(res.name3) == _norm(res.name4):
+        res.note(12, f"name4 cleared — duplicate of name3 ({res.name4!r})")
+        res.name4 = None
+    if res.name2 and res.name4 and _norm(res.name2) == _norm(res.name4):
+        res.note(12, f"name4 cleared — duplicate of name2 ({res.name4!r})")
+        res.name4 = None
+    if res.name1 and res.name4 and _norm(res.name1) == _norm(res.name4):
+        res.note(12, f"name4 cleared — duplicate of name1 ({res.name4!r})")
+        res.name4 = None
     if res.name2 and res.name3 and _norm(res.name2) == _norm(res.name3):
         res.note(12, f"name3 cleared — duplicate of name2 ({res.name3!r})")
         res.name3 = None
@@ -1027,7 +1065,7 @@ def preprocess_record(
 
 
 def _first_empty_street_slot(res: PreprocessResult) -> str | None:
-    for slot in ("street1", "street2", "street3"):
+    for slot in ("street1", "street2", "street3", "street4", "street5"):
         if not getattr(res, slot):
             return slot
     return None
@@ -1041,6 +1079,7 @@ def find_suspicious_plain_names(
     name1: str | None,
     name2: str | None,
     name3: str | None,
+    name4: str | None = None,
 ) -> list[str]:
     """Return distinct plain-name candidates that need LLM classification.
 
@@ -1071,7 +1110,8 @@ def find_suspicious_plain_names(
         seen.add(key)
         out.append(candidate)
 
-    for field_name, val in (("name1", name1), ("name2", name2), ("name3", name3)):
+    for field_name, val in (("name1", name1), ("name2", name2),
+                            ("name3", name3), ("name4", name4)):
         if not val:
             continue
         stripped = val.strip()
