@@ -34,6 +34,17 @@ from llm.prompts import (
     ADDRESS_RESIDUAL_SYSTEM_PROMPT,
     ADDRESS_RESIDUAL_USER_PROMPT_TEMPLATE,
 )
+# Shared junk patterns / person detector — preprocess does not import this
+# module, so this import is acyclic. Used to scrub street values so the
+# cleaned-street OUTPUT is free of URLs, phone numbers, emails and stray
+# person references (the email/contact VALUES are captured upstream in
+# preprocessing; here we only clean the street string).
+from enrichment.preprocess import (
+    _EMAIL_RE,
+    _PHONE_RE,
+    _URL_RE,
+    _street_person_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +116,10 @@ class AddressResult:
 
 _STRAY_DOTS_RE = re.compile(r"\.{2,}")
 _MULTI_SPACE_RE = re.compile(r"\s+")
+# Leading connector words that prefix a secondary address line in some
+# exports ("ALSO 250 Central Ave", "AND 350 Central Ave"). They carry no
+# address meaning and are stripped.
+_LEADING_CONNECTOR_RE = re.compile(r"^(?:also|and|or|plus|&)\b[\s:,\-]*", re.IGNORECASE)
 
 
 def _clean(value: str | None) -> str | None:
@@ -123,8 +138,32 @@ def _clean(value: str | None) -> str | None:
     # Leading/trailing single dashes (a "lone" dash, not embedded).
     v = re.sub(r"^-+\s*", "", v)
     v = re.sub(r"\s*-+$", "", v)
+    # Drop a leading connector word ("ALSO", "AND", …).
+    v = _LEADING_CONNECTOR_RE.sub("", v)
     v = v.strip()
     return v or None
+
+
+def _scrub_street(value: str | None) -> str | None:
+    """Remove non-address junk from a street value: URLs, phone/fax
+    numbers, emails, and a whole-value person reference.
+
+    This guarantees the cleaned-street OUTPUT is junk-free regardless of
+    whether the orchestrator handed us the preprocessed value or fell back
+    to the raw original. The email/contact themselves are captured in
+    preprocessing; here we only tidy the street string.
+    """
+    if not value:
+        return None
+    # A street slot that is entirely a person reference → drop it (the
+    # contact is captured upstream).
+    if _street_person_name(value):
+        return None
+    out = _URL_RE.sub(" ", value)
+    out = _PHONE_RE.sub(" ", out)
+    out = _EMAIL_RE.sub(" ", out)
+    out = _strip_residue(out)
+    return out or None
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +221,14 @@ _BARE_MARKER_RE = re.compile(
     r"\b(?:Suite|Ste|Bldg|Building|Floor|Fl|Room|Rm|Unit|Mail\s+Stop|MS)\b\s*$",
     re.IGNORECASE,
 )
+# Subset of bare markers safe to DELETE when value-less: interior
+# sub-locations that are meaningless without a number ("Ste", "Room").
+# "Building"/"Bldg" is excluded — it can be a descriptor for a named
+# building ("Research I Bldg"), so it is flagged but kept.
+_BARE_MARKER_DELETE_RE = re.compile(
+    r"\b(?:Suite|Ste|Floor|Fl|Room|Rm|Unit|Mail\s+Stop|MS)\b\s*$",
+    re.IGNORECASE,
+)
 
 
 def _is_identifier_like(token: str) -> bool:
@@ -230,7 +277,14 @@ def _extract_sublocations(text: str) -> tuple[str, dict[str, str], bool]:
                 found[target] = captured
             work = work[: m.start()] + work[m.end():]
             work = _strip_residue(work)
+    # A marker word with no value attached ("Ste", "Room" on its own) is
+    # noise — flag it, and drop the value-requiring ones from the residual
+    # so they do not linger in the cleaned street value. "Building"/"Bldg"
+    # is kept (it may name a building, e.g. "Research I Bldg").
     bare = bool(_BARE_MARKER_RE.search(work))
+    del_m = _BARE_MARKER_DELETE_RE.search(work)
+    if del_m:
+        work = _strip_residue(work[: del_m.start()] + work[del_m.end():])
     return work, found, bare
 
 
@@ -610,10 +664,13 @@ async def process_address(
     if care_of_enriched and care_of_enriched.strip():
         res.care_of_enriched = care_of_enriched.strip()
 
-    # Step 1 — clean every input we care about.
-    s1 = _clean(street)
-    s2 = _clean(street_2)
-    s3 = _clean(street_3)
+    # Step 1 — clean every input we care about, then scrub non-address
+    # junk (URLs, phones, emails, stray person references) so the cleaned
+    # street output is never polluted, even when the orchestrator fell back
+    # to the raw original street value.
+    s1 = _scrub_street(_clean(street))
+    s2 = _scrub_street(_clean(street_2))
+    s3 = _scrub_street(_clean(street_3))
 
     # Step 2a — full address jammed into street1 → split.
     if s1:
@@ -716,6 +773,23 @@ async def process_address(
     res.street_cleaned = _normalise_street_value(s1)
     res.street_2_cleaned = _normalise_street_value(s2)
     res.street_3_cleaned = _normalise_street_value(s3)
+
+    # Step 6 — dedupe identical street lines across slots. SAP exports often
+    # copy the same address line into Street 1/2/3; keep the first occurrence
+    # and blank later slots that merely repeat it so the output does not show
+    # the same street three times. G3-ADDR-012 records that a duplicate was
+    # dropped.
+    _seen: set[str] = set()
+    for _slot in ("street_cleaned", "street_2_cleaned", "street_3_cleaned"):
+        _val = getattr(res, _slot)
+        if not _val:
+            continue
+        _key = re.sub(r"\s+", " ", _val.strip()).lower()
+        if _key in _seen:
+            setattr(res, _slot, None)
+            res.issue("G3-ADDR-012")  # duplicate street value across slots
+        else:
+            _seen.add(_key)
 
     logger.info({
         "record_id": record_id,

@@ -9,7 +9,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    model_validator,
 )
 
 
@@ -215,15 +214,10 @@ class EnrichmentRecord(BaseModel):
         validation_alias=AliasChoices("email", "Email"),
     )
 
-    @model_validator(mode="after")
-    def _require_identifier(self) -> "EnrichmentRecord":
-        """At least one customer identifier must be present — it is used
-        as the record_id for logging and result correlation."""
-        if not ((self.customer or "").strip() or (self.ecc_customer_number or "").strip()):
-            raise ValueError(
-                "EnrichmentRecord requires 'Customer' (or 'ECC Customer Number')"
-            )
-        return self
+    # No field is mandatory: every column is optional, including the
+    # customer identifier. When absent, ``record_id`` falls back to an
+    # empty string (the record is still processed; correlation just lacks
+    # an id).
 
     # ── Compatibility accessors used by the enrichment pipeline ──────
     # The orchestrator/preprocess/address code reads these normalised

@@ -131,13 +131,13 @@ _ADDRESS_PATTERNS = [
     # "235 E 42nd St", "10 5th Ave", "1500 NW 12th Blvd",
     # "129000 N.W. 38th Avenue"
     re.compile(
-        rf"\b\d+\s+(?:{_DIRECTION}\s+)?{_STREET_TOKEN}(?:\s+{_STREET_TOKEN})*\s+(?:{_STREET_SUFFIXES})\b\.?",
+        rf"\b\d+\s+(?:{_DIRECTION}\s+)?{_STREET_TOKEN}(?:\s+{_STREET_TOKEN})*\s+(?:{_STREET_SUFFIXES})(?:\s+{_DIRECTION})?\b\.?",
         re.IGNORECASE,
     ),
     # Bare street names without house number:
     # "NW 2nd Ave", "S Main St", "E 42nd Street", "North Wolfe Road"
     re.compile(
-        rf"^\s*(?:{_DIRECTION}\s+)?{_STREET_TOKEN}(?:\s+{_STREET_TOKEN})*\s+(?:{_STREET_SUFFIXES})\s*$",
+        rf"^\s*(?:{_DIRECTION}\s+)?{_STREET_TOKEN}(?:\s+{_STREET_TOKEN})*\s+(?:{_STREET_SUFFIXES})(?:\s+{_DIRECTION})?\s*$",
         re.IGNORECASE,
     ),
     # "Suite 400", "Ste 400", "Unit 12", "Floor 3", "Bldg 4", "Room 12"
@@ -229,6 +229,89 @@ def _is_opaque_code(text: str) -> bool:
     if not text:
         return False
     return bool(_OPAQUE_CODE_RE.match(text.strip()))
+
+
+# Residual junk that lingers in the Name 3 overflow slot after the
+# structured extractors (email / address / contact) have run: web URLs,
+# phone / fax numbers, and standalone opaque codes. Stripped so the
+# tertiary name value is not polluted.
+_URL_RE = re.compile(
+    r"\b(?:https?://|www\.)\S+"
+    # Bare domain ("acme.com"); the (?<!@) guard avoids matching the
+    # domain part of an email address (e.g. the "x.com" in "foo@x.com").
+    r"|(?<!@)\b[A-Za-z0-9][A-Za-z0-9\-]*\."
+    r"(?:com|org|net|edu|gov|io|co|us|biz|info|gmbh|de|uk|ca)\b(?:/\S*)?",
+    re.IGNORECASE,
+)
+# Phone / fax: optional label, then 3+ digit groups separated by space,
+# dot or dash (so a lone number or short code is not mistaken for one).
+_PHONE_RE = re.compile(
+    r"(?:\b(?:tel|telephone|phone|fax|ph|cell|mobile|mob)\b\.?[:\s#]*)?"
+    r"\+?\(?\d{2,4}\)?(?:[\s.\-]\d{2,4}){2,4}"
+    r"(?:\s*(?:ext|x|extension)\.?\s*\d+)?",
+    re.IGNORECASE,
+)
+# A standalone token that is purely a code: 4+ bare digits, or a short
+# letter prefix followed by 2+ digits ("NT30", "X12345", "SAP-42").
+_OPAQUE_CODE_TOKEN_RE = re.compile(r"^(?:\d{4,}|[A-Za-z]{1,4}-?\d{2,})$")
+
+
+def _strip_name3_junk(value: str) -> str | None:
+    """Strip URLs, phone/fax numbers and standalone opaque codes from a
+    Name 3 value, returning the tidied remainder (or None)."""
+    out = _URL_RE.sub(" ", value)
+    out = _PHONE_RE.sub(" ", out)
+    kept = [
+        tok for tok in out.split()
+        if not _OPAQUE_CODE_TOKEN_RE.match(tok.strip(",;:|/"))
+    ]
+    out = re.sub(r"\s+", " ", " ".join(kept)).strip(" ,;/|-")
+    return out or None
+
+
+def _strip_street_junk(value: str) -> str | None:
+    """Strip URLs and phone/fax numbers from a street value.
+
+    Unlike Name 3, opaque numeric codes are NOT stripped — a street number
+    is itself numeric, so removing bare-digit tokens would destroy the
+    address.
+    """
+    out = _URL_RE.sub(" ", value)
+    out = _PHONE_RE.sub(" ", out)
+    out = re.sub(r"\s+", " ", out).strip(" ,;/|-")
+    return out or None
+
+
+# A person sitting in a street slot: a title prefix, 1-4 capitalised name
+# words, optionally followed by a "- role" / ", role" suffix. Group 1 is
+# the clean person name. The pattern's tight name shape plus the street-
+# suffix guard below avoid matching person-named streets ("Dr Martin
+# Luther King Jr Blvd", "Dr Sarah Johnson Ave").
+_STREET_PERSON_RE = re.compile(
+    r"^\s*("
+    r"(?:Dr|Prof|Professor|Mr|Mrs|Ms|Mx|Sir|Rev|Hon)\.?\s+"
+    r"[A-Z][A-Za-z\-']+(?:\s+[A-Z][A-Za-z\-']+){0,3}"
+    r")(?:\s*[-,]\s*.+)?$",
+    re.IGNORECASE,
+)
+# A street suffix that marks the value as an actual road appears at the
+# END of the line (optionally with a trailing direction), e.g.
+# "...King Jr Blvd", "...Johnson Ave". Anchoring to the end avoids
+# matching the leading title "Dr" (which doubles as the "Drive" suffix).
+_STREET_SUFFIX_GUARD_RE = re.compile(
+    rf"\b(?:{_STREET_SUFFIXES})\b\.?"
+    r"(?:\s+(?:N|S|E|W|NE|NW|SE|SW|North|South|East|West))?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _street_person_name(value: str) -> str | None:
+    """Return the person name if *value* is entirely a title-prefixed
+    person reference and is NOT street-like, else None."""
+    if _STREET_SUFFIX_GUARD_RE.search(value):
+        return None
+    m = _STREET_PERSON_RE.match(value.strip())
+    return m.group(1).strip() if m else None
 
 
 # ---------------------------------------------------------------------------
@@ -705,9 +788,12 @@ def preprocess_record(
             res.note(6, f"{field_name} normalised to Accounts Payable (was {val!r})")
 
     # ---------------------------------------------------------------
-    # UC 8 — Email copy (non-destructive). Scan name and address
-    # fields for an email address. If found, copy it to the email
-    # field but DO NOT strip it from the source field.
+    # UC 8 — Email copy. Scan name and address fields for an email
+    # address. When found, move it to the dedicated email field and
+    # strip it from the source field so the cleaned name/street value
+    # is not polluted with a stray email. The only exception is a
+    # conflict (a DIFFERENT email already populated): keep the source
+    # value intact and flag it so a reviewer can reconcile the two.
     # ---------------------------------------------------------------
     for field_name in ("name1", "name2", "name3", "street1", "street2", "street3"):
         val = getattr(res, field_name)
@@ -716,13 +802,24 @@ def preprocess_record(
         email_found = _find_email(val)
         if not email_found:
             continue
-        if res.email and res.email.strip():
-            if res.email.strip().lower() != email_found.lower():
-                res.note(8, f"email present in {field_name} ({email_found}) but Email already populated — flag for review")
-                res.flags.append("email-conflict")
-        else:
+        if (
+            res.email and res.email.strip()
+            and res.email.strip().lower() != email_found.lower()
+        ):
+            # Different email already captured — leave the source field
+            # untouched for manual review.
+            res.note(8, f"email present in {field_name} ({email_found}) but Email already populated — flag for review")
+            res.flags.append("email-conflict")
+            continue
+        if not (res.email and res.email.strip()):
             res.email = email_found
-            res.note(8, f"copied email from {field_name} (source field preserved)")
+            res.note(8, f"copied email from {field_name}")
+        # Remove the email token(s) from the source field and tidy residue.
+        stripped = _EMAIL_RE.sub("", val)
+        stripped = re.sub(r"\s+", " ", stripped).strip(" ,;/|-")
+        if stripped != val:
+            setattr(res, field_name, stripped or None)
+            res.note(8, f"removed email from {field_name}")
 
     # ---------------------------------------------------------------
     # UC 9 — Address extraction
@@ -803,6 +900,41 @@ def preprocess_record(
             setattr(res, field_name, remaining or None)
 
     # ---------------------------------------------------------------
+    # UC 13 — Name 3 residual junk cleanup. After the structured
+    # extractors above, the Name 3 overflow slot can still carry stray
+    # URLs, phone/fax numbers, or opaque codes. Strip them so the
+    # tertiary name value is clean. Runs before UC 14 so a junk-only
+    # Name 3 is not promoted into Name 2.
+    # ---------------------------------------------------------------
+    if res.name3 and res.name3.strip():
+        cleaned3 = _strip_name3_junk(res.name3)
+        if cleaned3 != res.name3:
+            res.note(13, f"name3 junk stripped (was {res.name3!r})")
+            res.name3 = cleaned3
+
+    # Same residual cleanup for the street slots — URLs and phone/fax
+    # numbers only (opaque codes are left alone so street numbers survive).
+    for slot in ("street1", "street2", "street3"):
+        val = getattr(res, slot)
+        if not (val and val.strip()):
+            continue
+        # A person sitting in a street slot → move to Contact, clear slot.
+        person = _street_person_name(val)
+        if person:
+            if res.contact and res.contact.strip():
+                res.note(13, f"person {person!r} in {slot} but Contact already populated — flag for review")
+                res.flags.append("contact-conflict")
+            else:
+                res.contact = person
+                res.note(13, f"moved person from {slot} to contact ({person!r})")
+                setattr(res, slot, None)
+                continue
+        cleaned = _strip_street_junk(val)
+        if cleaned != val:
+            res.note(13, f"{slot} junk stripped (was {val!r})")
+            setattr(res, slot, cleaned)
+
+    # ---------------------------------------------------------------
     # UC 14 — Name-slot consolidation.
     # If name2 is empty but name3 has a value, shift name3 → name2.
     # The dept-lookup logic (Tier 1 ROR child match, Tier 2 canonical)
@@ -832,6 +964,9 @@ def preprocess_record(
 
     if res.name2 and res.name3 and _norm(res.name2) == _norm(res.name3):
         res.note(12, f"name3 cleared — duplicate of name2 ({res.name3!r})")
+        res.name3 = None
+    if res.name1 and res.name3 and _norm(res.name1) == _norm(res.name3):
+        res.note(12, f"name3 cleared — duplicate of name1 ({res.name3!r})")
         res.name3 = None
     if res.name1 and res.name2 and _norm(res.name1) == _norm(res.name2):
         res.note(12, f"name2 cleared — duplicate of name1 ({res.name2!r})")

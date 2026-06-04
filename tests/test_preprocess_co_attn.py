@@ -168,6 +168,157 @@ class TestEdgeCases:
         assert res.email == "existing@example.com"
         assert "email-conflict" in res.flags
 
+
+# ── UC 8 — email stripped from name3 ─────────────────────────────────────────
+
+class TestUC8EmailStrip:
+    def test_email_removed_from_name3(self):
+        """An email in Name 3 is captured to the email field and removed
+        from Name 3 so the cleaned value isn't polluted."""
+        from enrichment.preprocess import preprocess_record
+
+        res = preprocess_record(
+            "Acme Corp", "Department of Chemistry",
+            "Research Lab jsmith@acme.com",
+            None, None, None, None, None,
+        )
+        assert res.email == "jsmith@acme.com"
+        assert res.name3 == "Research Lab"
+
+    def test_name3_only_email_becomes_none(self):
+        from enrichment.preprocess import preprocess_record
+
+        res = preprocess_record(
+            "Acme Corp", "Dept", "jsmith@acme.com",
+            None, None, None, None, None,
+        )
+        assert res.email == "jsmith@acme.com"
+        assert res.name3 is None
+
+    def test_conflicting_email_kept_for_review(self):
+        """A different email already on file → source field is left intact
+        and a conflict is flagged (not silently stripped)."""
+        from enrichment.preprocess import preprocess_record
+
+        res = preprocess_record(
+            "Acme Corp", "Department of Chemistry",
+            "Research Lab foo@x.com",
+            None, "existing@y.com", None, None, None,
+        )
+        assert res.email == "existing@y.com"
+        assert "foo@x.com" in (res.name3 or "")
+        assert "email-conflict" in res.flags
+
+
+# ── UC 13 — Name 3 residual junk cleanup ─────────────────────────────────────
+
+class TestUC13Name3Junk:
+    @staticmethod
+    def _name3(value):
+        from enrichment.preprocess import preprocess_record
+        return preprocess_record(
+            "Acme Corp", "Department of Chemistry", value,
+            None, None, None, None, None,
+        ).name3
+
+    def test_url_stripped(self):
+        assert self._name3("Research Lab www.acme.com") == "Research Lab"
+
+    def test_phone_stripped(self):
+        assert self._name3("Logistics Tel: 727-555-1234") == "Logistics"
+
+    def test_opaque_code_stripped(self):
+        assert self._name3("Billing NT30 800000070") == "Billing"
+
+    def test_legit_department_survives(self):
+        assert self._name3("Center for Advanced Materials") == (
+            "Center for Advanced Materials"
+        )
+
+    def test_duplicate_of_name1_cleared(self):
+        from enrichment.preprocess import preprocess_record
+        res = preprocess_record(
+            "Acme Corporation", "Department of Chemistry", "Acme Corporation",
+            None, None, None, None, None,
+        )
+        assert res.name3 is None
+
+
+# ── UC 13 — Street junk cleanup ──────────────────────────────────────────────
+
+class TestUC13StreetJunk:
+    @staticmethod
+    def _street1(value):
+        from enrichment.preprocess import preprocess_record
+        return preprocess_record(
+            "Acme Corp", "Dept", None, None, None, value, None, None,
+        ).street1
+
+    def test_street_number_survives(self):
+        assert self._street1("10901 Roosevelt Blvd N") == "10901 Roosevelt Blvd N"
+
+    def test_url_stripped_number_kept(self):
+        assert self._street1("10901 Roosevelt Blvd www.acme.com") == (
+            "10901 Roosevelt Blvd"
+        )
+
+    def test_phone_stripped(self):
+        assert self._street1("Dock B Tel: 727-555-1234") == "Dock B"
+
+    def test_email_moved_to_email_field(self):
+        from enrichment.preprocess import preprocess_record
+        res = preprocess_record(
+            "Acme Corp", "Dept", None, None, None,
+            "Receiving dept ap@acme.com", None, None,
+        )
+        assert res.email == "ap@acme.com"
+        assert res.street1 == "Receiving dept"
+
+    def test_multiple_address_numbers_survive(self):
+        assert self._street1("123 Main St Suite 456") == "123 Main St Suite 456"
+
+
+# ── UC 13 — Person in street → Contact ───────────────────────────────────────
+
+class TestUC13StreetPerson:
+    @staticmethod
+    def _run(street2):
+        from enrichment.preprocess import preprocess_record
+        return preprocess_record(
+            "Acme Corp", "Dept", None, None, None, None, street2, None,
+        )
+
+    def test_person_with_role_moved_to_contact(self):
+        res = self._run("Dr Sarah Johnson - Lab Director")
+        assert res.contact == "Dr Sarah Johnson"  # role suffix dropped
+        assert res.street2 is None
+
+    def test_person_only_moved_to_contact(self):
+        res = self._run("Prof. Alan Turing")
+        assert res.contact == "Prof. Alan Turing"
+        assert res.street2 is None
+
+    def test_person_named_street_kept(self):
+        # A real street named after a person must stay in the street.
+        res = self._run("Dr Martin Luther King Jr Blvd")
+        assert res.contact is None
+        assert res.street2 == "Dr Martin Luther King Jr Blvd"
+
+    def test_person_named_avenue_kept(self):
+        res = self._run("Dr Sarah Johnson Ave")
+        assert res.contact is None
+        assert res.street2 == "Dr Sarah Johnson Ave"
+
+    def test_conflict_keeps_street_and_flags(self):
+        from enrichment.preprocess import preprocess_record
+        res = preprocess_record(
+            "Acme Corp", "Dept", None,
+            "Existing Person", None, None, "Dr Jane Doe", None,
+        )
+        assert res.contact == "Existing Person"
+        assert res.street2 == "Dr Jane Doe"
+        assert "contact-conflict" in res.flags
+
     def test_person_with_existing_contact_flagged(self):
         res = _run(
             "Some Org",

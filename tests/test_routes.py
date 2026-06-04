@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import sys
 from pathlib import Path
@@ -9,6 +10,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from openpyxl import Workbook, load_workbook
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -79,14 +81,18 @@ class TestRoutes:
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_enrich_missing_record_id(self, client):
-        """Missing required field record_id → 422."""
+    async def test_enrich_record_without_identifier_accepted(self, client):
+        """No field is mandatory: a record with no customer identifier is
+        accepted (record_id falls back to empty string)."""
         payload = {
             "records": [{"name1": "MIT"}],
             "options": {},
         }
         resp = await client.post("/enrich", json=payload)
-        assert resp.status_code == 422
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["results"]) == 1
+        assert data["results"][0]["record_id"] == ""
 
     @pytest.mark.asyncio
     async def test_enrich_batch(self, client):
@@ -115,3 +121,191 @@ class TestRoutes:
         }
         resp = await client.post("/enrich", json=payload)
         assert resp.status_code == 200
+
+    @staticmethod
+    def _xlsx_bytes(header: list, *rows: list) -> bytes:
+        wb = Workbook()
+        ws = wb.active
+        ws.append(header)
+        for row in rows:
+            ws.append(row)
+        buf = io.BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    def _xlsx_upload(self, data: bytes, filename: str = "input.xlsx"):
+        return {
+            "file": (
+                filename,
+                data,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        }
+
+    @pytest.mark.asyncio
+    async def test_enrich_file_returns_xlsx(self, client):
+        """XLSX upload is enriched and returned as an XLSX file whose columns
+        match the /enrich response body."""
+        from api.output_columns import RESPONSE_COLUMNS
+
+        data = self._xlsx_bytes(
+            ["Customer", "Name 1", "Name 2"],
+            ["ROUTE_001", "Massachusetts Institute of Technology", "Department of Chemistry"],
+            [12345, "Pfizer Inc", "R&D"],  # numeric customer is coerced to str
+            [None, None, None],  # blank row is skipped
+        )
+        resp = await client.post(
+            "/enrich/file?max_concurrency=2", files=self._xlsx_upload(data)
+        )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        assert "attachment" in resp.headers["content-disposition"]
+
+        wb = load_workbook(io.BytesIO(resp.content))
+        ws = wb.active
+        header = [c.value for c in ws[1]]
+        rows = [[c.value for c in row] for row in ws.iter_rows(min_row=2)]
+
+        # Columns are exactly the response-body fields, in order.
+        assert header == list(RESPONSE_COLUMNS.values())
+        # Two data rows, blank row skipped; record_id is the first column.
+        assert len(rows) == 2
+        assert rows[0][0] == "ROUTE_001"
+        assert rows[1][0] == "12345"
+
+    @pytest.mark.asyncio
+    async def test_enrich_file_columns_match_response_body(self, client):
+        """The output columns are identical to the keys of a result object."""
+        from api.models import EnrichmentResult
+        from api.output_columns import RESPONSE_COLUMNS
+
+        data = self._xlsx_bytes(["Customer", "Name 1"], ["R1", "MIT"])
+        resp = await client.post("/enrich/file", files=self._xlsx_upload(data))
+        assert resp.status_code == 200
+        header = [c.value for c in load_workbook(io.BytesIO(resp.content)).active[1]]
+        # Mapping keys mirror the serialised response fields one-to-one.
+        assert list(RESPONSE_COLUMNS.keys()) == list(
+            EnrichmentResult(record_id="x").model_dump().keys()
+        )
+        assert header == list(RESPONSE_COLUMNS.values())
+
+    @pytest.mark.asyncio
+    async def test_enrich_file_tolerates_messy_headers(self, client):
+        """Headers differing only by case/spacing still map to input fields,
+        so the record is enriched."""
+        data = self._xlsx_bytes(
+            ["Customer ", "NAME 1", "Name  2 "],
+            ["R1", "MIT", "Department of Chemistry"],
+        )
+        from api.output_columns import RESPONSE_COLUMNS
+
+        resp = await client.post("/enrich/file", files=self._xlsx_upload(data))
+        assert resp.status_code == 200
+        ws = load_workbook(io.BytesIO(resp.content)).active
+        header = [c.value for c in ws[1]]
+        row = [c.value for c in ws[2]]
+        # Recognised on input despite messy headers → name1 was enriched.
+        name1_col = header.index(RESPONSE_COLUMNS["name1_enriched"])
+        assert row[name1_col] == "Massachusetts Institute of Technology"
+
+    @pytest.mark.asyncio
+    async def test_enrich_file_dedupes_repeated_streets(self, client):
+        """A street repeated across Street 1/2/3 is kept once; the repeats
+        are blanked rather than echoed in every cleaned-street column."""
+        data = self._xlsx_bytes(
+            ["Customer", "Name 1", "Street 1", "Street 2", "Street 3"],
+            ["R1", "Acme Corp", "235 East 42nd Street", "235 East 42nd Street", "235 East 42nd Street"],
+        )
+        resp = await client.post("/enrich/file", files=self._xlsx_upload(data))
+        assert resp.status_code == 200
+        ws = load_workbook(io.BytesIO(resp.content)).active
+        header = [c.value for c in ws[1]]
+        row = [c.value for c in ws[2]]
+        assert row[header.index("street_cleaned")]  # first occurrence kept
+        assert row[header.index("street_2_cleaned")] is None  # duplicate dropped
+        assert row[header.index("street_3_cleaned")] is None  # duplicate dropped
+
+    @pytest.mark.asyncio
+    async def test_enrich_file_dedupes_address_from_name_field(self, client):
+        """An address in Name 2 that duplicates Street 1 (incl. trailing
+        direction) is extracted in full and deduped, not echoed as a near-
+        duplicate street."""
+        data = self._xlsx_bytes(
+            ["Customer", "Name 1", "Name 2", "Street 1", "Street 2"],
+            [
+                "13344992",
+                "IDEXX Reference Labs",
+                "10901 Roosevelt Blvd N",       # address living in Name 2
+                "10901 ROOSEVELT BLVD N",        # same address in Street 1
+                "Pinellas Bus Ctr, Ste 400D",
+            ],
+        )
+        resp = await client.post("/enrich/file", files=self._xlsx_upload(data))
+        assert resp.status_code == 200
+        ws = load_workbook(io.BytesIO(resp.content)).active
+        header = [c.value for c in ws[1]]
+        row = [c.value for c in ws[2]]
+        assert row[header.index("street_cleaned")]            # Street 1 kept
+        assert row[header.index("street_3_cleaned")] is None  # Name 2 dup dropped
+
+    @pytest.mark.asyncio
+    async def test_enrich_file_street_junk_reaches_output(self, client):
+        """End-to-end: URL / email / person / connector / orphan-marker junk
+        in a street column is cleaned in the OUTPUT street_2_cleaned (not
+        just in the helper functions)."""
+        data = self._xlsx_bytes(
+            ["Customer", "Name 1", "Street 1", "Street 2"],
+            ["A", "Acme", "100 Main St", "ALSO 250 CENTRAL Ave"],
+            ["B", "Acme", "100 Main St", "Ste"],
+            ["C", "Acme", "100 Main St", "Dr Sarah Johnson - Lab Director"],
+            ["D", "Acme", "100 Main St", "http://www.lockheedmartin.com/us/supplie"],
+            ["E", "Acme", "100 Main St", "harrisapinvoices@harris.com"],
+            ["F", "Acme", "100 Main St", "440 NICKERSON Rd"],
+        )
+        resp = await client.post("/enrich/file", files=self._xlsx_upload(data))
+        assert resp.status_code == 200
+        ws = load_workbook(io.BytesIO(resp.content)).active
+        h = [c.value for c in ws[1]]
+        rows = {
+            r[h.index("record_id")]: r for r in ws.iter_rows(min_row=2, values_only=True)
+        }
+        s2 = h.index("street_2_cleaned")
+        contact = h.index("contact_enriched")
+        email = h.index("email_enriched")
+
+        assert rows["A"][s2] == "250 CENTRAL Ave"   # connector stripped
+        assert rows["B"][s2] is None                # orphan marker dropped
+        assert rows["C"][s2] is None                # person removed...
+        assert rows["C"][contact] == "Dr Sarah Johnson"  # ...routed to contact
+        assert rows["D"][s2] is None                # URL removed
+        assert rows["E"][s2] is None                # email removed...
+        assert rows["E"][email] == "harrisapinvoices@harris.com"  # ...to email
+        assert rows["F"][s2] == "440 NICKERSON Rd"  # real address kept
+
+    @pytest.mark.asyncio
+    async def test_enrich_file_rejects_non_xlsx(self, client):
+        resp = await client.post(
+            "/enrich/file",
+            files={"file": ("data.txt", b"not a spreadsheet", "text/plain")},
+        )
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_enrich_file_row_without_identifier_accepted(self, client):
+        """No field is mandatory: a row with no customer identifier is
+        processed rather than rejected."""
+        data = self._xlsx_bytes(["Name 1"], ["MIT"])
+        resp = await client.post("/enrich/file", files=self._xlsx_upload(data))
+        assert resp.status_code == 200
+        ws = load_workbook(io.BytesIO(resp.content)).active
+        rows = list(ws.iter_rows(min_row=2, values_only=True))
+        assert len(rows) == 1
+
+    @pytest.mark.asyncio
+    async def test_enrich_file_no_data_rows(self, client):
+        """Header only, no data rows → 400."""
+        data = self._xlsx_bytes(["Customer", "Name 1"])
+        resp = await client.post("/enrich/file", files=self._xlsx_upload(data))
+        assert resp.status_code == 400
