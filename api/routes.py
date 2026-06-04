@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import logging
+from collections import Counter
 from typing import Literal, Optional
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
@@ -21,6 +22,7 @@ from api.models import (
 )
 from api.output_columns import RESPONSE_COLUMNS
 from config import Settings, get_settings
+from enrichment.issue_detection import ISSUE_CATALOGUE, detect_issues
 from enrichment.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
@@ -118,6 +120,23 @@ def _input_alias_to_field() -> dict[str, str]:
         for name in names:
             alias_to_field.setdefault(_norm_header(name), field_name)
     return alias_to_field
+
+
+def _present_fields(headers: list[str]) -> set[str]:
+    """Map a file's header row onto the set of EnrichmentRecord field names it
+    actually carries.
+
+    Used by the issue endpoints so the required-field rules only judge columns
+    that exist in the file (an enriched export that drops, say, Postal Code is
+    not reported as "missing" it).
+    """
+    alias_to_field = _input_alias_to_field()
+    present: set[str] = set()
+    for header in headers:
+        field = alias_to_field.get(_norm_header(header))
+        if field is not None:
+            present.add(field)
+    return present
 
 
 def _parse_xlsx(contents: bytes) -> tuple[list[str], list[dict[str, str]]]:
@@ -243,6 +262,157 @@ def _build_output_xlsx(results: list[EnrichmentResult]) -> bytes:
     return buffer.getvalue()
 
 
+def _build_issues_xlsx(
+    headers: list[str],
+    row_dicts: list[dict[str, str]],
+    issues_per_row: list[list[str]],
+) -> bytes:
+    """Echo the uploaded sheet with one appended ``Issues`` column.
+
+    The original header row and cell values are preserved verbatim (blanks
+    filled where a cell was empty); a trailing ``Issues`` column holds the
+    semicolon-joined issue codes detected for that row (empty when clean).
+    """
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append([*headers, "Issues"])
+
+    for row_dict, codes in zip(row_dicts, issues_per_row):
+        values = [row_dict.get(header, "") for header in headers]
+        ws.append([*values, "; ".join(codes)])
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
+
+
+async def _audit_upload(file: UploadFile) -> dict[str, list[str]]:
+    """Validate, parse, and audit an XLSX upload into ``{record_id: [codes]}``.
+
+    Detection is column-aware (see ``_present_fields``). Rows without a record
+    id cannot be joined across files and are excluded (logged, not silently
+    dropped). The first occurrence wins for a duplicated id.
+    """
+    filename = file.filename or ""
+    if not filename.lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{filename or 'Uploaded file'} must be an .xlsx (or .xlsm) workbook.",
+        )
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail=f"{filename or 'Uploaded file'} is empty.")
+
+    headers, row_dicts = _parse_xlsx(contents)
+    records = _rows_to_records(row_dicts)
+    present = _present_fields(headers)
+
+    issue_map: dict[str, list[str]] = {}
+    excluded = 0
+    for record in records:
+        rid = record.record_id
+        if not rid:
+            excluded += 1
+            continue
+        issue_map.setdefault(rid, detect_issues(record, present))
+
+    if excluded:
+        logger.info(
+            "issues/compare: %s — %d row(s) without a record id excluded from join",
+            filename,
+            excluded,
+        )
+    return issue_map
+
+
+def _build_comparison_xlsx(
+    before_map: dict[str, list[str]],
+    after_map: dict[str, list[str]],
+) -> bytes:
+    """Build the before/after issue-reduction report.
+
+    Sheet 1 (Summary): headline totals + a per-code Before/After/Delta table.
+    Sheet 2 (Per Record): every matched record's before codes, after codes,
+    which issues were resolved, and which were newly introduced.
+    Comparison is over records present in BOTH files (joined by record id).
+    """
+    from openpyxl import Workbook
+
+    matched_ids = [rid for rid in before_map if rid in after_map]
+    only_before = [rid for rid in before_map if rid not in after_map]
+    only_after = [rid for rid in after_map if rid not in before_map]
+
+    total_before = total_after = total_resolved = total_introduced = 0
+    code_before: Counter = Counter()
+    code_after: Counter = Counter()
+    per_record_rows: list[list[str]] = []
+
+    for rid in matched_ids:
+        before = before_map[rid]
+        after = after_map[rid]
+        bset, aset = set(before), set(after)
+        # Order resolved/introduced by catalogue order for stable output.
+        resolved = [c for c in ISSUE_CATALOGUE if c in bset - aset]
+        introduced = [c for c in ISSUE_CATALOGUE if c in aset - bset]
+
+        total_before += len(before)
+        total_after += len(after)
+        total_resolved += len(resolved)
+        total_introduced += len(introduced)
+        code_before.update(bset)
+        code_after.update(aset)
+
+        per_record_rows.append([
+            rid,
+            "; ".join(before),
+            "; ".join(after),
+            "; ".join(resolved),
+            "; ".join(introduced),
+        ])
+
+    net = total_before - total_after
+    pct = (net / total_before * 100) if total_before else 0.0
+
+    wb = Workbook()
+    summary = wb.active
+    summary.title = "Summary"
+    summary.append(["Issue Reduction Summary"])
+    summary.append([])
+    summary.append(["Records matched (joined by id)", len(matched_ids)])
+    summary.append(["Records only in original", len(only_before)])
+    summary.append(["Records only in enriched", len(only_after)])
+    summary.append([])
+    summary.append(["Total issues before", total_before])
+    summary.append(["Total issues after", total_after])
+    summary.append(["Issues resolved", total_resolved])
+    summary.append(["Issues introduced", total_introduced])
+    summary.append(["Net reduction", net])
+    summary.append(["Reduction %", round(pct, 1)])
+    summary.append([])
+    summary.append(["Code", "Name", "Before", "After", "Delta"])
+    for code, name in ISSUE_CATALOGUE.items():
+        before_count = code_before.get(code, 0)
+        after_count = code_after.get(code, 0)
+        if before_count or after_count:
+            summary.append([
+                code, name, before_count, after_count, after_count - before_count,
+            ])
+
+    per_record = wb.create_sheet("Per Record")
+    per_record.append(
+        ["record_id", "Issues Before", "Issues After", "Resolved", "Introduced"]
+    )
+    for row in per_record_rows:
+        per_record.append(row)
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
+
+
 @router.post("/enrich/file")
 async def enrich_file(
     file: UploadFile = File(..., description="XLSX file of customer master data records"),
@@ -302,6 +472,93 @@ async def enrich_file(
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ),
         headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
+    )
+
+
+@router.post("/issues")
+async def detect_file_issues(
+    file: UploadFile = File(..., description="XLSX file of customer master data records"),
+) -> StreamingResponse:
+    """Audit an XLSX upload against the Issue Catalogue and return it annotated.
+
+    Each data row is checked against the deterministic issue-detection rules
+    (see ``enrichment.issue_detection``). The uploaded sheet is returned
+    unchanged with a single appended ``Issues`` column listing every issue
+    code found on that row (semicolon-separated, codes only). This is a pure
+    audit: no enrichment, LLM, or external call is made.
+    """
+    filename = file.filename or ""
+    if not filename.lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded file must be an .xlsx (or .xlsm) workbook.",
+        )
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    headers, row_dicts = _parse_xlsx(contents)
+    records = _rows_to_records(row_dicts)
+    present = _present_fields(headers)
+    issues_per_row = [detect_issues(record, present) for record in records]
+
+    logger.info(
+        "Issues file request received: %s, %d records, %d with issues",
+        filename,
+        len(records),
+        sum(1 for issues in issues_per_row if issues),
+    )
+
+    output_bytes = _build_issues_xlsx(headers, row_dicts, issues_per_row)
+
+    stem = filename.rsplit("/", 1)[-1].rsplit(".", 1)[0] or "records"
+    out_name = f"{stem}_issues.xlsx"
+    return StreamingResponse(
+        io.BytesIO(output_bytes),
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
+    )
+
+
+@router.post("/issues/compare")
+async def compare_file_issues(
+    original: UploadFile = File(..., description="Raw (pre-enrichment) XLSX"),
+    enriched: UploadFile = File(..., description="Enriched (post-pipeline) XLSX"),
+) -> StreamingResponse:
+    """Audit two files and report how many issues the pipeline reduced.
+
+    Runs the deterministic issue detector over both the ``original`` and the
+    ``enriched`` workbook, joins their rows by record id, and returns an XLSX
+    report: a summary (totals + per-code Before/After/Delta) and a per-record
+    breakdown of which issues were resolved vs newly introduced.
+
+    Detection is column-aware, so a required-field rule never counts a column
+    as "missing" in a file that simply doesn't carry it (e.g. the enriched
+    export dropping Postal Code) — the before/after counts stay apples-to-apples.
+    """
+    before_map = await _audit_upload(original)
+    after_map = await _audit_upload(enriched)
+
+    logger.info(
+        "Issues compare request: original=%s (%d records), enriched=%s (%d records)",
+        original.filename,
+        len(before_map),
+        enriched.filename,
+        len(after_map),
+    )
+
+    output_bytes = _build_comparison_xlsx(before_map, after_map)
+    return StreamingResponse(
+        io.BytesIO(output_bytes),
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={
+            "Content-Disposition": 'attachment; filename="issue_reduction_report.xlsx"'
+        },
     )
 
 

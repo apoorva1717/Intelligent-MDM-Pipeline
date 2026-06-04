@@ -317,3 +317,131 @@ class TestRoutes:
         data = self._xlsx_bytes(["Customer", "Name 1"])
         resp = await client.post("/enrich/file", files=self._xlsx_upload(data))
         assert resp.status_code == 400
+
+    # ── /issues endpoint ────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_issues_echoes_input_and_appends_column(self, client):
+        """The uploaded sheet is returned unchanged with an appended
+        ``Issues`` column listing the detected codes per row."""
+        data = self._xlsx_bytes(
+            ["Customer", "Name 1", "Name 2", "Postal Code", "Country/Region Key"],
+            ["R1", "Acme Corp", "PO BOX 115350", "12345", "US"],   # has issues
+            ["R2", "Acme Corp", "Engineering", "12345", "US"],     # clean-ish
+        )
+        resp = await client.post("/issues", files=self._xlsx_upload(data))
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        assert "attachment" in resp.headers["content-disposition"]
+
+        ws = load_workbook(io.BytesIO(resp.content)).active
+        header = [c.value for c in ws[1]]
+        # Original headers preserved, "Issues" appended last.
+        assert header == [
+            "Customer", "Name 1", "Name 2", "Postal Code",
+            "Country/Region Key", "Issues",
+        ]
+
+        rows = [[c.value for c in row] for row in ws.iter_rows(min_row=2)]
+        assert len(rows) == 2
+        # Original cell values are echoed verbatim.
+        assert rows[0][:5] == ["R1", "Acme Corp", "PO BOX 115350", "12345", "US"]
+        # PO Box in a name field surfaces as address-content-in-name.
+        assert "G1-CROSS-001" in (rows[0][-1] or "")
+
+    @pytest.mark.asyncio
+    async def test_issues_multiple_codes_semicolon_joined(self, client):
+        data = self._xlsx_bytes(
+            ["Name 1", "Postal Code", "Country/Region Key"],
+            ["Univ of Florida", "", "USA"],  # G5-NAME-001 + G2-VAL-002 + G4-ADDR-027
+        )
+        resp = await client.post("/issues", files=self._xlsx_upload(data))
+        assert resp.status_code == 200
+        ws = load_workbook(io.BytesIO(resp.content)).active
+        issues_cell = [c.value for c in ws[2]][-1]
+        codes = {c.strip() for c in (issues_cell or "").split(";")}
+        assert {"G2-VAL-002", "G4-ADDR-027", "G5-NAME-001"} <= codes
+
+    @pytest.mark.asyncio
+    async def test_issues_rejects_non_xlsx(self, client):
+        resp = await client.post(
+            "/issues",
+            files={"file": ("data.txt", b"not a spreadsheet", "text/plain")},
+        )
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_issues_column_aware_skips_absent_columns(self, client):
+        """A file that doesn't carry Postal Code is not reported as missing it."""
+        data = self._xlsx_bytes(["Customer", "Name 1", "Name 2"], ["R1", "Acme Corp", "Sales"])
+        resp = await client.post("/issues", files=self._xlsx_upload(data))
+        assert resp.status_code == 200
+        ws = load_workbook(io.BytesIO(resp.content)).active
+        issues_cell = [c.value for c in ws[2]][-1] or ""
+        assert "G2-VAL-002" not in issues_cell  # Postal Code column absent
+
+    # ── /issues/compare endpoint ────────────────────────────────────────
+
+    @staticmethod
+    def _summary(ws) -> dict:
+        """Read the label/value pairs from the Summary sheet."""
+        out = {}
+        for row in ws.iter_rows(values_only=True):
+            if row and row[0] is not None and len(row) >= 2 and row[1] is not None:
+                out[row[0]] = row[1]
+        return out
+
+    @pytest.mark.asyncio
+    async def test_issues_compare_reports_reduction(self, client):
+        # Original: PO box sits in a name field (G1-CROSS-001) + missing postal.
+        original = self._xlsx_bytes(
+            ["Customer", "Name 1", "Name 2", "Postal Code", "Country/Region Key"],
+            ["R1", "Acme Corp", "10901 Roosevelt Blvd N", "", "US"],
+        )
+        # Enriched: address moved out of the name, postal filled. Enriched
+        # schema omits Postal Code entirely (column-aware → not counted missing).
+        enriched = self._xlsx_bytes(
+            ["record_id", "Name 1", "Name 2", "Country/Region Key"],
+            ["R1", "Acme Corporation", "Sales Department", "US"],
+        )
+        resp = await client.post(
+            "/issues/compare",
+            files={
+                "original": ("original.xlsx", original,
+                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+                "enriched": ("enriched.xlsx", enriched,
+                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            },
+        )
+        assert resp.status_code == 200
+        assert "attachment" in resp.headers["content-disposition"]
+
+        wb = load_workbook(io.BytesIO(resp.content))
+        assert wb.sheetnames == ["Summary", "Per Record"]
+
+        summary = self._summary(wb["Summary"])
+        assert summary["Records matched (joined by id)"] == 1
+        assert summary["Total issues before"] > summary["Total issues after"]
+        assert summary["Net reduction"] >= 1
+        assert summary["Issues resolved"] >= 1
+
+        per_record = [
+            [c.value for c in row] for row in wb["Per Record"].iter_rows(min_row=2)
+        ]
+        assert per_record[0][0] == "R1"
+        assert "G1-CROSS-001" in (per_record[0][3] or "")  # resolved column
+
+    @pytest.mark.asyncio
+    async def test_issues_compare_rejects_non_xlsx(self, client):
+        good = self._xlsx_bytes(["Customer", "Name 1"], ["R1", "Acme"])
+        resp = await client.post(
+            "/issues/compare",
+            files={
+                "original": ("a.txt", b"nope", "text/plain"),
+                "enriched": ("enriched.xlsx", good,
+                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            },
+        )
+        assert resp.status_code == 400

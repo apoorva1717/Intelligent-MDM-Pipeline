@@ -291,6 +291,36 @@ class EnrichmentResult(BaseModel):
     """Enrichment outcome for one record."""
     record_id: str
 
+    # ── SAP master-data columns carried through verbatim (not enriched) ─
+    # These mirror the input record so the result workbook round-trips
+    # every original column. Enrichment never alters them.
+    ecc_customer_number: Optional[str] = None
+    central_deletion_flag: Optional[str] = None
+    comments: Optional[str] = None
+    account_group: Optional[str] = None
+    company_code: Optional[str] = None
+    sales_organization: Optional[str] = None
+    distribution_channel: Optional[str] = None
+    division: Optional[str] = None
+    name4: Optional[str] = None
+    street_4: Optional[str] = None
+    street_5: Optional[str] = None
+    country_region_key: Optional[str] = None
+    postal_code: Optional[str] = None
+    city: Optional[str] = None
+    region: Optional[str] = None
+    language_key: Optional[str] = None
+    reconciliation_acct: Optional[str] = None
+    tax_jurisdiction: Optional[str] = None
+    central_delivery_block: Optional[str] = None
+    delivery_priority: Optional[str] = None
+    shipping_conditions: Optional[str] = None
+    delivering_plant: Optional[str] = None
+    created_on: Optional[str] = None
+    created_by: Optional[str] = None
+    vat_registration_no: Optional[str] = None
+    terms_of_payment: Optional[str] = None
+
     # Name fields (enriched values)
     name1_enriched: Optional[str] = None
     name2_enriched: Optional[str] = None
@@ -316,6 +346,8 @@ class EnrichmentResult(BaseModel):
 
     # Address Stage 1 — cleaned streets + extracted sub-locations
     street_cleaned: Optional[str] = None
+    # House number passed through verbatim from the input record.
+    house_number: Optional[str] = None
     street_2_cleaned: Optional[str] = None
     street_3_cleaned: Optional[str] = None
     suite: Optional[str] = None

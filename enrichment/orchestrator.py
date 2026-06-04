@@ -194,6 +194,33 @@ def _init_result(record: EnrichmentRecord) -> dict[str, Any]:
     street1_original = record.street1 or record.street
     return {
         "record_id": record.record_id,
+        # SAP master-data columns carried through verbatim (not enriched).
+        "ecc_customer_number": record.ecc_customer_number,
+        "central_deletion_flag": record.central_deletion_flag,
+        "comments": record.comments,
+        "account_group": record.account_group,
+        "company_code": record.company_code,
+        "sales_organization": record.sales_organization,
+        "distribution_channel": record.distribution_channel,
+        "division": record.division,
+        "name4": record.name_4,
+        "street_4": record.street_4,
+        "street_5": record.street_5,
+        "country_region_key": record.country_region_key,
+        "postal_code": record.postal_code,
+        "city": record.city,
+        "region": record.region,
+        "language_key": record.language_key,
+        "reconciliation_acct": record.reconciliation_acct,
+        "tax_jurisdiction": record.tax_jurisdiction,
+        "central_delivery_block": record.central_delivery_block,
+        "delivery_priority": record.delivery_priority,
+        "shipping_conditions": record.shipping_conditions,
+        "delivering_plant": record.delivering_plant,
+        "created_on": record.created_on,
+        "created_by": record.created_by,
+        "vat_registration_no": record.vat_registration_no,
+        "terms_of_payment": record.terms_of_payment_contact,
         "name1_original": record.name1,
         "name2_original": record.name2,
         "name3_original": record.name3,
@@ -220,6 +247,8 @@ def _init_result(record: EnrichmentRecord) -> dict[str, Any]:
         "email_changed": False,
         "street1_original": street1_original,
         "street1_changed": False,
+        # Passed through verbatim — enrichment never alters the house number.
+        "house_number": record.house_number,
         "street2_original": record.street2,
         "street2_changed": False,
         "street3_original": record.street3,
@@ -542,14 +571,12 @@ class Orchestrator:
                         "Unhandled exception for record %s: %s",
                         records[i].record_id, str(res),
                     )
-                    final_results.append(EnrichmentResult(
-                        record_id=records[i].record_id,
-                        name1_original=records[i].name1,
-                        name2_original=records[i].name2,
-                        name3_original=records[i].name3,
-                        enrichment_status="failed",
-                        error=str(res),
-                    ))
+                    # Carry every original column through even on failure so
+                    # the result workbook still round-trips the input row.
+                    failed = _init_result(records[i])
+                    failed["enrichment_status"] = "failed"
+                    failed["error"] = str(res)
+                    final_results.append(EnrichmentResult(**failed))
                 else:
                     final_results.append(res)
 
