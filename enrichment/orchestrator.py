@@ -45,6 +45,7 @@ from enrichment.search_terms import (
 )
 from enrichment.preprocess import (
     _extract_addresses,
+    _location_fragment,
     find_suspicious_plain_names,
     has_multiple_contacts,
     llm_classify_plain_names_async,
@@ -395,6 +396,17 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     for _nf in ("name2_enriched", "name3_enriched", "name4_enriched"):
         _nval = result.get(_nf)
         if not (_nval and str(_nval).strip()):
+            continue
+        # A value that is purely address sub-locations ("Wing C", "Annex D
+        # Pod 2", "Floor 3 Room 12") is moved verbatim as one unit — these
+        # are not street addresses, so _extract_addresses misses them. Mirror
+        # preprocessing: location fragment first, then embedded addresses.
+        _frag = _location_fragment(str(_nval))
+        if _frag:
+            _slot = next((s for s in _street_out if not result.get(s)), None)
+            if _slot is not None:
+                result[_slot] = _normalise_street_value(_frag) or _frag
+                result[_nf] = None
             continue
         _addrs, _cleaned = _extract_addresses(str(_nval))
         if not _addrs:
@@ -1184,6 +1196,16 @@ class Orchestrator:
         """Resolve website (B/C if needed), probe for unit URL, run
         address Stage 1, finalise, and return."""
         await self._maybe_resolve_website_bc(record, result, cache)
+        # Derive the institution domain from a resolved website when no tier
+        # (ROR) supplied one. Both the department-domain probe below and the
+        # output ``domain`` field depend on this: a record resolved via the
+        # website resolver (SERP/LLM Path B/C) carries a website_url but no
+        # ``domain``, so without this the probe bails at its base-domain gate
+        # for every such row and ``department_domain`` is always empty.
+        if not result.get("domain") and result.get("website_url"):
+            derived = extract_domain(result["website_url"])
+            if derived:
+                result["domain"] = derived
         await self._probe_department_url(record.record_id, result, cache)
         await self._run_address_stage(result, record)
         result = finalise(result, start)

@@ -160,6 +160,27 @@ class TestFinaliseSafetyNet:
         assert out["name2_enriched"] == "Department of Chemistry"
         assert out["street_cleaned"] is None
 
+    def test_location_fragment_in_name3_is_moved(self):
+        # "Annex D Pod 2" is a pure address sub-location, not a department —
+        # _extract_addresses misses it, so the location-fragment branch must
+        # catch it and move it to a street slot.
+        out = finalise(_finalise_dict(
+            name1_enriched="University of Florida",
+            name3_enriched="Annex D Pod 2",
+            street_cleaned="549 Gale Lemerand Dr",
+        ), time.monotonic())
+        assert out["name3_enriched"] is None
+        assert out["street_cleaned"] == "549 Gale Lemerand Dr"
+        assert out["street_2_cleaned"] == "Annex D Pod 2"
+
+    def test_location_fragment_in_name2_fills_empty_street(self):
+        out = finalise(_finalise_dict(
+            name1_enriched="University of Florida",
+            name2_enriched="Wing C",
+        ), time.monotonic())
+        assert out["name2_enriched"] is None
+        assert out["street_cleaned"] == "Wing C"
+
 
 class TestSearchTermAddressGuard:
     def test_address_only_name2_original_not_used_as_unit_handle(self):
