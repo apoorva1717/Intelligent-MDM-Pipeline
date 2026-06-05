@@ -14,6 +14,7 @@ from llm.prompts import (
     COMPANY_CANONICAL_SYSTEM_PROMPT,
     COMPANY_CANONICAL_USER_PROMPT_TEMPLATE,
 )
+from utils.text_utils import canonical_preserves_identity
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,17 @@ async def run_company_canonical(
         logger.info(
             "[%s] Company canonical: rejecting '%s' (confidence=%s)",
             record_id, cleaned, confidence,
+        )
+        return result
+
+    # Identity guard: a canonical form must still be the SAME company —
+    # reformatting or acronym expansion, not a different entity. Blocks LLM
+    # hallucinations like "Iso Group Inc" → "CoStar Group".
+    if not canonical_preserves_identity(name1, cleaned):
+        logger.warning(
+            "[%s] Company canonical: REJECTED '%s' → '%s' "
+            "(different entity — identity not preserved)",
+            record_id, name1, cleaned,
         )
         return result
 

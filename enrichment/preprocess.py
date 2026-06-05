@@ -29,6 +29,16 @@ import logging
 import re
 from dataclasses import dataclass, field
 
+from rapidfuzz import fuzz
+
+from utils.text_utils import (
+    canonicalise_unit_name,
+    is_granular_unit,
+    is_logistics_location,
+    is_unit_construction,
+    looks_like_research_institution,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,6 +60,10 @@ class PreprocessResult:
     street3: str | None = None
     street4: str | None = None
     street5: str | None = None
+    # A named building pulled out of a name field (e.g. "Neil Armstrong
+    # Operations and Checkout Building"). Routed to the Building output by
+    # the orchestrator — it is a physical location, not a department.
+    building: str | None = None
     use_cases: list[int] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)
     # Names where UC 11 normalised a DBA variant to "DBA". Downstream
@@ -121,6 +135,13 @@ _STREET_SUFFIXES = (
     r"Way|Hwy|Highway|Pl|Place|Pkwy|Parkway|Ct|Court|Ter|Terrace|"
     r"Cir|Circle|Sq|Square"
 )
+# Building / hall words that, when preceded by a HOUSE NUMBER, mark a
+# campus-style street address (e.g. "100 Rhines Hall", "104 Weil Hall",
+# "20 Smith Building"). Without a leading number a value like "Rhines Hall"
+# is just a named building (routed to the Building field, not the street).
+_BUILDING_PLACE_WORDS = (
+    r"Hall|Building|Bldg|Pavilion|Tower|Annex|Wing|Complex"
+)
 # Patterns that indicate address content inside a name field.
 # Street-name tokens allow both capitalised words ("Main", "Wolfe",
 # "Torrey Pines") and numeric ordinals ("42nd", "5th", "1st") because
@@ -135,6 +156,20 @@ _ADDRESS_PATTERNS = [
     # "129000 N.W. 38th Avenue"
     re.compile(
         rf"\b\d+\s+(?:{_DIRECTION}\s+)?{_STREET_TOKEN}(?:\s+{_STREET_TOKEN})*\s+(?:{_STREET_SUFFIXES})(?:\s+{_DIRECTION})?\b\.?",
+        re.IGNORECASE,
+    ),
+    # House number + named building/hall: "100 Rhines Hall", "20 Smith
+    # Building". Requires the leading number so an unnumbered named building
+    # ("Rhines Hall") is left for the Building-field router instead.
+    re.compile(
+        rf"\b\d+\s+(?:{_DIRECTION}\s+)?{_STREET_TOKEN}(?:\s+{_STREET_TOKEN})*\s+(?:{_BUILDING_PLACE_WORDS})\b\.?",
+        re.IGNORECASE,
+    ),
+    # Named building/hall + room number: "Rhines Hall 104", "Smith Building
+    # 200" (the number trails the building name). The trailing number keeps
+    # an unnumbered building name out of this pattern.
+    re.compile(
+        rf"\b{_STREET_TOKEN}(?:\s+{_STREET_TOKEN})*\s+(?:{_BUILDING_PLACE_WORDS})\s+\d+[A-Za-z]?\b\.?",
         re.IGNORECASE,
     ),
     # Bare street names without house number:
@@ -235,6 +270,63 @@ def _is_opaque_code(text: str) -> bool:
     if not text:
         return False
     return bool(_OPAQUE_CODE_RE.match(text.strip()))
+
+
+# A leading account/customer code: 1-4 letters then ≥2 digits ("B800000123",
+# "NT30", "SAP-42"). A LETTER PREFIX is required so a leading HOUSE NUMBER
+# (pure digits, e.g. "10901 Roosevelt Blvd N") is never mistaken for a code.
+_LEADING_ACCOUNT_CODE_RE = re.compile(r"^[A-Za-z]{1,4}-?\d{2,}$")
+
+
+def _collapse_repeated_phrase(value: str | None) -> str | None:
+    """Collapse a value that is the same phrase repeated back-to-back.
+
+    "Department of Central Receiving Department of Central Receiving"
+        → "Department of Central Receiving"
+    "Receiving Receiving" → "Receiving"
+
+    Returns the value unchanged when it is not a whole-number repetition of a
+    shorter token sequence (case-insensitive comparison, original casing of
+    the first occurrence is kept).
+    """
+    if not value or not value.strip():
+        return value
+    tokens = value.split()
+    n = len(tokens)
+    if n < 2:
+        return value
+    low = [t.lower() for t in tokens]
+    for p in range(1, n // 2 + 1):
+        if n % p != 0:
+            continue
+        unit = low[:p]
+        if all(low[i * p:(i + 1) * p] == unit for i in range(n // p)):
+            return " ".join(tokens[:p])
+    return value
+
+
+def _strip_leading_opaque_code(value: str | None) -> str | None:
+    """Strip a leading account/opaque-code token from a name value when
+    real content follows it.
+
+    "B800000123 c/o Dr. Mark Adams" → "c/o Dr. Mark Adams"
+    "NT30 Division of Cardiology"   → "Division of Cardiology"
+
+    Leaves a value that is ONLY a code untouched (handled by UC 10), never
+    strips a leading house number ("10901 Roosevelt Blvd N"), and never
+    touches a leading number that is part of a name ("3M", "21st Century
+    Fox", "100 Black Men of America") — only a letter-prefixed code matches.
+    """
+    if not value or not value.strip():
+        return value
+    out = value.strip()
+    while True:
+        parts = out.split(None, 1)
+        if len(parts) == 2 and _LEADING_ACCOUNT_CODE_RE.match(parts[0].strip(",;:|/")):
+            out = parts[1].strip()
+        else:
+            break
+    return out
 
 
 # Residual junk that lingers in the Name 3 overflow slot after the
@@ -382,6 +474,61 @@ _DEPT_KEYWORDS_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+
+# A named building sitting in a name field — a value that ENDS in
+# "Building"/"Bldg" with at least one descriptive word before it
+# (e.g. "Neil Armstrong Operations and Checkout Building"). This is a
+# physical location, not a department, so it is routed to the Building
+# address output. A bare "Building" / "Bldg" (no descriptor) is ignored,
+# as is the "Building <id>" identifier form which the address extractor
+# already handles on street fields.
+_NAMED_BUILDING_RE = re.compile(r"\S.*\s(?:Building|Bldg)\.?\s*$", re.IGNORECASE)
+_BUILDING_IDENTIFIER_RE = re.compile(r"^(?:Building|Bldg)\.?\s+\w[\w\-]*\s*$", re.IGNORECASE)
+
+
+# A value made up ENTIRELY of location-descriptor + identifier groups —
+# "Wing C", "Annex D Pod 2", "Bay 4", "Floor 3 Room 12". These are address
+# sub-locations, not organisational names, and are moved verbatim (as one
+# unit) to an empty street slot. Each identifier must look like an identifier
+# (contains a digit, or is 1-2 chars) so "Wing Commander" is NOT matched.
+_LOC_DESCRIPTORS = (
+    r"Wing|Annex|Pod|Bay|Block|Module|Dock|Gate|Level|Hall|Pavilion|Tower|"
+    r"Suite|Ste|Unit|Floor|Fl|Room|Rm|Bldg|Building|Mail\s*Stop|MS"
+)
+_LOC_ID = r"(?:[\w]*\d[\w]*|[A-Za-z]{1,2})"
+# Descriptor and identifier may be separated by whitespace OR a hyphen
+# ("Wing C", "Wing-C", "Pod-2").
+_LOCATION_FRAGMENT_RE = re.compile(
+    rf"^(?:(?:{_LOC_DESCRIPTORS})\.?[\s\-]+{_LOC_ID}\b[\s,]*)+$", re.IGNORECASE,
+)
+
+
+def _location_fragment(text: str | None) -> str | None:
+    """Return the trimmed value when *text* is purely location sub-locations
+    (e.g. "Wing C", "Annex D Pod 2"), else None."""
+    if not text or not text.strip():
+        return None
+    stripped = re.sub(r"\s+", " ", text.strip())
+    return stripped if _LOCATION_FRAGMENT_RE.match(stripped) else None
+
+
+def _named_building(text: str | None) -> str | None:
+    """Return the trimmed value when *text* is a named building, else None."""
+    if not text or not text.strip():
+        return None
+    stripped = text.strip()
+    # A leading house number makes this a street address ("100 Rhines Hall",
+    # "20 Smith Building"), not a bare named building — leave it for the
+    # address extractor to route into a street slot.
+    if re.match(r"^\d+\s", stripped):
+        return None
+    if _BUILDING_IDENTIFIER_RE.match(stripped):
+        return None
+    if _DEPT_KEYWORDS_RE.search(stripped):
+        return None
+    if _NAMED_BUILDING_RE.match(stripped):
+        return stripped
+    return None
 
 # "Services" as the trailing word (e.g. "Fabrication Outage Services").
 _TRAILING_SERVICES_RE = re.compile(r"\bServices\s*$", re.IGNORECASE)
@@ -745,12 +892,136 @@ def preprocess_record(
     llm_person_verdicts = llm_person_verdicts or {}
 
     # ---------------------------------------------------------------
+    # Leading opaque-code strip. A stray account/customer code prefixed
+    # onto a name field ("B800000123 c/o Dr. Mark Adams") is removed so the
+    # real content is exposed — in particular so a following c/o clause
+    # becomes a prefix that UC 15 can route. Runs FIRST, before UC 15.
+    # ---------------------------------------------------------------
+    for slot in ("name1", "name2", "name3", "name4"):
+        val = getattr(res, slot)
+        stripped = _strip_leading_opaque_code(val)
+        if stripped != val:
+            setattr(res, slot, stripped or None)
+            res.note(10, f"leading opaque code stripped from {slot} (was {val!r})")
+
+    # ---------------------------------------------------------------
+    # Collapse a phrase repeated back-to-back within a single field
+    # ("Department of Central Receiving Department of Central Receiving"
+    # → "Department of Central Receiving"). Applies to name and street slots.
+    # ---------------------------------------------------------------
+    for slot in ("name1", "name2", "name3", "name4",
+                 "street1", "street2", "street3", "street4", "street5"):
+        val = getattr(res, slot)
+        collapsed = _collapse_repeated_phrase(val)
+        if collapsed != val:
+            setattr(res, slot, collapsed)
+            res.note(12, f"repeated phrase collapsed in {slot} (was {val!r})")
+
+    # ---------------------------------------------------------------
     # UC 15 — c/o + ATTN extraction from Name 2 (5-case classifier).
     # Runs FIRST so the legacy UC 7 Pattern A loop and UC 6 AP
     # normalisation see the already-routed state. Touches Name 2,
     # care_of, contact, email only — Name 1 / Name 3 are untouched.
     # ---------------------------------------------------------------
     name2_handled_by_co_attn = _extract_co_attn_from_name2(res, llm_person_verdicts)
+
+    # ---------------------------------------------------------------
+    # Named building → Building field. A name OR street slot whose value is a
+    # named building ("Neil Armstrong Operations and Checkout Building") is a
+    # physical location, not a department or a street line. Move the first
+    # such value to the Building output and clear the slot. Name slots are
+    # checked first. Runs BEFORE contact/AP/unit logic so the building (which
+    # may contain a person-like prefix, e.g. "Neil Armstrong …") is not
+    # misread as a contact or department. name1 is left alone — the
+    # institution name is not an address field.
+    # ---------------------------------------------------------------
+    for slot in ("name2", "name3", "name4",
+                 "street1", "street2", "street3", "street4", "street5"):
+        bldg = _named_building(getattr(res, slot))
+        if bldg:
+            res.building = bldg
+            setattr(res, slot, None)
+            res.note(9, f"named building moved from {slot} to Building ({bldg!r})")
+            break
+
+    # ---------------------------------------------------------------
+    # Location fragment → street slot. A name slot that is purely address
+    # sub-locations ("Wing C", "Annex D Pod 2") is moved verbatim to the
+    # first empty street slot — it is an address, not a department. Runs
+    # before contact/dept logic so the descriptors are not misread.
+    # ---------------------------------------------------------------
+    for slot in ("name2", "name3", "name4"):
+        frag = _location_fragment(getattr(res, slot))
+        if not frag:
+            continue
+        target = _first_empty_street_slot(res)
+        if target is None:
+            res.flags.append("street-slots-full")
+            res.note(9, f"location fragment in {slot} but all street slots full ({frag!r})")
+        else:
+            setattr(res, target, frag)
+            setattr(res, slot, None)
+            res.note(9, f"location fragment moved from {slot} to {target} ({frag!r})")
+
+    # ---------------------------------------------------------------
+    # Organisation name in a street slot → name block. An institution name
+    # that landed in a street field ("University of Miami Hospital") belongs
+    # in the names. If the name block has no institution (Name 1 is blank or
+    # is only a department), it becomes Name 1 — pushing any department in
+    # Name 1 down to the next empty name slot. Otherwise it goes to the first
+    # empty name slot. Only the first such street value is moved.
+    # ---------------------------------------------------------------
+    for slot in ("street1", "street2", "street3", "street4", "street5"):
+        val = getattr(res, slot)
+        if not _street_is_org_name(val):
+            continue
+        org = val.strip()
+        name1 = (res.name1 or "").strip()
+        has_institution = bool(name1) and not is_unit_construction(name1)
+        if has_institution:
+            target = _first_empty_name_slot(res)
+            if target is None:
+                continue  # nowhere to put it — leave in street
+            setattr(res, target, org)
+            res.note(16, f"organisation in {slot} moved to {target} ({org!r})")
+        else:
+            # Name 1 is empty or only a department → org becomes Name 1.
+            if name1:  # a department currently in Name 1 — preserve it
+                dept_target = _first_empty_name_slot(res)
+                if dept_target:
+                    setattr(res, dept_target, name1)
+            res.name1 = org
+            res.note(16, f"organisation in {slot} promoted to Name 1 ({org!r})")
+        setattr(res, slot, None)
+        break
+
+    # ---------------------------------------------------------------
+    # Department in a street slot → name block (or removed). A department /
+    # academic unit that landed in a street field ("Department of
+    # Neuroscience") is redundant when the name block already has a
+    # department/group — drop it. Otherwise move it to the first empty name
+    # slot. Processed in order so once one department fills a name slot, any
+    # further street departments are treated as redundant.
+    # ---------------------------------------------------------------
+    for slot in ("street1", "street2", "street3", "street4", "street5"):
+        val = getattr(res, slot)
+        if not _street_is_department(val):
+            continue
+        dept = val.strip()
+        if _name_block_has_department(res):
+            setattr(res, slot, None)
+            res.note(16, f"redundant department in {slot} removed ({dept!r})")
+        else:
+            target = _first_empty_name_slot(res)
+            if target is None:
+                continue  # no empty name slot — leave it in the street
+            # Title-case all-caps input ("CHEMISTRY DEPARTMENT" →
+            # "Chemistry Department") so finalise() canonicalises it cleanly
+            # to "Department of Chemistry".
+            dept_name = _smart_title_case(dept)
+            setattr(res, target, dept_name)
+            setattr(res, slot, None)
+            res.note(16, f"department in {slot} moved to {target} ({dept_name!r})")
 
     # ---------------------------------------------------------------
     # UC 7 Pattern A (Attn prefix) — runs BEFORE UC 6 so that a field
@@ -1038,26 +1309,43 @@ def preprocess_record(
     # ("A","A","A") → name3 cleared first, then name2 cleared.
     # No flag is added — duplicate clearing is informational only.
     # ---------------------------------------------------------------
+    # Compare on the CANONICAL unit form so surface variants of the same
+    # department are recognised as duplicates ("Department of Main Receiving"
+    # == "Main Receiving Department" == "Main Receiving Dept").
     def _norm(v: str | None) -> str:
-        return re.sub(r"\s+", " ", (v or "").strip()).lower()
+        if not v or not v.strip():
+            return ""
+        canon = canonicalise_unit_name(v) or v
+        return re.sub(r"\s+", " ", canon.strip()).lower()
+
+    # Equivalent when the canonical forms match exactly OR are near-identical
+    # (a typo / one-off character difference, e.g. "Department of Main
+    # Receiving" vs "Department of Main Receivingt"). The 92 threshold is
+    # strict enough that genuinely different units ("Physics" vs "Physiology")
+    # are not merged.
+    def _equiv(a: str | None, b: str | None) -> bool:
+        na, nb = _norm(a), _norm(b)
+        if not na or not nb:
+            return False
+        return na == nb or fuzz.ratio(na, nb) >= 92
 
     # Clear later slots first so an all-equal case collapses cleanly.
-    if res.name3 and res.name4 and _norm(res.name3) == _norm(res.name4):
+    if res.name3 and res.name4 and _equiv(res.name3, res.name4):
         res.note(12, f"name4 cleared — duplicate of name3 ({res.name4!r})")
         res.name4 = None
-    if res.name2 and res.name4 and _norm(res.name2) == _norm(res.name4):
+    if res.name2 and res.name4 and _equiv(res.name2, res.name4):
         res.note(12, f"name4 cleared — duplicate of name2 ({res.name4!r})")
         res.name4 = None
-    if res.name1 and res.name4 and _norm(res.name1) == _norm(res.name4):
+    if res.name1 and res.name4 and _equiv(res.name1, res.name4):
         res.note(12, f"name4 cleared — duplicate of name1 ({res.name4!r})")
         res.name4 = None
-    if res.name2 and res.name3 and _norm(res.name2) == _norm(res.name3):
+    if res.name2 and res.name3 and _equiv(res.name2, res.name3):
         res.note(12, f"name3 cleared — duplicate of name2 ({res.name3!r})")
         res.name3 = None
-    if res.name1 and res.name3 and _norm(res.name1) == _norm(res.name3):
+    if res.name1 and res.name3 and _equiv(res.name1, res.name3):
         res.note(12, f"name3 cleared — duplicate of name1 ({res.name3!r})")
         res.name3 = None
-    if res.name1 and res.name2 and _norm(res.name1) == _norm(res.name2):
+    if res.name1 and res.name2 and _equiv(res.name1, res.name2):
         res.note(12, f"name2 cleared — duplicate of name1 ({res.name2!r})")
         res.name2 = None
 
@@ -1069,6 +1357,91 @@ def _first_empty_street_slot(res: PreprocessResult) -> str | None:
         if not getattr(res, slot):
             return slot
     return None
+
+
+def _first_empty_name_slot(res: PreprocessResult) -> str | None:
+    for slot in ("name2", "name3", "name4"):
+        val = getattr(res, slot)
+        if not (val and val.strip()):
+            return slot
+    return None
+
+
+def _street_is_org_name(value: str | None) -> bool:
+    """True when a STREET value is actually an organisation/institution name
+    ("University of Miami Hospital"), not an address.
+
+    Requires an organisation signal (research-institution wording or a legal
+    company suffix) AND that the value is not address-like (no house-number +
+    street-type pattern, no leading street number).
+    """
+    if not value or not value.strip():
+        return False
+    v = value.strip()
+    if re.match(r"^\s*\d", v):           # leading house number → address
+        return False
+    if is_logistics_location(v):         # distribution centre etc. → not an org
+        return False
+    addrs, _ = _extract_addresses(v)     # matches a street pattern → address
+    if addrs:
+        return False
+    return looks_like_research_institution(v) or bool(_LEGAL_SUFFIX_RE.search(v))
+
+
+def _street_is_department(value: str | None) -> bool:
+    """True when a STREET value is actually a department / academic unit
+    ("Department of Neuroscience", "Smith Lab"), not an address.
+
+    A logistics facility ("Southeast Distribution Ctr") is excluded — it
+    reads as a "...Center" unit but is an unloading point, not a department.
+    """
+    if not value or not value.strip():
+        return False
+    v = value.strip()
+    if re.match(r"^\s*\d", v):
+        return False
+    if is_logistics_location(v):
+        return False
+    addrs, _ = _extract_addresses(v)
+    if addrs:
+        return False
+    return is_unit_construction(v) or is_granular_unit(v)
+
+
+def _name_block_has_department(res: PreprocessResult) -> bool:
+    """True when a DEPARTMENT slot already holds a department / group / unit.
+
+    Only Name 2-4 are checked — Name 1 is the institution slot, and many
+    institution names ("School of Medicine", "Scripps Research Institute",
+    "Moffitt Cancer Center") read as unit/granular constructions; counting
+    them here would wrongly drop a real department found in a street field.
+    """
+    for slot in ("name2", "name3", "name4"):
+        val = getattr(res, slot)
+        if val and (is_unit_construction(val) or is_granular_unit(val)):
+            return True
+    return False
+
+
+_TITLE_CASE_CONNECTORS = {"of", "and", "for", "the", "in", "at", "&"}
+
+
+def _smart_title_case(value: str | None) -> str | None:
+    """Title-case an ALL-CAPS value, keeping short acronyms (≤3 letters) and
+    lowercasing connectors. "CHEMISTRY DEPARTMENT" → "Chemistry Department",
+    "MRI DEPARTMENT" → "MRI Department". Mixed-case input is left as-is."""
+    if not value or not value.strip() or not value.isupper():
+        return value
+    out = []
+    for w in value.split():
+        letters = re.sub(r"[^A-Za-z]", "", w)
+        if w.lower() in _TITLE_CASE_CONNECTORS:
+            out.append(w.lower())
+        elif len(letters) >= 4:
+            out.append(w.capitalize())
+        else:
+            out.append(w)
+    return " ".join(out)
 
 
 # ---------------------------------------------------------------------------

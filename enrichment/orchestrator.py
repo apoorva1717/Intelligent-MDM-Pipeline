@@ -30,6 +30,7 @@ from api.models import (
 )
 from config import Settings
 from enrichment.address_processing import (
+    _normalise_street_value,
     merge_into_result as merge_address_into_result,
     process_address,
 )
@@ -43,6 +44,7 @@ from enrichment.search_terms import (
     extract_dept_core,
 )
 from enrichment.preprocess import (
+    _extract_addresses,
     find_suspicious_plain_names,
     has_multiple_contacts,
     llm_classify_plain_names_async,
@@ -61,8 +63,9 @@ from search.base import SearchClient
 from search.duckduckgo_client import DuckDuckGoClient
 from search.page_fetcher import PageFetcher
 from search.serpapi_client import SerpAPIClient
-from utils.cache import BatchCache
+from utils.cache import BatchCache, SerpCache
 from utils.text_utils import (
+    canonical_preserves_identity,
     canonicalise_unit_name,
     country_to_iso_code,
     expand_abbreviations,
@@ -136,6 +139,24 @@ def _significant_dept_tokens(text: str) -> set[str]:
     }
 
 
+def _seg_matches_needle(seg: str, needle: str) -> bool:
+    """Match a host segment against a dept token/acronym, allowing the
+    common abbreviation case where the subdomain is a prefix of the token
+    ("chem" ← "chemistry", "phys" ← "physics") or vice versa.
+    """
+    seg = (seg or "").lower()
+    needle = (needle or "").lower()
+    if not seg or not needle:
+        return False
+    if needle in seg:               # substring (e.g. "cs" in "csail")
+        return True
+    # Shared leading prefix of ≥3 chars — abbreviation either direction.
+    return (
+        min(len(seg), len(needle)) >= 3
+        and (needle.startswith(seg) or seg.startswith(needle))
+    )
+
+
 def _score_dept_candidate(
     host: str,
     base: str,
@@ -172,8 +193,10 @@ def _score_dept_candidate(
     if first_seg in _GENERIC_HOST_PREFIXES:
         return 0
 
-    host_lower = host_prefix.lower()
-    if not any(n in host_lower for n in needles):
+    # The first host segment must match a token/acronym — allowing the
+    # abbreviation case ("chem" ← "chemistry") so departments that use a
+    # shortened subdomain are not rejected.
+    if not any(_seg_matches_needle(first_seg, n) for n in needles):
         return 0
 
     score = 3
@@ -326,6 +349,13 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
             if canonical and canonical != val:
                 result[field] = canonical
 
+    # A named building lifted out of a name field (see preprocess) fills the
+    # Building output only when the address stage did not already extract one
+    # from the street fields.
+    pp_building = result.pop("_pp_building", None)
+    if pp_building and not result.get("building"):
+        result["building"] = pp_building
+
     preprocess_cleared = result.get("_preprocess_cleared") or set()
 
     # Passthrough: if no tier enriched name2/name3 but the record had
@@ -351,6 +381,34 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
             if orig and str(orig).strip():
                 result[f"{base}_enriched"] = str(orig).strip()
 
+    # Address-in-name safety net. By this point a street address can still
+    # be sitting in a name field: a tier wrote one into name2/name3 AFTER
+    # preprocessing's UC 9 ran, or the passthrough above restored an
+    # address-bearing original. The address stage handles the common case,
+    # but it runs before this passthrough — so re-check the FINAL name
+    # values here and pull any embedded street address into the first empty
+    # street output slot. name1 (the institution) is never touched. Only
+    # rewrite a name field when every fragment finds a slot, so a record
+    # with all street slots full never silently drops part of an address.
+    _street_out = ("street_cleaned", "street_2_cleaned", "street_3_cleaned",
+                   "street_4_cleaned", "street_5_cleaned")
+    for _nf in ("name2_enriched", "name3_enriched", "name4_enriched"):
+        _nval = result.get(_nf)
+        if not (_nval and str(_nval).strip()):
+            continue
+        _addrs, _cleaned = _extract_addresses(str(_nval))
+        if not _addrs:
+            continue
+        _placed_all = True
+        for _addr in _addrs:
+            _slot = next((s for s in _street_out if not result.get(s)), None)
+            if _slot is None:
+                _placed_all = False
+                break
+            result[_slot] = _normalise_street_value(_addr) or _addr
+        if _placed_all:
+            result[_nf] = _cleaned or None
+
     # UC 11 safety net: if preprocessing rewrote a DBA variant in a name
     # field, the preprocessed value IS the canonical form. Restore it
     # over anything a downstream tier (company_canonical, tier2_canonical,
@@ -360,6 +418,31 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     for base, preprocessed in dba_values.items():
         if preprocessed and result.get(f"{base}_enriched") != preprocessed:
             result[f"{base}_enriched"] = preprocessed
+
+    # Post-tier dedup of the department slots. Preprocess already deduped, but
+    # the tiers (especially the Tier 3 LLM) can set name2/name3/name4 to the
+    # same unit — or a near-duplicate/typo — AFTER that ran. Collapse
+    # equivalent enriched name slots here (canonical + fuzzy match) and pack
+    # the survivors leftward so a duplicate never reaches the output.
+    def _name_norm(v: Any) -> str:
+        if not v or not str(v).strip():
+            return ""
+        canon = canonicalise_unit_name(str(v)) or str(v)
+        return re.sub(r"\s+", " ", canon.strip()).lower()
+
+    kept_vals: list[Any] = []
+    kept_norms: list[str] = []
+    for f in ("name2_enriched", "name3_enriched", "name4_enriched"):
+        val = result.get(f)
+        n = _name_norm(val)
+        if not n:
+            continue
+        if any(n == kn or fuzz.ratio(n, kn) >= 92 for kn in kept_norms):
+            continue
+        kept_vals.append(val)
+        kept_norms.append(n)
+    for i, f in enumerate(("name2_enriched", "name3_enriched", "name4_enriched")):
+        result[f] = kept_vals[i] if i < len(kept_vals) else None
 
     # Compute all changed flags.
     def _changed(field: str) -> bool:
@@ -408,6 +491,12 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # the orchestrator (see _probe_department_url) — it doesn't share
     # source_url with the tiers.
     result["search_term_1"], result["search_term_2"] = derive_search_terms(result)
+
+    # Emit department_domain as a full URL (like website_url) rather than a
+    # bare host. Done AFTER derive_search_terms, which needs the host form.
+    dept_dom = (result.get("department_domain") or "").strip()
+    if dept_dom and not dept_dom.lower().startswith(("http://", "https://")):
+        result["department_domain"] = f"https://{dept_dom}"
 
     result["duration_ms"] = int((time.monotonic() - start) * 1000)
     # Strip transient non-schema keys before pydantic validation.
@@ -505,7 +594,19 @@ def _apply_tier3(result: dict, tier3: Tier3Result) -> None:
 
     if tier3.success:
         if tier3.name1_suggestion and tier3.name1_suggestion.strip():
-            result["name1_enriched"] = tier3.name1_suggestion.strip()
+            suggestion = tier3.name1_suggestion.strip()
+            # Identity guard: never let the LLM swap name1 for a different
+            # entity (e.g. "Iso Group Inc" → "CoStar Group"). Accept only a
+            # reformatting / acronym expansion of the original.
+            original_name1 = result.get("name1_original")
+            if canonical_preserves_identity(original_name1, suggestion):
+                result["name1_enriched"] = suggestion
+            else:
+                logger.warning(
+                    "[%s] Tier 3: REJECTED name1 '%s' → '%s' "
+                    "(different entity — identity not preserved)",
+                    result.get("record_id"), original_name1, suggestion,
+                )
         if tier3.name2_suggestion and tier3.name2_suggestion.strip():
             result["name2_enriched"] = tier3.name2_suggestion.strip()
         if tier3.name3_suggestion and tier3.name3_suggestion.strip():
@@ -539,6 +640,11 @@ class Orchestrator:
             )
             self._llm_client = OpenAIClient(settings)
 
+        # In-memory SERP cache shared by every batch this orchestrator
+        # processes, so repeated/overlapping queries reuse a prior result
+        # instead of re-hitting the search API for the life of the process.
+        self._serp_cache = SerpCache()
+
     @staticmethod
     def _build_search_client(settings: Settings) -> SearchClient:
         """Select SERP provider based on configuration."""
@@ -563,7 +669,7 @@ class Orchestrator:
         # for the duration of this batch. Idempotent.
         install_httpx_aclose_noise_filter()
         clear_ror_cache()  # fresh cache per batch to avoid stale failures
-        cache = BatchCache()
+        cache = BatchCache(shared_serp=self._serp_cache)
         semaphore = asyncio.Semaphore(options.max_concurrency)
 
         async def _process_with_semaphore(record: EnrichmentRecord) -> EnrichmentResult:
@@ -786,6 +892,14 @@ class Orchestrator:
             tok_l = tok.lower()
             if tok_l not in candidates:
                 candidates.append(tok_l)
+            # Departments often use an abbreviated subdomain
+            # ("chem" ← "chemistry", "phys" ← "physics", "math" ←
+            # "mathematics"). Probe short prefixes of the token too.
+            for plen in (4, 3):
+                if len(tok_l) > plen:
+                    pref = tok_l[:plen]
+                    if pref not in candidates:
+                        candidates.append(pref)
 
         hosts_to_probe = [f"{c}.{base}" for c in candidates]
         if hosts_to_probe:
@@ -901,11 +1015,56 @@ class Orchestrator:
                 )
                 return
 
+        # ── 2b) Path-based official page (no new SERP call) ───────────
+        # Some institutions host the department at a PATH on the main or a
+        # faculty domain ("clas.ufl.edu/chemistry") rather than a dedicated
+        # subdomain. The subdomain scan above skips those (host == base).
+        # Reuse the site:-restricted results already fetched: accept the
+        # FULL URL — including path — of the first on-domain result whose
+        # path/title carries the dept tokens AND whose page verifies.
+        needles: set[str] = set(tokens)
+        if acronym and len(acronym) >= 2:
+            needles.add(acronym.lower())
+        for sr in serp_results:
+            try:
+                parsed = urlparse(sr.url)
+            except Exception:
+                continue
+            host = (parsed.hostname or "").lower()
+            if host.startswith("www."):
+                host = host[4:]
+            if not (host == base or host.endswith("." + base)):
+                continue
+            path = (parsed.path or "").strip("/")
+            if not path:
+                continue  # bare domain handled by the host scan above
+            hay = re.sub(r"[/\-_]+", " ", path).lower() + " " + (sr.title or "").lower()
+            if not any(n in hay for n in needles):
+                continue
+            if await self._verify_candidate_url(sr.url, cleaned, tokens, acronym):
+                result["department_domain"] = sr.url
+                logger.info(
+                    "[%s] dept domain via on-domain path page: %s for name2=%r",
+                    record_id, sr.url, name2,
+                )
+                return
+
         # ── 3) SERP fallback (no site:) — cross-domain departments ────
         # Some institutions host their dept on a brand domain
         # (hopkinsmedicine.org for JHU medical departments). The
         # site:-filtered query above can't see those. Run an unrestricted
         # SERP and verify each candidate by fetching the page.
+        # This is a SECOND SERP call per record, so it is opt-in: when
+        # DEPT_PROBE_CROSS_DOMAIN is off (default) the probe stops here at
+        # one SERP call and leaves department_domain null for the
+        # cross-domain case rather than spending another query.
+        if not self._settings.dept_probe_cross_domain:
+            logger.info(
+                "[%s] dept domain probe: cross-domain fallback disabled — "
+                "stopping at one SERP call",
+                record_id,
+            )
+            return
         name1 = (
             result.get("name1_enriched") or result.get("name1_original") or ""
         ).strip()
@@ -962,19 +1121,29 @@ class Orchestrator:
         tokens: set[str],
         acronym: str | None,
     ) -> bool:
-        """Fetch ``https://<host>/`` and verify the page actually
-        describes the department.
+        """Verify ``https://<host>/`` describes the department."""
+        return await self._verify_candidate_url(
+            f"https://{host}/", cleaned_phrase, tokens, acronym,
+        )
+
+    async def _verify_candidate_url(
+        self,
+        url: str,
+        cleaned_phrase: str,
+        tokens: set[str],
+        acronym: str | None,
+    ) -> bool:
+        """Fetch *url* and verify the page actually describes the department.
 
         A page passes verification when EITHER:
         * the full *cleaned_phrase* appears in title/h1/breadcrumb, OR
         * at least 2 significant needles (tokens + acronym) appear there
           (or 1 needle, when only one is available).
 
-        This rejects hosts that resolve but don't describe the dept
+        This rejects pages that resolve but don't describe the dept
         (e.g. ``science.mit.edu`` is the School of Science, not the
         Computer Science department).
         """
-        url = f"https://{host}/"
         try:
             page = await self._page_fetcher.fetch_page_content(url)
         except Exception:
@@ -1070,10 +1239,6 @@ class Orchestrator:
         start = time.monotonic()
 
         try:
-            if options.dry_run:
-                result["enrichment_status"] = "unresolved"
-                return await self._finalise_and_return(result, start, record, cache)
-
             # ── UC 0: Name 1 overflow check ──────────────────────────
             # Single LLM call. If Name1 + Name2 read as ONE continuous
             # organisation name, flag the record and return immediately
@@ -1210,6 +1375,12 @@ class Orchestrator:
                 v = getattr(pre, slot)
                 if v is not None and v != result[f"{slot}_original"]:
                     result[f"{slot}_enriched"] = v
+            # A named building pulled out of a name field. Stashed as a
+            # transient and applied in finalise() AFTER the address stage, so
+            # a building extracted from the street fields takes precedence and
+            # this only fills the Building slot when it is otherwise empty.
+            if pre.building:
+                result["_pp_building"] = pre.building
 
             # From here on, the tiers work with the PREPROCESSED names.
             pp_name1 = pre.name1
@@ -1296,7 +1467,21 @@ class Orchestrator:
                     # failures don't lose it.
                     official = ror_parent.get("official_name")
                     if official and official.strip():
-                        result["name1_enriched"] = official.strip()
+                        # Identity guard: ROR's short canonical form can drop a
+                        # parent qualifier the input carried ("USDA Agricultural
+                        # Research Service" → "Agricultural Research Service").
+                        # Keep the user's fuller name when ROR's would lose a
+                        # distinctive token — but still use ROR's id/domain/
+                        # website below (it is the same entity).
+                        if canonical_preserves_identity(name1_cleaned, official.strip()):
+                            result["name1_enriched"] = official.strip()
+                        else:
+                            result["name1_enriched"] = name1_cleaned
+                            logger.info(
+                                "[%s] ROR name '%s' drops a distinctive token "
+                                "from '%s' — keeping the input name",
+                                record.record_id, official.strip(), name1_cleaned,
+                            )
 
                     # Carry the ROR acronym (when present) for the
                     # search_term_1 derivation in finalise().

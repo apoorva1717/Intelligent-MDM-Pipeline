@@ -375,6 +375,17 @@ def is_specific_unit_construction(text: str | None) -> bool:
     return False
 
 
+# Truncated / abbreviated department subjects that must NOT be reordered into
+# a fabricated "Department of <X>" (e.g. "Biomed" → there is no "Department of
+# Biomed"; the real unit is Biomedical Engineering/Sciences/etc.). When the
+# subject is one of these, canonicalise_unit_name leaves the value unchanged.
+# Extend this set as more truncations are observed.
+_TRUNCATED_SUBJECTS = {
+    "biomed", "anesth", "ortho", "rehab", "neuro", "cardio", "derm",
+    "psych", "ophth", "peds", "gastro", "endo", "pulm", "rad",
+}
+
+
 def canonicalise_unit_name(text: str | None) -> str | None:
     """Normalise academic unit names to the 'Unit of/for Subject' form.
 
@@ -421,10 +432,128 @@ def canonicalise_unit_name(text: str | None) -> str | None:
         m = suffix_re.match(cleaned)
         if m:
             subject = m.group(1).strip(" ,;.-")
-            if subject:
-                return f"{unit} {connector} {subject}"
+            if not subject:
+                continue
+            # Do NOT fabricate a "Department of <X>" when the subject is a
+            # single truncated/abbreviated token ("Biomed Dept" → would give
+            # the non-existent "Department of Biomed"). Leave the original
+            # value unchanged instead. Real subjects ("Chemistry Dept" →
+            # "Department of Chemistry") canonicalise normally.
+            if " " not in subject and subject.lower() in _TRUNCATED_SUBJECTS:
+                return text
+            return f"{unit} {connector} {subject}"
 
     return cleaned
+
+
+# Generic company words that carry no identity — ignored when comparing a
+# canonicalised name against the original. Deliberately limited to legal /
+# structural suffixes; distinctive words like "Technology", "International",
+# or "Sciences" are NOT generic (dropping or swapping them changes the
+# entity), so they must be preserved by a valid canonicalisation.
+_GENERIC_COMPANY_WORDS = {
+    "group", "inc", "incorporated", "llc", "llp", "lp", "corp", "corporation",
+    "company", "co", "ltd", "limited", "holdings", "holding", "plc", "gmbh",
+    "ag", "sa", "nv", "bv", "spa", "srl", "pty", "the", "and", "of", "for",
+}
+
+
+def _identity_tokens(name: str | None) -> set[str]:
+    toks = re.findall(r"[A-Za-z0-9]+", (name or "").lower())
+    return {t for t in toks if len(t) >= 2 and t not in _GENERIC_COMPANY_WORDS}
+
+
+# A logistics / shipping facility — a distribution or fulfillment centre,
+# warehouse, depot, etc. These are unloading points (address logistics),
+# NOT departments or organisations, even though "...Center/Ctr" reads as a
+# unit. Used to keep "Southeast Distribution Ctr" out of the name block and
+# route it to the unloading_point field instead.
+_LOGISTICS_LOCATION_RE = re.compile(
+    r"\b(?:Distribution|Fulfil?lment|Logistics)\s+(?:Center|Centre|Ctr|Warehouse)\b",
+    re.IGNORECASE,
+)
+
+
+def is_logistics_location(value: str | None) -> bool:
+    """True when *value* names a distribution/fulfillment/logistics facility."""
+    return bool(value and _LOGISTICS_LOCATION_RE.search(value))
+
+
+# Institution-type words a valid canonicalisation MAY add to complete a name
+# ("Harvard" → "Harvard University", "Mayo" → "Mayo Clinic"). Adding any
+# OTHER distinctive word — a brand/scope qualifier like "World" or "Global"
+# ("Precision Instruments Co." → "World Precision Instruments") — signals a
+# different entity and is rejected.
+_ORG_TYPE_ADDABLE = {
+    "university", "universities", "college", "colleges", "school", "schools",
+    "institute", "institutes", "laboratory", "laboratories", "foundation",
+    "center", "centre", "centers", "hospital", "hospitals", "clinic",
+    "academy", "conservatory", "seminary", "polytechnic",
+}
+
+
+def _token_covers(a: str, b: str) -> bool:
+    """True if tokens *a* and *b* are the same word or an abbreviation of it
+    (prefix relation, e.g. 'univ'↔'university', 'science'↔'sciences')."""
+    if a == b:
+        return True
+    return min(len(a), len(b)) >= 4 and (a.startswith(b) or b.startswith(a))
+
+
+def canonical_preserves_identity(original: str | None, canonical: str | None) -> bool:
+    """Return True if *canonical* plausibly names the SAME entity as *original*.
+
+    Guards LLM canonicalisation against silently replacing a company with a
+    completely different one (e.g. "Iso Group Inc" → "CoStar Group", or
+    "Liberty Health Sciences" → "Liberty Science Center"). It accepts a
+    result when:
+      * EVERY distinctive (non-generic) token of the original is covered by
+        the canonical AND the canonical adds no new distinctive word beyond
+        generic suffixes or institution-type words — i.e. the change only
+        reformats, adds a legal suffix / "University"-style word, or expands
+        an abbreviation. It never drops, swaps, OR prepends a distinctive
+        word. Sharing just one word ("Liberty"), or adding a brand qualifier
+        ("World" in "World Precision Instruments"), is NOT enough. OR
+      * it is a legitimate acronym expansion — the original is a single
+        all-caps acronym (2–6 letters) whose letters match the initials of
+        the canonical's words ("IBM" → "International Business Machines").
+
+    Conservative: when the original has no distinctive tokens to compare
+    (e.g. only generic words), it returns True so legitimate reformatting is
+    never blocked. The aim is to catch identity *replacement*, not to police
+    wording.
+    """
+    if not (original and original.strip()) or not (canonical and canonical.strip()):
+        return True
+    o = _identity_tokens(original)
+    c = _identity_tokens(canonical)
+    if not o or not c:
+        return True
+    # Every distinctive token of the original must survive in the canonical,
+    # and the canonical must not introduce a new distinctive word other than
+    # an institution-type word (a brand/scope qualifier like "World" changes
+    # the entity).
+    if all(any(_token_covers(t, u) for u in c) for t in o):
+        extras = [u for u in c if not any(_token_covers(t, u) for t in o)]
+        return all(u in _ORG_TYPE_ADDABLE for u in extras)
+    # Acronym expansion: original is a single all-caps token (in the raw
+    # string), 2–6 letters, matching the initials of the canonical's words.
+    # Use ALL canonical words for the initials (a generic word like
+    # "International" is still the "I" in "IBM"), dropping only a leading
+    # article.
+    raw = [t for t in re.findall(r"[A-Za-z&]+", original.strip())
+           if t.lower() not in _GENERIC_COMPANY_WORDS]
+    if len(raw) == 1 and raw[0].isupper() and 2 <= len(raw[0]) <= 6:
+        acro = raw[0].lower()
+        # Build initials from the canonical's words, skipping connector
+        # stopwords ("University of Florida" → "uf", not "uof").
+        _stop = {"the", "of", "and", "for", "de", "la", "le"}
+        canon_words = [t for t in re.findall(r"[A-Za-z0-9]+", canonical)
+                       if t.lower() not in _stop]
+        initials = "".join(t[0].lower() for t in canon_words if t)
+        if initials == acro or initials.startswith(acro):
+            return True
+    return False
 
 
 def strip_address_fragments(
@@ -486,6 +615,28 @@ def strip_address_fragments(
     if re.search(r"\b\d{3,}\b", result):
         address_like_hit = True
         result = re.sub(r"\b\d{3,}\b", " ", result)
+
+    # A trailing ", <city>" / ", <state>" segment that matches the record's
+    # own City/State is a location suffix on the org name — noise even when
+    # no street/zip is present (e.g. "HCA Florida University Hospital, Davie"
+    # with City "Davie"). Strip it as a trailing comma-delimited segment only,
+    # so interior words (e.g. "Florida" in the org name) are never touched.
+    # Repeated to peel "..., City, State". This does NOT set address_like_hit,
+    # so it can't trigger the broader whole-word removal below.
+    changed = True
+    while changed:
+        changed = False
+        for frag in (city, state):
+            if not (frag and frag.strip()):
+                continue
+            m = re.search(
+                r",\s*" + re.escape(frag.strip()) + r"\s*$", result, re.IGNORECASE,
+            )
+            if m:
+                candidate = result[: m.start()].strip(" ,;.-")
+                if candidate:
+                    result = candidate
+                    changed = True
 
     # Only strip city/state if we already saw address-like content
     if address_like_hit:

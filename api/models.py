@@ -286,7 +286,6 @@ class EnrichmentOptions(BaseModel):
     max_concurrency: int = Field(default=5, ge=1, le=20)
     serp_provider: Literal["serpapi", "duckduckgo"] = "serpapi"
     skip_tier: Optional[int] = Field(default=None, description="Skip a specific tier (for testing)")
-    dry_run: bool = False
 
 
 class EnrichmentRequest(BaseModel):

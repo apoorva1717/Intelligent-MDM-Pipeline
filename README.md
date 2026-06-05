@@ -618,8 +618,7 @@ If neither is available, `domain` is `null`.
   "options": {
     "max_concurrency": 5,
     "serp_provider": "serpapi",
-    "skip_tier": null,
-    "dry_run": false
+    "skip_tier": null
   }
 }
 ```

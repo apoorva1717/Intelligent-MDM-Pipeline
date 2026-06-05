@@ -36,9 +36,11 @@ RESPONSE_COLUMNS: dict[str, str] = {
     "name2_enriched": "Name 2",
     "name3_enriched": "Name 3",
     "name4_enriched": "Name 4",
-    "domain": "Domain",
+    # "Domain" and "Website URL" merged into a single "Domain" column that
+    # carries the website URL value; the separate "Website URL" column and the
+    # bare-domain value are no longer emitted.
+    "website_url": "Domain",
     "department_domain": "Department Domain",
-    "website_url": "Website URL",
     # ── Contact block (enriched) ─────────────────────────────────────
     "care_of_enriched": "Care Of",
     "contact_enriched": "Contact",

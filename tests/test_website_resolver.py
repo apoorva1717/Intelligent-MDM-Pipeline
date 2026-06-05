@@ -355,13 +355,3 @@ class TestOrchestratorWebsiteFields:
         response = await orchestrator.enrich_batch([record], default_options)
         result = response.results[0]
         assert result.website_url is None
-
-    @pytest.mark.asyncio
-    async def test_dry_run_leaves_website_empty(self, orchestrator):
-        record = EnrichmentRecord(
-            record_id="WEB_DRY", name1="Stanford University",
-        )
-        opts = EnrichmentOptions(max_concurrency=1, dry_run=True)
-        response = await orchestrator.enrich_batch([record], opts)
-        result = response.results[0]
-        assert result.website_url is None

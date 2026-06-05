@@ -196,7 +196,6 @@ async def run() -> None:
                     ],
                     "options": {
                         "max_concurrency": 1,
-                        "dry_run": False,
                     },
                 },
             )

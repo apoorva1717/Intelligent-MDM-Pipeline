@@ -44,8 +44,10 @@ from enrichment.preprocess import (
     _EMAIL_RE,
     _PHONE_RE,
     _URL_RE,
+    _extract_addresses,
     _street_person_name,
 )
+from utils.text_utils import is_logistics_location
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +108,13 @@ class AddressResult:
     state_inferred: str | None = None
     zip_inferred: str | None = None
     unclear_address_info: str | None = None
+    # Name-field values rewritten by the address stage. When a street
+    # address that a later tier wrote into a name field (e.g. "104 Rhines
+    # Hall" in Name 2) is pulled out into a street slot, the cleaned
+    # remainder — or ``None`` when the whole value was an address — is
+    # recorded here so the orchestrator can update the name output and
+    # mark the slot cleared. See ``merge_into_result``.
+    name_overrides: dict[str, str | None] = field(default_factory=dict)
     address_issues: list[str] = field(default_factory=list)
 
     def issue(self, code: str) -> None:
@@ -343,6 +352,10 @@ def _extract_logistics(text: str) -> tuple[str, str | None]:
     m2 = _LOGISTICS_KEYWORD_RE.match(text)
     if m2:
         return "", text.strip()
+    # A named logistics facility ("Southeast Distribution Ctr") anywhere in
+    # the value — the whole value is an unloading point.
+    if is_logistics_location(text):
+        return "", text.strip()
     return text, None
 
 
@@ -431,6 +444,44 @@ _NAME_STREET_LIKE_RE = re.compile(
     r"\b\d+\s+\w+\s+(?:St|Ave|Blvd|Rd|Dr|Ln|Hwy|Pkwy)\b\.?",
     re.IGNORECASE,
 )
+
+
+# Splitting a street value that carries a trailing access / location
+# qualifier after the street address: "300 Tech Park Dr NEAR LOADING DOCK B",
+# "1100 Commerce Way BEHIND WAREHOUSE 4", "750 Industrial Pkwy GATE C EAST
+# ENTRANCE". The qualifier starts right after the street-type word with a
+# positional preposition or an access/logistics noun, and is moved verbatim
+# to the next empty street slot (kept as a street line, NOT pulled into
+# unloading_point — a bare "Loading Dock B" with no street is still routed
+# there by _extract_logistics).
+_STREET_TYPES_ALT = (
+    r"St|Street|Ave|Avenue|Blvd|Boulevard|Rd|Road|Dr|Drive|Ln|Lane|"
+    r"Hwy|Highway|Pkwy|Parkway|Ct|Court|Way|Pl|Place|Ter|Terrace|Cir|Circle"
+)
+_LOC_QUALIFIER_LEAD = (
+    r"Near|Behind|Beside|Adjacent|Across|Opposite|Next\s+To|In\s+Front\s+Of|"
+    r"Gate|Dock|Loading|Unloading|Warehouse|Entrance|Entry|Bay|Ramp|Elevator"
+)
+_STREET_QUALIFIER_SPLIT_RE = re.compile(
+    rf"^(?P<street>.*?\b(?:{_STREET_TYPES_ALT})\b\.?)\s+"
+    rf"(?P<qual>(?:{_LOC_QUALIFIER_LEAD})\b.*)$",
+    re.IGNORECASE,
+)
+
+
+def _split_location_qualifier(value: str | None) -> tuple[str, str] | None:
+    """Split "<street address> <location qualifier>" into (street, qualifier)
+    or return None when the value is not that shape."""
+    if not value or not value.strip():
+        return None
+    m = _STREET_QUALIFIER_SPLIT_RE.match(value.strip())
+    if not m:
+        return None
+    street = m.group("street").strip(" ,;-")
+    qual = m.group("qual").strip(" ,;-")
+    if not street or not qual or not _HOUSE_NUMBER_RE.search(street):
+        return None
+    return street, qual
 
 
 def _looks_like_street(value: str | None) -> bool:
@@ -672,6 +723,36 @@ async def process_address(
         "s5": _scrub_street(_clean(street_5)),
     }
 
+    # Step 1b — pull a street address that a tier wrote into a name field.
+    # Preprocessing (UC 9) already routes addresses embedded in name fields
+    # to street slots, but a later tier (e.g. the Tier 3 LLM) can write a
+    # campus-style address such as "104 Rhines Hall" into Name 2 AFTER
+    # preprocessing ran. Re-run the same extraction on the final name values
+    # so the address lands in an empty street slot instead of the name
+    # output. Name 1 is the institution and is left untouched.
+    _slot_order = ("s1", "s2", "s3", "s4", "s5")
+    for _name_field, _name_val in (("name2", name2), ("name3", name3)):
+        if not (_name_val and _name_val.strip()):
+            continue
+        _addrs, _cleaned = _extract_addresses(_name_val)
+        if not _addrs:
+            continue
+        _placed_all = True
+        for _addr in _addrs:
+            _target = next((k for k in _slot_order if not slots[k]), None)
+            if _target is None:
+                _placed_all = False
+                break
+            slots[_target] = _scrub_street(_clean(_addr)) or _addr
+        # Only rewrite the name field when every fragment found a home, so a
+        # full-slots record never silently drops part of an address.
+        if _placed_all:
+            res.name_overrides[_name_field] = _cleaned or None
+            if _name_field == "name2":
+                name2 = _cleaned or None
+            else:
+                name3 = _cleaned or None
+
     # Step 2a — full address jammed into street1 → split.
     if slots["s1"]:
         split_street, city_inf, state_inf, zip_inf = _split_full_address(slots["s1"])
@@ -766,6 +847,23 @@ async def process_address(
     )
     slots.update(secondary)
 
+    # Step 4b — split a trailing access/location qualifier off a street value
+    # into the next empty street slot ("300 Tech Park Dr NEAR LOADING DOCK B"
+    # → "300 Tech Park Dr" + "NEAR LOADING DOCK B"). Runs after extraction so
+    # the qualifier stays a street line rather than being pulled into
+    # unloading_point, and only when an empty slot is available.
+    _slot_keys = ("s1", "s2", "s3", "s4", "s5")
+    for slot_name in [k for k in _slot_keys if slots[k]]:
+        split = _split_location_qualifier(slots[slot_name])
+        if not split:
+            continue
+        street_part, qualifier = split
+        target = next((k for k in _slot_keys if not slots[k]), None)
+        if target is None:
+            continue  # no free slot — leave the value combined rather than lose it
+        slots[slot_name] = street_part
+        slots[target] = qualifier
+
     # Step 5 — normalise abbreviations on the cleaned street fields.
     res.street_cleaned = _normalise_street_value(slots["s1"])
     res.street_2_cleaned = _normalise_street_value(slots["s2"])
@@ -790,6 +888,16 @@ async def process_address(
             res.issue("G3-ADDR-012")  # duplicate street value across slots
         else:
             _seen.add(_key)
+
+    # Step 7 — left-pack the street fields so there are no gaps (an empty
+    # Street 1 with a populated Street 2 moves up; a slot blanked by extraction
+    # or dedupe is closed). Relative order is preserved.
+    _street_slots = ("street_cleaned", "street_2_cleaned", "street_3_cleaned",
+                     "street_4_cleaned", "street_5_cleaned")
+    _packed = [getattr(res, s) for s in _street_slots if getattr(res, s)]
+    _packed += [None] * (len(_street_slots) - len(_packed))
+    for _slot, _val in zip(_street_slots, _packed):
+        setattr(res, _slot, _val)
 
     logger.info({
         "record_id": record_id,
@@ -835,6 +943,16 @@ def merge_into_result(
     # Assign directly; the orchestrator hands us the authoritative value.
     if addr.care_of_enriched is not None:
         result_dict["care_of_enriched"] = addr.care_of_enriched
+
+    # Apply name-field rewrites: a street address that was sitting in a name
+    # field (e.g. "104 Rhines Hall" in Name 2) has been moved into a street
+    # slot above, leaving the cleaned remainder (or None) here. Mark a now-
+    # empty slot as cleared so finalise() does not restore the original.
+    for name_field, new_val in addr.name_overrides.items():
+        result_dict[f"{name_field}_enriched"] = new_val
+        if not (new_val and str(new_val).strip()):
+            cleared = result_dict.setdefault("_preprocess_cleared", set())
+            cleared.add(name_field)
 
     # Place a detected department into the first empty name slot (name2,
     # then name3). A slot is "empty" only when both the enriched and the

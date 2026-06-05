@@ -24,6 +24,8 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
+from enrichment.preprocess import _extract_addresses
+
 
 # Stopwords excluded from acronym derivation (search_term_1 only).
 _ACRONYM_STOPWORDS = {
@@ -363,6 +365,12 @@ def _dept_domain_to_search_term(
     if not dept_domain or not dept_domain.strip():
         return None
     host = dept_domain.strip().lower()
+    # A path-based dept page arrives as a full URL — reduce to the hostname.
+    if "://" in host:
+        from urllib.parse import urlparse
+        host = (urlparse(host).hostname or "").lower()
+    if not host:
+        return None
     for prefix in ("www.", "web."):
         if host.startswith(prefix):
             host = host[len(prefix):]
@@ -444,10 +452,17 @@ def derive_search_terms(
         search_term_2 = _dept_domain_to_search_term(dept_domain, domain)
 
     if not search_term_2:
-        name2 = (
-            (result.get("name2_enriched") or "").strip()
-            or (result.get("name2_original") or "").strip()
-        )
+        name2 = (result.get("name2_enriched") or "").strip()
+        if not name2:
+            # Fall back to the original name2 — but not when it was actually a
+            # street address (e.g. "104 Rhines Hall") that enrichment moved
+            # into a street field. Deriving a "unit handle" from an address
+            # produces a junk search term.
+            orig = (result.get("name2_original") or "").strip()
+            if orig:
+                _addrs, _remainder = _extract_addresses(orig)
+                if not (_addrs and not _remainder.strip()):
+                    name2 = orig
         if name2:
             paren = _PAREN_ACRONYM_RE.search(name2)
             if paren:

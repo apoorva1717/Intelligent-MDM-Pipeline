@@ -435,7 +435,6 @@ async def enrich_file(
     max_concurrency: int = Query(default=5, ge=1, le=20),
     serp_provider: Literal["serpapi", "duckduckgo"] = Query(default="serpapi"),
     skip_tier: Optional[int] = Query(default=None),
-    dry_run: bool = Query(default=False),
 ) -> StreamingResponse:
     """Enrichment endpoint that takes an XLSX upload and returns an XLSX.
 
@@ -462,7 +461,6 @@ async def enrich_file(
         max_concurrency=max_concurrency,
         serp_provider=serp_provider,
         skip_tier=skip_tier,
-        dry_run=dry_run,
     )
     request = EnrichmentRequest(records=records, options=options)
 

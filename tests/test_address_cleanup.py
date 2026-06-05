@@ -13,6 +13,8 @@ from enrichment.address_processing import process_address
 
 
 async def _street2(value):
+    # The value is fed via Street 2 (to exercise secondary-slot cleanup), but
+    # the cleaned result left-packs into Street 1 when Street 1 is empty.
     res = await process_address(
         record_id="x",
         name1="Acme Corp", name2=None, name3=None,
@@ -20,7 +22,7 @@ async def _street2(value):
         city="Tampa", state="FL", zip_code="33620", country="US",
         po_box=None, care_of_enriched=None, llm_client=None,
     )
-    return res.street_2_cleaned
+    return res.street_cleaned
 
 
 class TestStreetCleanup:
@@ -59,4 +61,5 @@ class TestStreetCleanup:
             po_box=None, care_of_enriched=None, llm_client=None,
         )
         assert res.suite == "400D"
-        assert res.street_2_cleaned == "Pinellas Bus Ctr"
+        # Street 1 empty → the cleaned remainder left-packs into Street 1.
+        assert res.street_cleaned == "Pinellas Bus Ctr"

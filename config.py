@@ -79,6 +79,7 @@ OPTIONAL_VARS_WITH_DEFAULTS = {
     "MOCK_EXTERNAL_CALLS": "false",
     "ENV": "production",
     "LOG_LEVEL": "INFO",
+    "DEPT_PROBE_CROSS_DOMAIN": "true",
 }
 
 
@@ -121,6 +122,14 @@ class Settings:
 
     # Search
     serpapi_key: str = field(default_factory=lambda: os.getenv("SERPAPI_KEY", ""))
+    # When False (default) the department-domain probe issues at most one
+    # SERP call (the site-restricted query). The cross-domain fallback
+    # query — which catches departments hosted on a separate brand domain
+    # (e.g. hopkinsmedicine.org) — only runs when this is enabled, so the
+    # common case stays at one SERP call per record.
+    dept_probe_cross_domain: bool = field(
+        default_factory=lambda: _bool(os.getenv("DEPT_PROBE_CROSS_DOMAIN"), default=True)
+    )
 
     # ROR
     ror_api_base: str = field(

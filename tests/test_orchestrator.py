@@ -155,22 +155,6 @@ class TestOrchestrator:
         assert all(r.record_id.startswith("BATCH_") for r in response.results)
 
     @pytest.mark.asyncio
-    async def test_dry_run(self, orchestrator):
-        """Dry run should not perform any enrichment."""
-        record = EnrichmentRecord(
-            record_id="DRY_001",
-            name1="MIT",
-            name2=None,
-        )
-        options = EnrichmentOptions(max_concurrency=1, dry_run=True)
-        response = await orchestrator.enrich_batch([record], options)
-        result = response.results[0]
-
-        assert result.enrichment_status == "unresolved"
-        assert result.name1_enriched is None
-        assert result.name2_enriched is None
-
-    @pytest.mark.asyncio
     async def test_classification_from_ror(self, orchestrator, default_options):
         """Record type is derived from ROR org types, not keyword matching."""
         records = [

@@ -279,6 +279,19 @@ class TestDeriveSearchTerms:
         _, st2 = derive_search_terms(result)
         assert st2 == "eecs"
 
+    def test_search_term_2_handles_path_based_url_department_domain(self):
+        # A path-based dept page arrives as a full URL — must not produce junk.
+        result = {
+            "_ror_acronym": None,
+            "domain": "ufl.edu",
+            "name1_enriched": "University of Florida",
+            "name2_enriched": "Department of Chemistry",
+            "name2_original": "Department of Chemistry",
+            "department_domain": "https://clas.ufl.edu/chemistry",
+        }
+        _, st2 = derive_search_terms(result)
+        assert st2 == "clas"   # hostname prefix, not the raw URL
+
     def test_search_term_2_strips_web_prefix(self):
         result = {
             "_ror_acronym": None,
