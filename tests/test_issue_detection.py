@@ -68,6 +68,14 @@ def test_g1_cross_002_org_in_street():
     assert "G1-CROSS-002" in detect_issues(_record(**{"Street 1": "AGILENT TECHNOLOGIES"}))
 
 
+def test_g1_cross_002_university_centre_not_flagged():
+    # "University Centre" (and acronyms of centre) is a building name, not an
+    # org name misplaced in the address field.
+    for value in ("University Centre", "University Center", "University Ctr",
+                  "University Ctre", "University Cntr", "UNIVERSITY CENT"):
+        assert "G1-CROSS-002" not in detect_issues(_record(**{"Street 1": value})), value
+
+
 def test_g1_cross_003_email_in_name():
     assert "G1-CROSS-003" in detect_issues(_record(**{"Name 2": "AP@plasmatherm.com"}))
 

@@ -52,6 +52,7 @@ from enrichment.address_processing import (
     _PO_BOX_RE,
     _STREET_TYPE_WORD_RE,
     _SUITE_PATTERNS,
+    _UNIVERSITY_CENTRE_RE,
     _extract_mail_code,
     _looks_like_department,
     _looks_like_street,
@@ -202,11 +203,14 @@ def _detect_wrong_field(record: EnrichmentRecord, found: set[str]) -> None:
             break
 
     # G1-CROSS-002 — org / company name sitting in a Street field with no
-    # street-type word to anchor it as a real address.
+    # street-type word to anchor it as a real address. "University Centre" (and
+    # acronyms of centre) is a building name, not an org — strip it first.
     for st in streets:
+        if not st:
+            continue
+        without_centre = _UNIVERSITY_CENTRE_RE.sub(" ", st)
         if (
-            st
-            and _ORG_IN_STREET_RE.search(st)
+            _ORG_IN_STREET_RE.search(without_centre)
             and not _STREET_TYPE_WORD_RE.search(st)
         ):
             found.add("G1-CROSS-002")

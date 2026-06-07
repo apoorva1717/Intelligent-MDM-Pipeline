@@ -440,6 +440,14 @@ _ORG_KEYWORD_RE = re.compile(
     r"College|Faculty|School)\b",
     re.IGNORECASE,
 )
+# "University Centre" (and acronyms of centre) is a building / place name that
+# legitimately belongs in a Street field — not an org name in the address. Strip
+# these phrases before applying the org-keyword checks so they don't trigger
+# G1-CROSS-002.
+_UNIVERSITY_CENTRE_RE = re.compile(
+    r"\bUniversit(?:y|[äa]t)\s+(?:Centre|Center|Ctr|Ctre|Cntr|Cent)\b\.?",
+    re.IGNORECASE,
+)
 _NAME_STREET_LIKE_RE = re.compile(
     r"\b\d+\s+\w+\s+(?:St|Ave|Blvd|Rd|Dr|Ln|Hwy|Pkwy)\b\.?",
     re.IGNORECASE,
@@ -524,13 +532,15 @@ def _cross_field_checks(
             res.issue("G1-CROSS-001")
             break
 
-    # Street has org keyword without any street-type word.
-    if (
-        street_cleaned
-        and _ORG_KEYWORD_RE.search(street_cleaned)
-        and not _STREET_TYPE_WORD_RE.search(street_cleaned)
-    ):
-        res.issue("G1-CROSS-002")
+    # Street has org keyword without any street-type word. "University Centre"
+    # (and acronyms) is a building name, not an org — strip it before checking.
+    if street_cleaned:
+        without_centre = _UNIVERSITY_CENTRE_RE.sub(" ", street_cleaned)
+        if (
+            _ORG_KEYWORD_RE.search(without_centre)
+            and not _STREET_TYPE_WORD_RE.search(street_cleaned)
+        ):
+            res.issue("G1-CROSS-002")
 
 
 # ---------------------------------------------------------------------------
