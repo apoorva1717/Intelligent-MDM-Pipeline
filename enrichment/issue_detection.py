@@ -62,7 +62,7 @@ from utils.text_utils import (
     is_granular_unit,
     is_specific_unit_construction,
     is_unit_construction,
-    looks_like_research_institution,
+    looks_like_university_or_research_institute,
 )
 
 
@@ -305,8 +305,11 @@ def _detect_missing(
 
     name2_blank = is_blank(record.name_2)
 
-    # G2-NAME-012 — research institution (Name 1) with no department in Name 2.
-    if looks_like_research_institution(record.name_1) and name2_blank:
+    # G2-NAME-012 — university / research institute (Name 1) with no department
+    # in Name 2. Gated on the narrower university-or-research signal so clinical
+    # orgs (hospitals, clinics, medical centres) — which routinely have no
+    # department — are not flagged.
+    if looks_like_university_or_research_institute(record.name_1) and name2_blank:
         found.add("G2-NAME-012")
 
     # G2-NAME-009 — a granular research group (Name 2) with no parent department
@@ -318,11 +321,12 @@ def _detect_missing(
         found.add("G2-NAME-009")
 
     # G2-CONTACT-008 / -009 — department missing; routed by whether a single
-    # contact is available to enrich from. Only meaningful for research
-    # institutions, where a department is expected: a company with no Name 2
-    # is normal, not an issue. Gate on the same research-institution signal
-    # as G2-NAME-012 so these codes are not raised across the board.
-    if name2_blank and looks_like_research_institution(record.name_1):
+    # contact is available to enrich from. Only meaningful for universities and
+    # research institutes, where a department is expected: a company with no
+    # Name 2 is normal, not an issue, and clinical orgs routinely carry none.
+    # Gate on the same university-or-research signal as G2-NAME-012 so these
+    # codes are not raised across the board.
+    if name2_blank and looks_like_university_or_research_institute(record.name_1):
         if is_blank(record.contact) and is_blank(record.care_of):
             found.add("G2-CONTACT-008")
         elif not is_blank(record.contact) and not has_multiple_contacts(record.contact):

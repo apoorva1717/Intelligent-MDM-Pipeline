@@ -168,6 +168,22 @@ def test_g2_contact_008_not_raised_for_non_research_company():
     assert "G2-CONTACT-009" not in issues
 
 
+@pytest.mark.parametrize("name1", [
+    "St. Mary's Hospital",
+    "Downtown Clinic",
+    "MD Anderson Cancer Center",
+    "Regional Health System",
+])
+def test_missing_department_codes_not_raised_for_clinical_orgs(name1):
+    # Clinical orgs routinely carry no department — the missing-department
+    # codes must only fire for universities / research institutes.
+    rec = _record(**{"Name 1": name1, "Name 2": "", "Contact": ""})
+    issues = detect_issues(rec)
+    assert "G2-NAME-012" not in issues
+    assert "G2-CONTACT-008" not in issues
+    assert "G2-CONTACT-009" not in issues
+
+
 # ---------------------------------------------------------------------------
 # G3 — Duplicate or Conflicting Data
 # ---------------------------------------------------------------------------

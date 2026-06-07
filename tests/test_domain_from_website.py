@@ -91,3 +91,35 @@ class TestDomainFromWebsite:
         out = await orch._finalise_and_return(
             result, time.monotonic(), rec, BatchCache())
         assert out.domain is None
+
+
+class TestProbeSkipsAddressLikeName2:
+    """The probe must not spend a SERP call (or resolve a wrong host) when
+    name2 is actually a street address or location fragment that the
+    name→street cleanup will move out."""
+
+    @pytest.mark.asyncio
+    async def test_street_address_name2_skips_probe(self):
+        orch = _orch()
+        rec, result = _seed(name2_enriched="104 Rhines Hall",
+                            street1_enriched="549 Gale Lemerand Dr")
+        out = await orch._finalise_and_return(
+            result, time.monotonic(), rec, BatchCache())
+        assert out.department_domain is None
+        assert out.name2_enriched is None  # moved to a street field
+
+    @pytest.mark.asyncio
+    async def test_location_fragment_name2_skips_probe(self):
+        orch = _orch()
+        rec, result = _seed(name2_enriched="Annex D Pod 2")
+        out = await orch._finalise_and_return(
+            result, time.monotonic(), rec, BatchCache())
+        assert out.department_domain is None
+
+    @pytest.mark.asyncio
+    async def test_real_department_still_resolves(self):
+        orch = _orch()
+        rec, result = _seed(name2_enriched="Department of Chemistry")
+        out = await orch._finalise_and_return(
+            result, time.monotonic(), rec, BatchCache())
+        assert out.department_domain is not None

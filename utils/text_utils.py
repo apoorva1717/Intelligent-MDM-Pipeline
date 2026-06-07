@@ -256,6 +256,36 @@ def looks_like_research_institution(name: str | None) -> bool:
     return bool(_RESEARCH_NAME_SIGNALS_RE.search(name))
 
 
+# A narrower signal than the ROR-miss one above: universities, research
+# institutes, colleges and academies — the org types where a department
+# (Name 2) is genuinely expected, so its absence is a reportable issue.
+# Clinical types (hospitals, clinics, medical/cancer centres, health
+# systems) and bare labs/observatories are deliberately excluded: they
+# routinely carry no department and should not raise the missing-department
+# issue codes.
+_UNIVERSITY_OR_RESEARCH_SIGNALS_RE = re.compile(
+    r"\b(?:University|College|College\s+of|Institute|Research|Academy|"
+    r"Medical\s+School|School\s+of|Faculty\s+of|"
+    r"Schule|Universit[aä]t|Université|Universidade)\b",
+    re.IGNORECASE,
+)
+
+
+def looks_like_university_or_research_institute(name: str | None) -> bool:
+    """Heuristic: does *name* read as a university, research institute,
+    college or academy?
+
+    Narrower than :func:`looks_like_research_institution` — it excludes
+    clinical organisations (hospitals, clinics, medical/cancer centres,
+    health systems) and standalone labs/observatories. Used to gate the
+    missing-department issue codes so they only fire for org types where
+    a department is actually expected.
+    """
+    if not name or not name.strip():
+        return False
+    return bool(_UNIVERSITY_OR_RESEARCH_SIGNALS_RE.search(name))
+
+
 def is_granular_unit(text: str | None) -> bool:
     """Return True when *text* names a unit that is too granular for
     UC 5 scope — labs, groups, centres, or facilities.

@@ -850,6 +850,19 @@ class Orchestrator:
         )
         if not name2:
             return
+        # An address or pure location fragment that a tier dropped into name2
+        # ("104 Rhines Hall", "Annex D Pod 2") is NOT a department. The
+        # name→street cleanup (address stage / finalise) moves it out, but
+        # that runs after this probe — so guard here too. Skipping spends no
+        # SERP call and avoids resolving a wrong "department" for a building.
+        _name2_addrs, _name2_rem = _extract_addresses(name2)
+        if (_name2_addrs and not _name2_rem.strip()) or _location_fragment(name2):
+            logger.info(
+                "[%s] dept domain probe: skipped (name2 is an address/"
+                "location fragment %r)",
+                record_id, name2,
+            )
+            return
         if is_granular_unit(name2):
             logger.info(
                 "[%s] dept domain probe: skipped (granular unit name2=%r)",
