@@ -37,6 +37,7 @@ from utils.text_utils import (
     is_logistics_location,
     is_unit_construction,
     looks_like_research_institution,
+    smart_title_case,
 )
 
 logger = logging.getLogger(__name__)
@@ -1423,25 +1424,9 @@ def _name_block_has_department(res: PreprocessResult) -> bool:
     return False
 
 
-_TITLE_CASE_CONNECTORS = {"of", "and", "for", "the", "in", "at", "&"}
-
-
-def _smart_title_case(value: str | None) -> str | None:
-    """Title-case an ALL-CAPS value, keeping short acronyms (≤3 letters) and
-    lowercasing connectors. "CHEMISTRY DEPARTMENT" → "Chemistry Department",
-    "MRI DEPARTMENT" → "MRI Department". Mixed-case input is left as-is."""
-    if not value or not value.strip() or not value.isupper():
-        return value
-    out = []
-    for w in value.split():
-        letters = re.sub(r"[^A-Za-z]", "", w)
-        if w.lower() in _TITLE_CASE_CONNECTORS:
-            out.append(w.lower())
-        elif len(letters) >= 4:
-            out.append(w.capitalize())
-        else:
-            out.append(w)
-    return " ".join(out)
+# Title-casing of ALL-CAPS names now lives in utils.text_utils so the
+# orchestrator's passthrough cleanup and preprocessing share one implementation.
+_smart_title_case = smart_title_case
 
 
 # ---------------------------------------------------------------------------

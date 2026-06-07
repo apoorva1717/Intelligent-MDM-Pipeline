@@ -166,6 +166,10 @@ _COUNTRY_TO_ISO: dict[str, str] = {
 # Uses (?=\s|$) instead of \b after optional period so "Dept." is fully
 # consumed (including the dot) before the space.
 _ABBREV_MAP: dict[str, str] = {
+    # Common misspellings of "University" — fixed first so the typo'd form
+    # both matches ROR on rescore and is cleaned in passthrough output.
+    r"\b(?:Universtiy|Univeristy|Univesity|Universty|University|Univercity)\b":
+        "University",
     r"\bDept\.?(?=\s|$)": "Department",
     r"\bUniv\.?(?=\s|$)": "University",
     r"\bUni(?=\s|$)": "University",
@@ -177,6 +181,9 @@ _ABBREV_MAP: dict[str, str] = {
     r"\bPhys\.?(?=\s|$)": "Physics",
     r"\bSci\.?(?=\s|$)": "Science",
     r"\bEng\.?(?=\s|$)": "Engineering",
+    # "Med Ctr" / "Med Center" → "Medical Center" (must precede the generic
+    # Med→Medicine rule; "Ctr" has already expanded to "Center" by this point).
+    r"\bMed\.?(?=\s+(?:Center|Centre|Ctr)\b)": "Medical",
     r"\bMed\.?(?=\s|$)": "Medicine",
     r"\bOrg\.?(?=\s|$)": "Organization",
     r"\bAssoc\.?(?=\s|$)": "Association",
@@ -204,6 +211,78 @@ def expand_abbreviations(text: str | None) -> str | None:
     for pattern, replacement in _COMPILED_ABBREVS:
         result = pattern.sub(replacement, result)
     return result.strip()
+
+
+# Connectors kept lowercase when title-casing an ALL-CAPS org name.
+_TITLE_CASE_CONNECTORS = {"of", "and", "for", "the", "in", "at", "&"}
+
+# A 3-letter token is ambiguous: "MRI"/"IBM"/"LLC" are acronyms (keep upper)
+# but "BAY"/"NEW" are words and "INC" reads better title-cased. Length alone
+# defaults short tokens to acronyms; these allowlists carve out the exceptions.
+#
+# Short tokens (≤3 letters) that should be title-cased despite the default:
+# common short words and legal forms that read better capitalised.
+_FORCE_TITLE_SHORT = {
+    "INC", "LTD", "CO", "BAY", "NEW", "OLD", "SUN", "OAK", "BIG", "RED",
+    "SKY", "SEA", "AIR", "SON", "TWO", "ONE", "KEY", "TOP", "BOX",
+}
+# Longer tokens (≥4 letters, vowel-bearing) that should stay uppercase.
+_KEEP_UPPER_ACRONYMS = {
+    "NASA", "NOAA", "NIH", "FDA", "USDA", "EMSL", "IEEE",
+}
+_VOWELS = set("AEIOU")
+
+
+def smart_title_case(value: str | None) -> str | None:
+    """Title-case an ALL-CAPS value, preserving acronyms and connectors.
+
+    "CHEMISTRY DEPARTMENT" → "Chemistry Department"
+    "LARGO MEDICAL CENTER" → "Largo Medical Center"
+    "SOUTH BAY HOSPITAL"   → "South Bay Hospital"      (word "Bay" cased)
+    "STERLING INDUSTRY LLC" → "Sterling Industry LLC"  (acronym kept)
+    "MRI DEPARTMENT"       → "MRI Department"          (acronym kept)
+
+    Mixed-case input is returned unchanged, so canonical ROR / LLM names
+    (which are never ALL-CAPS) are never altered.
+    """
+    if not value or not value.strip() or not value.isupper():
+        return value
+    out = []
+    for w in value.split():
+        letters = re.sub(r"[^A-Za-z]", "", w)
+        upper = letters.upper()
+        if w.lower() in _TITLE_CASE_CONNECTORS:
+            out.append(w.lower())
+        elif not letters:
+            out.append(w)  # punctuation-only token
+        elif upper in _FORCE_TITLE_SHORT:
+            out.append(w.capitalize())  # Inc, Bay, New, …
+        elif upper in _KEEP_UPPER_ACRONYMS:
+            out.append(w)  # NASA, USDA, EMSL, …
+        elif len(letters) <= 3:
+            out.append(w)  # short → assume acronym: IBM, MRI, LLC, USA, HCA
+        elif len(letters) <= 5 and not (set(upper) & _VOWELS):
+            out.append(w)  # no-vowel 4-5 char acronym: MGMT, PLLC
+        else:
+            out.append(w.capitalize())  # real word: South, Brandon, Delr
+    return " ".join(out)
+
+
+def clean_passthrough_org_name(name: str | None) -> str | None:
+    """Normalise an org name that passed through enrichment uncanonicalised.
+
+    ROR misses are returned verbatim from the source — often ALL-CAPS and
+    full of abbreviations ("LARGO MEDICAL CTR", "Capital Regional Med Ctr").
+    Title-case any ALL-CAPS form first, then expand common abbreviations, so
+    the output is consistent with ROR-matched rows. Order matters: title-case
+    must run before expansion, otherwise expanding "CTR"→"Center" would make
+    the string mixed-case and defeat the ALL-CAPS title-case guard.
+    """
+    if not name or not name.strip():
+        return name
+    cleaned = smart_title_case(name) or name
+    cleaned = expand_abbreviations(cleaned) or cleaned
+    return cleaned
 
 
 # Unit-type canonicalisation — maps every variant wording to the

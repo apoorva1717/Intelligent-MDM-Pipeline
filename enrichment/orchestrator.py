@@ -68,12 +68,14 @@ from utils.cache import BatchCache, SerpCache
 from utils.text_utils import (
     canonical_preserves_identity,
     canonicalise_unit_name,
+    clean_passthrough_org_name,
     country_to_iso_code,
     expand_abbreviations,
     extract_domain,
     is_blank,
     is_granular_unit,
     looks_like_research_institution,
+    smart_title_case,
     strip_address_fragments,
 )
 
@@ -335,6 +337,19 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
         val = result.get(field)
         if val is not None and not str(val).strip():
             result[field] = None
+
+    # Normalise Name 1 when it was passed through uncanonicalised (a ROR miss
+    # left the raw source value — often ALL-CAPS and abbreviated, e.g. "LARGO
+    # MEDICAL CTR", "UNIVERSTIY OF FLORIDA"). Title-case + expand abbreviations
+    # so passthrough rows are consistent with ROR-matched ones. ROR / LLM
+    # canonical names are never ALL-CAPS, so for those we only run the (no-op
+    # on mixed-case) title-case as a safety net and never touch their wording.
+    name1_val = result.get("name1_enriched")
+    if name1_val:
+        if result.get("source") == "passthrough":
+            result["name1_enriched"] = clean_passthrough_org_name(name1_val)
+        else:
+            result["name1_enriched"] = smart_title_case(name1_val) or name1_val
 
     # Canonicalise academic unit names on name2/name3 only. name1
     # (the institution) is never a "Department of X", so we leave
