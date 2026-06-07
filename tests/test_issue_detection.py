@@ -151,11 +151,15 @@ def test_g2_name_009_lab_without_department():
     assert "G2-NAME-009" in detect_issues(rec)
 
 
-def test_g2_contact_008_no_contact_no_department():
+def test_g2_contact_008_suppressed_when_covered_by_name_012():
+    # A research institution with no department already raises G2-NAME-012, so
+    # G2-CONTACT-008 ("No Contact and No Department") must not double-count it.
     rec = _record(**{
         "Name 1": "Florida State University", "Name 2": "", "Contact": "",
     })
-    assert "G2-CONTACT-008" in detect_issues(rec)
+    issues = detect_issues(rec)
+    assert "G2-NAME-012" in issues
+    assert "G2-CONTACT-008" not in issues
 
 
 def test_g2_contact_009_department_enrichable_from_contact():

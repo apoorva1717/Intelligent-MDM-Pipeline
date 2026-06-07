@@ -330,9 +330,15 @@ def _detect_missing(
     # Name 2 is normal, not an issue, and clinical orgs routinely carry none.
     # Gate on the same university-or-research signal as G2-NAME-012 so these
     # codes are not raised across the board.
+    #
+    # G2-CONTACT-008 ("No Contact and No Department") shares G2-NAME-012's gate
+    # exactly, so it would always double-count the missing department. Suppress
+    # it whenever G2-NAME-012 already covers the record; only G2-CONTACT-009
+    # adds new information (the department is enrichable from a single contact).
     if name2_blank and looks_like_university_or_research_institute(record.name_1):
         if is_blank(record.contact) and is_blank(record.care_of):
-            found.add("G2-CONTACT-008")
+            if "G2-NAME-012" not in found:
+                found.add("G2-CONTACT-008")
         elif not is_blank(record.contact) and not has_multiple_contacts(record.contact):
             found.add("G2-CONTACT-009")
 
