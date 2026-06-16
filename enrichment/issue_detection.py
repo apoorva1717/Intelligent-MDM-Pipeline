@@ -102,6 +102,7 @@ ISSUE_CATALOGUE: dict[str, str] = {
     "G3-NAME-003": "DBA Pattern in Name Field",
     "G3-NAME-005": "Duplicate Name Across Fields",
     "G3-ADDR-005": "Multiple PO Boxes on Record",
+    "G3-ADDR-012": "Duplicate Street Across Fields",
     "G3-ADDR-013": "Two Distinct Street Addresses on Record",
     "G3-ADDR-014": "PO Box and Street Both Present",
     "G3-CONTACT-007": "Multiple Contacts on Record",
@@ -186,6 +187,31 @@ def _streets(record: EnrichmentRecord) -> list[str | None]:
 def _norm(value: str | None) -> str:
     """Case/whitespace-folded value for equality comparison."""
     return re.sub(r"\s+", " ", value.strip().lower()) if value else ""
+
+
+def _street_signature(
+    value: str | None, house_number: str | None = None,
+) -> tuple[frozenset[str], tuple[str, ...]] | None:
+    """An order- and case-independent (numbers, words) signature for a street
+    line, used to spot the same address repeated across slots.
+
+    The dedicated House Number is folded in when the line carries no inline
+    number, so "Innovation Blvd" + House Number "500" produces the same
+    signature as a sibling slot "500 Innovation Blvd". Returns None for a
+    blank line.
+    """
+    if not value or not value.strip():
+        return None
+    tokens = re.findall(r"[a-z]+|\d+", value.lower())
+    if not tokens:
+        return None
+    nums = {t for t in tokens if t.isdigit()}
+    words = tuple(sorted(t for t in tokens if not t.isdigit()))
+    if not nums and house_number and house_number.strip():
+        hn_nums = re.findall(r"\d+", house_number)
+        if hn_nums:
+            nums = set(hn_nums)
+    return (frozenset(nums), words)
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +399,22 @@ def _detect_duplicate(record: EnrichmentRecord, found: set[str]) -> None:
     # G3-ADDR-005 — more than one PO Box on the record.
     if po_box_count >= 2:
         found.add("G3-ADDR-005")
+
+    # G3-ADDR-012 — the same street address appears in more than one slot.
+    # Catches SAP's house-number split: Street 1 holds the street name with the
+    # number in the dedicated House Number field, while another Street slot
+    # repeats the combined "<number> <name>" — e.g. Street 1 "Innovation Blvd"
+    # + House Number "500" duplicates Street 2 "500 Innovation Blvd". Plain
+    # exact duplicates across slots are caught too.
+    street_sigs = [
+        sig
+        for idx, st in enumerate(streets)
+        # House Number conventionally pairs with Street 1 only.
+        if (sig := _street_signature(st, record.house_number if idx == 0 else None))
+        is not None
+    ]
+    if len(street_sigs) != len(set(street_sigs)):
+        found.add("G3-ADDR-012")
 
     # G3-ADDR-013 — two distinct real street addresses across street slots.
     real_streets = [

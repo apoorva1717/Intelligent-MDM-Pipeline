@@ -118,9 +118,24 @@ class MockOpenAIClient:
             return self._mock_company_canonical(user_prompt, prompt_lower)
         elif "infer official org and dept" in prompt_lower:
             return self._mock_tier3(user_prompt, prompt_lower)
+        elif '"kind": "person"' in prompt_lower or prompt_lower.startswith("text:"):
+            return self._mock_person_classifier(user_prompt)
 
         logger.warning("[MOCK] OpenAI: unrecognised prompt structure, returning generic response")
         return {"confidence": "low", "reasoning": "Mock fallback — unrecognised prompt"}
+
+    # Curated person names for the plain-name classifier. Eponymous companies
+    # (e.g. "Robert Bosch") are deliberately absent → classified organisation.
+    _KNOWN_PERSON_NAMES = {
+        "emily macdonald-korth", "david johnson", "jane smith", "steven park",
+    }
+
+    def _mock_person_classifier(self, user_prompt: str) -> dict[str, Any]:
+        """Mock UC 7 Pattern B2 person/organisation classifier."""
+        text = (self._extract_field(user_prompt, "Text:") or "").strip()
+        if text.lower() in self._KNOWN_PERSON_NAMES:
+            return {"kind": "person", "confidence": "high"}
+        return {"kind": "organisation", "confidence": "low"}
 
     def _mock_tier2a(self, user_prompt: str, prompt_lower: str) -> dict[str, Any]:
         """Mock Tier 2A contact affiliation extraction."""

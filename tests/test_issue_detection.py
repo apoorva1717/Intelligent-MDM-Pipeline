@@ -41,8 +41,8 @@ def _record(**fields) -> EnrichmentRecord:
 # Catalogue integrity
 # ---------------------------------------------------------------------------
 
-def test_catalogue_has_36_codes():
-    assert len(ISSUE_CATALOGUE) == 36
+def test_catalogue_has_37_codes():
+    assert len(ISSUE_CATALOGUE) == 37
 
 
 def test_clean_record_has_no_issues():
@@ -213,6 +213,33 @@ def test_g3_name_005_duplicate_name_across_fields():
 def test_g3_addr_005_multiple_po_boxes():
     rec = _record(**{"Street 1": "PO BOX 4500", "PO Box": "4500", "Street 2": "PO Box 6789"})
     assert "G3-ADDR-005" in detect_issues(rec)
+
+
+def test_g3_addr_012_duplicate_street_house_number_split():
+    # Street 1 holds the street name with the number in House Number; Street 2
+    # repeats the combined form — same address, must be flagged as a duplicate.
+    rec = _record(**{
+        "Street 1": "INNOVATION Blvd",
+        "House Number": "500",
+        "Street 2": "500 Innovation Blvd",
+    })
+    issues = detect_issues(rec)
+    assert "G3-ADDR-012" in issues
+    # Same address, so it must NOT also be reported as two distinct addresses.
+    assert "G3-ADDR-013" not in issues
+
+
+def test_g3_addr_012_exact_duplicate_street():
+    rec = _record(**{
+        "Street 1": "500 Innovation Blvd",
+        "Street 2": "500 Innovation Blvd",
+    })
+    assert "G3-ADDR-012" in detect_issues(rec)
+
+
+def test_g3_addr_012_not_raised_for_distinct_streets():
+    rec = _record(**{"Street 1": "500 Main St", "Street 2": "250 Main St"})
+    assert "G3-ADDR-012" not in detect_issues(rec)
 
 
 def test_g3_addr_013_two_distinct_streets():

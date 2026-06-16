@@ -150,6 +150,45 @@ class TestNameScoring:
         }
         assert _score_org("ASL Analytical, Inc.", asl_org) == 1.0
 
+    def test_initialism_matches_expansion(self) -> None:
+        """An org referenced by its initials matches its expanded canonical name.
+
+        Production case: "JAH VA Hospital" (Name 1) is the James A. Haley
+        Veterans' Hospital. fuzz scores the pair ~0.58 — too low — because it
+        cannot bridge the acronym to its expansion. The initialism fallback
+        recovers it.
+        """
+        from enrichment.tier1_ror import _score_org
+
+        jah_org = {
+            "names": [
+                {"value": "James A. Haley Veterans' Hospital",
+                 "types": ["ror_display", "label"]},
+            ],
+        }
+        assert _score_org("JAH VA Hospital", jah_org) >= 0.8
+
+    def test_initialism_requires_matching_org_type(self) -> None:
+        """An initialism only matches when the org-type word agrees."""
+        from enrichment.tier1_ror import _score_org
+
+        bank_org = {
+            "names": [
+                {"value": "James A. Haley Veterans Bank",
+                 "types": ["ror_display", "label"]},
+            ],
+        }
+        # "JAH Hospital" must not resolve to a bank.
+        assert _score_org("JAH Hospital", bank_org) < 0.8
+
+    def test_initialism_does_not_match_unrelated_acronym(self) -> None:
+        """A non-matching acronym is not rescued by the initialism path."""
+        from enrichment.tier1_ror import _initialism_score, _normalise_for_tokens
+
+        cv = [_normalise_for_tokens("James A. Haley Veterans' Hospital")]
+        assert _initialism_score("XYZ Hospital", cv) == 0.0
+        assert _initialism_score("JAH VA Hospital", cv) == 1.0
+
     def test_acronym_alias_exact_match_unaffected(self) -> None:
         """Acronym-only queries still match via alias exact match (step 1)."""
         from enrichment.tier1_ror import _score_org

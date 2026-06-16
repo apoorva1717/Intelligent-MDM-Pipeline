@@ -277,3 +277,65 @@ class TestOrchestrator:
 
         # comettherapeutics.com → company (not research_institution)
         assert result.record_type == "company"
+
+    @pytest.mark.asyncio
+    async def test_name1_hyphenated_person_moved_to_contact(
+        self, orchestrator, default_options,
+    ):
+        """A hyphenated person name in Name 1 (no org) → moved to Contact, Name 1 cleared.
+
+        Regression: the old plain-name pattern could not match "Macdonald-Korth"
+        (capital after the hyphen), so UC 7 never saw it as a person.
+        """
+        record = EnrichmentRecord(
+            record_id="PERSON_001",
+            name1="Emily Macdonald-Korth",
+            city="Miami",
+            state="FL",
+            country="US",
+        )
+        response = await orchestrator.enrich_batch([record], default_options)
+        result = response.results[0]
+
+        # Person routed to Contact; Name 1 cleared (no organisation supplied).
+        assert result.contact_enriched == "Emily Macdonald-Korth"
+        assert not (result.name1_enriched or "").strip()
+
+    @pytest.mark.asyncio
+    async def test_name1_person_with_existing_contact_conflict(
+        self, orchestrator, default_options,
+    ):
+        """Person in Name 1 with Contact already populated → contact-conflict flag."""
+        record = EnrichmentRecord(
+            record_id="PERSON_002",
+            name1="David Johnson",
+            contact="Alice Existing",
+            city="Miami",
+            state="FL",
+            country="US",
+        )
+        response = await orchestrator.enrich_batch([record], default_options)
+        result = response.results[0]
+
+        # Existing contact preserved (person not overwritten); record flagged.
+        assert result.flag_for_review is True
+        assert result.contact_enriched == "Alice Existing"
+
+    @pytest.mark.asyncio
+    async def test_eponymous_company_not_treated_as_person(
+        self, orchestrator, default_options,
+    ):
+        """A person-shaped company name (classified 'organisation') stays in Name 1."""
+        record = EnrichmentRecord(
+            record_id="PERSON_003",
+            name1="Robert Bosch",
+            city="Farmington Hills",
+            state="MI",
+            country="US",
+        )
+        response = await orchestrator.enrich_batch([record], default_options)
+        result = response.results[0]
+
+        # Not moved to contact — kept as the organisation name.
+        assert result.contact_enriched != "Robert Bosch"
+        assert (result.name1_enriched or "") != ""

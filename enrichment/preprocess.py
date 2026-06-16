@@ -754,9 +754,13 @@ _ORG_SIGNAL_RE = re.compile(
     re.IGNORECASE,
 )
 
-# A bare plain-name pattern: 2-3 capitalised words.
+# A bare plain-name pattern: 2-3 capitalised words. A word may carry an
+# internal hyphen or apostrophe with a following capital ("Macdonald-Korth",
+# "O'Brien", "Smith-Jones") — without that, hyphenated surnames never surface
+# for person classification.
+_NAME_WORD = r"[A-Z][a-z]+(?:[-'][A-Za-z][a-z]*)*"
 _PLAIN_NAME_RE = re.compile(
-    r"^\s*[A-Z][a-z\-']{1,}\s+(?:[A-Z]\.?\s+)?[A-Z][a-z\-']{1,}(?:\s+[A-Z][a-z\-']{1,})?\s*$",
+    rf"^\s*{_NAME_WORD}\s+(?:[A-Z]\.?\s+)?{_NAME_WORD}(?:\s+{_NAME_WORD})?\s*$",
 )
 
 

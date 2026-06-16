@@ -190,7 +190,10 @@ def _compute_name_score(query: str, org_names: list[dict[str, Any]]) -> float:
         if token_ratio > best:
             best = token_ratio
 
-    return best
+    # Initialism fallback: recover orgs referenced only by their initials
+    # ("JAH VA Hospital" → "James A. Haley Veterans' Hospital"), which fuzz
+    # alone scores too low to match.
+    return max(best, _initialism_score(query, canonical_values))
 
 
 _COMMON_DOMAIN_WORDS = {
@@ -201,6 +204,47 @@ _COMMON_DOMAIN_WORDS = {
     "corporation", "corp", "ltd", "llc", "international", "national",
     "american", "united", "global",
 }
+
+
+def _initialism_score(query: str, canonical_values: list[str]) -> float:
+    """Score a query that refers to an org by its initials.
+
+    fuzz cannot bridge an acronym to its expansion ("JAH" → "James A.
+    Haley"), so an org referenced only by initials never reaches the match
+    threshold on fuzz alone — e.g. "JAH VA Hospital" vs. "James A. Haley
+    Veterans' Hospital" scores ~0.58. When a short all-caps acronym in the
+    query (≥3 letters) equals a contiguous run of the leading initials of a
+    canonical name's words, and the query's organisation-type word
+    (Hospital, University, …) is shared with that name, treat it as a
+    confident match.
+
+    Guards against coincidence: the acronym must be ≥3 letters, must map to a
+    run that includes a distinctive (non-common, ≥4-letter) word, and the
+    org-type word must match so "JAH Hospital" can only resolve to another
+    hospital. ``canonical_values`` are already lowercased / dash-normalised.
+    """
+    acronyms = {a for a in _extract_identifier_tokens(query) if len(a) >= 3}
+    if not acronyms:
+        return 0.0
+    q_tokens = set(_normalise_for_tokens(query).split())
+    q_type_words = q_tokens & _COMMON_DOMAIN_WORDS
+    for val in canonical_values:
+        words = [w for w in val.split() if w]
+        if len(words) < 2:
+            continue
+        if q_type_words and not (q_type_words & set(words)):
+            continue
+        initials = "".join(w[0] for w in words)
+        for acro in acronyms:
+            start = initials.find(acro)
+            if start < 0:
+                continue
+            # The matched run must contain a distinctive word, so an acronym
+            # is not satisfied purely by short/common words.
+            run = words[start:start + len(acro)]
+            if any(len(w) >= 4 and w not in _COMMON_DOMAIN_WORDS for w in run):
+                return 1.0
+    return 0.0
 
 
 def _score_org(query: str, org: dict[str, Any]) -> float:
