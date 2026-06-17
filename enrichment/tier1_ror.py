@@ -43,6 +43,25 @@ def clear_ror_cache() -> None:
 
 _DASH_RE = re.compile(r"[\u2010-\u2015\-]+")
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*")
+_PUNCT_RE = re.compile(r"[.,]")
+_WS_RE = re.compile(r"\s+")
+
+# US legal-entity suffixes: long form (and dotted abbreviations, once the
+# dots have been stripped to spaces) \u2192 canonical abbreviation. Applied
+# symmetrically to the query and every ROR name variant so that
+# "Acme Corporation", "Acme Corp." and "Acme Corp" all compare equal.
+# Order matters: multi-word phrases must run before their constituent
+# single words ("limited liability company" before "limited"/"company").
+_LEGAL_SUFFIX_SUBS = [
+    (re.compile(r"\blimited liability company\b"), "llc"),
+    (re.compile(r"\blimited liability partnership\b"), "llp"),
+    (re.compile(r"\bl l c\b"), "llc"),   # from "L.L.C." after dot removal
+    (re.compile(r"\bl l p\b"), "llp"),
+    (re.compile(r"\bincorporated\b"), "inc"),
+    (re.compile(r"\bcorporation\b"), "corp"),
+    (re.compile(r"\bcompany\b"), "co"),
+    (re.compile(r"\blimited\b"), "ltd"),
+]
 
 
 def _extract_identifier_tokens(text: str) -> set[str]:
@@ -71,8 +90,18 @@ def _normalise_for_tokens(text: str) -> str:
     'University of Wisconsin–Madison' tokenises to
     {'university', 'of', 'wisconsin', 'madison'} rather than
     treating 'wisconsin–madison' as a single token.
+
+    Also strips '.'/',' and canonicalises US legal-entity suffixes to
+    their abbreviated form (Incorporated→inc, Corporation→corp, …) so
+    that legal-form variants of the same org ("Acme, Inc." vs
+    "Acme Incorporated") compare equal during matching.
     """
-    return _DASH_RE.sub(" ", text.lower())
+    t = _DASH_RE.sub(" ", text.lower())
+    t = _PUNCT_RE.sub(" ", t)
+    t = _WS_RE.sub(" ", t).strip()
+    for pat, repl in _LEGAL_SUFFIX_SUBS:
+        t = pat.sub(repl, t)
+    return t
 
 
 # Name types that represent the canonical display / label of the org.

@@ -200,3 +200,60 @@ class TestNameScoring:
             ],
         }
         assert _score_org("UCLA", ucla_org) == 1.0
+
+
+class TestLegalSuffixCanonicalisation:
+    """US legal-entity suffix variants of one org must score identically.
+
+    Production bug: two SAP rows at the same address with names that
+    differ only by legal form (e.g. "Carl Zeiss AG" vs "Carl Zeiss
+    Aktiengesellschaft") diverged — one matched ROR and enriched, the
+    other missed and was flagged unresolved. The same class of bug
+    affects US suffixes: long-form / abbreviated / dotted variants
+    ("Corporation" vs "Corp." vs "Corp") must all resolve to the same
+    ROR org. _normalise_for_tokens now strips '.'/',' and canonicalises
+    these suffixes before scoring.
+    """
+
+    def _org(self, canonical: str) -> dict:
+        return {"names": [{"value": canonical, "types": ["ror_display", "label"]}]}
+
+    @pytest.mark.parametrize(
+        "query, canonical",
+        [
+            ("Acme Corp.", "Acme Corporation"),
+            ("Acme Corp", "Acme Corporation"),
+            ("Acme, Inc.", "Acme Incorporated"),
+            ("Acme Inc", "Acme Incorporated"),
+            ("Globex LLC", "Globex L.L.C."),
+            ("Globex Limited Liability Company", "Globex LLC"),
+            ("Initech Co.", "Initech Company"),
+            ("Initech Ltd.", "Initech Limited"),
+        ],
+    )
+    def test_suffix_variants_score_perfect(self, query: str, canonical: str) -> None:
+        from enrichment.tier1_ror import _score_org
+
+        score = _score_org(query, self._org(canonical))
+        assert score == 1.0, f"{query!r} vs {canonical!r} should match, got {score}"
+
+    def test_divergent_pair_now_agrees(self) -> None:
+        """Both legal-form variants of the same org resolve equally."""
+        from enrichment.tier1_ror import _score_org
+
+        org = self._org("Acme Corporation")
+        assert _score_org("Acme Corp.", org) == _score_org("Acme Corporation", org) == 1.0
+
+    def test_normalisation_collapses_suffix(self) -> None:
+        from enrichment.tier1_ror import _normalise_for_tokens
+
+        assert _normalise_for_tokens("Acme, Inc.") == "acme inc"
+        assert _normalise_for_tokens("Acme Incorporated") == "acme inc"
+        assert _normalise_for_tokens("Globex L.L.C.") == "globex llc"
+        assert _normalise_for_tokens("Globex Limited Liability Company") == "globex llc"
+
+    def test_distinct_orgs_still_do_not_match(self) -> None:
+        """Suffix canonicalisation must not cause unrelated orgs to match."""
+        from enrichment.tier1_ror import _score_org
+
+        assert _score_org("Acme Corp.", self._org("Globex Corporation")) < 0.8

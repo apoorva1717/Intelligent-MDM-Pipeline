@@ -604,6 +604,41 @@ def _has_legal_suffix(text: str) -> bool:
     return bool(text and _LEGAL_SUFFIX_RE.search(text))
 
 
+# Long-form legal-entity suffixes → canonical abbreviation. These long
+# forms are unambiguous legal designators (a name never contains
+# "Aktiengesellschaft" or "Incorporated" as a distinctive word), so they
+# are collapsed to the short form during preprocessing. This keeps a name
+# like "Carl Zeiss Aktiengesellschaft" on the SAME enrichment path as its
+# sibling "Carl Zeiss AG": both then feed the identical string into ROR,
+# the company-canonical LLM, the SERP query, and search-term derivation.
+# Without it the long form misses ROR, passes the raw suffix into the web
+# search, and resolves to an unrelated site.
+_LEGAL_LONGFORM_SUBS = [
+    (re.compile(r"\bGesellschaft\s+mit\s+beschr[äa]nkter\s+Haftung\b", re.IGNORECASE), "GmbH"),
+    (re.compile(r"\bLimited\s+Liability\s+Company\b", re.IGNORECASE), "LLC"),
+    (re.compile(r"\bLimited\s+Liability\s+Partnership\b", re.IGNORECASE), "LLP"),
+    (re.compile(r"\bAktiengesellschaft\b", re.IGNORECASE), "AG"),
+    (re.compile(r"\bIncorporated\b", re.IGNORECASE), "Inc"),
+    (re.compile(r"\bCorporation\b", re.IGNORECASE), "Corp"),
+]
+
+
+def _normalise_legal_suffix(text: str | None) -> tuple[str, bool]:
+    """Collapse long-form legal suffixes to their canonical abbreviation.
+
+    Returns ``(normalised_text, changed)``. Bare ambiguous words
+    ("Limited", "Company") are intentionally left alone — they appear as
+    real name components ("Limited Brands", "The Walt Disney Company").
+    """
+    if not text:
+        return text or "", False
+    out = text
+    for pat, repl in _LEGAL_LONGFORM_SUBS:
+        out = pat.sub(repl, out)
+    out = re.sub(r"\s+", " ", out).strip()
+    return out, out != text
+
+
 def _is_job_title(text: str) -> bool:
     return bool(text and _JOB_TITLE_TAIL_RE.search(text))
 
@@ -1160,6 +1195,21 @@ def preprocess_record(
             setattr(res, field_name, normalised or None)
             res.dba_fields.add(field_name)
             res.note(11, f"{field_name} DBA variant normalised to 'DBA' (was {val!r})")
+
+    # ---------------------------------------------------------------
+    # UC 17 — Long-form legal-suffix normalisation. Collapse
+    # "Aktiengesellschaft" → "AG", "Incorporated" → "Inc", etc. so a
+    # company name resolves on the same path regardless of which legal
+    # form the source system recorded.
+    # ---------------------------------------------------------------
+    for field_name in ("name1", "name2", "name3", "name4"):
+        val = getattr(res, field_name)
+        if not val:
+            continue
+        normalised, changed = _normalise_legal_suffix(val)
+        if changed:
+            setattr(res, field_name, normalised or None)
+            res.note(17, f"{field_name} legal suffix normalised (was {val!r})")
 
     # ---------------------------------------------------------------
     # UC 10 — Opaque code / meaningless identifier clearing

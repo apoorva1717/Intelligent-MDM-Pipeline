@@ -384,8 +384,10 @@ class TestUC16DepartmentSplit:
 
     def test_unit_substring_not_extracted_as_address(self):
         # "Unit" inside "United" must NOT be ripped out as a sub-location.
+        # ("Corporation" → "Corp" is the separate UC 17 legal-suffix
+        # normalisation; the point here is that "United" stays intact.)
         res = self._run("United Technologies Corporation")
-        assert res.name1 == "United Technologies Corporation"
+        assert res.name1 == "United Technologies Corp"
 
     def test_person_with_existing_contact_flagged(self):
         res = _run(
