@@ -70,7 +70,13 @@ def install_httpx_aclose_noise_filter(
 _FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?\s*```", re.DOTALL)
 
 
-def get_openai_client() -> AsyncAzureOpenAI:
+# Default Azure OpenAI REST API version for the Phase 1 enrichment tiers.
+# Reasoning models (GPT-5.x) and the ``reasoning_effort`` parameter need a
+# newer version — see ``get_openai_client(api_version=...)`` callers.
+DEFAULT_AZURE_OPENAI_API_VERSION = "2024-08-01-preview"
+
+
+def get_openai_client(api_version: str | None = None) -> AsyncAzureOpenAI:
     """Returns Azure OpenAI async client.
 
     The httpx client is constructed explicitly with ``verify=certifi.where()``
@@ -80,10 +86,19 @@ def get_openai_client() -> AsyncAzureOpenAI:
     own ``http_client``, we also bypass openai SDK's
     ``AsyncHttpxClientWrapper``, sidestepping its noisy ``__del__``
     aclose-as-task behaviour on Python 3.13 + httpx 0.28.
+
+    ``api_version`` overrides the REST API version; when omitted it falls back
+    to ``AZURE_OPENAI_API_VERSION`` then ``DEFAULT_AZURE_OPENAI_API_VERSION``.
+    Phase 1 callers pass nothing and keep the historical version; the dedup
+    adjudicator passes a newer version that supports ``reasoning_effort``.
     """
     api_key = os.getenv("AZURE_OPENAI_API_KEY")
     endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-    api_version = "2024-08-01-preview"
+    api_version = (
+        api_version
+        or os.getenv("AZURE_OPENAI_API_VERSION")
+        or DEFAULT_AZURE_OPENAI_API_VERSION
+    )
     if not api_key or not endpoint:
         raise RuntimeError(
             "AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT must be set. "

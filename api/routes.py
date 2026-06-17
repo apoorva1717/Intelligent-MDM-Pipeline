@@ -22,6 +22,9 @@ from api.models import (
 )
 from api.output_columns import RESPONSE_COLUMNS
 from config import Settings, get_settings
+from dedup.adjudicator import cluster_blocks
+from dedup.llm import DedupLLM
+from dedup.models import DedupRequest, DedupResponse
 from enrichment.issue_detection import ISSUE_CATALOGUE, detect_issues
 from enrichment.orchestrator import Orchestrator
 
@@ -576,6 +579,49 @@ async def compare_file_issues(
     )
 
 
+def _get_dedup_llm(settings: Settings):
+    """Build the dedup adjudicator LLM, real or mock based on config.
+
+    Mirrors ``_get_orchestrator`` — when ``MOCK_EXTERNAL_CALLS`` is set the
+    mock client is used so the endpoint runs offline.
+    """
+    if settings.mock_external_calls:
+        from tests.mocks.dedup_mock import MockDedupLLM
+        logger.info("Mock mode enabled — using mock dedup LLM")
+        return MockDedupLLM()
+    return DedupLLM(settings)
+
+
+@router.post("/api/dedup/cluster-block", response_model=DedupResponse)
+async def dedup_cluster_block(request: DedupRequest) -> DedupResponse:
+    """Phase 2 "Pass 2" deduplication adjudicator.
+
+    Takes address-gated candidate rows (already cleared by DATAshaper's
+    address gates — same country + postal code + street) grouped into one or
+    more blocks, decides which rows refer to the same (institution,
+    department) entity, and returns cluster assignments. Auth is inherited
+    from the Azure Function App (same key/function-auth pattern as the other
+    endpoints); the function is JSON in / JSON out and never reads files.
+    """
+    settings = get_settings()
+    llm = _get_dedup_llm(settings)
+
+    logger.info("Dedup request received: %d rows", len(request.rows))
+
+    try:
+        return await cluster_blocks(request.rows, llm, settings=settings)
+    finally:
+        # Release the cached AsyncAzureOpenAI HTTP client cleanly, matching
+        # the orchestrator's lifecycle handling. Mocks expose aclose only
+        # when present.
+        aclose = getattr(llm, "aclose", None)
+        if callable(aclose):
+            try:
+                await aclose()
+            except Exception as exc:  # noqa: BLE001
+                logger.info("Dedup LLM aclose failed (non-fatal): %s", exc)
+
+
 @router.get("/diag/llm")
 async def diag_llm() -> dict:
     """Diagnostic: make one LLM call and return the raw outcome.
@@ -606,6 +652,45 @@ async def diag_llm() -> dict:
             "error_message": str(exc),
             "env": env_snapshot,
         }
+
+
+@router.get("/diag/dedup-llm")
+async def diag_dedup_llm() -> dict:
+    """Diagnostic: make one real dedup adjudication call and return the raw
+    outcome. Use this when /api/dedup/cluster-block returns everything as
+    manual_review with errors>0 — it surfaces the actual Azure error string
+    (e.g. an unsupported api-version or reasoning_effort rejection) that the
+    per-block handler swallows to keep the batch alive.
+    """
+    import os
+
+    env_snapshot = {
+        "AZURE_OPENAI_ENDPOINT": os.getenv("AZURE_OPENAI_ENDPOINT", "<unset>"),
+        "AOAI_DEPLOYMENT_DEDUP": os.getenv("AOAI_DEPLOYMENT_DEDUP", "<unset>"),
+        "AOAI_API_VERSION_DEDUP": os.getenv("AOAI_API_VERSION_DEDUP", "<unset>"),
+        "DEDUP_REASONING_EFFORT": os.getenv("DEDUP_REASONING_EFFORT", "<unset>"),
+        "AZURE_OPENAI_API_KEY_present": bool(os.getenv("AZURE_OPENAI_API_KEY")),
+    }
+    llm = DedupLLM(get_settings())
+    try:
+        result = await llm.adjudicate(
+            "Return valid JSON only.",
+            'Return STRICT JSON: {"ok": true}',
+            max_tokens=200,
+        )
+        return {
+            "status": "ok" if result.error is None else "failed",
+            "raw": result.raw,
+            "error": result.error,
+            "model_version": result.model_version,
+            "prompt_tokens": result.prompt_tokens,
+            "completion_tokens": result.completion_tokens,
+            "api_version": llm._api_version,
+            "reasoning_effort_used": llm._use_reasoning_effort,
+            "env": env_snapshot,
+        }
+    finally:
+        await llm.aclose()
 
 
 @router.get("/tiers", response_model=TierConfigResponse)
