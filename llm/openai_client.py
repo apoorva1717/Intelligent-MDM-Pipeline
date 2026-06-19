@@ -75,17 +75,67 @@ _FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?\s*```", re.DOTALL)
 # newer version — see ``get_openai_client(api_version=...)`` callers.
 DEFAULT_AZURE_OPENAI_API_VERSION = "2024-08-01-preview"
 
+# CA-bundle env vars consulted (in order) for TLS verification, before
+# falling back to certifi. A dedicated var comes first so the LLM client
+# can be pointed at a corp CA without disturbing other tooling.
+_CA_BUNDLE_ENV_VARS = ("AZURE_OPENAI_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE")
+
+
+def _env_bool(name: str, default: bool = True) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.strip().lower() in ("true", "1", "yes", "on")
+
+
+def resolve_tls_verify() -> str | bool:
+    """Resolve the httpx ``verify`` setting for outbound LLM calls.
+
+    Corporate VPNs frequently terminate TLS with their own root CA (SSL
+    inspection / MITM proxy). When that happens, verifying the connection
+    against certifi's public bundle fails the handshake and every LLM call
+    hangs or errors out the moment the VPN is connected. To survive that:
+
+    1. ``LLM_SSL_VERIFY=false`` disables verification entirely. Insecure —
+       a last resort for locked-down machines where the corp CA cannot be
+       installed. Logged loudly.
+    2. Otherwise, if a CA bundle is configured via one of
+       ``AZURE_OPENAI_CA_BUNDLE`` / ``REQUESTS_CA_BUNDLE`` / ``SSL_CERT_FILE``
+       and the file exists, that bundle is used (point it at the corp CA
+       exported as a ``.pem``).
+    3. Otherwise certifi's bundle is used (the normal, non-VPN path).
+    """
+    if not _env_bool("LLM_SSL_VERIFY", default=True):
+        logger.warning(
+            "LLM_SSL_VERIFY=false — TLS certificate verification is DISABLED "
+            "for LLM calls. This is insecure; only use it when the corporate "
+            "CA cannot be installed."
+        )
+        return False
+
+    for var in _CA_BUNDLE_ENV_VARS:
+        path = os.getenv(var)
+        if path and os.path.isfile(path):
+            logger.info(
+                "Using CA bundle from %s for LLM TLS verification: %s", var, path
+            )
+            return path
+
+    return certifi.where()
+
 
 def get_openai_client(api_version: str | None = None) -> AsyncAzureOpenAI:
     """Returns Azure OpenAI async client.
 
-    The httpx client is constructed explicitly with ``verify=certifi.where()``
-    so that a bogus ``SSL_CERT_FILE`` env var (a common gotcha when a
-    .env file contains a placeholder corp-CA path that no longer
-    exists) cannot break TLS context construction. By providing our
-    own ``http_client``, we also bypass openai SDK's
-    ``AsyncHttpxClientWrapper``, sidestepping its noisy ``__del__``
-    aclose-as-task behaviour on Python 3.13 + httpx 0.28.
+    The httpx client is constructed with an explicit ``verify`` resolved by
+    :func:`resolve_tls_verify`, so a corporate VPN that intercepts TLS with
+    its own CA can be accommodated (set ``AZURE_OPENAI_CA_BUNDLE`` /
+    ``REQUESTS_CA_BUNDLE`` to the corp CA ``.pem``), while a bogus
+    ``SSL_CERT_FILE`` placeholder still falls back to certifi. ``trust_env``
+    is left enabled so the VPN's ``HTTPS_PROXY`` / ``HTTP_PROXY`` /
+    ``NO_PROXY`` settings are honored. By providing our own ``http_client``,
+    we also bypass openai SDK's ``AsyncHttpxClientWrapper``, sidestepping its
+    noisy ``__del__`` aclose-as-task behaviour on Python 3.13 + httpx 0.28.
 
     ``api_version`` overrides the REST API version; when omitted it falls back
     to ``AZURE_OPENAI_API_VERSION`` then ``DEFAULT_AZURE_OPENAI_API_VERSION``.
@@ -105,9 +155,14 @@ def get_openai_client(api_version: str | None = None) -> AsyncAzureOpenAI:
             "Copy .env.example to .env and add your values, "
             "then restart the server."
         )
+    # Connect timeout is generous because a VPN tunnel can add real latency
+    # to the initial handshake; override via LLM_HTTP_CONNECT_TIMEOUT if needed.
+    connect_timeout = float(os.getenv("LLM_HTTP_CONNECT_TIMEOUT", "30"))
+    read_timeout = float(os.getenv("LLM_HTTP_TIMEOUT", "60"))
     http_client = httpx.AsyncClient(
-        verify=certifi.where(),
-        timeout=httpx.Timeout(60.0, connect=10.0),
+        verify=resolve_tls_verify(),
+        timeout=httpx.Timeout(read_timeout, connect=connect_timeout),
+        trust_env=True,
     )
     return AsyncAzureOpenAI(
         api_key=api_key,

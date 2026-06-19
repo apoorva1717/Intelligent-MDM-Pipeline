@@ -7,6 +7,9 @@ build/
 .eggs/
 *.egg
 .env
+# Machine-specific CA bundles (corp/VPN root certs); regenerated per machine.
+certs/
+*.pem
 .venv/
 venv/
 env/

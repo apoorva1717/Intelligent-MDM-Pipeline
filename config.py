@@ -40,15 +40,26 @@ def _sanitize_ssl_env() -> None:
     but third-party SDKs we don't control (e.g. ``serpapi``) can't
     be patched the same way. Overriding the env vars here makes the
     workaround global.
+
+    On a TLS-inspecting corporate VPN, certifi alone is not enough — the
+    inspected hosts present certs signed by the corp CA. So when a corp CA
+    bundle is configured (``AZURE_OPENAI_CA_BUNDLE``, e.g. certifi + corp
+    roots), prefer it as the replacement so every requests-based client
+    (ROR, SerpAPI, page fetch) survives the VPN too. Fall back to certifi
+    when no corp bundle is available.
     """
     certifi_path = certifi.where()
+    corp_bundle = os.environ.get("AZURE_OPENAI_CA_BUNDLE")
+    replacement = (
+        corp_bundle if (corp_bundle and os.path.isfile(corp_bundle)) else certifi_path
+    )
     for var in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
         current = os.environ.get(var)
         if current and not os.path.isfile(current):
-            os.environ[var] = certifi_path
+            os.environ[var] = replacement
             logger.warning(
                 "%s pointed to non-existent path %r; overriding to %s",
-                var, current, certifi_path,
+                var, current, replacement,
             )
 
 
