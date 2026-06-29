@@ -1,4 +1,4 @@
-# SAP Customer Master Data Name Enrichment API / 18/06/26
+# SAP Customer Master Data Name Enrichment API / 20/06/26
 
 An intelligent, multi-tier enrichment service built for Bruker Corporation's Master Data Management (MDM) pipeline. It resolves incomplete, abbreviated, misspelled, or incorrectly formatted SAP customer master data records — specifically institution and company names — through a pipeline that combines deterministic preprocessing, API lookups, web search, contact verification, and LLM inference.
 
@@ -21,6 +21,7 @@ Both phases share the same FastAPI app, configuration system, Azure Functions de
    - [Stage 0: Name1 Overflow Check (UC 0)](#stage-0-name1-overflow-check-uc-0)
    - [Stage 1: Preprocessing (UC 6-12)](#stage-1-preprocessing-uc-6-10)
    - [Stage 2: Tier 1 — ROR API Lookup](#stage-2-tier-1--ror-api-lookup)
+   - [Stage 2 (Company): Tier 1 — GLEIF / LEI Registry Lookup](#stage-2-company-tier-1--gleif--lei-registry-lookup)
    - [Stage 3: Tier 2 — Multi-Mode Canonicalization](#stage-3-tier-2--multi-mode-canonicalization)
    - [Stage 4: Tier 3 — LLM Inference (Last Resort)](#stage-4-tier-3--llm-inference-last-resort)
    - [Finalization](#finalization)
@@ -78,7 +79,8 @@ The API uses a **tiered escalation approach**: start with the cheapest, most rel
 | Tier | Method | Cost | Confidence | When Used |
 |------|--------|------|------------|-----------|
 | **Preprocessing** | Regex patterns (deterministic) | Zero (no API calls) | Deterministic | Always runs first |
-| **Tier 1** | ROR API (Research Organization Registry) | Low (free public API) | High | Institutions, companies |
+| **Tier 1 (ROR)** | ROR API (Research Organization Registry) | Low (free public API) | High | Institutions (and some companies ROR happens to carry) |
+| **Tier 1 (LEI)** | GLEIF API (Legal Entity Identifier registry) | Low (free public API) | High (verified) / Medium (fuzzy) | Companies — deterministic step before the LLM fallback |
 | **Tier 2A** | Contact person web lookup (SERP + page fetch + LLM) | Medium | Medium-High | When contact is available and Tier 1 matched the parent org |
 | **Tier 2 Canonical** | LLM canonicalization (no web search) | Low-Medium | High (only accepts high-confidence answers) | When Name2/3 present but no ROR child match |
 | **Tier 2B** | Department web search (SERP + page fetch + LLM) | Medium | Medium-Low | When no contact or Tier 2A failed |
@@ -102,6 +104,7 @@ The API uses a **tiered escalation approach**: start with the cheapest, most rel
 | **Serverless Runtime** | Azure Functions v2 (ASGI wrapper) | Production deployment |
 | **LLM** | Azure OpenAI / AI Foundry (GPT-5.4) | Extraction, canonicalization, inference, dedup adjudication |
 | **Organization Registry** | ROR API v2 | Institution/organization lookup and classification |
+| **Company Registry** | GLEIF API v1 | Company legal-name + Legal Entity Identifier (LEI) lookup (Tier 1 company branch) |
 | **Web Search** | SerpAPI (primary) / DuckDuckGo (fallback) | Finding faculty pages, department pages |
 | **HTML Parsing** | BeautifulSoup4 | Extracting structured elements from web pages |
 | **Fuzzy Matching** | RapidFuzz | Name comparison (token sort ratio, partial ratio) |
@@ -308,6 +311,12 @@ The scoring system (`_compute_name_score()`) is carefully designed to prevent fa
    - **Distinctive-token guard:** When the query contains generic domain words (regional, health, medical, center, national, general, community, memorial), the scorer requires at least one **distinctive token** (5+ characters) to be shared between query and match
    - Example: "Newman Regional Health" has distinctive token "newman". "Lakeland Regional Health" does not contain "newman", so the fuzzy score is capped at 0.7 even if the generic words produce a high fuzzy ratio.
    - This prevents the common false-positive pattern where organizations with similar generic names (many hospitals, regional health systems, community colleges) match each other.
+5. **Legal-form normalization:** before scoring, `_normalise_for_tokens()` strips `.`/`,` and canonicalizes legal-entity suffixes (Incorporated→inc, Corporation→corp, Company→co, Limited→ltd, "L.L.C."→llc, "Limited Liability Company"→llc, …) **symmetrically** on the query and every ROR name variant. So "Acme Corp.", "Acme Corp" and "Acme Corporation" all compare equal, and two SAP rows that differ only by legal form don't diverge (one matching ROR, the other missing).
+6. **Identifier-token (acronym) guard:** short all-caps acronyms in the query (e.g. "HFT", "EMSL", "ASL") must appear in the candidate before the exact/subset/substring shortcuts can score 1.0. Without it, "HFT Stuttgart" would subset-match *any* "… Stuttgart" org on the shared city token alone (Marienhospital Stuttgart, Stuttgart Observatory) and produce a confidently wrong match.
+
+#### Institution Acronym Expansion
+
+Some institutions are referenced by an acronym that ROR does **not** carry as an alias — e.g. "HFT Stuttgart" (ROR has no "HFT" alias, so the bare query returns unrelated same-city orgs). A small ROR-local map (`_INSTITUTION_ACRONYMS`, e.g. `HFT → Hochschule für Technik`) drives an **additive** affiliation retry: when the raw name misses, the affiliation endpoint is tried once more with the acronym expanded ("HFT Stuttgart" → "Hochschule für Technik Stuttgart"). It is kept out of the global `expand_abbreviations` map so it never affects search terms or output names, and names that already resolve never reach it. Extend the map as new institution acronyms come up.
 
 #### Child Matching
 
@@ -335,6 +344,48 @@ If Tier 1 misses (no ROR match), classification falls back to keyword detection 
 #### Caching
 
 A module-level ROR cache (`_ror_cache`) prevents duplicate API calls within a batch. For example, if a batch contains three records for "MIT", only one ROR API call is made. The cache is cleared between batches.
+
+#### TLS
+
+The ROR client uses the shared `resolve_tls_verify()` helper (corporate CA bundle → certifi fallback) so it survives a TLS-inspecting corporate VPN. Before this, ROR hardcoded `verify=certifi.where()`, so on such a VPN **every** ROR call failed the handshake and silently returned no match — leaving `ror_id`/`domain` null and pushing every record to the LLM. See [TLS and Corporate VPN](#tls-and-corporate-vpn).
+
+---
+
+### Stage 2 (Company): Tier 1 — GLEIF / LEI Registry Lookup
+
+**File:** `enrichment/tier1_lei.py`
+
+ROR is the registry for *research institutions* and has no good coverage of ordinary companies. The [GLEIF API](https://www.gleif.org/) (Global Legal Entity Identifier Foundation — free, no auth, JSON:API) is the **company counterpart**: for company-type records it resolves the official legal name and a **Legal Entity Identifier (LEI)** *before* falling back to LLM company canonicalization. This is what lets the Phase 2 dedup converge records on a shared `lei_id` (e.g. "Pfizer AG" / "Pfizer").
+
+**When it runs (company branch only):**
+- ROR miss **and** the name doesn't look like a research institution, **or**
+- ROR matched the record as a company.
+- It **never** runs on, or overwrites, a record ROR confidently matched as a research institution — ROR's institution result wins; LEI is the company counterpart, not a competitor.
+
+**Order on the company branch:** ROR → **LEI (new)** → LLM company canonicalization (existing fallback).
+
+**Lookup strategy (mirrors the ROR client):**
+
+1. **Precise filter:** `lei-records?filter[entity.legalName]=<name>&filter[entity.status]=ACTIVE&filter[entity.legalAddress.country]=<ISO2>`. The record's ISO country (from `country_to_iso_code`) narrows results. Note GLEIF's `legalName` filter is *fulltext*, not exact — "Pfizer" returns "PFIZER AG", "PFIZER INC.", etc. — so the verification guard below is mandatory even on this "precise" path.
+2. **Fuzzy fallback:** `fuzzycompletions?field=entity.legalName&q=<name>`, then resolve each candidate to its full `lei-record`. Best-effort — GLEIF's typeahead frequently returns nothing, which is a normal miss.
+
+**Field mapping:** `data[].id` → LEI · `data[].attributes.entity.legalName.name` → official name · `…entity.status` (ACTIVE) · `…entity.legalAddress.country` (ISO alpha-2).
+
+**Verification guard (required):** every candidate's `legalName` is scored against the input with RapidFuzz `token_sort_ratio` (case-folded — GLEIF returns names UPPERCASE; legal-form suffixes like AG/Inc/Ltd/GmbH stripped so "Novartis" verifies against "NOVARTIS AG"). Candidates below `LEI_NAME_MATCH_THRESHOLD` (default 88) are rejected. GLEIF fuzzy is statistical — without this guard it fabricates matches (e.g. "Personalvorsorgestiftung der Pfizer AG in Liquidation" for "Pfizer AG"). `token_set_ratio` is deliberately **not** used: it scores any contained substring 100 and would accept that wrong entity.
+
+**On a verified match:**
+- `name1_enriched` ← official GLEIF `legalName`
+- `lei_id` ← the LEI · `record_type = "company"` · `source = "gleif"` · `tier_used = 1`
+- `confidence = high` (precise filter) / `medium` (fuzzy)
+- `domain` stays `null` — GLEIF has no website field. Downstream web-search tiers that need a domain simply won't have one for these; that's acceptable.
+
+**On miss / below-threshold / timeout / API error:** nothing is fabricated — the record falls through to the existing LLM company-canonical path unchanged. **A GLEIF failure never fails the record.**
+
+**Feature flag:** `LEI_LOOKUP_ENABLED` (default `true`) disables the whole step for cheap A/B testing — behaviour then reverts to LLM-only, identical to before.
+
+**Telemetry:** `lei_attempts`, `lei_hits_exact`, `lei_hits_fuzzy`, `lei_misses`, `lei_errors`, and `tier1_lei_count` in the batch `summary`.
+
+**Caching & TLS:** a module-level `_lei_cache` (keyed on name + country) dedupes calls within a batch, cleared per batch like the ROR cache. The client uses the shared `resolve_tls_verify()` so it survives a TLS-inspecting corporate VPN.
 
 ---
 
@@ -535,7 +586,7 @@ The pipeline tracks which "use cases" fired for each record. These are reported 
 |----|------|-------|---------|--------|
 | 0 | Name1 Overflow Detection | Stage 0 | Both Name1 + Name2 non-blank | LLM checks if it's one split name; flags if yes |
 | 2 | Institution ROR Resolution | Tier 1 | ROR match found | Enriches Name1 with official ROR name |
-| 3 | Company Name Canonicalization | Tier 1/2 | ROR miss + looks like a company | LLM canonicalizes company name with geographic context |
+| 3 | Company Name Canonicalization | Tier 1/2 | ROR miss + looks like a company, or ROR matched a company | GLEIF/LEI registry lookup first (official legal name + `lei_id`); LLM canonicalization with geographic context as the fallback when LEI misses |
 | 4 | Contact Lookup with Scope Filter | Tier 2A | Contact present, ROR hit, domain known | Discovers/verifies Name2 from contact's faculty page |
 | 5 | Department Canonicalization | Tier 2 | Name2 present, ROR hit, no child match | LLM normalizes department name to official wording |
 | 6 | Accounts Payable Recognition | Preprocessing | AP pattern detected | Flags as accounts payable for special handling |
@@ -563,7 +614,7 @@ Records are classified as either `research_institution` or `company`. Classifica
 
 **Impact on pipeline routing:**
 - `research_institution`: Eligible for Tier 2A (contact lookup) and Tier 2 Canonical
-- `company`: Routes to company canonicalization (LLM), then Tier 2B if Name2 exists
+- `company`: Routes to **Tier 1 GLEIF/LEI registry lookup** first, then company canonicalization (LLM) if LEI misses, then Tier 2B if Name2 exists
 - Both types: Eligible for Tier 1, Tier 2B, and Tier 3
 
 ---
@@ -575,7 +626,7 @@ Each result carries a `domain` field — the registrable domain (e.g. `mit.edu`,
 1. **ROR website** (primary). When Tier 1 matches an ROR record, its declared website link is parsed by `extract_domain()` and written to `domain`. This covers the vast majority of research institutions.
 2. **`source_url` host** (fallback). When ROR didn't match but a successful Tier 2A or Tier 2B run produced a `source_url`, `finalise()` derives the domain from that URL's host. Tier 2A URLs are on-domain by construction (the contact's faculty page); Tier 2B URLs may or may not be on the institution's own site, so use this value cautiously when `source != "ROR"`.
 
-If neither is available, `domain` is `null`.
+If neither is available, `domain` is `null`. **Companies resolved via Tier 1 LEI carry `domain = null`** — GLEIF has no website field — unless a later web-search tier supplies one.
 
 ---
 
@@ -646,7 +697,9 @@ The canonical request body mirrors the SAP customer-master export columns one-to
 
 ### Response
 
-The result mirrors every original SAP column (carried through verbatim) plus the enriched name/address fields. The response is intentionally lean: a number of internal fields used by the pipeline (`tier_used`, `confidence`, `source`, `ror_id`, `source_url`, `contact_used`, `name2_match_result`, `use_cases_triggered`, `enrichment_status`, `duration_ms`) are marked `exclude=True` in `EnrichmentResult` and therefore **do not appear in the JSON** — they are available only in logs and the batch summary counts.
+The result mirrors every original SAP column (carried through verbatim) plus the enriched name/address fields. The response is intentionally lean: a number of internal fields used by the pipeline (`tier_used`, `confidence`, `source`, `source_url`, `contact_used`, `name2_match_result`, `use_cases_triggered`, `enrichment_status`, `duration_ms`) are marked `exclude=True` in `EnrichmentResult` and therefore **do not appear in the JSON** — they are available only in logs and the batch summary counts.
+
+The two **registry identifiers are deliberately included** in the JSON so the Phase 2 dedup can converge records on a shared id: `ror_id` (institutions, and ROR-matched companies) and `lei_id` (GLEIF-matched companies). A record may carry both if ROR matched it as a company and GLEIF also resolved it.
 
 ```json
 {
@@ -702,6 +755,8 @@ The result mirrors every original SAP column (carried through verbatim) plus the
       "unloading_point": null,
       "mail_code": null,
       "record_type": "research_institution",
+      "ror_id": "https://ror.org/042nb2s44",
+      "lei_id": null,
       "domain": "mit.edu",
       "website_url": "https://www.mit.edu",
       "flag_for_review": true,
@@ -718,6 +773,12 @@ The result mirrors every original SAP column (carried through verbatim) plus the
     "research_institution_count": 1,
     "company_count": 0,
     "tier1_resolved": 0,
+    "tier1_lei_count": 0,
+    "lei_attempts": 0,
+    "lei_hits_exact": 0,
+    "lei_hits_fuzzy": 0,
+    "lei_misses": 0,
+    "lei_errors": 0,
     "tier2a_population_count": 0,
     "tier2a_verification_count": 1,
     "tier2b_count": 0,
@@ -729,7 +790,7 @@ The result mirrors every original SAP column (carried through verbatim) plus the
 }
 ```
 
-> Because `ror_id` is excluded from this response, the Phase 2 dedup request built from it will have `ror_id: null` (see [Chaining Enrichment → Dedup](#chaining-enrichment--dedup)). Flip `exclude=True` on `ror_id` in `api/models.py` if you need it to flow through.
+> A company resolved by Tier 1 LEI would instead show `"record_type": "company"`, a populated `"lei_id"`, `"domain": null`, and `lei_hits_exact`/`lei_hits_fuzzy` incremented in the summary.
 
 ---
 
@@ -843,7 +904,7 @@ curl -X POST http://localhost:8000/enrich \
 
 ### POST /enrich/file
 
-Same enrichment as `/enrich`, but accepts an `.xlsx`/`.xlsm` upload (SAP column headers) and returns an enriched `.xlsx`. Multipart form field: `file`. Query params: `max_concurrency`, `serp_provider`, `skip_tier`.
+Same enrichment as `/enrich`, but accepts an `.xlsx`/`.xlsm` upload (SAP column headers) and returns an enriched `.xlsx`. Multipart form field: `file`. Query params: `max_concurrency`, `serp_provider`, `skip_tier`. The output columns are defined in `api/output_columns.py` and mirror the JSON response one-to-one — including the **"ROR ID"** and **"LEI ID"** columns.
 
 ### POST /issues
 
@@ -867,6 +928,10 @@ curl -X POST http://localhost:8000/api/dedup/cluster-block \
     ]
   }'
 ```
+
+### POST /api/dedup/file
+
+Same clustering as `/api/dedup/cluster-block`, but accepts an `.xlsx`/`.xlsm` upload and returns an `.xlsx` with the cluster-assignment columns appended. It accepts the human SAP headers emitted by `/enrich/file` ("Customer", "Name 1", "Street 1", …) or the snake_case `DedupRow` field names. Multipart form field: `file`.
 
 ### GET /diag/llm
 
@@ -1072,7 +1137,8 @@ In production, DATAshaper supplies `block_id`. When testing the two endpoints by
 | `country` | `country_region_key` |
 | `enriched_name` | `name1_enriched` |
 | `block_id` | *(leave null to derive, or assign explicitly — see note)* |
-| `ror_id` | *(not present in the `/enrich` response — `ror_id` is `exclude=True` in `EnrichmentResult`, so it is dropped from the JSON; passes through as null)* |
+| `ror_id` | `ror_id` *(now included in the `/enrich` response — populated for institutions and ROR-matched companies)* |
+| `lei_id` | `lei_id` *(included in the `/enrich` response for GLEIF-matched companies. Available to pass through, but `DedupRow`/`signatures.py` do not consume it yet — wiring dedup to converge on a shared LEI, like it does for `ror_id`, is a follow-up)* |
 
 > **`block_id` caveat:** deriving the block id from the enriched address only groups rows correctly if their cleaned `street`/`house_no`/`postal_code` come out identical. If enrichment cleans the same address inconsistently across rows, assign an explicit `block_id` (as DATAshaper does) so duplicates land in the same block.
 
@@ -1109,7 +1175,8 @@ enrichment_api/
 │   ├── preprocess.py             # Deterministic cleanup: UC 6-12 (regex-based)
 │   ├── classifier.py             # Record type classification (research_institution vs company)
 │   ├── overflow_check.py         # UC 0: Name1+Name2 overflow detection
-│   ├── tier1_ror.py              # Tier 1: ROR API client, scoring, child matching
+│   ├── tier1_ror.py              # Tier 1: ROR API client, scoring, child matching, acronym expansion
+│   ├── tier1_lei.py              # Tier 1 (company): GLEIF/LEI registry client + verification guard
 │   ├── tier2a_contact.py         # Tier 2A: Contact person lookup (Modes A & B)
 │   ├── tier2b_dept.py            # Tier 2B: Department web search
 │   ├── tier2_canonical.py        # Tier 2 Canonical: LLM-only department normalization
@@ -1139,6 +1206,7 @@ enrichment_api/
 │   ├── test_*.py                 # Unit tests per module
 │   ├── test_dedup.py             # Phase 2 dedup adjudicator tests (algorithm + route)
 │   ├── mocks/                    # Mock client implementations
+│   │   ├── lei_mock.py           # Deterministic GLEIF/LEI client for tests
 │   │   └── dedup_mock.py         # Conservative offline dedup LLM (never invents merges)
 │   └── fixtures/                 # JSON test data for various scenarios
 │
@@ -1168,7 +1236,7 @@ Creates the shared FastAPI app instance with middleware attached. This single ap
 
 ### `api/routes.py` — Route Definitions
 
-Defines all endpoints: `/health`, `/tiers`, `/enrich`, `/enrich/file`, `/issues`, `/issues/compare`, the Phase 2 `/api/dedup/cluster-block`, and the `/diag/llm` + `/diag/dedup-llm` diagnostics. The `/enrich` endpoint instantiates the Orchestrator and runs `enrich_batch()`; the dedup endpoint builds a `DedupLLM` (or its mock in mock mode) and runs `cluster_blocks()`, closing the client cleanly in a `finally` block.
+Defines all endpoints: `/health`, `/tiers`, `/enrich`, `/enrich/file`, `/issues`, `/issues/compare`, the Phase 2 `/api/dedup/cluster-block` and `/api/dedup/file`, and the `/diag/llm` + `/diag/dedup-llm` diagnostics. The `/enrich` endpoint instantiates the Orchestrator and runs `enrich_batch()`; the dedup endpoint builds a `DedupLLM` (or its mock in mock mode) and runs `cluster_blocks()`, closing the client cleanly in a `finally` block.
 
 ### `api/models.py` — Pydantic Schemas
 
@@ -1188,7 +1256,11 @@ Pattern-matching engine for UC 6-10. Runs before any network call. Returns `Prep
 
 ### `enrichment/tier1_ror.py` — ROR Client
 
-Async ROR API client with hybrid lookup (affiliation + query), sophisticated name scoring with distinctive-token guards, local child matching, and organization type extraction for classification.
+Async ROR API client with hybrid lookup (affiliation + query), sophisticated name scoring with distinctive-token guards, legal-form suffix normalization, an identifier-acronym guard, local child matching, and organization type extraction for classification. Includes `_INSTITUTION_ACRONYMS` + an additive acronym-expanded affiliation retry (e.g. "HFT Stuttgart" → "Hochschule für Technik Stuttgart"). Uses `resolve_tls_verify()` for corporate-VPN TLS.
+
+### `enrichment/tier1_lei.py` — GLEIF / LEI Client (company Tier 1)
+
+Async GLEIF client (`call_lei` + `LEIClient`), structured like the ROR client: precise `legalName`+country+ACTIVE filter, then `fuzzycompletions` fallback, retries/backoff, a module-level cache, and `resolve_tls_verify()` TLS. Enforces the RapidFuzz `token_sort_ratio` verification guard (legal-form-suffix-aware) so unverified/fabricated hits are rejected. Returns a match dict (LEI, legal name, country, strategy, confidence) or a clean miss/error — never raises, so a GLEIF failure can't fail the record.
 
 ### `enrichment/tier2a_contact.py` — Contact Lookup
 
@@ -1285,6 +1357,7 @@ Per-batch in-memory cache with separate ROR and SERP namespaces. Keyed on lowerc
 | Service | Purpose | Authentication | Fallback |
 |---------|---------|---------------|----------|
 | **ROR API v2** (`api.ror.org`) | Organization/institution lookup | None (free, public) | No fallback — if ROR misses, escalate to Tier 2/3 |
+| **GLEIF API v1** (`api.gleif.org`) | Company legal-name + LEI lookup (Tier 1, company branch) | None (free, public) | No fallback — if GLEIF misses/errors, escalate to LLM company canonicalization. A GLEIF failure never fails the record |
 | **Azure OpenAI / AI Foundry** | All Phase 1 LLM calls + Phase 2 dedup adjudication | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` | No fallback — Phase 1 records fall to `unresolved`; Phase 2 signatures fall to `manual_review` |
 | **SerpAPI** (`serpapi.com`) | Google Search results for Tier 2A/2B | `SERPAPI_KEY` | DuckDuckGo |
 | **DuckDuckGo** | Free web search | None | N/A (is itself the fallback) |
@@ -1313,6 +1386,11 @@ Copy `.env.example` to `.env` and configure:
 | `AZURE_OPENAI_API_VERSION` | `2024-08-01-preview` | REST API version for Phase 1 (and default fallback for Phase 2) |
 | `ROR_API_BASE` | `https://api.ror.org/v2/organizations` | ROR API endpoint |
 | `ROR_CONFIDENCE_THRESHOLD` | `0.8` | Minimum score to accept a ROR match |
+| `LEI_LOOKUP_ENABLED` | `true` | Enable the Tier 1 GLEIF/LEI company lookup. `false` → company branch goes straight to the LLM (pre-LEI behaviour) |
+| `GLEIF_API_BASE` | `https://api.gleif.org/api/v1` | GLEIF API base URL |
+| `GLEIF_TIMEOUT_SECONDS` | `15` | HTTP timeout for GLEIF calls |
+| `LEI_NAME_MATCH_THRESHOLD` | `88` | RapidFuzz `token_sort_ratio` (0-100) a candidate `legalName` must reach to be accepted |
+| `LEI_MAX_RETRIES` | `2` | Max retries (exponential backoff) on transient GLEIF errors |
 | `FUZZY_MATCH_THRESHOLD` | `80` | RapidFuzz threshold for name matching |
 | `MAX_PAGE_CONTENT_CHARS` | `3000` | Maximum body text extracted per page |
 | `PAGE_FETCH_TIMEOUT_SECONDS` | `10` | HTTP timeout for page fetching |
@@ -1324,7 +1402,7 @@ Copy `.env.example` to `.env` and configure:
 
 ### Azure OpenAI / AI Foundry (Phase 1)
 
-The same Azure credentials are used locally and in production — the only difference is delivery: a local `.env` file versus **Azure Application Settings** in the deployed Function App. The client is `AsyncAzureOpenAI`, constructed in `llm/openai_client.py::get_openai_client` with an explicit `certifi` CA bundle (to survive corp `SSL_CERT_FILE` placeholders).
+The same Azure credentials are used locally and in production — the only difference is delivery: a local `.env` file versus **Azure Application Settings** in the deployed Function App. The client is `AsyncAzureOpenAI`, constructed in `llm/openai_client.py::get_openai_client`; its TLS `verify` is resolved by `resolve_tls_verify()` (corporate CA bundle → certifi), the same helper now used by the ROR and GLEIF clients. See [TLS and Corporate VPN](#tls-and-corporate-vpn).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -1332,6 +1410,18 @@ The same Azure credentials are used locally and in production — the only diffe
 | `AZURE_OPENAI_ENDPOINT` | *(none, required)* | e.g., `https://your-resource.openai.azure.com/` |
 | `AZURE_OPENAI_DEPLOYMENT` | `gpt-5.4` | Phase 1 model deployment name |
 | `AZURE_OPENAI_API_VERSION` | `2024-08-01-preview` | REST API version used by Phase 1 (and the default fallback for Phase 2) |
+
+### Tier 1 — GLEIF / LEI (company registry)
+
+The company counterpart to ROR. For company-type records, resolves the official legal name + Legal Entity Identifier from the free GLEIF API before the LLM fallback. See [Stage 2 (Company): Tier 1 — GLEIF / LEI Registry Lookup](#stage-2-company-tier-1--gleif--lei-registry-lookup).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LEI_LOOKUP_ENABLED` | `true` | Master switch. `false` reverts the company branch to LLM-only |
+| `GLEIF_API_BASE` | `https://api.gleif.org/api/v1` | GLEIF JSON:API base URL |
+| `GLEIF_TIMEOUT_SECONDS` | `15` | Per-call HTTP timeout |
+| `LEI_NAME_MATCH_THRESHOLD` | `88` | `token_sort_ratio` (0-100) verification threshold; below it a candidate is rejected (no fabrication) |
+| `LEI_MAX_RETRIES` | `2` | Retries on transient (5xx/network) GLEIF errors, exponential backoff |
 
 ### Phase 2 — Dedup Adjudicator (`POST /api/dedup/cluster-block`)
 
@@ -1348,7 +1438,9 @@ The same Azure credentials are used locally and in production — the only diffe
 
 ### TLS and Corporate VPN
 
-A corporate VPN that performs **TLS inspection** (SSL interception) presents its own root CA on outbound HTTPS. The LLM client verifies certificates against certifi's public bundle by default, so when the VPN is connected the TLS handshake fails and **every LLM call hangs or errors** — for both Phase 1 and Phase 2 (which share `get_openai_client`). To fix it, point the client at the corporate root CA.
+A corporate VPN that performs **TLS inspection** (SSL interception) presents its own root CA on outbound HTTPS. Verifying against certifi's public bundle then fails the handshake, so when the VPN is connected **every outbound HTTPS call hangs or errors**. To fix it, point the clients at the corporate root CA via the variables below.
+
+This affects all outbound HTTPS, not just the LLM: the **OpenAI client (both phases), the ROR client, and the GLEIF/LEI client** all resolve their `verify` setting through the shared `resolve_tls_verify()` helper. (ROR and GLEIF previously hardcoded `verify=certifi.where()`, which is exactly why, on the VPN, `ror_id`/`lei_id`/`domain` came back empty and every record fell through to the LLM.)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -1575,11 +1667,13 @@ For each record (async, concurrency-limited via Semaphore):
   │    ├─ If MATCH:
   │    │   ├─ Write official ROR name to name1_enriched
   │    │   ├─ Classify from ROR org types → research_institution | company
+  │    │   ├─ If company → Tier 1 GLEIF/LEI lookup (overwrites name1, sets lei_id)
   │    │   ├─ Try child matching for Name2/Name3 (local, no 2nd API call)
   │    │   └─ If no Name2 signal and no contact → RETURN (Tier 1 final)
   │    └─ If MISS:
   │         ├─ If looks like research institution → passthrough, may escalate
-  │         └─ If looks like company → try LLM company canonicalization
+  │         └─ If looks like company → Tier 1 GLEIF/LEI lookup (verified → name1 + lei_id);
+  │              on miss/error → LLM company canonicalization (never fabricates)
   │
   ├──► STAGE 3: Tier 2 — Multi-Mode Canonicalization
   │    │
@@ -1644,6 +1738,17 @@ RETURN EnrichmentResponse (JSON)
 
 ## Changelog
 
+### Phase 1 — Tier 1 LEI (GLEIF) company lookup (new)
+
+- **New `enrichment/tier1_lei.py`** — a GLEIF/LEI registry client (`call_lei` + `LEIClient`), the company counterpart to ROR. For company-type records it resolves the official legal name + Legal Entity Identifier *before* the LLM company-canonical fallback. Precise `legalName`+country+ACTIVE filter, then `fuzzycompletions` fallback; module-level cache; retries/backoff.
+- **Verification guard** — RapidFuzz `token_sort_ratio` (case-folded, legal-form-suffix-aware) with `LEI_NAME_MATCH_THRESHOLD` (default 88). Rejects statistically-close wrong entities; never accepts an unverified hit. `token_set_ratio` was rejected as unsafe (it scores any contained substring 100).
+- **Orchestrator integration** — LEI runs on the company branch only (ROR-miss-company before the LLM, and ROR-matched-company where it overwrites `name1`); it never runs on or overwrites a ROR-matched research institution. A GLEIF failure never fails the record.
+- **Registry ids in the response** — `lei_id` added to `EnrichmentResult`, and `ror_id` is **no longer `exclude=True`** — both now appear in the JSON `/enrich` response and as **"ROR ID" / "LEI ID"** columns in `/enrich/file` (`api/output_columns.py`), so the dedup phase can converge on a shared identifier.
+- **ROR scoring fix + acronym expansion** — the identifier-token guard now also gates the subset/substring shortcut, so a query acronym (e.g. "HFT") can no longer false-match a same-city org on the shared city token. A ROR-local `_INSTITUTION_ACRONYMS` map drives an additive acronym-expanded affiliation retry ("HFT Stuttgart" → "Hochschule für Technik Stuttgart"). (Composes with the merged-in legal-suffix normalization in `_normalise_for_tokens`.)
+- **Telemetry** — `lei_attempts`, `lei_hits_exact`, `lei_hits_fuzzy`, `lei_misses`, `lei_errors`, `tier1_lei_count` in the batch `summary`.
+- **Config** — `LEI_LOOKUP_ENABLED`, `GLEIF_API_BASE`, `GLEIF_TIMEOUT_SECONDS`, `LEI_NAME_MATCH_THRESHOLD`, `LEI_MAX_RETRIES`.
+- **Mock & tests** — `tests/mocks/lei_mock.py` + `tests/test_tier1_lei.py` (verification guard, exact/fuzzy/miss/error HTTP paths via `httpx.MockTransport`, orchestrator integration, feature-flag regression).
+
 ### Phase 2 — Deduplication Adjudicator (new)
 
 - **New endpoint `POST /api/dedup/cluster-block`** — a "Pass 2" deduplication adjudicator that takes address-gated candidate rows and emits duplicate clusters. JSON in / JSON out; one or more address blocks per call, each processed independently. Auth is inherited from the Azure Function App (same pattern as every other route).
@@ -1667,7 +1772,8 @@ RETURN EnrichmentResponse (JSON)
 ### Corporate VPN / TLS fix
 
 - **`get_openai_client` no longer hardcodes `verify=certifi.where()`.** A new `resolve_tls_verify()` helper honors a corporate CA bundle (`AZURE_OPENAI_CA_BUNDLE` / `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE`) so a TLS-inspecting VPN no longer breaks LLM calls, supports `LLM_SSL_VERIFY=false` (insecure last resort), and falls back to certifi otherwise. The httpx client keeps `trust_env=True` (honors `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`) and exposes `LLM_HTTP_CONNECT_TIMEOUT` / `LLM_HTTP_TIMEOUT`. Fixes both phases (the dedup client reuses the factory). See [TLS and Corporate VPN](#tls-and-corporate-vpn).
+- **ROR and GLEIF clients now reuse `resolve_tls_verify()` too.** Both previously hardcoded `verify=certifi.where()`, so on a TLS-inspecting VPN every ROR/GLEIF call failed the handshake — `ror_id`/`lei_id`/`domain` came back empty and every record fell through to the LLM. Now fixed.
 
 ### New environment variables
 
-`AOAI_DEPLOYMENT_DEDUP`, `AOAI_API_VERSION_DEDUP`, `DEDUP_REASONING_EFFORT`, `SIG_PARTITION_THRESHOLD`, `DEDUP_MAX_CONCURRENCY`, `DEDUP_MAX_RETRIES`, and `AZURE_OPENAI_API_VERSION` — all documented in [Configuration and Environment Variables](#configuration-and-environment-variables) and `.env.example`.
+`AOAI_DEPLOYMENT_DEDUP`, `AOAI_API_VERSION_DEDUP`, `DEDUP_REASONING_EFFORT`, `SIG_PARTITION_THRESHOLD`, `DEDUP_MAX_CONCURRENCY`, `DEDUP_MAX_RETRIES`, `AZURE_OPENAI_API_VERSION`, and the Tier 1 LEI vars (`LEI_LOOKUP_ENABLED`, `GLEIF_API_BASE`, `GLEIF_TIMEOUT_SECONDS`, `LEI_NAME_MATCH_THRESHOLD`, `LEI_MAX_RETRIES`) — all documented in [Configuration and Environment Variables](#configuration-and-environment-variables) and `.env.example`.
