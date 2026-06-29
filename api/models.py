@@ -383,9 +383,13 @@ class EnrichmentResult(BaseModel):
         "ROR", "ROR+child", "contact_lookup_found",
         "contact_lookup_corrected", "dept_search", "LLM",
         "llm_canonical", "SERP+LLM", "pattern_match",
-        "web_search", "passthrough", "none",
+        "web_search", "passthrough", "gleif", "none",
     ] = Field(default="none", exclude=True)
-    ror_id: Optional[str] = Field(default=None, exclude=True)
+    # Registry identifiers — both surface in the JSON (not excluded) so the
+    # dedup phase can converge records on a shared identifier: ror_id for
+    # institutions, lei_id for companies (e.g. "Pfizer AG" / "Pfizer").
+    ror_id: Optional[str] = None
+    lei_id: Optional[str] = None
     source_url: Optional[str] = Field(default=None, exclude=True)
     domain: Optional[str] = None
     website_url: Optional[str] = None
@@ -412,6 +416,13 @@ class EnrichmentSummary(BaseModel):
     research_institution_count: int = 0
     company_count: int = 0
     tier1_resolved: int = 0
+    # Tier 1 LEI (GLEIF) telemetry — the company registry step.
+    tier1_lei_count: int = 0
+    lei_attempts: int = 0
+    lei_hits_exact: int = 0
+    lei_hits_fuzzy: int = 0
+    lei_misses: int = 0
+    lei_errors: int = 0
     tier2a_population_count: int = 0
     tier2a_verification_count: int = 0
     tier2b_count: int = 0

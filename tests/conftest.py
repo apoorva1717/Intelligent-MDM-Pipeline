@@ -21,6 +21,7 @@ os.environ.setdefault("MOCK_EXTERNAL_CALLS", "true")
 os.environ.setdefault("OPENAI_API_KEY", "test-key-for-mocks")
 
 from config import Settings
+from tests.mocks.lei_mock import MockLEIClient
 from tests.mocks.openai_mock import MockOpenAIClient
 from tests.mocks.page_mock import MockPageFetcher
 from tests.mocks.ror_mock import MockRORClient
@@ -41,6 +42,11 @@ def mock_ror_client(test_settings: Settings) -> MockRORClient:
 
 
 @pytest.fixture
+def mock_lei_client(test_settings: Settings) -> MockLEIClient:
+    return MockLEIClient(test_settings)
+
+
+@pytest.fixture
 def mock_search_client() -> MockSearchClient:
     return MockSearchClient()
 
@@ -58,6 +64,7 @@ def mock_llm_client() -> MockOpenAIClient:
 @pytest.fixture
 def mock_clients(
     mock_ror_client: MockRORClient,
+    mock_lei_client: MockLEIClient,
     mock_search_client: MockSearchClient,
     mock_page_fetcher: MockPageFetcher,
     mock_llm_client: MockOpenAIClient,
@@ -65,6 +72,7 @@ def mock_clients(
     """Bundle all mock clients for Orchestrator injection."""
     return {
         "ror": mock_ror_client,
+        "lei": mock_lei_client,
         "search": mock_search_client,
         "page_fetcher": mock_page_fetcher,
         "llm": mock_llm_client,

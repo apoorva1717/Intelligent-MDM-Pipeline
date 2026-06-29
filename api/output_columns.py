@@ -84,4 +84,7 @@ RESPONSE_COLUMNS: dict[str, str] = {
     "flag_reason": "Flag Reason",
     "error": "Error",
     "record_type": "Record Type",
+    # Registry identifiers — ror_id for institutions, lei_id for companies.
+    "ror_id": "ROR ID",
+    "lei_id": "LEI ID",
 }

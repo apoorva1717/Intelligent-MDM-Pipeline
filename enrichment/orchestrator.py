@@ -51,6 +51,7 @@ from enrichment.preprocess import (
     llm_classify_plain_names_async,
     preprocess_record,
 )
+from enrichment.tier1_lei import LEIClient, clear_lei_cache
 from enrichment.tier1_ror import RORClient, clear_ror_cache
 from enrichment.tier2_canonical import run_tier2_canonical
 from enrichment.tier2a_contact import Tier2AResult, run_tier2a
@@ -309,6 +310,7 @@ def _init_result(record: EnrichmentRecord) -> dict[str, Any]:
         "confidence": "none",
         "source": "none",
         "ror_id": None,
+        "lei_id": None,
         "source_url": None,
         "domain": None,
         "website_url": None,
@@ -651,6 +653,7 @@ class Orchestrator:
 
         if mock_clients:
             self._ror_client: RORClient = mock_clients.get("ror", RORClient(settings))
+            self._lei_client: LEIClient = mock_clients.get("lei", LEIClient(settings))
             self._search_client: SearchClient = mock_clients.get(
                 "search", self._build_search_client(settings))
             self._page_fetcher: PageFetcher = mock_clients.get("page_fetcher", PageFetcher(
@@ -660,6 +663,7 @@ class Orchestrator:
             self._llm_client: OpenAIClient = mock_clients.get("llm", OpenAIClient(settings))
         else:
             self._ror_client = RORClient(settings)
+            self._lei_client = LEIClient(settings)
             self._search_client = self._build_search_client(settings)
             self._page_fetcher = PageFetcher(
                 timeout=settings.page_fetch_timeout_seconds,
@@ -667,10 +671,21 @@ class Orchestrator:
             )
             self._llm_client = OpenAIClient(settings)
 
+        # Per-batch GLEIF/LEI telemetry counters (reset in enrich_batch).
+        self._lei_counts: dict[str, int] = self._new_lei_counts()
+
         # In-memory SERP cache shared by every batch this orchestrator
         # processes, so repeated/overlapping queries reuse a prior result
         # instead of re-hitting the search API for the life of the process.
         self._serp_cache = SerpCache()
+
+    @staticmethod
+    def _new_lei_counts() -> dict[str, int]:
+        """Fresh per-batch GLEIF/LEI telemetry counters."""
+        return {
+            "attempts": 0, "hits_exact": 0, "hits_fuzzy": 0,
+            "misses": 0, "errors": 0,
+        }
 
     @staticmethod
     def _build_search_client(settings: Settings) -> SearchClient:
@@ -696,6 +711,8 @@ class Orchestrator:
         # for the duration of this batch. Idempotent.
         install_httpx_aclose_noise_filter()
         clear_ror_cache()  # fresh cache per batch to avoid stale failures
+        clear_lei_cache()  # likewise for the GLEIF/LEI cache
+        self._lei_counts = self._new_lei_counts()  # reset per-batch telemetry
         cache = BatchCache(shared_serp=self._serp_cache)
         semaphore = asyncio.Semaphore(options.max_concurrency)
 
@@ -727,6 +744,16 @@ class Orchestrator:
 
             batch_ms = int((time.perf_counter() - batch_start) * 1000)
             summary = self._build_summary(final_results, batch_ms)
+            # Fold in the GLEIF/LEI per-batch telemetry. tier1_lei_count is
+            # the number of records resolved by the LEI step (exact + fuzzy).
+            summary.lei_attempts = self._lei_counts["attempts"]
+            summary.lei_hits_exact = self._lei_counts["hits_exact"]
+            summary.lei_hits_fuzzy = self._lei_counts["hits_fuzzy"]
+            summary.lei_misses = self._lei_counts["misses"]
+            summary.lei_errors = self._lei_counts["errors"]
+            summary.tier1_lei_count = (
+                self._lei_counts["hits_exact"] + self._lei_counts["hits_fuzzy"]
+            )
 
             logger.info(
                 "Batch complete: %d records, %d enriched, %d failed in %dms",
@@ -1278,6 +1305,80 @@ class Orchestrator:
             return
         merge_address_into_result(result, addr)
 
+    async def _run_lei_lookup(
+        self,
+        record: EnrichmentRecord,
+        result: dict[str, Any],
+        name: str,
+        country_code: str | None,
+    ) -> bool:
+        """Tier 1 LEI: resolve official legal name + LEI from GLEIF for a
+        company record (the company counterpart to ROR).
+
+        On a verified match, writes ``name1_enriched`` / ``lei_id`` /
+        classification / provenance and returns True. On miss /
+        below-threshold / API error, leaves the result untouched and
+        returns False so the caller falls through to the existing LLM
+        company-canonical path. A GLEIF failure NEVER fails the record.
+
+        ``domain`` is intentionally left as-is: GLEIF has no website field,
+        and on a ROR company match ROR's domain must be preserved.
+        """
+        if not self._settings.lei_lookup_enabled:
+            return False
+        if not name or not name.strip():
+            return False
+
+        self._lei_counts["attempts"] += 1
+        try:
+            lei_res = await self._lei_client.call(name, country_code=country_code)
+        except Exception as exc:  # noqa: BLE001 — GLEIF must never fail a record
+            self._lei_counts["errors"] += 1
+            logger.warning(
+                "[%s] Tier 1 LEI lookup raised (non-fatal): %s",
+                record.record_id, exc,
+            )
+            return False
+
+        logger.info({
+            "record_id": record.record_id,
+            "step": "tier1_lei",
+            "query": name,
+            "country_filter": country_code,
+            "matched": lei_res.get("matched"),
+            "strategy": lei_res.get("strategy"),
+            "lei_id": lei_res.get("lei_id"),
+            "legal_name": lei_res.get("legal_name"),
+            "score": lei_res.get("score"),
+        })
+
+        if lei_res.get("error"):
+            self._lei_counts["errors"] += 1
+            return False
+        if not lei_res.get("matched"):
+            self._lei_counts["misses"] += 1
+            return False
+
+        if lei_res.get("strategy") == "exact":
+            self._lei_counts["hits_exact"] += 1
+        else:
+            self._lei_counts["hits_fuzzy"] += 1
+
+        legal_name = (lei_res.get("legal_name") or "").strip()
+        if legal_name:
+            result["name1_enriched"] = legal_name
+        result["lei_id"] = lei_res.get("lei_id")
+        result["record_type"] = "company"
+        result["tier_used"] = 1
+        result["source"] = "gleif"
+        result["confidence"] = lei_res.get("confidence", "high")
+        result["enrichment_status"] = "enriched"
+        if 2 not in result["use_cases_triggered"]:
+            result["use_cases_triggered"].append(2)
+        if 3 not in result["use_cases_triggered"]:
+            result["use_cases_triggered"].append(3)
+        return True
+
     async def _enrich_single(
         self,
         record: EnrichmentRecord,
@@ -1558,6 +1659,18 @@ class Orchestrator:
                     if ror_website:
                         result["website_url"] = ror_website
 
+                    # ── Tier 1 LEI: company counterpart to ROR ───────
+                    # ROR classified this record as a company. Resolve
+                    # the official legal name + LEI from GLEIF and let it
+                    # win for name1 (LEI overwrites name1 on a company
+                    # match). ROR's domain/website are preserved. A
+                    # research institution never reaches this branch, so
+                    # ROR's institution result is never touched.
+                    if result["record_type"] == "company":
+                        await self._run_lei_lookup(
+                            record, result, name1_cleaned, country_code,
+                        )
+
                     # Mark Tier 1 success and UC 2/3 triggered.
                     result["enrichment_status"] = "enriched"
                     if 2 not in result["use_cases_triggered"]:
@@ -1642,14 +1755,32 @@ class Orchestrator:
                         # Otherwise fall through to Tier 2/3 for name2.
                         company_res = None
                     else:
-                        company_res = await run_company_canonical(
-                            record_id=record.record_id,
-                            name1=name1_cleaned,
-                            city=record.city,
-                            state=record.state,
-                            country=record.country,
-                            llm_client=self._llm_client,
+                        # ── Tier 1 LEI (deterministic) BEFORE the LLM ──
+                        # The company branch's deterministic step: resolve
+                        # the official legal name + LEI from GLEIF. On a
+                        # verified match this becomes the canonical name1;
+                        # only on a miss/error do we fall back to the LLM
+                        # company-canonical path (unchanged).
+                        lei_matched = await self._run_lei_lookup(
+                            record, result, name1_cleaned, country_code,
                         )
+                        if lei_matched:
+                            company_res = None
+                            # If no name2, Tier 1 LEI is the final answer —
+                            # return now so Tier 3 can't overwrite it.
+                            if not (pp_name2 and pp_name2.strip()):
+                                return await self._finalise_and_return(
+                                    result, start, record, cache,
+                                )
+                        else:
+                            company_res = await run_company_canonical(
+                                record_id=record.record_id,
+                                name1=name1_cleaned,
+                                city=record.city,
+                                state=record.state,
+                                country=record.country,
+                                llm_client=self._llm_client,
+                            )
 
                     if company_res and company_res.success and company_res.name1_enriched:
                         result["name1_enriched"] = company_res.name1_enriched

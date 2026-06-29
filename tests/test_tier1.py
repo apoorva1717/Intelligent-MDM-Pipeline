@@ -201,6 +201,36 @@ class TestNameScoring:
         }
         assert _score_org("UCLA", ucla_org) == 1.0
 
+    def test_acronym_not_subset_matched_on_city_token(self) -> None:
+        """'HFT Stuttgart' must NOT score 1.0 against a same-city org.
+
+        Production bug: the acronym 'HFT' (3 chars) is dropped as
+        insignificant, so the only significant token is the city
+        'Stuttgart'. The subset shortcut then returned 1.0 for ANY
+        '… Stuttgart' org (Marienhospital Stuttgart, Stuttgart
+        Observatory), producing a confidently wrong ROR match. The
+        identifier-token guard on the subset path caps it.
+        """
+        from enrichment.tier1_ror import _score_org
+
+        observatory = {
+            "names": [
+                {"value": "Stuttgart Observatory", "types": ["ror_display", "label"]},
+            ],
+        }
+        assert _score_org("HFT Stuttgart", observatory) < 0.8
+
+    def test_institution_acronym_expansion(self) -> None:
+        """Known institution acronyms expand for the ROR fallback request."""
+        from enrichment.tier1_ror import _expand_institution_acronyms
+
+        assert (
+            _expand_institution_acronyms("HFT Stuttgart")
+            == "Hochschule für Technik Stuttgart"
+        )
+        # Unknown tokens are left untouched.
+        assert _expand_institution_acronyms("Acme Corp") == "Acme Corp"
+
 
 class TestLegalSuffixCanonicalisation:
     """US legal-entity suffix variants of one org must score identically.

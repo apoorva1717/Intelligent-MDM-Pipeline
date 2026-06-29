@@ -18,10 +18,10 @@ import os
 import re
 from typing import Any
 
-import certifi
 import httpx
 from rapidfuzz import fuzz
 
+from llm.openai_client import resolve_tls_verify
 from utils.text_utils import expand_abbreviations, extract_domain
 
 logger = logging.getLogger(__name__)
@@ -39,6 +39,30 @@ _ror_cache: dict[tuple[str, str | None], dict[str, Any]] = {}
 def clear_ror_cache() -> None:
     """Reset the module-level ROR cache (useful between test runs)."""
     _ror_cache.clear()
+
+
+# Institution acronyms that ROR does NOT carry as an alias, so a bare-acronym
+# query ("HFT Stuttgart") returns unrelated same-city orgs instead of the
+# institution. Mapped to the full institution name and used ONLY to build a
+# fallback ROR affiliation request — kept ROR-local (not in the global
+# expand_abbreviations map) so it never affects search terms or output names.
+# Extend with further institution acronyms as they come up.
+_INSTITUTION_ACRONYMS: dict[str, str] = {
+    "hft": "Hochschule für Technik",
+}
+
+_INSTITUTION_ACRONYM_RE = re.compile(r"\b([A-Za-z]{2,6})\b")
+
+
+def _expand_institution_acronyms(name: str) -> str:
+    """Replace known institution acronyms in *name* with their full form.
+
+    Token-scoped and case-insensitive: "HFT Stuttgart" → "Hochschule für
+    Technik Stuttgart". Unknown tokens are left untouched.
+    """
+    def _sub(m: "re.Match[str]") -> str:
+        return _INSTITUTION_ACRONYMS.get(m.group(1).lower(), m.group(0))
+    return _INSTITUTION_ACRONYM_RE.sub(_sub, name)
 
 
 _DASH_RE = re.compile(r"[\u2010-\u2015\-]+")
@@ -166,6 +190,17 @@ def _compute_name_score(query: str, org_names: list[dict[str, Any]]) -> float:
         longer = max(len(a), len(b))
         return longer > 0 and shorter / longer >= ratio
 
+    # Identifier-token guard (also applied in step 4): short all-caps
+    # acronyms in the query (e.g. "HFT", "EMSL", "ASL") are the
+    # distinguishing element when the rest of the name is a generic city
+    # or descriptor. The subset/substring shortcuts below only count the
+    # ≥4-char "significant" tokens, so "HFT Stuttgart" would otherwise
+    # subset-match ANY "… Stuttgart" org (Marienhospital Stuttgart,
+    # Stuttgart Observatory …) on the shared "stuttgart" token alone and
+    # return a false 1.0. Require every query acronym to appear in the
+    # candidate before the shortcut can fire.
+    q_identifiers = _extract_identifier_tokens(query)
+
     # Step 2 + 3: subset and substring only against CANONICAL names.
     # The substring rule is tight (≥90% length similarity) to prevent
     # a short canonical name from matching a longer query that merely
@@ -173,6 +208,10 @@ def _compute_name_score(query: str, org_names: list[dict[str, Any]]) -> float:
     # HEALTH" should NOT produce a perfect score.
     for val in canonical_values:
         val_tokens = set(val.split())
+        if q_identifiers and not q_identifiers.issubset(val_tokens):
+            # Query carries a distinguishing acronym the candidate lacks —
+            # the shortcut cannot fire; defer to the guarded fuzz path.
+            continue
         if significant_query_tokens and significant_query_tokens.issubset(val_tokens):
             return 1.0
         if _length_ok(query_lower, val, ratio=0.9) and (
@@ -199,7 +238,7 @@ def _compute_name_score(query: str, org_names: list[dict[str, Any]]) -> float:
     # (e.g. "EMSL", "ASL") are the distinguishing element when the
     # rest of the name is descriptive — every such acronym must
     # appear in the candidate's tokens, or the score is capped.
-    q_identifiers = _extract_identifier_tokens(query)
+    # (q_identifiers computed above for the step-2 shortcut guard.)
     canonical_scoring = [v for v in canonical_values if len(v) >= 5]
     best = 0.0
     for val in canonical_scoring:
@@ -435,73 +474,104 @@ async def call_ror(
         return r
 
     try:
-        # verify=certifi.where() — match the OpenAI client's pattern so
-        # ROR is immune to a bogus SSL_CERT_FILE / REQUESTS_CA_BUNDLE
-        # env var (a common Windows gotcha where a placeholder corp-CA
-        # path is set but the file doesn't exist). Without this, every
-        # ROR call fails and downstream gets `domain: null`.
+        # verify=resolve_tls_verify() — reuse the OpenAI client's TLS trust
+        # resolution so ROR survives a corporate TLS-inspecting VPN. The
+        # public certifi bundle fails the handshake on such a VPN
+        # ("CERTIFICATE_VERIFY_FAILED: unable to get local issuer
+        # certificate"); resolve_tls_verify() prefers a configured corp CA
+        # bundle (AZURE_OPENAI_CA_BUNDLE / REQUESTS_CA_BUNDLE / SSL_CERT_FILE)
+        # and falls back to certifi off-VPN. Without this every ROR call
+        # fails and downstream gets `ror_id: null` / `domain: null`.
         async with httpx.AsyncClient(
-            timeout=15.0, verify=certifi.where(),
+            timeout=15.0, verify=resolve_tls_verify(),
         ) as client:
             # ── Strategy A: affiliation endpoint with location context ──
-            logger.info(
-                "ROR affiliation request: '%s'", affiliation_string[:120],
-            )
-            resp_aff = await client.get(
-                base_url, params={"affiliation": affiliation_string},
-            )
-            resp_aff.raise_for_status()
-            aff_data = resp_aff.json()
-
-            chosen = next(
-                (it for it in aff_data.get("items", []) if it.get("chosen") is True),
-                None,
-            )
-
-            if chosen and chosen.get("score", 0.0) >= threshold:
-                org = chosen["organization"]
-                # Re-validate locally — ROR's affiliation scorer is
-                # fuzzy enough to return e.g. "ASL Analytical" as a
-                # confident match for "EMSL Analytical, Inc." (the
-                # shared 'Analytical' token dominates the score). The
-                # local check applies the identifier-token guard that
-                # ROR's scorer lacks.
-                expanded_name = expand_abbreviations(name) or name
-                local_score = max(
-                    _score_org(name, org),
-                    _score_org(expanded_name, org),
+            # Run as a reusable attempt so we can try the raw name first and,
+            # on a miss, retry with institution acronyms expanded ("HFT
+            # Stuttgart" → "Hochschule für Technik Stuttgart") — ROR carries
+            # no "HFT" alias, so the bare acronym otherwise returns unrelated
+            # same-city orgs.
+            async def _try_affiliation(
+                aff_str: str, rescore_names: list[str], strategy: str,
+            ) -> dict[str, Any] | None:
+                logger.info("ROR affiliation request: '%s'", aff_str[:120])
+                resp = await client.get(
+                    base_url, params={"affiliation": aff_str},
                 )
+                resp.raise_for_status()
+                data = resp.json()
+                ch = next(
+                    (it for it in data.get("items", []) if it.get("chosen") is True),
+                    None,
+                )
+                if not (ch and ch.get("score", 0.0) >= threshold):
+                    logger.info(
+                        "ROR affiliation no confident match for '%s' "
+                        "(chosen=%s, score=%.2f)",
+                        aff_str[:80], ch is not None,
+                        ch["score"] if ch else 0.0,
+                    )
+                    return None
+                org = ch["organization"]
+                # Re-validate locally — ROR's affiliation scorer is fuzzy
+                # enough to return e.g. "ASL Analytical" as a confident match
+                # for "EMSL Analytical, Inc." (the shared 'Analytical' token
+                # dominates). The local check applies the identifier-token
+                # guard that ROR's scorer lacks.
+                local_score = max(_score_org(n, org) for n in rescore_names)
                 if local_score < threshold:
                     logger.info(
                         "ROR affiliation chosen '%s' rejected by local "
-                        "rescore (%.2f < %.2f), falling through to query",
+                        "rescore (%.2f < %.2f)",
                         (org.get("names") or [{}])[0].get("value", "?")[:60],
                         local_score, threshold,
                     )
-                else:
-                    fields = _extract_org_fields(org)
-                    score = chosen["score"]
-                    result: dict[str, Any] = {
-                        "matched": True,
-                        "score": score,
-                        **{k: v for k, v in fields.items() if k != "org_names"},
-                        "query_used": name,
-                        "affiliation_used": affiliation_string,
-                        "country_filter": country_code,
-                        "strategy": "affiliation",
-                    }
-                    _ror_cache[cache_key] = result
-                    logger.info(
-                        "ROR affiliation matched '%s' → '%s' (score=%.2f)",
-                        affiliation_string[:80], fields["official_name"], score,
-                    )
-                    return result
+                    return None
+                fields = _extract_org_fields(org)
+                res: dict[str, Any] = {
+                    "matched": True,
+                    "score": ch["score"],
+                    **{k: v for k, v in fields.items() if k != "org_names"},
+                    "query_used": name,
+                    "affiliation_used": aff_str,
+                    "country_filter": country_code,
+                    "strategy": strategy,
+                }
+                _ror_cache[cache_key] = res
+                logger.info(
+                    "ROR affiliation matched '%s' → '%s' (score=%.2f)",
+                    aff_str[:80], fields["official_name"], ch["score"],
+                )
+                return res
+
+            expanded_name = expand_abbreviations(name) or name
+            result_a = await _try_affiliation(
+                affiliation_string, [name, expanded_name], "affiliation",
+            )
+            if result_a is not None:
+                return result_a
+
+            # Retry with institution acronyms expanded, when that changes the
+            # name. Only an additive attempt — names that already resolve
+            # never reach here.
+            acr_name = _expand_institution_acronyms(name)
+            if acr_name.strip().lower() != name.strip().lower():
+                acr_parts = [acr_name]
+                for part in (city, state, country):
+                    if part and part.strip():
+                        acr_parts.append(part.strip())
+                acr_aff_string = ", ".join(acr_parts)
+                result_a2 = await _try_affiliation(
+                    acr_aff_string,
+                    [name, acr_name, expand_abbreviations(acr_name) or acr_name],
+                    "affiliation_acronym",
+                )
+                if result_a2 is not None:
+                    return result_a2
 
             logger.info(
-                "ROR affiliation no confident match for '%s' (chosen=%s, score=%.2f), trying query",
+                "ROR affiliation no confident match for '%s', trying query",
                 affiliation_string[:80],
-                chosen is not None,
-                chosen["score"] if chosen else 0.0,
             )
 
             # ── Strategy B: query endpoint with country filter ─────────

@@ -83,6 +83,11 @@ OPTIONAL_VARS_WITH_DEFAULTS = {
     "AZURE_OPENAI_DEPLOYMENT": "gpt-5.4",
     "ROR_API_BASE": "https://api.ror.org/v2/organizations",
     "ROR_CONFIDENCE_THRESHOLD": "0.8",
+    "LEI_LOOKUP_ENABLED": "true",
+    "GLEIF_API_BASE": "https://api.gleif.org/api/v1",
+    "GLEIF_TIMEOUT_SECONDS": "15",
+    "LEI_NAME_MATCH_THRESHOLD": "88",
+    "LEI_MAX_RETRIES": "2",
     "FUZZY_MATCH_THRESHOLD": "80",
     "MAX_PAGE_CONTENT_CHARS": "3000",
     "DEFAULT_MAX_CONCURRENCY": "5",
@@ -150,6 +155,28 @@ class Settings:
     # Was: separate 0.8 for institutions, 0.9 for companies.
     ror_confidence_threshold: float = field(
         default_factory=lambda: float(os.getenv("ROR_CONFIDENCE_THRESHOLD", "0.8"))
+    )
+
+    # GLEIF / LEI (Tier 1 company registry — the company counterpart to ROR)
+    # Feature flag so the lookup can be A/B tested or disabled cheaply; when
+    # off the company branch behaves exactly as before (straight to the LLM).
+    lei_lookup_enabled: bool = field(
+        default_factory=lambda: _bool(os.getenv("LEI_LOOKUP_ENABLED"), default=True)
+    )
+    gleif_api_base: str = field(
+        default_factory=lambda: os.getenv("GLEIF_API_BASE", "https://api.gleif.org/api/v1")
+    )
+    gleif_timeout_seconds: float = field(
+        default_factory=lambda: float(os.getenv("GLEIF_TIMEOUT_SECONDS", "15"))
+    )
+    # rapidfuzz token_sort_ratio (0-100). GLEIF's legalName filter is fulltext,
+    # not exact, so a candidate below this is rejected to avoid fabricated
+    # matches (e.g. "Personalvorsorgestiftung der Pfizer AG" for "Pfizer AG").
+    lei_name_match_threshold: float = field(
+        default_factory=lambda: float(os.getenv("LEI_NAME_MATCH_THRESHOLD", "88"))
+    )
+    lei_max_retries: int = field(
+        default_factory=lambda: int(os.getenv("LEI_MAX_RETRIES", "2"))
     )
 
     # Fuzzy matching
