@@ -460,3 +460,89 @@ class TestRoutes:
             },
         )
         assert resp.status_code == 400
+
+
+class TestDedupFile:
+    """The /api/dedup/file XLSX endpoint (file twin of cluster-block)."""
+
+    _XTYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    _EXTRA = ["Cluster", "Block ID", "Cluster ID", "Routing", "LLM Flag",
+              "Confidence", "Reasoning", "Signature ID"]
+
+    @staticmethod
+    def _xlsx_bytes(header: list, *rows: list) -> bytes:
+        wb = Workbook()
+        ws = wb.active
+        ws.append(header)
+        for row in rows:
+            ws.append(row)
+        buf = io.BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    def _upload(self, data: bytes, filename: str = "candidates.xlsx"):
+        return {"file": (filename, data, self._XTYPE)}
+
+    @pytest.mark.asyncio
+    async def test_dedup_file_returns_annotated_xlsx(self, client):
+        """Accepts enriched-export headers and appends cluster columns,
+        one output row per input row, with row_ids echoed."""
+        data = self._xlsx_bytes(
+            ["Customer", "Name 1", "Name 2", "Street 1", "House Number",
+             "Postal Code", "City", "Country/Region Key"],
+            ["SAP-1", "University of Stuttgart", "Department of Chemistry",
+             "Pfaffenwaldring", "55", "70569", "Stuttgart", "DE"],
+            ["SAP-2", "University of Stuttgart", "Department of Chemistry",
+             "Pfaffenwaldring", "55", "70569", "Stuttgart", "DE"],
+            ["SAP-3", "Carl Zeiss", None,
+             "Carl-Zeiss-Straße", "22", "73447", "Oberkochen", "DE"],
+        )
+        resp = await client.post("/api/dedup/file", files=self._upload(data))
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith(self._XTYPE)
+        assert "candidates_dedup.xlsx" in resp.headers["content-disposition"]
+
+        ws = load_workbook(io.BytesIO(resp.content)).active
+        header = [c.value for c in ws[1]]
+        for col in self._EXTRA:
+            assert col in header
+
+        body = list(ws.iter_rows(min_row=2, values_only=True))
+        assert len(body) == 3  # one row per input row
+        # Customer column echoed verbatim; routing is a valid bucket.
+        cust_i = header.index("Customer")
+        routing_i = header.index("Routing")
+        cluster_i = header.index("Cluster")
+        assert {r[cust_i] for r in body} == {"SAP-1", "SAP-2", "SAP-3"}
+        assert all(r[routing_i] in {"cluster", "unique", "manual_review"}
+                   for r in body)
+
+        # The Cluster column is populated for every row, and the two
+        # identical Stuttgart rows share a group while Carl Zeiss differs.
+        by_cust = {r[cust_i]: r[cluster_i] for r in body}
+        assert all(v is not None for v in by_cust.values())
+        assert by_cust["SAP-1"] == by_cust["SAP-2"]
+        assert by_cust["SAP-3"] != by_cust["SAP-1"]
+
+    @pytest.mark.asyncio
+    async def test_dedup_file_accepts_snake_case_headers(self, client):
+        data = self._xlsx_bytes(
+            ["row_id", "name1", "name2", "postal_code", "country"],
+            ["R1", "Acme", "Sales", "12345", "US"],
+        )
+        resp = await client.post("/api/dedup/file", files=self._upload(data))
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_dedup_file_rejects_non_xlsx(self, client):
+        resp = await client.post(
+            "/api/dedup/file",
+            files={"file": ("data.txt", b"not a spreadsheet", "text/plain")},
+        )
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_dedup_file_missing_row_id_is_validation_error(self, client):
+        data = self._xlsx_bytes(["Name 1", "City"], ["Acme", "Boston"])
+        resp = await client.post("/api/dedup/file", files=self._upload(data))
+        assert resp.status_code == 422

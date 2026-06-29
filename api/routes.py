@@ -24,7 +24,7 @@ from api.output_columns import RESPONSE_COLUMNS
 from config import Settings, get_settings
 from dedup.adjudicator import cluster_blocks
 from dedup.llm import DedupLLM
-from dedup.models import DedupRequest, DedupResponse
+from dedup.models import DedupRequest, DedupResponse, DedupRow
 from enrichment.issue_detection import ISSUE_CATALOGUE, detect_issues
 from enrichment.orchestrator import Orchestrator
 
@@ -592,6 +592,135 @@ def _get_dedup_llm(settings: Settings):
     return DedupLLM(settings)
 
 
+# ---------------------------------------------------------------------------
+# XLSX <-> DedupRow helpers for the /api/dedup/file endpoint
+# ---------------------------------------------------------------------------
+
+# Normalised header (alnum, lowercase — see ``_norm_header``) → DedupRow
+# field. Accepts both the human SAP headers used by the enriched export
+# ("Customer", "Name 1", "Street 1", …) and the snake_case DedupRow field
+# names, so the file produced by /enrich/file can be fed straight in.
+_DEDUP_HEADER_ALIASES: dict[str, str] = {
+    "rowid": "row_id",
+    "recordid": "row_id",
+    "customer": "row_id",
+    "blockid": "block_id",
+    "name1": "name1",
+    "name2": "name2",
+    "street": "street",
+    "street1": "street",
+    "streetcleaned": "street",
+    "houseno": "house_no",
+    "housenumber": "house_no",
+    "postalcode": "postal_code",
+    "zip": "postal_code",
+    "city": "city",
+    "country": "country",
+    "countryregionkey": "country",
+    "rorid": "ror_id",
+    "enrichedname": "enriched_name",
+}
+
+
+def _rows_to_dedup_rows(row_dicts: list[dict[str, str]]) -> list[DedupRow]:
+    """Validate parsed XLSX rows into DedupRows.
+
+    Headers are normalised to their DedupRow field name first (see
+    ``_DEDUP_HEADER_ALIASES``) so a column written as "Customer", "row_id",
+    or "Name 1" is recognised. ``row_id`` is required by the model; a row
+    missing it surfaces as a validation error rather than being dropped.
+    """
+    rows: list[DedupRow] = []
+    errors: list[str] = []
+    for index, row_dict in enumerate(row_dicts, start=1):
+        normalised: dict[str, str] = {}
+        for header, value in row_dict.items():
+            field = _DEDUP_HEADER_ALIASES.get(_norm_header(header))
+            if field is None or field in normalised:
+                continue
+            normalised[field] = value
+        try:
+            rows.append(DedupRow.model_validate(normalised))
+        except ValidationError as exc:
+            errors.append(f"row {index}: {exc.errors()[0].get('msg', str(exc))}")
+
+    if errors:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "Some rows failed validation", "errors": errors},
+        )
+    return rows
+
+
+def _cluster_labels(response: DedupResponse) -> dict[str, int]:
+    """Assign every row a 1-based ``Cluster`` group number.
+
+    Rows the adjudicator placed in the same duplicate cluster share a number;
+    each remaining row (a unique/manual-review singleton) gets its own. The
+    response's ``cluster_id`` is null for singletons, so it can't be shown
+    directly as a per-row group — this fills that gap so the output column is
+    always populated and sorting by it groups duplicates together.
+    """
+    order: dict[tuple[str, object], int] = {}
+    labels: dict[str, int] = {}
+    for r in response.rows:
+        key = ("c", r.cluster_id) if r.cluster_id is not None else ("r", r.row_id)
+        if key not in order:
+            order[key] = len(order) + 1
+        labels[r.row_id] = order[key]
+    return labels
+
+
+def _build_dedup_xlsx(
+    headers: list[str],
+    row_dicts: list[dict[str, str]],
+    rows: list[DedupRow],
+    response: DedupResponse,
+) -> bytes:
+    """Echo the uploaded sheet with cluster-assignment columns appended.
+
+    The original header row and cell values are preserved verbatim. A
+    ``Cluster`` group number (always populated — see ``_cluster_labels``) is
+    appended first, followed by the detailed result columns, joined onto each
+    row by its ``row_id``. Rows the adjudicator did not return (should not
+    happen) get blank result cells rather than being dropped.
+    """
+    from openpyxl import Workbook
+
+    result_by_id = {r.row_id: r for r in response.rows}
+    labels = _cluster_labels(response)
+    extra = [
+        "Cluster", "Block ID", "Cluster ID", "Routing", "LLM Flag",
+        "Confidence", "Reasoning", "Signature ID",
+    ]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append([*headers, *extra])
+
+    for row_dict, parsed in zip(row_dicts, rows):
+        values = [row_dict.get(header, "") for header in headers]
+        res = result_by_id.get(parsed.row_id)
+        if res is None:
+            ws.append([*values, *([""] * len(extra))])
+            continue
+        ws.append([
+            *values,
+            labels.get(res.row_id),
+            res.block_id,
+            res.cluster_id,
+            res.routing,
+            res.llm_flag,
+            res.confidence,
+            res.reasoning,
+            res.signature_id,
+        ])
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
+
+
 @router.post("/api/dedup/cluster-block", response_model=DedupResponse)
 async def dedup_cluster_block(request: DedupRequest) -> DedupResponse:
     """Phase 2 "Pass 2" deduplication adjudicator.
@@ -620,6 +749,63 @@ async def dedup_cluster_block(request: DedupRequest) -> DedupResponse:
                 await aclose()
             except Exception as exc:  # noqa: BLE001
                 logger.info("Dedup LLM aclose failed (non-fatal): %s", exc)
+
+
+@router.post("/api/dedup/file")
+async def dedup_file(
+    file: UploadFile = File(..., description="XLSX file of address-gated candidate rows"),
+) -> StreamingResponse:
+    """Dedup adjudicator that takes an XLSX upload and returns an XLSX.
+
+    The spreadsheet uses the same fields as the /api/dedup/cluster-block
+    request rows — it accepts the human SAP headers emitted by /enrich/file
+    ("Customer", "Name 1", "Street 1", …) or the snake_case DedupRow field
+    names. Each data row becomes one DedupRow, the rows are clustered exactly
+    as the JSON endpoint does, and the uploaded sheet is returned with the
+    cluster-assignment columns appended (one row per input row).
+    """
+    filename = file.filename or ""
+    if not filename.lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded file must be an .xlsx (or .xlsm) workbook.",
+        )
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    headers, row_dicts = _parse_xlsx(contents)
+    rows = _rows_to_dedup_rows(row_dicts)
+
+    settings = get_settings()
+    llm = _get_dedup_llm(settings)
+
+    logger.info(
+        "Dedup file request received: %s, %d rows", filename, len(rows)
+    )
+
+    try:
+        response = await cluster_blocks(rows, llm, settings=settings)
+    finally:
+        aclose = getattr(llm, "aclose", None)
+        if callable(aclose):
+            try:
+                await aclose()
+            except Exception as exc:  # noqa: BLE001
+                logger.info("Dedup LLM aclose failed (non-fatal): %s", exc)
+
+    output_bytes = _build_dedup_xlsx(headers, row_dicts, rows, response)
+
+    stem = filename.rsplit("/", 1)[-1].rsplit(".", 1)[0] or "records"
+    out_name = f"{stem}_dedup.xlsx"
+    return StreamingResponse(
+        io.BytesIO(output_bytes),
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
+    )
 
 
 @router.get("/diag/llm")
