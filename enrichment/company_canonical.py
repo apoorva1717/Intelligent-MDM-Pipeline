@@ -24,6 +24,11 @@ class CompanyCanonicalResult:
     success: bool = False
     name1_enriched: str | None = None
     confidence: str = "none"
+    # The LLM's high-confidence canonical name when the identity guard
+    # rejected it as not-clearly-the-same-entity (success stays False). The
+    # orchestrator may re-verify this against GLEIF to recover a typo'd
+    # company name ("Bayr AG" → "Bayer AG") the guard blocks. None otherwise.
+    proposed_name: str | None = None
 
 
 async def run_company_canonical(
@@ -33,6 +38,8 @@ async def run_company_canonical(
     state: str | None,
     country: str | None,
     llm_client: OpenAIClient,
+    street: str | None = None,
+    postal_code: str | None = None,
 ) -> CompanyCanonicalResult:
     result = CompanyCanonicalResult()
     if not name1 or not name1.strip():
@@ -40,6 +47,8 @@ async def run_company_canonical(
 
     user_prompt = COMPANY_CANONICAL_USER_PROMPT_TEMPLATE.format(
         name1=name1,
+        street=street or "unknown",
+        postal_code=postal_code or "unknown",
         city=city or "unknown",
         state=state or "unknown",
         country=country or "unknown",
@@ -77,6 +86,11 @@ async def run_company_canonical(
             "(different entity — identity not preserved)",
             record_id, name1, cleaned,
         )
+        # Surface the high-confidence proposal so the orchestrator can, for a
+        # plausible spelling correction, re-verify it against GLEIF rather
+        # than discard it outright. success stays False — this is NOT an
+        # accepted name.
+        result.proposed_name = cleaned
         return result
 
     result.success = True

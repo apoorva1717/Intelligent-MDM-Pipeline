@@ -225,6 +225,8 @@ COMPANY_CANONICAL_SYSTEM_PROMPT = (
 
 COMPANY_CANONICAL_USER_PROMPT_TEMPLATE = (
     "User-supplied company name: {name1}\n"
+    "Street: {street}\n"
+    "Postal code: {postal_code}\n"
     "City: {city}\n"
     "State: {state}\n"
     "Country: {country}\n\n"
@@ -238,10 +240,18 @@ COMPANY_CANONICAL_USER_PROMPT_TEMPLATE = (
     "1. Return a confident canonical form only when you are certain "
     "it matches the intended company. Use the geographic context to "
     "disambiguate.\n"
-    "2. Return null if you are not sure.\n"
-    "3. Do not invent companies. Do not resolve acronyms you do not "
+    "2. The full street address may identify a well-known corporate "
+    "headquarters and help you recognise a misspelled or abbreviated "
+    "form of THAT company's name (e.g. a typo of the company "
+    "headquartered there). Use it to CORRECT or disambiguate a name "
+    "that is already a plausible variant of the company at that "
+    "address. NEVER replace the given name with a different company "
+    "just because they share a building — many firms share an "
+    "address, so the name must still match.\n"
+    "3. Return null if you are not sure.\n"
+    "4. Do not invent companies. Do not resolve acronyms you do not "
     "recognise.\n"
-    "4. confidence=high means you are certain of the exact wording."
+    "5. confidence=high means you are certain of the exact wording."
 )
 
 

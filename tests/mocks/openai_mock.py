@@ -224,6 +224,21 @@ class MockOpenAIClient:
             "reasoning": "Mock: no parent dept mapping",
         }
 
+    # Curated typo corrections the real LLM would make: a misspelled company
+    # name → its correct spelling. Drives the GLEIF typo-recovery re-verify
+    # path (the identity guard blocks the correction; GLEIF confirms it).
+    _COMPANY_TYPO_CORRECTIONS = {
+        "bayr ag": "Bayer AG",
+    }
+
+    # Known corporate HQ streets → (name prefix, canonical name). Simulates the
+    # LLM using the full street address to resolve a name that is a plausible
+    # variant of the company headquartered there but too short/ambiguous to
+    # resolve from the name alone (e.g. "Bayr" at Bayer's HQ street).
+    _COMPANY_HQ_BY_STREET = {
+        "kaiser-wilhelm-allee": ("bay", "Bayer AG"),
+    }
+
     def _mock_company_canonical(
         self, user_prompt: str, prompt_lower: str,
     ) -> dict[str, Any]:
@@ -234,6 +249,26 @@ class MockOpenAIClient:
         well-known companies); otherwise null.
         """
         company = (self._extract_field(user_prompt, "User-supplied company name:") or "").lower()
+        correction = self._COMPANY_TYPO_CORRECTIONS.get(company.strip())
+        if correction is not None:
+            return {
+                "official_name": correction,
+                "confidence": "high",
+                "reasoning": f"Mock: corrected typo '{company}' → '{correction}'",
+            }
+        # Address-assisted resolution: the street identifies a known HQ and the
+        # name is a plausible variant of the company there.
+        street = (self._extract_field(user_prompt, "Street:") or "").lower()
+        for hq_street, (prefix, canonical) in self._COMPANY_HQ_BY_STREET.items():
+            if hq_street in street and company.strip().startswith(prefix):
+                return {
+                    "official_name": canonical,
+                    "confidence": "high",
+                    "reasoning": (
+                        f"Mock: '{company}' at HQ street '{hq_street}' → "
+                        f"'{canonical}'"
+                    ),
+                }
         for key in _KNOWN_WEBSITES:
             if key in company:
                 # Echo back a cleaned form of the input — the mock is

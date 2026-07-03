@@ -67,6 +67,7 @@ from search.page_fetcher import PageFetcher
 from search.serpapi_client import SerpAPIClient
 from utils.cache import BatchCache, SerpCache
 from utils.text_utils import (
+    canonical_is_spelling_variant,
     canonical_preserves_identity,
     canonicalise_unit_name,
     clean_passthrough_org_name,
@@ -1790,7 +1791,51 @@ class Orchestrator:
                                 state=record.state,
                                 country=record.country,
                                 llm_client=self._llm_client,
+                                # Full street address: lets the LLM recognise a
+                                # well-known HQ and correct a garbled name the
+                                # name alone can't resolve. The spelling-variant
+                                # gate below still blocks an address-driven swap
+                                # to a different co-tenant company.
+                                street=pp_street1,
+                                postal_code=record.postal_code,
                             )
+                            # ── Registry re-verify of a typo'd company name ──
+                            # GLEIF's name search is not typo-tolerant, so a
+                            # misspelling ("Bayr AG") misses on the raw name
+                            # above. The company-canonical LLM proposes the
+                            # correction ("Bayer AG") but the identity guard
+                            # blocks it (a typo is not a prefix/acronym of the
+                            # original). When that proposal is a genuine
+                            # spelling VARIANT (not an entity swap), re-query
+                            # GLEIF on it: a confirmed ACTIVE entity in the
+                            # right country proves the correction real and
+                            # attaches the LEI. The spelling-variant gate is
+                            # what keeps this from laundering a hallucination.
+                            if (
+                                not company_res.success
+                                and company_res.proposed_name
+                                and canonical_is_spelling_variant(
+                                    name1_cleaned, company_res.proposed_name,
+                                )
+                            ):
+                                confirmed = await self._run_lei_lookup(
+                                    record, result,
+                                    company_res.proposed_name, country_code,
+                                )
+                                if confirmed:
+                                    logger.info({
+                                        "record_id": record.record_id,
+                                        "step": "tier1_lei_typo_recovered",
+                                        "input_name": name1_cleaned,
+                                        "llm_proposed": company_res.proposed_name,
+                                        "legal_name": result.get("name1_enriched"),
+                                        "lei_id": result.get("lei_id"),
+                                    })
+                                    company_res = None
+                                    if not (pp_name2 and pp_name2.strip()):
+                                        return await self._finalise_and_return(
+                                            result, start, record, cache,
+                                        )
 
                     if company_res and company_res.success and company_res.name1_enriched:
                         result["name1_enriched"] = company_res.name1_enriched

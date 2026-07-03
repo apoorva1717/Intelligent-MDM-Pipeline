@@ -66,6 +66,55 @@ def test_company_canonical_rejects_different_entity():
     ))
     assert res.success is False
     assert res.name1_enriched is None
+    # The proposal is surfaced (proposed_name), but the orchestrator's
+    # spelling-variant gate — not run_company_canonical — is what blocks an
+    # entity swap from ever being re-verified/accepted.
+    from utils.text_utils import canonical_is_spelling_variant
+    assert canonical_is_spelling_variant("Iso Group Inc", res.proposed_name) is False
+
+
+@pytest.mark.parametrize("original, canonical", [
+    ("Bayr AG", "Bayer AG"),                       # dropped letter
+    ("Siemns AG", "Siemens AG"),
+    ("Microsft Corp", "Microsoft Corporation"),    # typo + suffix expansion
+    ("Volkswagon AG", "Volkswagen AG"),            # common misspelling
+])
+def test_spelling_variant_accepts_typos(original, canonical):
+    from utils.text_utils import canonical_is_spelling_variant
+    assert canonical_is_spelling_variant(original, canonical) is True
+
+
+@pytest.mark.parametrize("original, canonical", [
+    ("Iso Group Inc", "CoStar Group"),   # entity swap
+    ("Apple", "Google"),                 # unrelated
+    ("Bayer AG", "Baker AG"),            # different word, not a typo
+    ("Bayer AG", "Bayer AG"),            # identical — no correction to make
+    ("Pfizer", "Pfizer Inc"),           # pure legal-suffix add (identity path)
+])
+def test_spelling_variant_rejects_non_typos(original, canonical):
+    from utils.text_utils import canonical_is_spelling_variant
+    assert canonical_is_spelling_variant(original, canonical) is False
+
+
+def test_company_canonical_surfaces_typo_proposal_for_reverify():
+    """A high-confidence spelling correction the identity guard blocks must be
+    exposed via proposed_name so the orchestrator can re-verify it (GLEIF)."""
+    import asyncio
+
+    class _FakeLLM:
+        async def extract_json(self, system, user):
+            return {"official_name": "Bayer AG", "confidence": "high"}
+
+    from enrichment.company_canonical import run_company_canonical
+    from utils.text_utils import canonical_is_spelling_variant
+    res = asyncio.run(run_company_canonical(
+        record_id="R2", name1="Bayr AG",
+        city="Leverkusen", state=None, country="DE", llm_client=_FakeLLM(),
+    ))
+    assert res.success is False            # identity guard still blocks it
+    assert res.name1_enriched is None
+    assert res.proposed_name == "Bayer AG"  # …but the proposal is surfaced
+    assert canonical_is_spelling_variant("Bayr AG", res.proposed_name) is True
 
 
 def test_company_canonical_accepts_same_entity():

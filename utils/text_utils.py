@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from urllib.parse import urlparse
 
+from rapidfuzz import fuzz
+
 
 def clean_whitespace(text: str | None) -> str | None:
     """Collapse consecutive whitespace into single spaces and strip."""
@@ -663,6 +665,59 @@ def canonical_preserves_identity(original: str | None, canonical: str | None) ->
         if initials == acro or initials.startswith(acro):
             return True
     return False
+
+
+# Minimum per-token fuzz ratio for two tokens to count as spelling variants of
+# each other ("bayr" ↔ "bayer"). High enough that a distinct word ("bayer" ↔
+# "baker") does not qualify.
+_SPELLING_VARIANT_TOKEN_RATIO = 85.0
+
+
+def _fuzzy_token_covers(a: str, b: str) -> bool:
+    """Like ``_token_covers`` but also accepts a minor spelling difference.
+
+    Two tokens cover each other when they are equal, in a prefix relation, OR
+    (both ≥4 chars) their rapidfuzz ratio clears
+    ``_SPELLING_VARIANT_TOKEN_RATIO`` — i.e. one is a typo of the other. The
+    ≥4-char floor stops short tokens ("abc"↔"abd") from colliding.
+    """
+    if _token_covers(a, b):
+        return True
+    return (
+        min(len(a), len(b)) >= 4
+        and fuzz.ratio(a, b) >= _SPELLING_VARIANT_TOKEN_RATIO
+    )
+
+
+def canonical_is_spelling_variant(
+    original: str | None, canonical: str | None,
+) -> bool:
+    """True if *canonical* is *original* modulo a minor spelling correction.
+
+    A stricter, fuzzy cousin of :func:`canonical_preserves_identity`, used to
+    gate registry re-verification of an LLM-proposed name: every distinctive
+    token of the original must be covered by a canonical token exactly, by
+    prefix, OR by a high fuzzy ratio (a typo fix like "Bayr"→"Bayer"), and the
+    canonical may add only generic org-type words. Entity swaps where the
+    tokens do not align ("Iso Group"→"CoStar Group") return False, so this can
+    never launder an LLM hallucination — GLEIF confirmation is still required
+    downstream, but only for proposals that pass this gate.
+    """
+    if not (original and original.strip()) or not (canonical and canonical.strip()):
+        return False
+    o = _identity_tokens(original)
+    c = _identity_tokens(canonical)
+    if not o or not c:
+        return False
+    # No exact/prefix-only match (that is canonical_preserves_identity's job);
+    # require a genuine spelling difference in at least one token so this stays
+    # a typo-correction gate, not a second identity check.
+    if all(any(_token_covers(t, u) for u in c) for t in o):
+        return False
+    if not all(any(_fuzzy_token_covers(t, u) for u in c) for t in o):
+        return False
+    extras = [u for u in c if not any(_fuzzy_token_covers(t, u) for t in o)]
+    return all(u in _ORG_TYPE_ADDABLE for u in extras)
 
 
 def strip_address_fragments(

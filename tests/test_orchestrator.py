@@ -113,6 +113,71 @@ class TestOrchestrator:
         assert result.tier2_mode != "2A_verification"
 
     @pytest.mark.asyncio
+    async def test_typod_company_name_recovered_via_gleif_reverify(
+        self, orchestrator, default_options,
+    ):
+        """A misspelled company name ("Bayr AG") is corrected and gets an LEI.
+
+        GLEIF's name search is not typo-tolerant, so ROR and the raw-name LEI
+        lookup both miss. The company-canonical LLM proposes "Bayer AG"; the
+        identity guard blocks it (a typo is not a prefix/acronym), but the
+        proposal is a spelling variant, so it is re-verified against GLEIF —
+        which confirms BAYER AG (DE) and attaches its LEI. Previously this
+        record fell to Tier 3 with the typo unchanged.
+        """
+        record = EnrichmentRecord(
+            record_id="ORCH_BAYER",
+            name1="Bayr AG",
+            name2=None,
+            contact=None,
+            street1="Kaiser-Wilhelm-Allee 1",
+            city="Leverkusen",
+            country="DE",
+        )
+        response = await orchestrator.enrich_batch([record], default_options)
+        result = response.results[0]
+
+        assert result.record_type == "company"
+        # GLEIF's legal name "BAYER AG" is title-cased by finalise(); the key
+        # point is the typo is gone and it's the real Bayer.
+        assert result.name1_enriched == "Bayer AG"
+        assert result.lei_id == "3157002JBAOA57BQAT84"
+        assert result.tier_used == 1
+        assert result.source == "gleif"
+
+    @pytest.mark.asyncio
+    async def test_hq_address_resolves_ambiguous_company_name(
+        self, orchestrator, default_options,
+    ):
+        """The HQ street address resolves a name too ambiguous on its own.
+
+        "Bayr" (no legal form) is ambiguous by name — the LLM only resolves it
+        to "Bayer AG" once the street identifies Bayer's HQ. The same record
+        WITHOUT the street stays unresolved. Proves the address is doing the
+        work, and the spelling-variant gate + GLEIF re-verify still gate it.
+        """
+        base = dict(
+            record_id="ORCH_BAYR2", name1="Bayr", name2=None, contact=None,
+            city="Leverkusen", country="DE", postal_code="51373",
+        )
+        # Without the HQ street: unresolved (name alone is ambiguous).
+        no_addr = await orchestrator.enrich_batch(
+            [EnrichmentRecord(**base)], default_options,
+        )
+        assert no_addr.results[0].lei_id is None
+
+        # With the HQ street: the address resolves it and attaches the LEI.
+        with_addr = await orchestrator.enrich_batch(
+            [EnrichmentRecord(**base, street1="Kaiser-Wilhelm-Allee 1")],
+            default_options,
+        )
+        result = with_addr.results[0]
+        assert result.record_type == "company"
+        assert result.name1_enriched == "Bayer AG"
+        assert result.lei_id == "3157002JBAOA57BQAT84"
+        assert result.source == "gleif"
+
+    @pytest.mark.asyncio
     async def test_abbreviated_institution_adopts_ror_official_name(
         self, orchestrator, default_options,
     ):

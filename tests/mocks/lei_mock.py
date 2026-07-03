@@ -37,6 +37,18 @@ _MOCK_LEI: dict[str, dict[str, Any]] = {
         "confidence": "high",
         "score": 100.0,
     },
+    # Keyed by "bayer" (not "bayr"): the typo'd raw name "Bayr AG" misses
+    # here, mirroring real GLEIF, and only the LLM-corrected "Bayer AG"
+    # resolves — the typo-recovery re-verify path.
+    "bayer": {
+        "lei_id": "3157002JBAOA57BQAT84",
+        "legal_name": "BAYER AG",
+        "country": "DE",
+        "status": "ACTIVE",
+        "strategy": "exact",
+        "confidence": "high",
+        "score": 100.0,
+    },
     # A name that GLEIF returns a statistically-close but WRONG entity for —
     # the verification guard rejects it, so the client reports a miss.
     "closebrand": {"__reject__": True},
