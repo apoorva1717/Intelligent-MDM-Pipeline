@@ -220,6 +220,36 @@ class TestNameScoring:
         }
         assert _score_org("HFT Stuttgart", observatory) < 0.8
 
+    def test_lone_city_token_does_not_subset_match_same_city_org(self) -> None:
+        """A query whose only significant token is the city must not score
+        1.0 against an unrelated same-city org.
+
+        Production bug: "Uni Stuttgart" — the 3-char "Uni" is dropped as
+        insignificant (and, being mixed-case, is not caught by the all-caps
+        identifier-token guard), leaving only the city "Stuttgart". The
+        subset shortcut then returned 1.0 for ANY "… Stuttgart" org
+        (Marienhospital Stuttgart, Klinikum Stuttgart), so "Uni Stuttgart"
+        resolved to a random same-city hospital instead of the university.
+        Passing the city as a location token excludes it from the shortcut.
+        """
+        from enrichment.tier1_ror import _extract_location_tokens, _score_org
+
+        hospital = {
+            "names": [
+                {"value": "Marienhospital Stuttgart", "types": ["ror_display", "label"]},
+            ],
+        }
+        loc = _extract_location_tokens("Stuttgart", None, "Germany")
+        # Without the guard this returned a false 1.0.
+        assert _score_org("Uni Stuttgart", hospital, loc) < 0.8
+        # And the expanded form must still cleanly match the real university.
+        university = {
+            "names": [
+                {"value": "University of Stuttgart", "types": ["ror_display", "label"]},
+            ],
+        }
+        assert _score_org("University Stuttgart", university, loc) == 1.0
+
     def test_institution_acronym_expansion(self) -> None:
         """Known institution acronyms expand for the ROR fallback request."""
         from enrichment.tier1_ror import _expand_institution_acronyms

@@ -107,6 +107,30 @@ def _extract_identifier_tokens(text: str) -> set[str]:
     return tokens
 
 
+def _extract_location_tokens(*parts: str | None) -> set[str]:
+    """Significant (>=4 char) tokens drawn from the address context
+    (city / state / country).
+
+    These identify *where* an org is, never *which* org it is, so they must
+    not on their own justify a perfect name match. Without this, a query
+    whose only significant name token is the city — e.g. "Uni Stuttgart",
+    where the 3-char "Uni" is dropped as insignificant, leaving only
+    "stuttgart" — subset-matches EVERY same-city org ("Marienhospital
+    Stuttgart", "Klinikum Stuttgart", …) and returns a false 1.0. The
+    winner among the tied same-city orgs is then arbitrary/ROR-order
+    dependent. Returned tokens are lowercased and normalised the same way
+    as name tokens so they compare equal.
+    """
+    tokens: set[str] = set()
+    for part in parts:
+        if not part:
+            continue
+        for tok in _normalise_for_tokens(part).split():
+            if len(tok) >= 4:
+                tokens.add(tok)
+    return tokens
+
+
 def _normalise_for_tokens(text: str) -> str:
     """Normalise text for tokenisation.
 
@@ -135,7 +159,11 @@ def _normalise_for_tokens(text: str) -> str:
 _CANONICAL_NAME_TYPES = {"ror_display", "label"}
 
 
-def _compute_name_score(query: str, org_names: list[dict[str, Any]]) -> float:
+def _compute_name_score(
+    query: str,
+    org_names: list[dict[str, Any]],
+    location_tokens: set[str] | None = None,
+) -> float:
     """Score how well *query* matches any of the organisation's name variants.
 
     Strategy:
@@ -177,8 +205,13 @@ def _compute_name_score(query: str, org_names: list[dict[str, Any]]) -> float:
         if query_lower == val:
             return 1.0
 
+    location_tokens = location_tokens or set()
     query_tokens = set(query_lower.split())
     significant_query_tokens = {t for t in query_tokens if len(t) >= 4}
+    # Significant tokens that actually identify the ORG (not its city/state).
+    # A subset/substring match resting entirely on location tokens matches
+    # every same-city org, so it must not award a perfect score.
+    distinctive_query_tokens = significant_query_tokens - location_tokens
 
     # Scoring values: exclude short acronym-like variants for fuzz
     scoring_values = [v for v in all_values if len(v) >= 5]
@@ -211,6 +244,11 @@ def _compute_name_score(query: str, org_names: list[dict[str, Any]]) -> float:
         if q_identifiers and not q_identifiers.issubset(val_tokens):
             # Query carries a distinguishing acronym the candidate lacks —
             # the shortcut cannot fire; defer to the guarded fuzz path.
+            continue
+        if significant_query_tokens and not distinctive_query_tokens:
+            # The query's only significant tokens are location (city/state)
+            # tokens — a subset/substring hit here would match every
+            # same-city org. Defer to the guarded fuzz path.
             continue
         if significant_query_tokens and significant_query_tokens.issubset(val_tokens):
             return 1.0
@@ -246,8 +284,15 @@ def _compute_name_score(query: str, org_names: list[dict[str, Any]]) -> float:
         if token_ratio <= best:
             continue
         v_tokens = set(val.split())
-        # Distinctive-token check
-        q_distinctive = {t for t in query_tokens if len(t) >= 5 and t not in _COMMON_DOMAIN_WORDS}
+        # Distinctive-token check. Location tokens (city/state) are excluded
+        # too — a fuzz hit that shares only the city ("… Stuttgart") is not a
+        # trustworthy same-org signal, so it must not save the score.
+        q_distinctive = {
+            t for t in query_tokens
+            if len(t) >= 5
+            and t not in _COMMON_DOMAIN_WORDS
+            and t not in location_tokens
+        }
         if q_distinctive and not (q_distinctive & v_tokens):
             # No distinctive token shared — cap at 0.7 so it cannot
             # cross the 0.8 match threshold.
@@ -315,9 +360,13 @@ def _initialism_score(query: str, canonical_values: list[str]) -> float:
     return 0.0
 
 
-def _score_org(query: str, org: dict[str, Any]) -> float:
+def _score_org(
+    query: str,
+    org: dict[str, Any],
+    location_tokens: set[str] | None = None,
+) -> float:
     """Wrapper: extract org names and compute match score."""
-    return _compute_name_score(query, org.get("names", []))
+    return _compute_name_score(query, org.get("names", []), location_tokens)
 
 
 _ROR_COUNTRY_SUFFIX_RE = re.compile(
@@ -360,6 +409,33 @@ def extract_website_from_ror(ror_org: dict[str, Any]) -> str | None:
         if link.get("type") == "website" and link.get("value"):
             return link["value"]
     return None
+
+
+def _org_country_code(org: dict[str, Any]) -> str | None:
+    """ISO alpha-2 country code of an org's primary location, uppercased.
+
+    Reads ``locations[0].geonames_details.country_code`` (ROR v2). Returns
+    None when the org carries no location / country code.
+    """
+    locations = org.get("locations") or []
+    if not locations:
+        return None
+    cc = (locations[0].get("geonames_details", {}) or {}).get("country_code")
+    return cc.strip().upper() if cc else None
+
+
+def _country_ok(org: dict[str, Any], want_country_code: str | None) -> bool:
+    """Country guard: True if no country was requested, or the org's country
+    matches the requested ISO alpha-2 (case-insensitive).
+
+    Rejects on a definite mismatch AND when the requested country is known but
+    the org has no country code — ROR's affiliation scorer and the no-filter
+    query retry both happily return same-name orgs from the wrong country
+    (e.g. a US "BASF" for a German record), which is a different entity.
+    """
+    if not want_country_code:
+        return True
+    return _org_country_code(org) == want_country_code.strip().upper()
 
 
 def _extract_org_fields(org: dict[str, Any]) -> dict[str, Any]:
@@ -418,6 +494,7 @@ def _extract_org_fields(org: dict[str, Any]) -> dict[str, Any]:
         "website": website,
         "children": children,
         "country": country,
+        "country_code": _org_country_code(org),
         "org_names": org_names,
     }
 
@@ -467,6 +544,12 @@ async def call_ror(
         if part and part.strip():
             aff_parts.append(part.strip())
     affiliation_string = ", ".join(aff_parts)
+
+    # Address tokens that must never, on their own, justify a name match —
+    # otherwise a query whose only significant name token is the city (e.g.
+    # "Uni Stuttgart", where "Uni" is too short to count) matches every
+    # same-city org. Passed into every local rescore below.
+    location_tokens = _extract_location_tokens(city, state, country)
 
     def _no_match(score: float = 0.0) -> dict[str, Any]:
         r: dict[str, Any] = {"matched": False, "score": score}
@@ -518,13 +601,28 @@ async def call_ror(
                 # for "EMSL Analytical, Inc." (the shared 'Analytical' token
                 # dominates). The local check applies the identifier-token
                 # guard that ROR's scorer lacks.
-                local_score = max(_score_org(n, org) for n in rescore_names)
+                local_score = max(
+                    _score_org(n, org, location_tokens) for n in rescore_names
+                )
                 if local_score < threshold:
                     logger.info(
                         "ROR affiliation chosen '%s' rejected by local "
                         "rescore (%.2f < %.2f)",
                         (org.get("names") or [{}])[0].get("value", "?")[:60],
                         local_score, threshold,
+                    )
+                    return None
+                # Country guard — ROR's affiliation scorer ignores the country
+                # context in the affiliation string often enough to return a
+                # same-name org from the wrong country (e.g. a US "BASF" for a
+                # German record). Reject it so we fall through to the
+                # country-filtered query endpoint instead.
+                if not _country_ok(org, country_code):
+                    logger.info(
+                        "ROR affiliation chosen '%s' rejected — country %s != "
+                        "requested %s",
+                        (org.get("names") or [{}])[0].get("value", "?")[:60],
+                        _org_country_code(org), country_code,
                     )
                     return None
                 fields = _extract_org_fields(org)
@@ -595,7 +693,22 @@ async def call_ror(
                 resp_q.raise_for_status()
                 q_data = resp_q.json()
 
-            if not q_data.get("items"):
+            items = q_data.get("items") or []
+
+            # Country guard: never accept a wrong-country org — not even from
+            # the no-filter retry above. Applied to the candidate set before
+            # ranking so a correct-country org can still win.
+            if country_code:
+                kept = [it for it in items if _country_ok(it, country_code)]
+                if len(kept) != len(items):
+                    logger.info(
+                        "ROR query: dropped %d/%d wrong-country candidate(s) for "
+                        "'%s' (requested %s)",
+                        len(items) - len(kept), len(items), name[:60], country_code,
+                    )
+                items = kept
+
+            if not items:
                 logger.info("ROR: 0 items for '%s' across both strategies", name[:80])
                 return _no_match()
 
@@ -608,8 +721,8 @@ async def call_ror(
             exp_lower = expanded_query.strip().lower()
 
             def _rank_key(item: dict) -> tuple:
-                s = _score_org(expanded_query, item)
-                s2 = _score_org(name, item)
+                s = _score_org(expanded_query, item, location_tokens)
+                s2 = _score_org(name, item, location_tokens)
                 score = max(s, s2)
 
                 # Inspect all name variants for an EXACT match against
@@ -635,13 +748,13 @@ async def call_ror(
                 # (exact_match desc, score desc, token_diff asc)
                 return (exact_match, score, -token_diff)
 
-            ranked = sorted(q_data["items"][:10], key=_rank_key, reverse=True)
+            ranked = sorted(items[:10], key=_rank_key, reverse=True)
             best_org = ranked[0] if ranked else None
             best_score = 0.0
             if best_org:
                 best_score = max(
-                    _score_org(expanded_query, best_org),
-                    _score_org(name, best_org),
+                    _score_org(expanded_query, best_org, location_tokens),
+                    _score_org(name, best_org, location_tokens),
                 )
 
             if best_org is None:
