@@ -569,8 +569,48 @@ _GENERIC_COMPANY_WORDS = {
 }
 
 
+# Long-form legal designators → the abbreviation the pipeline normalises to.
+# Collapsing these before comparison means "SAP Aktiengesellschaft" and
+# "SAP AG" compare as the same entity (both reduce to {"sap"}), and the
+# short form is what surfaces in output. Mirrors preprocess UC 17; kept here
+# (the lower-level module) so the identity guard and finalise share it
+# without a circular import. Case-insensitive; replacements are the
+# conventionally-cased short forms.
+_LONGFORM_LEGAL_SUBS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\bgesellschaft\s+mit\s+beschr[aä]nkter\s+haftung\b", re.IGNORECASE), "GmbH"),
+    (re.compile(r"\blimited\s+liability\s+company\b", re.IGNORECASE), "LLC"),
+    (re.compile(r"\blimited\s+liability\s+partnership\b", re.IGNORECASE), "LLP"),
+    (re.compile(r"\baktiengesellschaft\b", re.IGNORECASE), "AG"),
+    (re.compile(r"\bincorporated\b", re.IGNORECASE), "Inc"),
+    (re.compile(r"\bcorporation\b", re.IGNORECASE), "Corp"),
+]
+
+
+def collapse_legal_suffix(text: str | None) -> str | None:
+    """Collapse long-form legal suffixes to their abbreviation, preserving
+    the casing of the rest of the name.
+
+    "SAP Aktiengesellschaft" → "SAP AG", "Acme Incorporated" → "Acme Inc".
+    Bare ambiguous words ("Limited", "Company") are left alone — they occur
+    as real name components ("The Walt Disney Company"). Returns *text*
+    unchanged when nothing matches.
+    """
+    if not text or not text.strip():
+        return text
+    out = text
+    for pat, repl in _LONGFORM_LEGAL_SUBS:
+        out = pat.sub(repl, out)
+    return re.sub(r"\s+", " ", out).strip()
+
+
 def _identity_tokens(name: str | None) -> set[str]:
-    toks = re.findall(r"[A-Za-z0-9]+", (name or "").lower())
+    # Collapse long-form legal suffixes first so "SAP Aktiengesellschaft" and
+    # "SAP AG" both reduce to {"sap"} rather than differing on a spurious
+    # "aktiengesellschaft" token.
+    text = name or ""
+    for pat, repl in _LONGFORM_LEGAL_SUBS:
+        text = pat.sub(repl, text)
+    toks = re.findall(r"[A-Za-z0-9]+", text.lower())
     return {t for t in toks if len(t) >= 2 and t not in _GENERIC_COMPANY_WORDS}
 
 

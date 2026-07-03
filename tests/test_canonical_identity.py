@@ -45,6 +45,28 @@ def test_preserves_identity_rejects_different_company(original, canonical):
     assert canonical_preserves_identity(original, canonical) is False
 
 
+@pytest.mark.parametrize("raw, expected", [
+    ("SAP Aktiengesellschaft", "SAP AG"),
+    ("Carl Zeiss AKTIENGESELLSCHAFT", "Carl Zeiss AG"),
+    ("Acme Incorporated", "Acme Inc"),
+    ("Globex Corporation", "Globex Corp"),
+    ("Muster Gesellschaft mit beschränkter Haftung", "Muster GmbH"),
+    ("SAP SE", "SAP SE"),            # not a long form — unchanged
+    ("SAP AG", "SAP AG"),            # already short — unchanged
+    ("The Walt Disney Company", "The Walt Disney Company"),  # bare word kept
+])
+def test_collapse_legal_suffix(raw, expected):
+    from utils.text_utils import collapse_legal_suffix
+    assert collapse_legal_suffix(raw) == expected
+
+
+def test_long_form_suffix_preserves_identity_against_short():
+    # The identity guard must treat the long and short legal forms as the
+    # SAME entity, so "Aktiengesellschaft" is not read as a distinctive word.
+    assert canonical_preserves_identity("SAP Aktiengesellschaft", "SAP AG") is True
+    assert canonical_preserves_identity("SAP AG", "SAP Aktiengesellschaft") is True
+
+
 def test_blank_inputs_are_permissive():
     # Nothing to compare → don't block.
     assert canonical_preserves_identity(None, "Anything") is True

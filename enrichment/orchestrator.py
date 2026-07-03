@@ -71,6 +71,7 @@ from utils.text_utils import (
     canonical_preserves_identity,
     canonicalise_unit_name,
     clean_passthrough_org_name,
+    collapse_legal_suffix,
     country_to_iso_code,
     expand_abbreviations,
     extract_domain,
@@ -353,6 +354,16 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
             result["name1_enriched"] = clean_passthrough_org_name(name1_val)
         else:
             result["name1_enriched"] = smart_title_case(name1_val) or name1_val
+
+    # Guarantee the short legal form on the final output regardless of source
+    # (input passthrough, ROR, GLEIF, or LLM): "… Aktiengesellschaft" → "… AG",
+    # "… Incorporated" → "… Inc". Preprocess (UC 17) already does this on the
+    # input; this backstops any long form a downstream tier introduces.
+    for field in ("name1_enriched", "name2_enriched", "name3_enriched",
+                  "name4_enriched"):
+        val = result.get(field)
+        if val:
+            result[field] = collapse_legal_suffix(val)
 
     # Canonicalise academic unit names on name2/name3 only. name1
     # (the institution) is never a "Department of X", so we leave
