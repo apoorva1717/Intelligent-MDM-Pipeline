@@ -113,6 +113,32 @@ class TestOrchestrator:
         assert result.tier2_mode != "2A_verification"
 
     @pytest.mark.asyncio
+    async def test_abbreviated_institution_adopts_ror_official_name(
+        self, orchestrator, default_options,
+    ):
+        """An abbreviated institution name adopts ROR's fuller official name.
+
+        "Uni Stuttgart" resolves to ROR's University of Stuttgart; the input is
+        normalised to the official name even though "Uni" (3 chars) is below
+        the identity guard's per-token 4-char floor for "University" — the
+        abbreviation-expanded comparison bridges it.
+        """
+        record = EnrichmentRecord(
+            record_id="ORCH_UNISTG",
+            name1="Uni Stuttgart",
+            name2=None,
+            city="Stuttgart",
+            country="DE",
+            postal_code="70569",
+        )
+        response = await orchestrator.enrich_batch([record], default_options)
+        result = response.results[0]
+
+        assert result.record_type == "research_institution"
+        assert result.ror_id == "https://ror.org/04vnq7t77"
+        assert result.name1_enriched == "University of Stuttgart"
+
+    @pytest.mark.asyncio
     async def test_unknown_institution_reaches_tier3(self, orchestrator, default_options):
         """Unknown institution with no contact → falls to Tier 3 but name1 is populated."""
         record = EnrichmentRecord(

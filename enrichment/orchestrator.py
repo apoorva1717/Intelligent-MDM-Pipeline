@@ -1624,7 +1624,17 @@ class Orchestrator:
                         # Keep the user's fuller name when ROR's would lose a
                         # distinctive token — but still use ROR's id/domain/
                         # website below (it is the same entity).
-                        if canonical_preserves_identity(name1_cleaned, official.strip()):
+                        #
+                        # Compare on the abbreviation-expanded input too, so an
+                        # abbreviated form adopts ROR's fuller official name
+                        # ("Uni Stuttgart" → "University of Stuttgart"): the
+                        # raw guard misses it because "Uni" (3 chars) is below
+                        # _token_covers' 4-char floor for "University".
+                        expanded_name1 = expand_abbreviations(name1_cleaned) or name1_cleaned
+                        if (
+                            canonical_preserves_identity(name1_cleaned, official.strip())
+                            or canonical_preserves_identity(expanded_name1, official.strip())
+                        ):
                             result["name1_enriched"] = official.strip()
                         else:
                             result["name1_enriched"] = name1_cleaned

@@ -136,6 +136,32 @@ _MOCK_DATA: dict[str, dict[str, Any]] = {
             {"name": "Harvard Medical School", "id": "https://ror.org/fakeharvmed"},
         ],
     },
+    # Both the abbreviated and full forms resolve to the SAME ROR id, so the
+    # abbreviated input adopts ROR's fuller official name.
+    "uni stuttgart": {
+        "score": 0.99,
+        "ror_id": "https://ror.org/04vnq7t77",
+        "official_name": "University of Stuttgart",
+        "domain": "uni-stuttgart.de",
+        "website": "https://www.uni-stuttgart.de",
+        "org_types": ["education"],
+        "is_research_institution": True,
+        "country": "Germany",
+        "names": ["University of Stuttgart", "Universität Stuttgart", "Uni Stuttgart"],
+        "children": [],
+    },
+    "university of stuttgart": {
+        "score": 0.99,
+        "ror_id": "https://ror.org/04vnq7t77",
+        "official_name": "University of Stuttgart",
+        "domain": "uni-stuttgart.de",
+        "website": "https://www.uni-stuttgart.de",
+        "org_types": ["education"],
+        "is_research_institution": True,
+        "country": "Germany",
+        "names": ["University of Stuttgart", "Universität Stuttgart", "Uni Stuttgart"],
+        "children": [],
+    },
     "pfizer": {
         "score": 0.95,
         "ror_id": "https://ror.org/01xdqrp08",
