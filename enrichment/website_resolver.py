@@ -188,7 +188,15 @@ def select_website_from_serp(
         return 1 if _domain_introduces_foreign_brand(name1, sr.url) else 2
 
     best = max(valid, key=_rank)  # first max preserves SERP order on ties
-    confidence = "high" if _rank(best) == 2 else "low"
+    best_rank = _rank(best)
+    if best_rank == 0:
+        # No candidate has a name token in its HOST — the overlap is only a
+        # word in the title/snippet (a neighbour business, a listings page).
+        # Too weak to trust as the official site: return nothing and let
+        # Path C (LLM) try, rather than emit a stranger's domain like
+        # "universitysurgical.com" for "Sign A Rama USA".
+        return WebsiteResolution()
+    confidence = "high" if best_rank == 2 else "low"
     return WebsiteResolution(url=_root_url(best.url), confidence=confidence, source="serp")
 
 

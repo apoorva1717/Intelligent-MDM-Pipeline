@@ -126,15 +126,30 @@ class TestSelectWebsiteFromSERP:
         assert chosen.url == "https://www.fishersci.com"
         assert chosen.confidence == "high"
 
-    def test_company_token_not_in_host_is_low_confidence(self):
-        # Company rule: name token NOT in the host → low.
+    def test_company_token_not_in_host_is_rejected(self):
+        # Company rule: the only overlap is a word in the TITLE, not the host
+        # — too weak to trust, so nothing is returned (Path C/LLM then tries).
         results = [
             _sr("Pittsburgh PA Listings — Page 4", "https://www.example.com/co/listings"),
         ]
         chosen = select_website_from_serp(
             "Acme Pittsburgh", results, record_type="company",
         )
-        assert chosen.confidence == "low"
+        assert chosen.url is None
+        assert chosen.confidence == "none"
+
+    def test_company_unrelated_host_with_title_overlap_rejected(self):
+        # "Sign A Rama USA": a result whose HOST shares no name token but whose
+        # title mentions "signs" must NOT be emitted as the website.
+        results = [
+            _sr("Signs & banners — University Surgical Center",
+                "http://universitysurgical.com/"),
+        ]
+        chosen = select_website_from_serp(
+            "Sign A Rama USA", results, record_type="company",
+        )
+        assert chosen.url is None
+        assert chosen.confidence == "none"
 
     def test_company_prefers_root_domain_over_subsidiary(self):
         # "Siemens AG": the subsidiary siemens-healthineers.com contains the
