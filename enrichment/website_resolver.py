@@ -102,6 +102,34 @@ def _name_in_domain(name1: str, url: str) -> bool:
     return any(t in domain for t in _significant_tokens(name1))
 
 
+def _domain_introduces_foreign_brand(name1: str, url: str) -> bool:
+    """True if the host's primary label carries a distinctive word absent
+    from *name1* — the mark of a subsidiary / sub-brand domain.
+
+    "Siemens AG" → ``siemens.com`` is clean (label is just "siemens"), but
+    ``siemens-healthineers.com`` introduces "healthineers", a distinctive word
+    the name never had → a *different* (sub-)entity's site. Only hyphen/
+    underscore-separated labels are inspected: a single concatenated label
+    ("thermofisher", "bankofamerica") can't be split reliably without a word
+    list, so it is treated as clean to avoid false positives on legitimate
+    multi-word company domains.
+    """
+    domain = (extract_domain(url) or "").lower()
+    if not domain:
+        return False
+    label = domain.split(".")[0]
+    parts = [p for p in re.split(r"[-_]", label) if p]
+    if len(parts) <= 1:
+        return False  # single label — cannot detect a foreign word safely
+    tokens = _significant_tokens(name1)
+    for part in parts:
+        if len(part) < 4:
+            continue  # short connector ("of", "and") — never distinctive
+        if not any(part.startswith(t) or t.startswith(part) for t in tokens):
+            return True  # a distinctive label part the name never carried
+    return False
+
+
 def _root_url(url: str) -> str:
     """Reduce a URL to scheme://host (drop path/query/fragment)."""
     try:
@@ -120,28 +148,48 @@ def select_website_from_serp(
 ) -> WebsiteResolution:
     """Pick the best official-website candidate from ranked SERP results.
 
-    Confidence rules (first non-blacklisted, name-overlapping result):
-      * Research institution: ``high`` if the URL is on
-        ``.edu``/``.gov``/``.org``; otherwise ``low``.
-      * Company / unknown: ``high`` if a significant name1 token is a
-        substring of the URL host; otherwise ``low``.
+    Confidence rules:
+      * Research institution: first non-blacklisted, name-overlapping hit;
+        ``high`` if the URL is on ``.edu``/``.gov``/``.org``, else ``low``.
+      * Company / unknown: among non-blacklisted, name-overlapping hits,
+        prefer the host whose label matches name1 WITHOUT introducing a
+        foreign brand word — ``siemens.com`` beats ``siemens-healthineers.com``
+        for "Siemens AG" even when the subsidiary ranks higher. ``high`` when
+        the chosen host cleanly contains a name token; ``low`` when only a
+        sub-brand / weak host is available.
       * ``none`` — no usable candidate.
     """
-    for sr in results:
-        if not sr.url or not _URL_RE.match(sr.url):
-            continue
-        if _is_blacklisted(sr.url):
-            continue
-        if not _name_overlap(name1, sr):
-            continue
-        url = _root_url(sr.url)
-        if record_type == "research_institution":
-            high = _tld(sr.url) in _OFFICIAL_TLDS
-        else:
-            high = _name_in_domain(name1, sr.url)
-        confidence = "high" if high else "low"
-        return WebsiteResolution(url=url, confidence=confidence, source="serp")
-    return WebsiteResolution()
+    valid = [
+        sr for sr in results
+        if sr.url and _URL_RE.match(sr.url)
+        and not _is_blacklisted(sr.url)
+        and _name_overlap(name1, sr)
+    ]
+    if not valid:
+        return WebsiteResolution()
+
+    if record_type == "research_institution":
+        sr = valid[0]
+        high = _tld(sr.url) in _OFFICIAL_TLDS
+        return WebsiteResolution(
+            url=_root_url(sr.url),
+            confidence="high" if high else "low",
+            source="serp",
+        )
+
+    # Company / unknown: rank so a clean root-domain match wins over a
+    # subsidiary domain that merely contains the name token.
+    #   2 = name token in host AND no foreign brand word (clean match)
+    #   1 = name token in host but the label adds a foreign brand (sub-brand)
+    #   0 = name only overlaps the title, not the host
+    def _rank(sr: SearchResult) -> int:
+        if not _name_in_domain(name1, sr.url):
+            return 0
+        return 1 if _domain_introduces_foreign_brand(name1, sr.url) else 2
+
+    best = max(valid, key=_rank)  # first max preserves SERP order on ties
+    confidence = "high" if _rank(best) == 2 else "low"
+    return WebsiteResolution(url=_root_url(best.url), confidence=confidence, source="serp")
 
 
 def _build_serp_query(

@@ -136,6 +136,44 @@ class TestSelectWebsiteFromSERP:
         )
         assert chosen.confidence == "low"
 
+    def test_company_prefers_root_domain_over_subsidiary(self):
+        # "Siemens AG": the subsidiary siemens-healthineers.com contains the
+        # token "siemens" but introduces the foreign brand "healthineers".
+        # The clean root siemens.com must win even when it ranks lower.
+        results = [
+            _sr("Siemens Healthineers", "https://www.siemens-healthineers.com/"),
+            _sr("Siemens Global", "https://www.siemens.com/"),
+        ]
+        chosen = select_website_from_serp(
+            "Siemens AG", results, record_type="company",
+        )
+        assert chosen.url == "https://www.siemens.com"
+        assert chosen.confidence == "high"
+
+    def test_company_subsidiary_only_is_low_confidence(self):
+        # When only the sub-brand domain is available, it is still returned
+        # (best effort) but flagged low so a human verifies it.
+        results = [
+            _sr("Siemens Healthineers", "https://www.siemens-healthineers.com/"),
+        ]
+        chosen = select_website_from_serp(
+            "Siemens AG", results, record_type="company",
+        )
+        assert chosen.url == "https://www.siemens-healthineers.com"
+        assert chosen.confidence == "low"
+
+    def test_company_multiword_concatenated_domain_stays_high(self):
+        # A single concatenated label ("thermofisher") is NOT a foreign brand
+        # — must remain high (no regression on legitimate company domains).
+        results = [
+            _sr("Thermo Fisher", "https://www.thermofisher.com/"),
+        ]
+        chosen = select_website_from_serp(
+            "Thermo Fisher Scientific Inc.", results, record_type="company",
+        )
+        assert chosen.url == "https://www.thermofisher.com"
+        assert chosen.confidence == "high"
+
     def test_no_name_overlap_skipped(self):
         results = [
             _sr("Some Other Site", "https://www.some-other.edu/page"),
