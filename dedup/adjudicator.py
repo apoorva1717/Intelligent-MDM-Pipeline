@@ -185,6 +185,7 @@ async def _mode_a(
                 "name1": s.name1,
                 "name2": s.name2,
                 "ror_id": s.ror_id or "none",
+                "lei_id": s.lei_id or "none",
             }
             for s in bucket
         ]
@@ -297,6 +298,7 @@ async def _mode_b(
             "name1": sig.name1,
             "name2": sig.name2,
             "ror_id": sig.ror_id or "none",
+            "lei_id": sig.lei_id or "none",
         }
         canonical_payload = [
             {
@@ -306,6 +308,7 @@ async def _mode_b(
                 "name1": e.signatures[0].name1,
                 "name2": e.signatures[0].name2,
                 "ror_id": next((s.ror_id for s in e.signatures if s.ror_id), "none"),
+                "lei_id": next((s.lei_id for s in e.signatures if s.lei_id), "none"),
             }
             for e in compatible
         ]

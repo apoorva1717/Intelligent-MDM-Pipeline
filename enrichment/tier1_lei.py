@@ -25,6 +25,13 @@ lowercased — GLEIF returns names UPPERCASE). Candidates below
 ``LEI_NAME_MATCH_THRESHOLD`` are rejected. GLEIF fuzzy is statistical;
 without this guard it fabricates matches.
 
+COUNTRY GUARD (required): when a country is known, candidates whose
+``legalAddress.country`` differs from it are rejected during selection on
+BOTH paths. GLEIF's country filter only constrains the precise request, and
+``fuzzycompletions`` cannot be country-filtered at the API — so without this
+post-filter the fuzzy path returns same-name companies from the wrong
+country (a different legal entity). See ``_best_verified_candidate``.
+
 A GLEIF failure (timeout / 5xx / malformed) must NEVER fail the record —
 every error path returns a miss/error dict and the orchestrator falls
 through to the existing LLM path unchanged.
@@ -122,13 +129,23 @@ def _best_verified_candidate(
     name: str,
     records: list[dict[str, Any]],
     threshold: float,
+    country_code: str | None = None,
 ) -> tuple[dict[str, Any] | None, float]:
     """Pick the best name-verified candidate from a list of lei-records.
 
     Prefers ACTIVE entities, then highest name-match score. Returns
     ``(fields, score)`` for the best candidate at/above *threshold*, or
     ``(None, best_score)`` when nothing qualifies (best_score aids logging).
+
+    When *country_code* is given, candidates whose legal-address country does
+    not match it are rejected outright. This is the country guard: GLEIF's
+    ``filter[entity.legalAddress.country]`` only constrains the *exact* path,
+    and the ``fuzzycompletions`` typeahead cannot be country-filtered at the
+    API at all — so without this post-filter the fuzzy path (and any
+    server-side filter slip) can return a same-name company from the wrong
+    country, which is fundamentally a different legal entity.
     """
+    want_country = (country_code or "").strip().upper() or None
     best_fields: dict[str, Any] | None = None
     best_rank: tuple[int, float] = (-1, -1.0)
     best_score = 0.0
@@ -136,6 +153,15 @@ def _best_verified_candidate(
         fields = _record_fields(rec)
         if not fields.get("lei_id") or not fields.get("legal_name"):
             continue
+        if want_country:
+            cand_country = (fields.get("country") or "").strip().upper()
+            if cand_country != want_country:
+                logger.info(
+                    "GLEIF: rejecting '%s' (LEI=%s) — country %s != requested %s",
+                    fields.get("legal_name"), fields.get("lei_id"),
+                    cand_country or "?", want_country,
+                )
+                continue
         score = _name_match_score(name, fields["legal_name"])
         best_score = max(best_score, score)
         if score < threshold:
@@ -243,7 +269,7 @@ async def call_lei(
             records = data.get("data", []) or []
 
             fields, best_score = _best_verified_candidate(
-                name, records, threshold,
+                name, records, threshold, country_code=country_code,
             )
             if fields is not None:
                 result = {
@@ -331,7 +357,9 @@ async def _fuzzy_lookup(
         if isinstance(rec, dict):
             candidate_records.append(rec)
 
-    fields, best_score = _best_verified_candidate(name, candidate_records, threshold)
+    fields, best_score = _best_verified_candidate(
+        name, candidate_records, threshold, country_code=country_code,
+    )
     if fields is None:
         logger.info(
             "GLEIF fuzzy: no verified candidate for '%s' (best score=%.1f)",

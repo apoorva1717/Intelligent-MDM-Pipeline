@@ -31,6 +31,7 @@ Rules:
 - Same institution but DIFFERENT departments → DIFFERENT entities. Never merge them. Example: "Uni Stuttgart, Dept of Chemistry" and "Uni Stuttgart, Dept of Mechanical Engineering" are two distinct entities.
 - Different institutions that happen to share one address (shared campus or building) → DIFFERENT entities.
 - A shared ROR ID means same INSTITUTION only. It does not mean same department and never by itself makes two records the same entity — you must still compare Name 2.
+- A shared LEI (Legal Entity Identifier) means the records are the same legal entity (typically a company). Treat it like ROR: a strong same-INSTITUTION signal, but it still does not by itself merge records with DIFFERENT Name 2 departments, and you must still compare Name 2. Conversely, DIFFERENT non-empty LEIs are a strong signal of different entities.
 
 Judge names accounting for: cross-language translations (German↔English etc.), abbreviations and acronyms ("Dept" = "Department", "Mech Eng" = "Mechanical Engineering"), word reordering, legal-form suffixes (GmbH, AG, Inc., Ltd, e.V.), historical renames or restructures, and spelling variants/typos.
 
@@ -42,7 +43,7 @@ def build_mode_a_user_prompt(signatures: List[dict]) -> str:
     """Mode A (partition) user message.
 
     ``signatures`` is a list of dicts with keys: signature_id, name1, name2,
-    ror_id. The LLM always sees the original (un-normalized) names.
+    ror_id, lei_id. The LLM always sees the original (un-normalized) names.
     """
     listing = json.dumps({"signatures": signatures}, ensure_ascii=False, indent=2)
     return (
@@ -60,9 +61,9 @@ def build_mode_a_user_prompt(signatures: List[dict]) -> str:
 def build_mode_b_user_prompt(candidate: dict, canonicals: List[dict]) -> str:
     """Mode B (incremental assignment) user message.
 
-    ``candidate`` is a dict with keys signature_id, name1, name2, ror_id.
+    ``candidate`` is a dict with keys signature_id, name1, name2, ror_id, lei_id.
     ``canonicals`` is a list of dicts with keys entity_id, institution,
-    department, name1, name2, ror_id (example name1/name2 of the entity).
+    department, name1, name2, ror_id, lei_id (example name1/name2 of the entity).
     """
     payload = json.dumps(
         {"candidate": candidate, "entities": canonicals},

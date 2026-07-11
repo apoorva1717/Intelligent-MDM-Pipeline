@@ -71,6 +71,10 @@ class Signature:
     row_ids: List[str] = field(default_factory=list)
     # Set when the LLM leaves this signature's merge unresolved.
     uncertain: bool = False
+    # GLEIF LEI hint (companies). Like ror_id, a soft same-entity signal for
+    # the LLM — never a deterministic cluster key. Defaulted last to keep
+    # positional construction stable.
+    lei_id: Optional[str] = None
 
     @property
     def has_name2(self) -> bool:
@@ -103,7 +107,8 @@ def build_signatures(rows: List[DedupRow]) -> List[Signature]:
 
     Signatures are returned in first-appearance order; their ids are
     ``s1``, ``s2`` … local to the block. Each signature accumulates the
-    row_ids that share its key and adopts the first non-empty ror_id seen.
+    row_ids that share its key and adopts the first non-empty ror_id / lei_id
+    seen.
     """
     by_key: "OrderedDict[tuple[str, str], Signature]" = OrderedDict()
     for row in rows:
@@ -120,12 +125,15 @@ def build_signatures(rows: List[DedupRow]) -> List[Signature]:
                 name2=(row.name2 or "").strip(),
                 ror_id=(row.ror_id or None),
                 row_ids=[],
+                lei_id=(row.lei_id or None),
             )
             by_key[key] = sig
         sig.row_ids.append(row.row_id)
-        # Adopt the first non-empty ror_id any row in the signature carries.
+        # Adopt the first non-empty ror_id / lei_id any row in the signature carries.
         if not sig.ror_id and row.ror_id:
             sig.ror_id = row.ror_id
+        if not sig.lei_id and row.lei_id:
+            sig.lei_id = row.lei_id
 
     signatures = list(by_key.values())
     for index, sig in enumerate(signatures, start=1):

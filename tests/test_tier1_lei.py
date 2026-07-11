@@ -134,6 +134,45 @@ class TestVerificationGuard:
         assert fields is not None
         assert fields["lei_id"] == PFIZER_AG_LEI
 
+    def test_wrong_country_rejected(self) -> None:
+        """A same-name entity in a different country is rejected by the guard."""
+        records = [
+            _rec("USWRONG0000000000001", "PFIZER AG", "US"),
+        ]
+        fields, _ = _best_verified_candidate(
+            "Pfizer AG", records, 88.0, country_code="CH",
+        )
+        assert fields is None
+
+    def test_right_country_selected_over_wrong_country(self) -> None:
+        """With both countries present, only the requested-country entity wins."""
+        records = [
+            _rec("USWRONG0000000000001", "PFIZER AG", "US"),
+            _rec(PFIZER_AG_LEI, "PFIZER AG", "CH"),
+        ]
+        fields, _ = _best_verified_candidate(
+            "Pfizer AG", records, 88.0, country_code="CH",
+        )
+        assert fields is not None
+        assert fields["lei_id"] == PFIZER_AG_LEI
+        assert fields["country"] == "CH"
+
+    def test_no_country_filter_keeps_all(self) -> None:
+        """When no country is given, the guard does not filter on country."""
+        records = [_rec("USONLY00000000000001", "PFIZER AG", "US")]
+        fields, _ = _best_verified_candidate("Pfizer AG", records, 88.0)
+        assert fields is not None
+        assert fields["lei_id"] == "USONLY00000000000001"
+
+    def test_country_match_is_case_insensitive(self) -> None:
+        """Requested country compares case-insensitively against GLEIF's value."""
+        records = [_rec(PFIZER_AG_LEI, "PFIZER AG", "CH")]
+        fields, _ = _best_verified_candidate(
+            "Pfizer AG", records, 88.0, country_code="ch",
+        )
+        assert fields is not None
+        assert fields["lei_id"] == PFIZER_AG_LEI
+
 
 # ── call_lei HTTP paths (mock GLEIF) ──────────────────────────────────────────
 
@@ -199,6 +238,48 @@ class TestCallLei:
         assert res["strategy"] == "fuzzy"
         assert res["confidence"] == "medium"
         assert res["lei_id"] == PFIZER_AG_LEI
+
+    @pytest.mark.asyncio
+    async def test_fuzzy_wrong_country_rejected(self, monkeypatch) -> None:
+        """The reported bug: fuzzycompletions resolves a same-name entity in a
+        DIFFERENT country. With a country filter, it must be rejected (miss),
+        not returned."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if path.endswith("/fuzzycompletions"):
+                return httpx.Response(200, json={"data": [{
+                    "type": "fuzzycompletions",
+                    "attributes": {"value": "PFIZER AG"},
+                    "relationships": {
+                        "lei-records": {"data": {"type": "lei-records", "id": "USWRONG0000000000001"}}
+                    },
+                }]})
+            if path.endswith("/lei-records/USWRONG0000000000001"):
+                # Same name, WRONG country (US, not the requested CH).
+                return httpx.Response(200, json={"data": _rec("USWRONG0000000000001", "PFIZER AG", "US")})
+            if path.endswith("/lei-records"):
+                return httpx.Response(200, json={"data": []})  # exact miss
+            return httpx.Response(404, json={"data": []})
+
+        _patch_gleif(monkeypatch, handler)
+        res = await call_lei("Pfizer AG", country_code="CH", max_retries=0)
+        assert res["matched"] is False
+        assert res.get("lei_id") is None
+
+    @pytest.mark.asyncio
+    async def test_exact_wrong_country_rejected(self, monkeypatch) -> None:
+        """Even if GLEIF's server-side country filter slips and returns a
+        wrong-country record, the post-filter guard rejects it."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/lei-records"):
+                return httpx.Response(200, json={"data": [
+                    _rec("USWRONG0000000000001", "PFIZER AG", "US"),
+                ]})
+            return httpx.Response(200, json={"data": []})  # fuzzy empty
+
+        _patch_gleif(monkeypatch, handler)
+        res = await call_lei("Pfizer AG", country_code="CH", max_retries=0)
+        assert res["matched"] is False
 
     @pytest.mark.asyncio
     async def test_miss_returns_unmatched(self, monkeypatch) -> None:

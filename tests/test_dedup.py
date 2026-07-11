@@ -94,6 +94,19 @@ def test_build_signatures_collapses_identical_rows():
     assert sigs[0].signature_id == "s1"
 
 
+def test_build_signatures_captures_ror_and_lei():
+    """A signature adopts the first non-empty ror_id and lei_id among its rows."""
+    rows = [
+        DedupRow(row_id="r1", name1="Carl Zeiss AG", block_id="b1"),
+        DedupRow(row_id="r2", name1="Carl Zeiss AG", block_id="b1",
+                 ror_id="ror:zeiss", lei_id="LEI-ZEISS-001"),
+    ]
+    sigs = build_signatures(rows)
+    assert len(sigs) == 1
+    assert sigs[0].ror_id == "ror:zeiss"
+    assert sigs[0].lei_id == "LEI-ZEISS-001"
+
+
 @pytest.mark.asyncio
 async def test_100_identical_rows_one_cluster_no_llm():
     """STEP A: 100 identical rows → 1 signature → 1 cluster of 100, no LLM."""
@@ -180,6 +193,44 @@ async def test_cross_language_abbreviation_merge():
     assert by["r1"].routing == "cluster" and by["r2"].routing == "cluster"
     assert by["r1"].llm_flag is True and by["r2"].llm_flag is True
     assert by["r1"].confidence == pytest.approx(0.95)
+
+
+# ---------------------------------------------------------------------------
+# LEI / ROR hints reach the LLM prompt
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_lei_and_ror_hints_passed_to_llm():
+    """ror_id and lei_id are included in the prompt the adjudicator sends."""
+    rows = [
+        DedupRow(row_id="r1", block_id="b1", name1="Carl Zeiss AG", name2=None,
+                 ror_id="ror:zeiss", lei_id="LEI-ZEISS-001"),
+        DedupRow(row_id="r2", block_id="b1", name1="Carl Zeiss Aktiengesellschaft",
+                 name2=None, lei_id="LEI-ZEISS-001"),
+    ]
+
+    def responder(system, user):
+        # Same LEI → one entity merging both signatures.
+        return json.dumps({
+            "entities": [
+                {"signature_ids": ["s1", "s2"], "institution": "Carl Zeiss",
+                 "department": "", "confidence": 0.97, "reasoning": "same LEI"},
+            ],
+            "uncertain_signature_ids": [],
+        })
+
+    llm = ScriptedLLM(responder)
+    resp = await cluster_blocks(rows, llm)
+    by = _by_row(resp)
+
+    # The hint values appear in the prompt the model received.
+    assert llm.calls == 1
+    prompt = llm.prompts[0]
+    assert "LEI-ZEISS-001" in prompt
+    assert "ror:zeiss" in prompt
+    # And the merge produced one cluster (LLM-driven).
+    assert by["r1"].cluster_id == 1 == by["r2"].cluster_id
+    assert by["r1"].llm_flag is True
 
 
 # ---------------------------------------------------------------------------

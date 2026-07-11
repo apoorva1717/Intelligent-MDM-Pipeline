@@ -41,7 +41,8 @@ class DedupRow(BaseModel):
     postal_code: Optional[str] = None
     city: Optional[str] = None
     country: Optional[str] = None
-    ror_id: Optional[str] = Field(default=None, description="From Phase 1, if resolved.")
+    ror_id: Optional[str] = Field(default=None, description="ROR id from Phase 1, if resolved (institution hint).")
+    lei_id: Optional[str] = Field(default=None, description="GLEIF LEI from Phase 1, if resolved (company legal-entity hint).")
     enriched_name: Optional[str] = Field(default=None, description="Phase 1 official name, if resolved.")
 
 

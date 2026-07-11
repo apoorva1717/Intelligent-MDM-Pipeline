@@ -299,6 +299,15 @@ ROR offers two endpoints with different strengths:
 
 The client tries the affiliation endpoint first. If the best score is below the confidence threshold (default 0.8), it falls back to the query endpoint.
 
+#### Country Guard
+
+When the record's ISO country is known, a candidate whose ROR location country (`locations[0].geonames_details.country_code`) doesn't match it is **rejected**, on **both** strategies. This is required because:
+
+- The **affiliation** endpoint's scorer often ignores the country context in the affiliation string and returns a confident same-name org from the wrong country — e.g. for "BASF SE, Ludwigshafen, DE" it returns the **US** "BASF" (`ror.org/002yzpx87`, score 1.0). The guard rejects it and the lookup falls through to the country-filtered query endpoint.
+- The **query** endpoint applies a server-side country filter, but on 0 results it retries **without** the filter — so the guard re-filters the candidate set (before ranking) to keep that retry from admitting a wrong-country org.
+
+A wrong-country ROR id is worse than none: it would wrongly converge distinct entities (e.g. BASF Germany and BASF US) in Phase 2 dedup. On a rejection the record misses and falls through to the LLM path, exactly like any other miss. The comparison is case-insensitive; with no resolvable country, no country filtering is applied.
+
 #### Name Scoring Logic
 
 The scoring system (`_compute_name_score()`) is carefully designed to prevent false matches:
@@ -372,6 +381,8 @@ ROR is the registry for *research institutions* and has no good coverage of ordi
 **Field mapping:** `data[].id` → LEI · `data[].attributes.entity.legalName.name` → official name · `…entity.status` (ACTIVE) · `…entity.legalAddress.country` (ISO alpha-2).
 
 **Verification guard (required):** every candidate's `legalName` is scored against the input with RapidFuzz `token_sort_ratio` (case-folded — GLEIF returns names UPPERCASE; legal-form suffixes like AG/Inc/Ltd/GmbH stripped so "Novartis" verifies against "NOVARTIS AG"). Candidates below `LEI_NAME_MATCH_THRESHOLD` (default 88) are rejected. GLEIF fuzzy is statistical — without this guard it fabricates matches (e.g. "Personalvorsorgestiftung der Pfizer AG in Liquidation" for "Pfizer AG"). `token_set_ratio` is deliberately **not** used: it scores any contained substring 100 and would accept that wrong entity.
+
+**Country guard (required):** when the record's ISO country is known, candidates whose `legalAddress.country` does not match it are rejected during selection — on **both** the precise and fuzzy paths. This matters because GLEIF's `filter[entity.legalAddress.country]` only constrains the *precise* request, and the `fuzzycompletions` typeahead **cannot be country-filtered at the API at all** — so without this post-filter the fuzzy path would happily return a same-name company from the wrong country (e.g. a US "PFIZER AG" for a Swiss record), which is a fundamentally different legal entity. The comparison is case-insensitive; when the record has no resolvable country, no country filtering is applied.
 
 **On a verified match:**
 - `name1_enriched` ← official GLEIF `legalName`
@@ -978,6 +989,7 @@ These rules are enforced consistently by the algorithm (some deterministically i
 | Same institution **+** *different* department | **Different entities** → never merged (e.g. "Uni Stuttgart, Dept of Chemistry" vs "Uni Stuttgart, Dept of Mechanical Eng" — two entities even though both resolve to the same ROR ID) |
 | One Name 2 empty, the other populated | **Different entities** (institution-level vs department-level record). Deterministic — enforced in code, never sent to the LLM |
 | Two records share a **ROR ID** | Means same **institution only**. It is a *hint*, never a cluster decision by itself, and never overrides the Name 2 comparison |
+| Two records share a **LEI** | Means same **legal entity** (typically a company). Treated like ROR — a strong same-institution hint, but still does not merge records with different Name 2 departments, and never overrides the Name 2 comparison. Different non-empty LEIs are a strong *different*-entity signal |
 | An entity has only **one** row | **No cluster** (`cluster_id = null`, routing `unique`). Singleton clusters are never minted |
 
 ### Endpoint Contract
@@ -1001,7 +1013,8 @@ These rules are enforced consistently by the algorithm (some deterministically i
       "postal_code": "string|null",
       "city": "string|null",
       "country": "string|null",
-      "ror_id": "string|null",       // from Phase 1, if resolved
+      "ror_id": "string|null",       // ROR id from Phase 1 (institution hint)
+      "lei_id": "string|null",       // GLEIF LEI from Phase 1 (company legal-entity hint)
       "enriched_name": "string|null" // Phase 1 official name, if resolved
     }
   ]
@@ -1050,7 +1063,7 @@ Rows are grouped by `block_id` (deriving one from the normalized address when ab
 This is the **blow-up guard**. The endpoint must never send thousands of raw rows to the LLM.
 
 - A **conservative normalized key** is computed per row on *both* `name1` and `name2`: lowercase, trim, collapse internal whitespace, strip punctuation, fold accents (`Universität` → `universitat`). It does **not** strip legal forms or expand abbreviations — that is the LLM's job. The key is internal only and never shown to the LLM.
-- A **signature** is a distinct `(norm_name1, norm_name2)` key. Each signature records: the list of `row_id`s that share it, the original (un-normalized) `name1`/`name2` from the first row, and the `ror_id` if any row in it carries one.
+- A **signature** is a distinct `(norm_name1, norm_name2)` key. Each signature records: the list of `row_id`s that share it, the original (un-normalized) `name1`/`name2` from the first row, and the `ror_id` / `lei_id` if any row in it carries one (the first non-empty value seen).
 - Result: 100 byte-identical rows collapse to **1** signature; 100 rows spread across 8 departments collapse to ~8 signatures. The LLM only ever works on distinct signatures.
 
 #### STEP B — Group signatures into entities (LLM)
@@ -1138,7 +1151,7 @@ In production, DATAshaper supplies `block_id`. When testing the two endpoints by
 | `enriched_name` | `name1_enriched` |
 | `block_id` | *(leave null to derive, or assign explicitly — see note)* |
 | `ror_id` | `ror_id` *(now included in the `/enrich` response — populated for institutions and ROR-matched companies)* |
-| `lei_id` | `lei_id` *(included in the `/enrich` response for GLEIF-matched companies. Available to pass through, but `DedupRow`/`signatures.py` do not consume it yet — wiring dedup to converge on a shared LEI, like it does for `ror_id`, is a follow-up)* |
+| `lei_id` | `lei_id` *(included in the `/enrich` response for GLEIF-matched companies; now consumed by dedup as an LLM hint, exactly like `ror_id`)* |
 
 > **`block_id` caveat:** deriving the block id from the enriched address only groups rows correctly if their cleaned `street`/`house_no`/`postal_code` come out identical. If enrichment cleans the same address inconsistently across rows, assign an explicit `block_id` (as DATAshaper does) so duplicates land in the same block.
 
@@ -1759,6 +1772,7 @@ RETURN EnrichmentResponse (JSON)
   - `llm.py` — `DedupLLM`, which **reuses** `get_openai_client` rather than writing a new client; defensive JSON parsing; bounded retries; `reasoning_effort` fallback.
   - `adjudicator.py` — the per-block algorithm (Mode A partition / Mode B incremental assignment), the deterministic Name 2 asymmetry rule, cluster emission, global cluster-id remap, and structured telemetry.
 - **Two-level identity model** — `(institution, department)`. Same institution + different department → distinct entities (never merged), even when they share a ROR ID. ROR id is a hint only. Empty vs populated Name 2 is decided deterministically in code, never by the LLM.
+- **Registry-id hints** — both `ror_id` and `lei_id` (Phase 1 outputs) flow into dedup as soft LLM hints in the signature/candidate payloads: a shared ROR = same institution, a shared LEI = same legal entity. Neither is a deterministic cluster key, and neither overrides the Name 2 comparison (the system prompt enforces this). `DedupRow.lei_id` and `Signature.lei_id` carry the value; the first non-empty id per signature is used.
 - **Routing** — `cluster` / `unique` / `manual_review` per row, with `llm_flag` distinguishing LLM-merged clusters from pure identical-row collapses.
 - **Resilience** — a single bad LLM call never fails a block; affected signatures route to `manual_review` and `summary.errors` is incremented.
 - **Telemetry** — per-block, per-LLM-call, and per-request structured logs to the `mdm-pipeline-insights` Application Insights instance (reuses the existing logging integration; no new SDK).
@@ -1773,6 +1787,13 @@ RETURN EnrichmentResponse (JSON)
 
 - **`get_openai_client` no longer hardcodes `verify=certifi.where()`.** A new `resolve_tls_verify()` helper honors a corporate CA bundle (`AZURE_OPENAI_CA_BUNDLE` / `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE`) so a TLS-inspecting VPN no longer breaks LLM calls, supports `LLM_SSL_VERIFY=false` (insecure last resort), and falls back to certifi otherwise. The httpx client keeps `trust_env=True` (honors `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`) and exposes `LLM_HTTP_CONNECT_TIMEOUT` / `LLM_HTTP_TIMEOUT`. Fixes both phases (the dedup client reuses the factory). See [TLS and Corporate VPN](#tls-and-corporate-vpn).
 - **ROR and GLEIF clients now reuse `resolve_tls_verify()` too.** Both previously hardcoded `verify=certifi.where()`, so on a TLS-inspecting VPN every ROR/GLEIF call failed the handshake — `ror_id`/`lei_id`/`domain` came back empty and every record fell through to the LLM. Now fixed.
+
+### Registry country guards (ROR + GLEIF)
+
+- Both Tier 1 registry lookups now **reject a candidate whose registered country doesn't match the record's country** when it is known. This stops same-name, wrong-country entities from being attached — e.g. a US "BASF" (`ror.org/002yzpx87`) for a German BASF record, or a Norwegian "Siemens AS" LEI for a German Siemens record.
+- **ROR** ([tier1_ror.py](enrichment/tier1_ror.py)): applied on both the affiliation path (whose scorer ignores the affiliation-string country) and the query path (covering the no-filter retry). Country is compared via `locations[0].geonames_details.country_code`.
+- **GLEIF/LEI** ([tier1_lei.py](enrichment/tier1_lei.py)): applied in `_best_verified_candidate` on both the precise and fuzzy paths (`fuzzycompletions` can't be country-filtered at the API, so the post-filter is mandatory).
+- A wrong-country id is worse than none — it would wrongly converge distinct legal entities in Phase 2 dedup — so a rejection becomes a clean miss that falls through to the LLM path. Case-insensitive; no filtering when the record has no resolvable country. Covered by `tests/test_tier1_ror_country.py` and the country tests in `tests/test_tier1_lei.py`.
 
 ### New environment variables
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import logging
+import time
 from collections import Counter
 from typing import Literal, Optional
 
@@ -25,6 +26,14 @@ from config import Settings, get_settings
 from dedup.adjudicator import cluster_blocks
 from dedup.llm import DedupLLM
 from dedup.models import DedupRequest, DedupResponse, DedupRow
+from dedup.scoring import (
+    DuplicateRowIdError,
+    ScoringRequest,
+    ScoringResponse,
+    build_summary,
+    elect_golden_records,
+)
+from dedup.scoring_xlsx import ScoringFileError, score_workbook
 from enrichment.issue_detection import ISSUE_CATALOGUE, detect_issues
 from enrichment.orchestrator import Orchestrator
 
@@ -241,24 +250,91 @@ def _rows_to_records(row_dicts: list[dict[str, str]]) -> list[EnrichmentRecord]:
     return records
 
 
-def _build_output_xlsx(results: list[EnrichmentResult]) -> bytes:
+def _copy_extra_sheets(contents: bytes, wb) -> None:
+    """Copy every sheet except the data sheet (values only) from the uploaded
+    workbook into ``wb``.
+
+    The pipeline is /enrich/file -> /api/dedup/file -> /api/dedup/score/file,
+    and the scoring workbook ships a "Weights" sheet the last stage reads.
+    Rebuilding the output workbook must not silently drop such sheets on the
+    way through.
+    """
+    from openpyxl import load_workbook
+
+    try:
+        src = load_workbook(io.BytesIO(contents), read_only=True, data_only=True)
+    except Exception:  # noqa: BLE001 - the upload already parsed once; be lenient
+        return
+    active_title = src.active.title if src.active else None
+    for sheet in src.worksheets:
+        if sheet.title == active_title:
+            continue
+        out = wb.create_sheet(sheet.title)
+        for row in sheet.iter_rows(values_only=True):
+            out.append(list(row))
+    src.close()
+
+
+def _passthrough_headers(input_headers: list[str], output_headers: list[str]) -> list[str]:
+    """Input columns that enrichment neither consumes nor re-emits.
+
+    These are carried through verbatim (e.g. the CRM/scoring columns —
+    Sales_Order_*, SleepingCustomer, SF_ID_*, score_* — that
+    /api/dedup/score/file needs at the end of the pipeline) so no field is
+    lost before it reaches the stage that uses it.
+    """
+    known = {_norm_header(h) for h in output_headers}
+    known |= set(_input_alias_to_field())
+    passthrough: list[str] = []
+    seen: set[str] = set()
+    for header in input_headers:
+        key = _norm_header(header)
+        if not key or key in known or key in seen:
+            continue
+        seen.add(key)
+        passthrough.append(header)
+    return passthrough
+
+
+def _build_output_xlsx(
+    results: list[EnrichmentResult],
+    input_headers: list[str] | None = None,
+    row_dicts: list[dict[str, str]] | None = None,
+    source_contents: bytes | None = None,
+) -> bytes:
     """Build the result workbook.
 
     One column per field in the /enrich response body (see
     api.output_columns.RESPONSE_COLUMNS), one row per enriched record.
+    Unconsumed input columns are appended verbatim (results arrive in input
+    order — see enrich_batch's asyncio.gather — so passthrough values join
+    by position) and extra sheets such as "Weights" are copied over, so the
+    downstream dedup and scoring stages never lose fields.
     """
     from openpyxl import Workbook
 
     fields = list(RESPONSE_COLUMNS.keys())
     headers = [RESPONSE_COLUMNS[f] for f in fields]
+    passthrough = (
+        _passthrough_headers(input_headers, headers)
+        if input_headers and row_dicts is not None
+        else []
+    )
 
     wb = Workbook()
     ws = wb.active
-    ws.append(headers)
+    ws.append([*headers, *passthrough])
 
-    for result in results:
+    for index, result in enumerate(results):
         data = result.model_dump()
-        ws.append([data.get(field) for field in fields])
+        row_dict = row_dicts[index] if row_dicts is not None else {}
+        ws.append(
+            [data.get(field) for field in fields]
+            + [row_dict.get(header) for header in passthrough]
+        )
+
+    if source_contents is not None:
+        _copy_extra_sheets(source_contents, wb)
 
     buffer = io.BytesIO()
     wb.save(buffer)
@@ -458,7 +534,7 @@ async def enrich_file(
     if not contents:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
-    _headers, row_dicts = _parse_xlsx(contents)
+    headers, row_dicts = _parse_xlsx(contents)
     records = _rows_to_records(row_dicts)
     options = EnrichmentOptions(
         max_concurrency=max_concurrency,
@@ -479,7 +555,9 @@ async def enrich_file(
 
     response = await orchestrator.enrich_batch(request.records, request.options)
 
-    output_bytes = _build_output_xlsx(response.results)
+    output_bytes = _build_output_xlsx(
+        response.results, headers, row_dicts, source_contents=contents
+    )
 
     stem = filename.rsplit("/", 1)[-1].rsplit(".", 1)[0] or "records"
     out_name = f"{stem}_enriched.xlsx"
@@ -676,6 +754,7 @@ def _build_dedup_xlsx(
     row_dicts: list[dict[str, str]],
     rows: list[DedupRow],
     response: DedupResponse,
+    source_contents: bytes | None = None,
 ) -> bytes:
     """Echo the uploaded sheet with cluster-assignment columns appended.
 
@@ -683,7 +762,9 @@ def _build_dedup_xlsx(
     ``Cluster`` group number (always populated — see ``_cluster_labels``) is
     appended first, followed by the detailed result columns, joined onto each
     row by its ``row_id``. Rows the adjudicator did not return (should not
-    happen) get blank result cells rather than being dropped.
+    happen) get blank result cells rather than being dropped. Extra sheets
+    (e.g. the scoring "Weights" sheet) are copied over so the downstream
+    /api/dedup/score/file stage still sees them.
     """
     from openpyxl import Workbook
 
@@ -715,6 +796,9 @@ def _build_dedup_xlsx(
             res.reasoning,
             res.signature_id,
         ])
+
+    if source_contents is not None:
+        _copy_extra_sheets(source_contents, wb)
 
     buffer = io.BytesIO()
     wb.save(buffer)
@@ -795,10 +879,109 @@ async def dedup_file(
             except Exception as exc:  # noqa: BLE001
                 logger.info("Dedup LLM aclose failed (non-fatal): %s", exc)
 
-    output_bytes = _build_dedup_xlsx(headers, row_dicts, rows, response)
+    output_bytes = _build_dedup_xlsx(
+        headers, row_dicts, rows, response, source_contents=contents
+    )
 
     stem = filename.rsplit("/", 1)[-1].rsplit(".", 1)[0] or "records"
     out_name = f"{stem}_dedup.xlsx"
+    return StreamingResponse(
+        io.BytesIO(output_bytes),
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Scoring + golden-record election (Phase 2 "Pass 3")
+# ---------------------------------------------------------------------------
+
+
+@router.post("/api/dedup/score", response_model=ScoringResponse)
+async def dedup_score(request: ScoringRequest) -> ScoringResponse:
+    """Deterministic scoring + golden-record election.
+
+    Separate from /api/dedup/cluster-block on purpose: clustering and
+    election have different inputs, cadences, and cost profiles — election
+    is pure arithmetic over dedup/weights.json and can be re-run on retuned
+    weights without paying for LLM adjudication again. No LLM is involved.
+
+    An empty rows list returns 200 with an empty result and zeroed summary;
+    a duplicated row_id returns 400 (a duplicated BP number means a broken
+    upstream join; scoring it would double-elect).
+    """
+    request_start = time.perf_counter()
+    logger.info("Scoring request received: %d rows", len(request.rows))
+
+    try:
+        results = elect_golden_records(request.rows)
+    except DuplicateRowIdError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Duplicate row_id(s) in request: {', '.join(exc.row_ids)}",
+        ) from exc
+
+    summary = build_summary(results)
+    logger.info(
+        "scoring_request",
+        extra={
+            "summary": summary.model_dump(),
+            "total_latency_ms": int((time.perf_counter() - request_start) * 1000),
+        },
+    )
+    return ScoringResponse(rows=results, summary=summary)
+
+
+@router.post("/api/dedup/score/file")
+async def dedup_score_file(
+    file: UploadFile = File(..., description="Scoring XLSX (dedup test data with score_* columns)"),
+) -> StreamingResponse:
+    """Scoring + election endpoint that takes an XLSX upload and returns it filled.
+
+    The uploaded workbook is edited IN PLACE with openpyxl — the "Weights"
+    sheet and every original column survive untouched; only the empty
+    score_*/derived/election columns are written (located by header name,
+    never by index). A parseable Weights sheet overrides dedup/weights.json
+    wholesale; a broken one is ignored wholesale with a warning in the
+    logged summary. Rows with a blank Customer cell are skipped and counted
+    in summary.errors.
+    """
+    request_start = time.perf_counter()
+    filename = file.filename or ""
+    if not filename.lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded file must be an .xlsx (or .xlsm) workbook.",
+        )
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    try:
+        output_bytes, summary = score_workbook(contents)
+    except DuplicateRowIdError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Duplicate Customer number(s) in file: {', '.join(exc.row_ids)}",
+        ) from exc
+    except ScoringFileError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    logger.info(
+        "scoring_request",
+        extra={
+            "summary": summary.model_dump(),
+            # "filename" is a reserved LogRecord attribute — use upload_name.
+            "upload_name": filename,
+            "total_latency_ms": int((time.perf_counter() - request_start) * 1000),
+        },
+    )
+
+    stem = filename.rsplit("/", 1)[-1].rsplit(".", 1)[0] or "records"
+    out_name = f"{stem}_scored.xlsx"
     return StreamingResponse(
         io.BytesIO(output_bytes),
         media_type=(
