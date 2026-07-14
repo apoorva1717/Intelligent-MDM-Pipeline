@@ -70,7 +70,7 @@ class TestRoutes:
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["results"]) == 1
-        assert data["results"][0]["record_id"] == "ROUTE_001"
+        assert data["results"][0]["Customer"] == "ROUTE_001"
         assert data["summary"]["total"] == 1
 
     @pytest.mark.asyncio
@@ -92,7 +92,7 @@ class TestRoutes:
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["results"]) == 1
-        assert data["results"][0]["record_id"] == ""
+        assert data["results"][0]["Customer"] == ""
 
     @pytest.mark.asyncio
     async def test_enrich_batch(self, client):

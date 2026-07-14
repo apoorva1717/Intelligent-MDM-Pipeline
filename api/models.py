@@ -6,10 +6,13 @@ from typing import List, Literal, Optional
 
 from pydantic import (
     AliasChoices,
+    AliasGenerator,
     BaseModel,
     ConfigDict,
     Field,
 )
+
+from api.output_columns import RESPONSE_COLUMNS
 
 
 # ---------------------------------------------------------------------------
@@ -299,12 +302,26 @@ class EnrichmentRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 class EnrichmentResult(BaseModel):
-    """Enrichment outcome for one record."""
-    record_id: str
+    """Enrichment outcome for one record.
 
-    # ── SAP master-data columns carried through verbatim (not enriched) ─
-    # These mirror the input record so the result workbook round-trips
-    # every original column. Enrichment never alters them.
+    Serialises with the exact /enrich/file column headers as JSON keys
+    (via ``RESPONSE_COLUMNS``), so the response body and the file output
+    share one schema — same columns, same names. Internal code keeps
+    using the snake_case field names; only the wire format is aliased.
+    """
+    model_config = ConfigDict(
+        alias_generator=AliasGenerator(
+            serialization_alias=lambda field_name: RESPONSE_COLUMNS.get(
+                field_name, field_name
+            ),
+        ),
+    )
+
+    # Serialised fields are declared in RESPONSE_COLUMNS order so the JSON
+    # response carries the columns in the same order as the file output.
+
+    # ── Identity & administrative (carried through verbatim) ─────────
+    record_id: str
     ecc_customer_number: Optional[str] = None
     central_deletion_flag: Optional[str] = None
     comments: Optional[str] = None
@@ -313,6 +330,45 @@ class EnrichmentResult(BaseModel):
     sales_organization: Optional[str] = None
     distribution_channel: Optional[str] = None
     division: Optional[str] = None
+
+    # ── Name block (enriched) + web enrichment ───────────────────────
+    name1_enriched: Optional[str] = None
+    name2_enriched: Optional[str] = None
+    name3_enriched: Optional[str] = None
+    name4_enriched: Optional[str] = None
+    # Serialised as the "Domain" column (carries the website URL value).
+    website_url: Optional[str] = None
+    # Unit-scoped host with TLD (e.g. 'cs.mit.edu') when the source URL
+    # points to a real subdomain of the institution domain. Null when
+    # name2 is absent or the source URL is the bare institution domain.
+    department_domain: Optional[str] = None
+
+    # ── Contact block (enriched) ─────────────────────────────────────
+    # c/o (extracted from prefixed Name 2 or passed through)
+    care_of_enriched: Optional[str] = None
+    # Contact / email (extracted or passed through)
+    contact_enriched: Optional[str] = None
+    email_enriched: Optional[str] = None
+
+    # ── Address Stage 1 — cleaned streets + extracted sub-locations ──
+    street_cleaned: Optional[str] = None
+    # House number passed through verbatim from the input record.
+    house_number: Optional[str] = None
+    street_2_cleaned: Optional[str] = None
+    street_3_cleaned: Optional[str] = None
+    street_4_cleaned: Optional[str] = None
+    street_5_cleaned: Optional[str] = None
+    po_box_extracted: Optional[str] = None
+    suite: Optional[str] = None
+    building: Optional[str] = None
+    floor: Optional[str] = None
+    room: Optional[str] = None
+    unit: Optional[str] = None
+    mail_stop: Optional[str] = None
+    unloading_point: Optional[str] = None
+    mail_code: Optional[str] = None
+
+    # ── Geography & remaining SAP master-data (carried through) ───────
     country_region_key: Optional[str] = None
     postal_code: Optional[str] = None
     city: Optional[str] = None
@@ -327,55 +383,28 @@ class EnrichmentResult(BaseModel):
     created_on: Optional[str] = None
     created_by: Optional[str] = None
     vat_registration_no: Optional[str] = None
-    terms_of_payment: Optional[str] = None
-
-    # Name fields (enriched values)
-    name1_enriched: Optional[str] = None
-    name2_enriched: Optional[str] = None
-    name3_enriched: Optional[str] = None
-    name4_enriched: Optional[str] = None
-
     # Compact search handles for downstream re-querying.
     # search_term_1 mirrors name1 (acronym preferred, domain fallback);
     # search_term_2 mirrors name2 with the same shape — null when name2 is absent.
     search_term_1: Optional[str] = None
     search_term_2: Optional[str] = None
+    terms_of_payment: Optional[str] = None
 
-    # Unit-scoped host with TLD (e.g. 'cs.mit.edu') when the source URL
-    # points to a real subdomain of the institution domain. Null when
-    # name2 is absent or the source URL is the bare institution domain.
-    department_domain: Optional[str] = None
+    # ── Review metadata (enrichment output) ──────────────────────────
+    flag_for_review: bool = False
+    flag_reason: Optional[str] = None
+    error: Optional[str] = None
+    record_type: Literal["research_institution", "company", "unknown"] = "unknown"
+    # Registry identifiers — both surface in the JSON (not excluded) so the
+    # dedup phase can converge records on a shared identifier: ror_id for
+    # institutions, lei_id for companies (e.g. "Pfizer AG" / "Pfizer").
+    ror_id: Optional[str] = None
+    lei_id: Optional[str] = None
 
-    # c/o (extracted from prefixed Name 2 or passed through)
-    care_of_enriched: Optional[str] = None
-
-    # Contact / email (extracted or passed through)
-    contact_enriched: Optional[str] = None
-    email_enriched: Optional[str] = None
-
-    # Address Stage 1 — cleaned streets + extracted sub-locations
-    street_cleaned: Optional[str] = None
-    # House number passed through verbatim from the input record.
-    house_number: Optional[str] = None
-    street_2_cleaned: Optional[str] = None
-    street_3_cleaned: Optional[str] = None
-    street_4_cleaned: Optional[str] = None
-    street_5_cleaned: Optional[str] = None
-    suite: Optional[str] = None
-    building: Optional[str] = None
-    floor: Optional[str] = None
-    room: Optional[str] = None
-    unit: Optional[str] = None
-    mail_stop: Optional[str] = None
-    po_box_extracted: Optional[str] = None
-    unloading_point: Optional[str] = None
-    mail_code: Optional[str] = None
-
-    # Classification & provenance
+    # ── Internal-only fields (excluded from serialisation) ───────────
     # NOTE: the fields marked ``exclude=True`` below are still populated and
     # used internally (tier logic, batch summary counts, tests) — they are
     # just omitted from the serialised API response to keep the output lean.
-    record_type: Literal["research_institution", "company", "unknown"] = "unknown"
     tier_used: Literal[1, 2, 3] = Field(default=1, exclude=True)
     tier2_mode: Optional[Literal["2A_population", "2A_verification", "2B"]] = Field(default=None, exclude=True)
     confidence: Literal["high", "medium", "low", "none"] = Field(default="none", exclude=True)
@@ -385,25 +414,17 @@ class EnrichmentResult(BaseModel):
         "llm_canonical", "SERP+LLM", "pattern_match",
         "web_search", "passthrough", "gleif", "none",
     ] = Field(default="none", exclude=True)
-    # Registry identifiers — both surface in the JSON (not excluded) so the
-    # dedup phase can converge records on a shared identifier: ror_id for
-    # institutions, lei_id for companies (e.g. "Pfizer AG" / "Pfizer").
-    ror_id: Optional[str] = None
-    lei_id: Optional[str] = None
     source_url: Optional[str] = Field(default=None, exclude=True)
-    domain: Optional[str] = None
-    website_url: Optional[str] = None
+    # Populated and used internally (search terms, tier logic) but excluded
+    # from the response body: only website_url is serialised (the "Domain"
+    # column), keeping the JSON response identical to the file output schema.
+    domain: Optional[str] = Field(default=None, exclude=True)
     contact_used: bool = Field(default=False, exclude=True)
     name2_match_result: Literal["exact", "partial", "no_match", "not_applicable", "unknown"] = Field(default="not_applicable", exclude=True)
-
     # Which use cases (0-9) fired for this record
     use_cases_triggered: List[int] = Field(default_factory=list, exclude=True)
-
-    flag_for_review: bool = False
-    flag_reason: Optional[str] = None
     enrichment_status: Literal["enriched", "verified", "unresolved", "failed"] = Field(default="failed", exclude=True)
     duration_ms: int = Field(default=0, exclude=True)
-    error: Optional[str] = None
 
 
 class EnrichmentSummary(BaseModel):

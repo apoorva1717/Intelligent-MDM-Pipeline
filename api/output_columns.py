@@ -1,16 +1,15 @@
-"""Output column mapping for the /enrich/file endpoint.
+"""Single output schema for the /enrich and /enrich/file endpoints.
 
-The result workbook has one column per field returned in the /enrich JSON
-response body (i.e. the serialised fields of ``EnrichmentResult``). This
-mapping lists every output column in order:
+This mapping defines every output column in order:
 
-    key   = EnrichmentResult field name (exactly as it appears in the
-            response body)
-    value = column header written to the XLSX
+    key   = EnrichmentResult field name (internal, snake_case)
+    value = the output name — both the column header written to the XLSX
+            and the JSON key in the /enrich response body (applied as a
+            serialization alias on ``EnrichmentResult``)
 
-By default the header is identical to the response field name so the file
-matches the response body one-to-one. Edit a value here if you want a
-friendlier header in the spreadsheet without changing the API response.
+The JSON response and the file therefore always carry exactly the same
+columns under exactly the same names. Edit a value here to rename an
+output column in both places at once.
 """
 
 from __future__ import annotations
