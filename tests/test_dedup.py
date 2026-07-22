@@ -121,7 +121,8 @@ async def test_100_identical_rows_one_cluster_no_llm():
     assert resp.summary.rows_clustered == 100
     assert resp.summary.llm_calls == 0
     cluster_ids = {r.cluster_id for r in resp.rows}
-    assert cluster_ids == {1}
+    assert len(cluster_ids) == 1 and None not in cluster_ids
+    assert all(str(cid).startswith("c_") for cid in cluster_ids)  # stable hash
     assert all(r.routing == "cluster" for r in resp.rows)
     assert all(r.llm_flag is False for r in resp.rows)
 
@@ -161,6 +162,116 @@ async def test_same_institution_different_department_not_merged():
 
 
 # ---------------------------------------------------------------------------
+# Q1 — verdict application: conflicting hard IDs must never merge
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_conflicting_ror_not_merged_verdict_guard():
+    """Q1 reproduction (the 100-row 'cluster 7 / 73000015' defect in miniature).
+
+    The LLM returns two signatures that carry DIFFERENT non-empty ROR ids in a
+    single entity, with reasoning that itself argues against the merge. The
+    deterministic identity guard must split them (a different non-empty ROR is a
+    strong split signal) and route them to manual_review — never emit them as
+    one confident cluster whose stored reasoning disowns its own membership.
+    """
+    rows = [
+        _row("r1", "Max Planck Institute", "Chemistry", ror_id="ror:AAA"),
+        _row("r2", "Max-Planck-Institut", "Chemistry", ror_id="ror:BBB"),
+    ]
+
+    def responder(system, user):
+        return json.dumps({
+            "entities": [
+                {"signature_ids": ["s1", "s2"], "institution": "Max Planck",
+                 "department": "Chemistry", "confidence": 0.96,
+                 "reasoning": "Names match, but the different ROR indicates "
+                              "this should not be merged."},
+            ],
+            "uncertain_signature_ids": [],
+        })
+
+    llm = ScriptedLLM(responder)
+    resp = await cluster_blocks(rows, llm)
+    by = _by_row(resp)
+
+    # Never co-merged into one real cluster.
+    co_clustered = (
+        by["r1"].cluster_id is not None
+        and by["r1"].cluster_id == by["r2"].cluster_id
+    )
+    assert not co_clustered
+    # The conflicting-ROR merge is demoted for human review.
+    assert by["r1"].routing == "manual_review"
+    assert by["r2"].routing == "manual_review"
+    # INVARIANT: no clustered row carries reasoning that disowns its own merge.
+    for r in resp.rows:
+        if r.routing == "cluster" and r.reasoning:
+            assert "should not be merged" not in r.reasoning.lower()
+
+
+@pytest.mark.asyncio
+async def test_conflicting_lei_not_merged_verdict_guard():
+    """Companion: two DIFFERENT non-empty LEIs in one entity split the same way
+    (the system prompt already states different LEIs signal different entities)."""
+    rows = [
+        _row("r1", "Globex SE", None, lei_id="LEI-GLOBEX-AAA"),
+        _row("r2", "Globex S.E.", None, lei_id="LEI-GLOBEX-BBB"),
+    ]
+
+    def responder(system, user):
+        return json.dumps({
+            "entities": [
+                {"signature_ids": ["s1", "s2"], "institution": "Globex",
+                 "department": "", "confidence": 0.98, "reasoning": "same name"},
+            ],
+            "uncertain_signature_ids": [],
+        })
+
+    llm = ScriptedLLM(responder)
+    resp = await cluster_blocks(rows, llm)
+    by = _by_row(resp)
+
+    co_clustered = (
+        by["r1"].cluster_id is not None
+        and by["r1"].cluster_id == by["r2"].cluster_id
+    )
+    assert not co_clustered
+    assert by["r1"].routing == "manual_review"
+    assert by["r2"].routing == "manual_review"
+
+
+# ---------------------------------------------------------------------------
+# Q4 — stable content-hash cluster_id
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_cluster_id_is_stable_hash_independent_of_input_order():
+    """Same membership → same cluster_id across runs and input orderings; the
+    id is the 'c_'-prefixed content hash, never a response-scoped int."""
+    def make_rows():
+        return [
+            _row("r1", "Acme GmbH", "Chemistry"),
+            _row("r2", "Acme GmbH", "Chemistry"),  # identical → same cluster
+            _row("r3", "Zeta Institut", "Physics"),  # unique
+        ]
+
+    llm1 = ScriptedLLM(lambda s, u: "{}")
+    resp1 = await cluster_blocks(make_rows(), llm1)
+    cid1 = _by_row(resp1)["r1"].cluster_id
+
+    # Same rows, reversed order → identical cluster_id.
+    rows2 = list(reversed(make_rows()))
+    llm2 = ScriptedLLM(lambda s, u: "{}")
+    resp2 = await cluster_blocks(rows2, llm2)
+    by2 = _by_row(resp2)
+
+    assert cid1.startswith("c_") and len(cid1) == 14  # "c_" + 12 hex
+    assert by2["r1"].cluster_id == cid1 == by2["r2"].cluster_id
+    assert by2["r3"].cluster_id is None  # unique carries no cluster id
+
+
+# ---------------------------------------------------------------------------
 # Cross-language / abbreviation merge
 # ---------------------------------------------------------------------------
 
@@ -189,7 +300,7 @@ async def test_cross_language_abbreviation_merge():
 
     assert llm.calls == 1
     assert resp.summary.clusters == 1
-    assert by["r1"].cluster_id == 1 == by["r2"].cluster_id
+    assert by["r1"].cluster_id == by["r2"].cluster_id is not None
     assert by["r1"].routing == "cluster" and by["r2"].routing == "cluster"
     assert by["r1"].llm_flag is True and by["r2"].llm_flag is True
     assert by["r1"].confidence == pytest.approx(0.95)
@@ -229,7 +340,7 @@ async def test_lei_and_ror_hints_passed_to_llm():
     assert "LEI-ZEISS-001" in prompt
     assert "ror:zeiss" in prompt
     # And the merge produced one cluster (LLM-driven).
-    assert by["r1"].cluster_id == 1 == by["r2"].cluster_id
+    assert by["r1"].cluster_id == by["r2"].cluster_id is not None
     assert by["r1"].llm_flag is True
 
 
@@ -559,7 +670,7 @@ async def test_blocks_processed_independently_and_block_id_derived():
     by = _by_row(resp)
 
     assert resp.summary.blocks == 2
-    assert by["r1"].cluster_id == 1 == by["r2"].cluster_id
+    assert by["r1"].cluster_id == by["r2"].cluster_id is not None
     assert by["r3"].cluster_id is None
     assert by["r3"].block_id.startswith("blk-")
 

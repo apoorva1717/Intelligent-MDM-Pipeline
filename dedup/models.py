@@ -65,13 +65,16 @@ class DedupResultRow(BaseModel):
 
     row_id: str
     block_id: str
-    # Simple sequential cluster number (1, 2, 3, …), unique across the whole
-    # response; null for rows that are not in a duplicate cluster.
-    cluster_id: Optional[int] = None
+    # Stable content-hash cluster id ("c_" + 12 hex of sha256 over the sorted
+    # member row_ids); null for rows that are not in a duplicate cluster. Same
+    # membership => same id across runs; a membership change => a new id.
+    cluster_id: Optional[str] = None
     routing: Literal["cluster", "unique", "manual_review"]
     llm_flag: bool
     signature_id: str
-    # Entity confidence when the row is clustered or flagged uncertain; null otherwise.
+    # Merge confidence: set only for a genuine LLM merge (>=2 distinct
+    # signatures) or an uncertain row; null for a unique row AND for a pure
+    # identical-signature collapse (deterministic, no merge decision).
     confidence: Optional[float] = None
     reasoning: Optional[str] = None
     model: str

@@ -91,6 +91,12 @@ OPTIONAL_VARS_WITH_DEFAULTS = {
     "FUZZY_MATCH_THRESHOLD": "80",
     "MAX_PAGE_CONTENT_CHARS": "3000",
     "DEFAULT_MAX_CONCURRENCY": "5",
+    # Golden-record election: a duplicate merge whose adjudication confidence is
+    # below this keeps its cluster membership but enters election as
+    # manual_review (a human confirms before anything is blocked). Retuning it
+    # never re-runs the LLM — election reads the confidence persisted by
+    # clustering.
+    "CONFIDENCE_MERGE_THRESHOLD": "0.95",
     "PAGE_FETCH_TIMEOUT_SECONDS": "10",
     "MOCK_EXTERNAL_CALLS": "false",
     "ENV": "production",
@@ -195,6 +201,13 @@ class Settings:
     # Concurrency
     default_max_concurrency: int = field(
         default_factory=lambda: int(os.getenv("DEFAULT_MAX_CONCURRENCY", "5"))
+    )
+
+    # Golden-record election (Phase 2 Pass 3). A merge below this confidence is
+    # demoted to manual_review at election time; the threshold is a pure data
+    # retune (no LLM re-run).
+    confidence_merge_threshold: float = field(
+        default_factory=lambda: float(os.getenv("CONFIDENCE_MERGE_THRESHOLD", "0.95"))
     )
 
     # Feature flags

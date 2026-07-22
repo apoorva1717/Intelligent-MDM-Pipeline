@@ -14,6 +14,7 @@ UNCONFIRMED values flagged in the model (verify with Bernd before go-live):
 from __future__ import annotations
 
 import io
+import json
 import os
 import random
 import sys
@@ -34,6 +35,7 @@ from dedup.scoring import (
     DuplicateRowIdError,
     ScoringRow,
     derived_counts,
+    detect_issues,
     elect_golden_records,
     load_weights,
     score_row,
@@ -282,6 +284,144 @@ class TestElection:
         assert by["1"].election_status == "manual_review"
         assert by["2"].election_status == "manual_review"
 
+    def test_low_confidence_merge_demoted_to_manual_review(self):
+        """Q2: a merge below the confidence threshold keeps its membership but
+        enters election as manual_review — a human confirms before a block."""
+        results = elect_golden_records([
+            _cluster_row("1", confidence=0.90, last_order_year=2026, order_count=20),
+            _cluster_row("2", confidence=0.90),
+        ], WEIGHTS, confidence_threshold=0.95)
+        by = _by_row(results)
+        # Membership + winner still computed…
+        assert by["1"].is_golden_record is True
+        assert by["1"].golden_record_id == "1"
+        assert by["2"].golden_record_id == "1"
+        # …but the whole cluster is demoted.
+        assert by["1"].election_status == "manual_review"
+        assert by["2"].election_status == "manual_review"
+
+    def test_confident_merge_stays_proposed(self):
+        """A merge at/above threshold is a normal proposal."""
+        results = elect_golden_records([
+            _cluster_row("1", confidence=0.97, last_order_year=2026, order_count=20),
+            _cluster_row("2", confidence=0.96),
+        ], WEIGHTS, confidence_threshold=0.95)
+        by = _by_row(results)
+        assert by["1"].election_status == "proposed"
+        assert by["2"].election_status == "proposed"
+
+    def test_lowest_member_confidence_gates_the_cluster(self):
+        """Per-cluster confidence is the LOWEST member's — one low-confidence
+        join demotes the merge even if others are confident."""
+        results = elect_golden_records([
+            _cluster_row("1", confidence=0.99, last_order_year=2026),
+            _cluster_row("2", confidence=0.80),  # dragged the merge down
+        ], WEIGHTS, confidence_threshold=0.95)
+        assert all(r.election_status == "manual_review" for r in results)
+
+    def test_none_confidence_never_gates(self):
+        """A deterministic identical-collapse (no LLM merge → confidence None)
+        is fully trusted: it elects as proposed, never gated."""
+        results = elect_golden_records([
+            _cluster_row("1", confidence=None, last_order_year=2026),
+            _cluster_row("2", confidence=None),
+        ], WEIGHTS, confidence_threshold=0.95)
+        assert all(r.election_status == "proposed" for r in results)
+
+    def test_confidence_threshold_from_env(self, monkeypatch):
+        """The threshold is env-overridable without re-running the LLM."""
+        monkeypatch.setenv("CONFIDENCE_MERGE_THRESHOLD", "0.85")
+        results = elect_golden_records([
+            _cluster_row("1", confidence=0.90, last_order_year=2026),
+            _cluster_row("2", confidence=0.90),
+        ], WEIGHTS)  # 0.90 >= 0.85 → proposed
+        assert all(r.election_status == "proposed" for r in results)
+
+    def test_inherited_manual_review_survives_confident_neighbours(self):
+        """Q3: a row clustering flagged manual_review can NEVER leave election
+        as proposed/unique — even surrounded by confident rows. Election only
+        ever propagates uncertainty, never upgrades it."""
+        results = elect_golden_records([
+            # A confident cluster…
+            _cluster_row("1", cluster_id="C1", confidence=0.99, last_order_year=2026),
+            _cluster_row("2", cluster_id="C1", confidence=0.99),
+            # …and a lone row clustering could not resolve.
+            ScoringRow(row_id="9", cluster_id=None, routing="manual_review",
+                       last_order_year=2026, order_count=20),
+        ], WEIGHTS, confidence_threshold=0.95)
+        by = _by_row(results)
+        assert by["1"].election_status == "proposed"   # neighbours unaffected
+        assert by["2"].election_status == "proposed"
+        assert by["9"].election_status == "manual_review"  # never upgraded to unique
+
+    def test_inherited_manual_review_demotes_whole_cluster(self):
+        """An uncertain member propagates manual_review to its cluster, even at
+        high confidence and with no blocked members."""
+        results = elect_golden_records([
+            _cluster_row("1", cluster_id="C1", confidence=0.99,
+                         routing="manual_review", last_order_year=2026),
+            _cluster_row("2", cluster_id="C1", confidence=0.99, routing="cluster"),
+        ], WEIGHTS, confidence_threshold=0.95)
+        by = _by_row(results)
+        assert by["1"].election_status == "manual_review"
+        assert by["2"].election_status == "manual_review"
+        # Winner is still elected — membership is preserved, only routing demoted.
+        assert by["1"].is_golden_record is True
+        assert by["2"].golden_record_id == "1"
+
+    def test_manual_review_singleton_not_upgraded_in_summary(self):
+        """A lone manual_review row is counted as manual_review, not unique, and
+        does not mint a phantom cluster."""
+        from dedup.scoring import build_summary
+        results = elect_golden_records([
+            ScoringRow(row_id="9", cluster_id=None, routing="manual_review"),
+            ScoringRow(row_id="8", cluster_id=None, routing="unique"),
+        ], WEIGHTS)
+        summary = build_summary(results)
+        assert summary.rows_manual_review == 1
+        assert summary.rows_unique == 1
+        assert summary.clusters == 0
+        assert summary.all_blocked_clusters == 0
+
+    def test_approval_and_proposed_golden_fields(self):
+        """Q5: cluster rows get approval_status='proposed' and a
+        proposed_golden_id; unique rows get neither (nothing to approve)."""
+        results = elect_golden_records([
+            _cluster_row("1", cluster_id="C1", last_order_year=2026, order_count=20),
+            _cluster_row("2", cluster_id="C1"),
+            ScoringRow(row_id="9", cluster_id=None),
+        ], WEIGHTS)
+        by = _by_row(results)
+        assert by["1"].approval_status == "proposed"
+        assert by["2"].approval_status == "proposed"
+        assert by["1"].proposed_golden_id == "1" == by["2"].proposed_golden_id
+        # Unique: nothing to approve.
+        assert by["9"].approval_status is None
+        assert by["9"].proposed_golden_id is None
+        assert by["9"].election_status == "unique"
+
+    def test_apply_approval_promotes_golden_and_rejects(self):
+        """Q5: approving a cluster sets approval_status and promotes the proposed
+        winner into the golden fields; rejecting only sets the status. Unknown
+        cluster raises."""
+        from dedup.scoring import apply_approval, ClusterNotFoundError
+        results = elect_golden_records([
+            _cluster_row("1", cluster_id="C1", customer_status="blocked",
+                         last_order_year=2026),
+            _cluster_row("2", cluster_id="C1", customer_status="blocked"),
+        ], WEIGHTS)  # all-blocked → manual_review
+        approved, updated = apply_approval(results, "C1", "approved")
+        by = {r.row_id: r for r in approved}
+        assert set(updated) == {"1", "2"}
+        assert all(r.approval_status == "approved" for r in approved)
+        assert by["1"].is_golden_record is True and by["1"].golden_record_id == "1"
+        assert by["2"].is_golden_record is False and by["2"].golden_record_id == "1"
+
+        rejected, _ = apply_approval(results, "C1", "rejected")
+        assert all(r.approval_status == "rejected" for r in rejected)
+        with pytest.raises(ClusterNotFoundError):
+            apply_approval(results, "NOPE", "approved")
+
     def test_duplicate_row_id_raises(self):
         with pytest.raises(DuplicateRowIdError) as exc:
             elect_golden_records([
@@ -419,6 +559,44 @@ def transport():
     return ASGITransport(app=app)
 
 
+class TestIssues:
+    def test_detect_issues_covers_each_type(self):
+        rows = [
+            # cA: low-confidence merge (0.90 < 0.95); r1 has a score, r2 doesn't.
+            _cluster_row("1", cluster_id="cA", confidence=0.90, last_order_year=2026),
+            _cluster_row("2", cluster_id="cA", confidence=0.90),
+            # cB: all blocked + zero scores → all_blocked + empty_payload + tie.
+            _cluster_row("3", cluster_id="cB", customer_status="blocked"),
+            _cluster_row("4", cluster_id="cB", customer_status="blocked"),
+            # cC: a deterministic identity-split reasoning → verdict_contradiction.
+            _cluster_row("5", cluster_id="cC", last_order_year=2026,
+                         reasoning="Split: different non-empty ROR ids (a, b) "
+                                   "indicate different entities."),
+            _cluster_row("6", cluster_id="cC", last_order_year=2023),
+        ]
+        results = elect_golden_records(rows, WEIGHTS, confidence_threshold=0.95)
+        issues = detect_issues(rows, results, confidence_threshold=0.95)
+        by_type = {}
+        for i in issues:
+            by_type.setdefault(i.issue_type, []).append(i)
+
+        assert "low_confidence_merge" in by_type
+        assert by_type["low_confidence_merge"][0].cluster_id == "cA"
+        assert "all_blocked_cluster" in by_type
+        assert "empty_scoring_payload" in by_type
+        assert "tiebreak_decided" in by_type
+        vc = by_type["verdict_contradiction"]
+        assert vc[0].row_id == "5" and "Split:" in vc[0].detail
+
+    def test_no_issues_on_clean_confident_cluster(self):
+        rows = [
+            _cluster_row("1", cluster_id="cA", confidence=0.99, last_order_year=2026),
+            _cluster_row("2", cluster_id="cA", confidence=0.99, last_order_year=2023),
+        ]
+        results = elect_golden_records(rows, WEIGHTS, confidence_threshold=0.95)
+        assert detect_issues(rows, results, confidence_threshold=0.95) == []
+
+
 @pytest_asyncio.fixture
 async def client(transport):
     async with AsyncClient(transport=transport, base_url="http://test") as c:
@@ -443,6 +621,55 @@ class TestScoreEndpoint:
         assert data["rows"] == []
         assert data["summary"]["rows_in"] == 0
         assert data["summary"]["clusters"] == 0
+
+    @pytest.mark.asyncio
+    async def test_approve_endpoint_promotes_and_echoes(self, client):
+        """Q5: score a cluster, then approve it — approval_status flips to
+        approved and the proposed winner is promoted into the golden fields."""
+        scored = await client.post("/api/dedup/score", json={"rows": [
+            {"row_id": "1", "cluster_id": "C1", "last_order_year": 2026,
+             "customer_status": "blocked"},
+            {"row_id": "2", "cluster_id": "C1", "customer_status": "blocked"},
+        ]})
+        rows = scored.json()["rows"]
+        assert all(r["election_status"] == "manual_review" for r in rows)
+
+        resp = await client.post("/api/dedup/approve", json={
+            "cluster_id": "C1", "decision": "approved",
+            "approver": "bernd", "rows": rows,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["approver"] == "bernd"
+        assert set(data["updated_row_ids"]) == {"1", "2"}
+        by = {r["row_id"]: r for r in data["rows"]}
+        assert all(r["approval_status"] == "approved" for r in data["rows"])
+        assert by["1"]["is_golden_record"] is True
+        assert by["2"]["golden_record_id"] == "1"
+
+    @pytest.mark.asyncio
+    async def test_score_endpoint_returns_issues(self, client):
+        """Q7: the JSON score endpoint returns an issues list."""
+        resp = await client.post("/api/dedup/score", json={"rows": [
+            {"row_id": "1", "cluster_id": "C1", "confidence": 0.80,
+             "last_order_year": 2026},
+            {"row_id": "2", "cluster_id": "C1", "confidence": 0.80},
+        ]})
+        assert resp.status_code == 200
+        issues = resp.json()["issues"]
+        assert any(i["issue_type"] == "low_confidence_merge" for i in issues)
+        assert all(set(i) == {"row_id", "cluster_id", "issue_type", "detail"}
+                   for i in issues)
+
+    @pytest.mark.asyncio
+    async def test_approve_unknown_cluster_404(self, client):
+        resp = await client.post("/api/dedup/approve", json={
+            "cluster_id": "NOPE", "decision": "approved", "approver": "x",
+            "rows": [{"row_id": "1", "cluster_id": "C1", "score": 0,
+                      "is_golden_record": True, "election_status": "proposed",
+                      "score_breakdown": {}}],
+        })
+        assert resp.status_code == 404
 
     @pytest.mark.asyncio
     async def test_dirty_values_do_not_422(self, client):
@@ -568,6 +795,54 @@ def _build_workbook(data_rows, *, weights_rows=None, drop_weights_sheet=False):
 
 
 class TestScoreWorkbook:
+    def test_manual_review_blanks_golden_in_file(self):
+        """Q5: an all-blocked (manual_review) cluster leaves is_golden_record
+        and golden_record_id EMPTY in the file; the proposal survives in
+        proposed_golden_id, and approval_status is 'proposed'."""
+        original = _build_workbook([
+            _data_row("1", cluster="A1", routing="cluster", status="blocked",
+                      year=2026),
+            _data_row("2", cluster="A1", routing="cluster", status="blocked"),
+            _data_row("3"),  # unique
+        ])
+        output, _ = score_workbook(original)
+        ws = load_workbook(io.BytesIO(output))["Sheet1"]
+        headers = [c.value for c in ws[1]]
+
+        def col(h):
+            return headers.index(h) + 1
+
+        # Row 2 (winner "1", row 3 in sheet): golden blanked, proposal kept.
+        assert ws.cell(row=2, column=col("election_status")).value == "manual_review"
+        assert ws.cell(row=2, column=col("is_golden_record")).value is None
+        assert ws.cell(row=2, column=col("golden_record_id")).value is None
+        assert ws.cell(row=2, column=col("proposed_golden_id")).value == "1"
+        assert ws.cell(row=2, column=col("approval_status")).value == "proposed"
+        # Unique row: golden filled, nothing to approve.
+        assert ws.cell(row=4, column=col("is_golden_record")).value is True
+        assert ws.cell(row=4, column=col("election_status")).value == "unique"
+        assert ws.cell(row=4, column=col("approval_status")).value is None
+
+    def test_issues_sheet_written_preserving_weights(self):
+        """Q7: an Issues sheet is added (all_blocked_cluster) while the Weights
+        sheet and original columns survive."""
+        original = _build_workbook([
+            _data_row("1", cluster="A1", routing="cluster", status="blocked",
+                      year=2026),
+            _data_row("2", cluster="A1", routing="cluster", status="blocked"),
+            _data_row("3"),
+        ])
+        output, _ = score_workbook(original)
+        wb = load_workbook(io.BytesIO(output))
+        assert "Issues" in wb.sheetnames
+        assert "Weights" in wb.sheetnames  # untouched
+        issues_ws = wb["Issues"]
+        header = [c.value for c in issues_ws[1]]
+        assert header == ["row_id", "cluster_id", "issue_type", "detail"]
+        body = list(issues_ws.iter_rows(min_row=2, values_only=True))
+        types = {r[2] for r in body}
+        assert "all_blocked_cluster" in types
+
     def test_round_trip_preserves_weights_sheet_and_45_columns(self):
         original = _build_workbook([
             _data_row("72000001", cluster="A1", routing="cluster", year=2026,
@@ -832,3 +1107,106 @@ class TestPipelineFieldPreservation:
         assert by["72000003"]["election_status"] == "unique"
         # CRM values survived both hops and actually scored.
         assert by["72000001"]["score_final"] >= 20 + 25 + 15 + 10  # year+orders+sleeping+status
+
+
+class TestEdgeCases:
+    """Q8 — robustness edge cases (offline, no LLM)."""
+
+    def test_zero_signal_cluster_is_manual_review(self):
+        """A cluster whose every member scores 0 (all-None payload) elects a
+        winner by tie-break only → manual_review + empty_scoring_payload issue."""
+        rows = [_cluster_row("1", cluster_id="C1"), _cluster_row("2", cluster_id="C1")]
+        results = elect_golden_records(rows, WEIGHTS)
+        assert all(r.score == 0 for r in results)
+        assert all(r.election_status == "manual_review" for r in results)
+        issues = detect_issues(rows, results)
+        assert any(i.issue_type == "empty_scoring_payload" for i in issues)
+
+    def test_mixed_numeric_and_lexical_row_ids_no_raise(self):
+        """Non-numeric row_ids exercise the lexical tie-break; a cluster mixing
+        numeric and non-numeric ids must not raise."""
+        rows = [
+            _cluster_row("DE-0001", cluster_id="C1", last_order_year=2026),
+            _cluster_row("100", cluster_id="C1", last_order_year=2026),  # tie on score
+        ]
+        results = elect_golden_records(rows, WEIGHTS)  # must not raise
+        winners = [r for r in results if r.is_golden_record]
+        assert len(winners) == 1
+        # Lexical order: "100" < "DE-0001", so "100" wins the tie.
+        assert winners[0].row_id == "100"
+
+    def test_weights_retune_flips_winner_and_changes_version(self):
+        """Same cluster, different weights → possibly different winner, and a
+        different scored_with_weights_version stamped on every row."""
+        rows = [
+            _cluster_row("1", cluster_id="C1", last_order_year=2026),
+            _cluster_row("2", cluster_id="C1", equipment_count=50),
+        ]
+        w_year = json.loads(json.dumps(WEIGHTS))
+        w_equip = json.loads(json.dumps(WEIGHTS))
+        for band in w_year["equipment_count"]:
+            w_year["equipment_count"][band] = 0        # year dominates
+        for band in w_equip["sales_order_last_used"]:
+            w_equip["sales_order_last_used"][band] = 0
+        for band in w_equip["equipment_count"]:
+            w_equip["equipment_count"][band] = 999      # equipment dominates
+
+        by_year = _by_row(elect_golden_records(rows, w_year))
+        by_equip = _by_row(elect_golden_records(rows, w_equip))
+        assert by_year["1"].is_golden_record is True    # year winner
+        assert by_equip["2"].is_golden_record is True    # equipment winner
+        # Version fingerprints differ and are stamped on the rows.
+        v1 = by_year["1"].scored_with_weights_version
+        v2 = by_equip["1"].scored_with_weights_version
+        assert v1 and v2 and v1 != v2
+
+    def test_partial_cluster_warns_but_does_not_fail(self):
+        """A content-hash cluster_id whose submitted members don't reproduce the
+        hash (a subset submitted separately) warns 'partial_cluster'; a complete
+        submission does not."""
+        from dedup.cluster_key import cluster_hash
+        cid = cluster_hash(["1", "2"])  # id encodes the FULL membership {1, 2}
+
+        # Only member "1" submitted → subset → partial_cluster warning.
+        subset = elect_golden_records([_cluster_row("1", cluster_id=cid)], WEIGHTS)
+        assert any("partial_cluster" in w for w in subset[0].warnings)
+
+        # Both members submitted → hash matches → no partial warning.
+        full = elect_golden_records([
+            _cluster_row("1", cluster_id=cid, last_order_year=2026),
+            _cluster_row("2", cluster_id=cid),
+        ], WEIGHTS)
+        assert not any("partial_cluster" in w for r in full for w in r.warnings)
+
+    def test_non_hash_cluster_id_never_warns_partial(self):
+        """A plain id like 'C1' is not a content hash and must never trip the
+        partial-cluster check."""
+        results = elect_golden_records([
+            _cluster_row("1", cluster_id="C1", last_order_year=2026),
+            _cluster_row("2", cluster_id="C1"),
+        ], WEIGHTS)
+        assert not any("partial_cluster" in w for r in results for w in r.warnings)
+
+    def test_rerun_is_deterministic_end_to_end(self):
+        """Scoring the same workbook twice yields identical scoring/election
+        column values (determinism end to end)."""
+        wb = _build_workbook([
+            _data_row("1", cluster="A1", routing="cluster", year=2026, orders=12),
+            _data_row("2", cluster="A1", routing="cluster", year=2023),
+            _data_row("3"),
+        ])
+        out1, _ = score_workbook(wb)
+        out2, _ = score_workbook(wb)
+        ws1 = load_workbook(io.BytesIO(out1))["Sheet1"]
+        ws2 = load_workbook(io.BytesIO(out2))["Sheet1"]
+        vals1 = [[c.value for c in row] for row in ws1.iter_rows()]
+        vals2 = [[c.value for c in row] for row in ws2.iter_rows()]
+        assert vals1 == vals2
+
+    def test_scored_with_weights_version_written_to_file(self):
+        output, _ = score_workbook(_build_workbook([_data_row("1", year=2026)]))
+        ws = load_workbook(io.BytesIO(output))["Sheet1"]
+        headers = [c.value for c in ws[1]]
+        assert "scored_with_weights_version" in headers
+        col = headers.index("scored_with_weights_version") + 1
+        assert ws.cell(row=2, column=col).value  # non-empty fingerprint

@@ -466,8 +466,9 @@ class TestDedupFile:
     """The /api/dedup/file XLSX endpoint (file twin of cluster-block)."""
 
     _XTYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    _EXTRA = ["Cluster", "Block ID", "Cluster ID", "Routing", "LLM Flag",
-              "Confidence", "Reasoning", "Signature ID"]
+    # Q4: exactly one cluster key on the main sheet (Cluster ID = stable hash);
+    # internal keys (Block ID, Signature ID) live on the Dedup Debug sheet.
+    _EXTRA = ["Cluster ID", "Routing", "LLM Flag", "Confidence", "Reasoning"]
 
     @staticmethod
     def _xlsx_bytes(header: list, *rows: list) -> bytes:
@@ -502,26 +503,30 @@ class TestDedupFile:
         assert resp.headers["content-type"].startswith(self._XTYPE)
         assert "candidates_dedup.xlsx" in resp.headers["content-disposition"]
 
-        ws = load_workbook(io.BytesIO(resp.content)).active
+        wb = load_workbook(io.BytesIO(resp.content))
+        ws = wb.active
         header = [c.value for c in ws[1]]
         for col in self._EXTRA:
             assert col in header
+        # Internal keys moved off the main sheet onto the debug sheet.
+        assert "Dedup Debug" in wb.sheetnames
+        assert "Block ID" not in header and "Signature ID" not in header
 
         body = list(ws.iter_rows(min_row=2, values_only=True))
         assert len(body) == 3  # one row per input row
         # Customer column echoed verbatim; routing is a valid bucket.
         cust_i = header.index("Customer")
         routing_i = header.index("Routing")
-        cluster_i = header.index("Cluster")
+        cluster_i = header.index("Cluster ID")
         assert {r[cust_i] for r in body} == {"SAP-1", "SAP-2", "SAP-3"}
         assert all(r[routing_i] in {"cluster", "unique", "manual_review"}
                    for r in body)
 
-        # The Cluster column is populated for every row, and the two
-        # identical Stuttgart rows share a group while Carl Zeiss differs.
+        # The two identical Stuttgart rows share a stable-hash Cluster ID;
+        # the unique Carl Zeiss row has none.
         by_cust = {r[cust_i]: r[cluster_i] for r in body}
-        assert all(v is not None for v in by_cust.values())
-        assert by_cust["SAP-1"] == by_cust["SAP-2"]
+        assert by_cust["SAP-1"] == by_cust["SAP-2"] is not None
+        assert str(by_cust["SAP-1"]).startswith("c_")
         assert by_cust["SAP-3"] != by_cust["SAP-1"]
 
     @pytest.mark.asyncio

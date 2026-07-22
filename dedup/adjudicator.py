@@ -27,6 +27,7 @@ from dedup.prompts import (
     build_mode_a_user_prompt,
     build_mode_b_user_prompt,
 )
+from dedup.cluster_key import cluster_hash
 from dedup.signatures import Signature, build_signatures, group_rows_by_block
 
 logger = logging.getLogger(__name__)
@@ -144,6 +145,101 @@ def _enforce_name2_split(entities: List[Entity], next_index: int) -> tuple[List[
     return result, next_index
 
 
+def _next_entity_index(entities: List[Entity]) -> int:
+    """Smallest ``e<N>`` index free above every existing entity id."""
+    highest = 0
+    for ent in entities:
+        suffix = ent.entity_id[1:] if ent.entity_id.startswith("e") else ""
+        if suffix.isdigit():
+            highest = max(highest, int(suffix))
+    return highest + 1
+
+
+def _distinct_nonempty(values: Any) -> set[str]:
+    return {v for v in values if v}
+
+
+def _enforce_identity_split(
+    entities: List[Entity], next_index: int
+) -> tuple[List[Entity], int, bool]:
+    """Deterministic guard: an entity may never hold two DIFFERENT non-empty
+    ROR ids, nor two different non-empty LEI ids.
+
+    A different non-empty hard identifier means a different institution / legal
+    entity — a strong split signal (ROR/LEI is only ever a split signal here,
+    never a merge trigger). When an LLM merge violates this, split the entity
+    into singletons and flag each for human review; we never guess a safe
+    regrouping (the safe outcome is manual_review). Returns the (expanded)
+    entity list, the next free id index, and whether any split fired.
+    """
+    result: List[Entity] = []
+    fired = False
+    for ent in entities:
+        rors = _distinct_nonempty(s.ror_id for s in ent.signatures)
+        leis = _distinct_nonempty(s.lei_id for s in ent.signatures)
+        if len(ent.signatures) < 2 or (len(rors) < 2 and len(leis) < 2):
+            result.append(ent)
+            continue
+        fired = True
+        kind = "ROR" if len(rors) >= 2 else "LEI"
+        ids = sorted(rors if len(rors) >= 2 else leis)
+        logger.warning(
+            "Dedup: entity %s merged conflicting %s ids %s; splitting to "
+            "manual_review", ent.entity_id, kind, ids,
+        )
+        reason = (
+            f"Split: different non-empty {kind} ids ({', '.join(ids)}) "
+            f"indicate different entities; routed to manual review."
+        )
+        for i, sig in enumerate(ent.signatures):
+            sig.uncertain = True
+            sig.merge_reasoning = reason
+            sig.merge_confidence = ent.confidence
+            if i == 0:
+                entity_id = ent.entity_id
+            else:
+                entity_id = f"e{next_index}"
+                next_index += 1
+            result.append(Entity(
+                entity_id=entity_id,
+                signatures=[sig],
+                institution=ent.institution,
+                department=ent.department,
+                confidence=ent.confidence,
+                reasoning=reason,
+            ))
+    return result, next_index, fired
+
+
+# Explicit non-merge assertions. Read ONLY to demote toward manual_review —
+# never to merge — so a coarse phrase match is the safe direction (spec: if a
+# verdict is ambiguous, route the whole block to manual_review, never guess
+# toward merging).
+_NONMERGE_MARKERS = (
+    "should not be merged",
+    "should not merge",
+    "must not be merged",
+    "not be merged",
+    "do not merge",
+    "should be split",
+    "must be split",
+)
+
+
+def _reasoning_disowns_membership(entities: List[Entity]) -> bool:
+    """True when a MERGED entity (>=2 signatures) carries reasoning that
+    explicitly asserts a non-merge — a self-contradicting verdict. The INVARIANT
+    (asserted at the block seam): a record's stored reasoning may never assert
+    non-merge of a signature it belongs to."""
+    for ent in entities:
+        if len(ent.signatures) < 2 or not ent.reasoning:
+            continue
+        text = ent.reasoning.casefold()
+        if any(marker in text for marker in _NONMERGE_MARKERS):
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Mode A — one partition call per Name 2 bucket
 # ---------------------------------------------------------------------------
@@ -222,13 +318,21 @@ async def _mode_a(
                 continue
             assigned.update(s.signature_id for s in members)
             decision_counts["entity"] += 1
+            confidence = _confidence_to_float(ent_obj.get("confidence"))
+            reasoning = (ent_obj.get("reasoning") or None)
+            # The partition rationale is this group's merge rationale — attach
+            # it to every member so each output row carries the reasoning for
+            # its own membership.
+            for member in members:
+                member.merge_reasoning = reasoning
+                member.merge_confidence = confidence
             entities.append(Entity(
                 entity_id=f"e{next_index}",
                 signatures=members,
                 institution=(ent_obj.get("institution") or None),
                 department=(ent_obj.get("department") or None),
-                confidence=_confidence_to_float(ent_obj.get("confidence")),
-                reasoning=(ent_obj.get("reasoning") or None),
+                confidence=confidence,
+                reasoning=reasoning,
             ))
             next_index += 1
 
@@ -339,8 +443,14 @@ async def _mode_b(
         if decision == "match":
             target = compatible_by_id.get(parsed.get("matched_entity_id"))
             if target is not None:
+                # Stamp the decision on the joining signature so its output row
+                # carries the rationale for ITS OWN membership — never a blob
+                # overwritten across the whole entity as members accrue.
+                sig.merge_reasoning = reasoning
+                sig.merge_confidence = confidence
                 target.signatures.append(sig)
-                # Carry the merge's confidence/reasoning onto the entity.
+                # Entity-level confidence/reasoning is the latest merge, kept as
+                # a fallback for the seed signature only.
                 target.confidence = confidence
                 target.reasoning = reasoning
                 _log_llm_call("B", stats, call, {"match": 1})
@@ -360,6 +470,8 @@ async def _mode_b(
         else:
             # "uncertain" or anything unrecognised → own entity, flagged.
             sig.uncertain = True
+            sig.merge_reasoning = reasoning
+            sig.merge_confidence = confidence
             ent = Entity(
                 entity_id=f"e{next_index}",
                 signatures=[sig],
@@ -384,21 +496,19 @@ def _emit_rows(
     model_version: str,
     stats: BlockStats,
 ) -> List[DedupResultRow]:
-    """Build one output row per input row, with a block-local cluster number.
+    """Build one output row per input row.
 
-    The block-local number is remapped to a global sequential id in
-    ``cluster_blocks`` once every block has finished, so the final cluster_id
-    is a simple 1, 2, 3 … unique across the whole response.
+    Each cluster's id is a content hash of its member row_ids (see
+    ``cluster_hash``) — already globally unique and stable, so no post-hoc
+    renumbering is needed.
     """
     out: List[DedupResultRow] = []
-    cluster_n = 0
 
     for ent in entities:
         row_ids = ent.row_ids
         clustered = len(row_ids) >= 2
         if clustered:
-            cluster_n += 1
-            cluster_id: Optional[int] = cluster_n
+            cluster_id: Optional[str] = cluster_hash(row_ids)
             stats.clusters += 1
         else:
             cluster_id = None
@@ -415,11 +525,24 @@ def _emit_rows(
                     routing = "unique"
                     stats.rows_unique += 1
 
-                # Confidence/reasoning surface for clustered or uncertain rows;
-                # a plain unique row carries neither.
-                if cluster_id is not None or sig.uncertain:
-                    confidence = ent.confidence
-                    reasoning = ent.reasoning
+                # Confidence/reasoning are MERGE signals: surface them only for
+                # a genuine LLM merge (>=2 distinct signatures) or an uncertain
+                # row — never for a pure identical-signature collapse, whose
+                # duplicate-ness is deterministic and carries no merge decision
+                # (a spurious confidence there would wrongly trip the election
+                # confidence gate). Prefer the per-signature membership
+                # rationale; fall back to the entity-level value.
+                if ent.llm_merged or sig.uncertain:
+                    confidence = (
+                        sig.merge_confidence
+                        if sig.merge_confidence is not None
+                        else ent.confidence
+                    )
+                    reasoning = (
+                        sig.merge_reasoning
+                        if sig.merge_reasoning is not None
+                        else ent.reasoning
+                    )
                 else:
                     confidence = None
                     reasoning = None
@@ -496,6 +619,22 @@ async def _process_block(
         stats.mode = "B"
         entities = await _mode_b(signatures, llm, semaphore, stats)
 
+    # Deterministic verdict guards, applied uniformly to both modes' output.
+    # 1) A merge across different non-empty ROR/LEI ids is split to
+    #    manual_review (a hard identifier conflict is a strong split signal).
+    entities, _, _ = _enforce_identity_split(entities, _next_entity_index(entities))
+    # 2) INVARIANT: a merged entity's reasoning may never assert non-merge of a
+    #    member. If it does, the verdict is self-contradictory — route the whole
+    #    block to manual_review rather than guess toward merging.
+    if _reasoning_disowns_membership(entities):
+        logger.warning(
+            "Dedup: reasoning contradicts membership in block %s; routing the "
+            "whole block to manual_review", block_id,
+        )
+        for ent in entities:
+            for sig in ent.signatures:
+                sig.uncertain = True
+
     out = _emit_rows(
         block_id, entities, llm.model, stats.model_version or llm.model, stats,
     )
@@ -554,19 +693,10 @@ async def cluster_blocks(
     summary = DedupSummary(blocks=len(blocks), rows_in=len(rows))
     total_prompt_tokens = 0
     total_completion_tokens = 0
-    # Remap each block's local cluster numbers onto a single global sequence
-    # (1, 2, 3 …). Done after gather, in deterministic block order, so the
-    # ids are stable regardless of concurrent block completion order.
-    global_cluster_n = 0
-
+    # cluster_id is a content hash of member row_ids (see cluster_hash) —
+    # already globally unique and order-independent, so no cross-block
+    # renumbering is required.
     for out_rows, stats in block_outputs:
-        local_to_global: dict[int, int] = {}
-        for row in out_rows:
-            if row.cluster_id is not None:
-                if row.cluster_id not in local_to_global:
-                    global_cluster_n += 1
-                    local_to_global[row.cluster_id] = global_cluster_n
-                row.cluster_id = local_to_global[row.cluster_id]
         all_rows.extend(out_rows)
         summary.distinct_signatures += stats.distinct_signatures
         summary.clusters += stats.clusters

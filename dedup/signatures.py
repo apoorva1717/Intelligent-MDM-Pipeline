@@ -75,6 +75,12 @@ class Signature:
     # the LLM — never a deterministic cluster key. Defaulted last to keep
     # positional construction stable.
     lei_id: Optional[str] = None
+    # The adjudication reasoning/confidence for THIS signature's membership
+    # (the merge that brought it into its entity). Set per-signature so the
+    # output row carries the rationale for its own membership, never a blob
+    # copied across the block. None => fall back to the entity-level value.
+    merge_reasoning: Optional[str] = None
+    merge_confidence: Optional[float] = None
 
     @property
     def has_name2(self) -> bool:

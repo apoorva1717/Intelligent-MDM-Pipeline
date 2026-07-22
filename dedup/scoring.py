@@ -18,17 +18,26 @@ enrichment; those records never reach dedup.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from dedup.cluster_key import CLUSTER_ID_PREFIX, cluster_hash
+
 logger = logging.getLogger(__name__)
 
 WEIGHTS_PATH = Path(__file__).parent / "weights.json"
+
+# A merge whose adjudication confidence is below this is demoted to
+# manual_review at election time. Overridable via env / config
+# (CONFIDENCE_MERGE_THRESHOLD); gating here never re-runs the LLM.
+DEFAULT_CONFIDENCE_MERGE_THRESHOLD = 0.95
 
 # Raw cell/JSON value for numeric-ish fields. Typed permissively so one dirty
 # value in a real extract can never 422 the whole request; coercion (and the
@@ -64,6 +73,29 @@ class ScoringRow(BaseModel):
         default=None,
         description="Stable cluster key from the adjudicator. None => no cluster.",
     )
+    confidence: Optional[float] = Field(
+        default=None,
+        description=(
+            "Adjudication merge confidence from clustering (0-1). Below the "
+            "configured threshold the merge is demoted to manual_review. None "
+            "(a deterministic identical-collapse, or a unique row) never gates."
+        ),
+    )
+    routing: Optional[str] = Field(
+        default=None,
+        description=(
+            "Incoming clustering routing: cluster | unique | manual_review. A "
+            "manual_review from clustering is INHERITED by election and can "
+            "never be upgraded to proposed — uncertainty only ever propagates."
+        ),
+    )
+    reasoning: Optional[str] = Field(
+        default=None,
+        description=(
+            "Adjudication reasoning from clustering. Surfaced in the issue list "
+            "to flag a verdict_contradiction (reasoning that disowns a merge)."
+        ),
+    )
     last_order_year: Scalar = None
     order_count: Scalar = None
     partner_last_order_year: Scalar = None
@@ -81,6 +113,8 @@ class ScoringRow(BaseModel):
 
     @field_validator(
         "cluster_id",
+        "routing",
+        "reasoning",
         "sleeping_band",
         "customer_status",
         "account_group",
@@ -105,6 +139,18 @@ class ScoringRow(BaseModel):
             return []
         return [None if item is None else str(item) for item in v]
 
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _floatify_confidence(cls, v):
+        """A blank/dirty Confidence cell must never 422 the request — coerce to
+        float or fall back to None (which never gates)."""
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
 
 class ScoringRequest(BaseModel):
     """Top-level POST /api/dedup/score request body.
@@ -119,9 +165,15 @@ class ScoringRequest(BaseModel):
 class ScoringResultRow(BaseModel):
     """Score + election outcome for one input row.
 
-    Table invariant (branchless for Phase 3): every surviving record
-    (elected winner or unique) is golden=true and self-references; every
-    duplicate is golden=false and points at its survivor.
+    Table invariant: a unique row and an APPROVED winner are golden=true and
+    self-reference; a duplicate is golden=false and points at its survivor.
+    A manual_review row leaves is_golden_record/golden_record_id EMPTY — its
+    computed winner lives in ``proposed_golden_id`` so nobody acting on
+    is_golden_record alone can touch an unreviewed row.
+
+    PHASE 3 CONTRACT: consume ONLY rows with ``approval_status == "approved"``
+    or ``election_status == "unique"``. Everything else is a proposal awaiting
+    human sign-off (see POST /api/dedup/approve).
     """
 
     row_id: str
@@ -129,7 +181,18 @@ class ScoringResultRow(BaseModel):
     score: int
     is_golden_record: bool
     golden_record_id: Optional[str] = None
+    # The computed winner for this row's cluster — always present for a cluster
+    # member (proposed or manual_review), None for a unique row. On a
+    # manual_review row this is the ONLY place the proposal survives.
+    proposed_golden_id: Optional[str] = None
     election_status: Literal["proposed", "manual_review", "unique"]
+    # Human approval lifecycle. The pipeline only ever writes "proposed" (or
+    # null for unique — nothing to approve); approved/rejected are set later by
+    # POST /api/dedup/approve.
+    approval_status: Optional[Literal["proposed", "approved", "rejected"]] = None
+    # 12-hex fingerprint of the weights the row was scored with — detects score
+    # drift if weights were retuned between a proposal and its approval.
+    scored_with_weights_version: Optional[str] = None
     score_breakdown: Dict[str, int]
     warnings: List[str] = Field(default_factory=list)
 
@@ -149,16 +212,193 @@ class ScoringSummary(BaseModel):
     warnings: List[str] = Field(default_factory=list)
 
 
+# Recognised issue types (thesis "potential inconsistency" list). Cluster-level
+# types key on the proposed winner's row_id. missing_building_inconsistency is
+# reserved for the upstream building differentiator (Phase 1); it is a declared
+# type here but not emitted from election (no building signal at this stage).
+ISSUE_TYPES = (
+    "low_confidence_merge",
+    "verdict_contradiction",
+    "missing_building_inconsistency",
+    "all_blocked_cluster",
+    "tiebreak_decided",
+    "empty_scoring_payload",
+)
+
+_CONTRADICTION_MARKERS = (
+    "should not be merged", "should not merge", "must not be merged",
+    "not be merged", "do not merge", "should be split", "must be split",
+)
+
+
+class DedupIssue(BaseModel):
+    """One 'potential inconsistency' for the reviewer feedback loop."""
+
+    row_id: Optional[str] = None
+    cluster_id: Optional[str] = None
+    issue_type: str
+    detail: str
+
+
 class ScoringResponse(BaseModel):
     """Top-level POST /api/dedup/score response body."""
 
     rows: List[ScoringResultRow]
     summary: ScoringSummary
+    issues: List[DedupIssue] = Field(default_factory=list)
+
+
+def _reasoning_is_contradiction(text: Optional[str]) -> bool:
+    """A reasoning string that disowns a merge (an explicit non-merge assertion,
+    or the deterministic identity-split marker) — the Q1 verdict-contradiction
+    signal, surfaced downstream from the persisted Reasoning column."""
+    if not text:
+        return False
+    low = text.casefold()
+    return low.startswith("split:") or any(m in low for m in _CONTRADICTION_MARKERS)
+
+
+def detect_issues(
+    rows: List[ScoringRow],
+    results: List[ScoringResultRow],
+    *,
+    confidence_threshold: Optional[float] = None,
+) -> List[DedupIssue]:
+    """Derive the potential-inconsistency list from scored rows + results.
+
+    Row-level: verdict_contradiction. Cluster-level (keyed on the proposed
+    winner): low_confidence_merge, all_blocked_cluster, tiebreak_decided,
+    empty_scoring_payload. Deterministic and offline.
+    """
+    threshold = _resolve_confidence_threshold(confidence_threshold)
+    by_id = {r.row_id: r for r in rows}
+    issues: List[DedupIssue] = []
+
+    # Row-level — a persisted reasoning that argues against its own merge.
+    for row in rows:
+        if _reasoning_is_contradiction(row.reasoning):
+            issues.append(DedupIssue(
+                row_id=row.row_id, cluster_id=row.cluster_id,
+                issue_type="verdict_contradiction",
+                detail=row.reasoning.strip()[:200],  # type: ignore[union-attr]
+            ))
+
+    clusters: Dict[str, List[ScoringResultRow]] = {}
+    for res in results:
+        if res.cluster_id is not None:
+            clusters.setdefault(res.cluster_id, []).append(res)
+
+    for cid, members in clusters.items():
+        winner = next(
+            (m.proposed_golden_id or m.golden_record_id for m in members), None
+        )
+        inputs = [by_id[m.row_id] for m in members if m.row_id in by_id]
+
+        confs = [im.confidence for im in inputs if im.confidence is not None]
+        if confs and min(confs) < threshold:
+            issues.append(DedupIssue(
+                row_id=winner, cluster_id=cid, issue_type="low_confidence_merge",
+                detail=f"min merge confidence {min(confs):.2f} < {threshold:.2f}",
+            ))
+        if inputs and all(_normalized_status(im) == "blocked" for im in inputs):
+            issues.append(DedupIssue(
+                row_id=winner, cluster_id=cid, issue_type="all_blocked_cluster",
+                detail="every member is blocked",
+            ))
+        scores = [m.score for m in members]
+        top = max(scores)
+        if len(scores) >= 2 and scores.count(top) >= 2:
+            issues.append(DedupIssue(
+                row_id=winner, cluster_id=cid, issue_type="tiebreak_decided",
+                detail=f"top score {top} shared by {scores.count(top)} members",
+            ))
+        if members and all(m.score == 0 for m in members):
+            issues.append(DedupIssue(
+                row_id=winner, cluster_id=cid, issue_type="empty_scoring_payload",
+                detail="all members scored 0 — winner decided by tie-break only",
+            ))
+    return issues
+
+
+# ---------------------------------------------------------------------------
+# Approval lifecycle (human sign-off on a proposed/manual_review cluster)
+# ---------------------------------------------------------------------------
+
+class ClusterNotFoundError(ValueError):
+    """The cluster_id to approve/reject is absent from the submitted rows."""
+
+    def __init__(self, cluster_id: str):
+        self.cluster_id = cluster_id
+        super().__init__(f"cluster_id not found in payload: {cluster_id!r}")
+
+
+class ApprovalRequest(BaseModel):
+    """POST /api/dedup/approve body: a human's decision on one cluster.
+
+    Stateless — the caller submits the scored rows, the decision is applied to
+    the named cluster, and the updated rows are echoed back. Persistence is out
+    of scope (a durable approval store is a future step).
+    """
+
+    cluster_id: str
+    decision: Literal["approved", "rejected"]
+    approver: str = Field(..., min_length=1, description="Who approved/rejected.")
+    rows: List[ScoringResultRow] = Field(..., min_length=1)
+
+
+class ApprovalResponse(BaseModel):
+    """POST /api/dedup/approve response: the decision and the echoed rows."""
+
+    cluster_id: str
+    decision: Literal["approved", "rejected"]
+    approver: str
+    updated_row_ids: List[str]
+    rows: List[ScoringResultRow]
+
+
+def apply_approval(
+    rows: List[ScoringResultRow],
+    cluster_id: str,
+    decision: str,
+) -> Tuple[List[ScoringResultRow], List[str]]:
+    """Apply an approve/reject decision to every row in ``cluster_id``.
+
+    Returns (all rows with the decision applied, updated row_ids). On
+    "approved" the proposed winner is promoted into the golden fields so Phase 3
+    can act uniformly (a manual_review row's golden was left blank until now).
+    On "rejected" the golden fields are left as-is. Raises ClusterNotFoundError
+    when no row carries the cluster_id. Never mutates the inputs.
+    """
+    if not any(r.cluster_id == cluster_id for r in rows):
+        raise ClusterNotFoundError(cluster_id)
+
+    out: List[ScoringResultRow] = []
+    updated: List[str] = []
+    for r in rows:
+        if r.cluster_id != cluster_id:
+            out.append(r)
+            continue
+        r2 = r.model_copy()
+        r2.approval_status = decision  # type: ignore[assignment]
+        if decision == "approved" and r2.proposed_golden_id is not None:
+            r2.is_golden_record = r2.row_id == r2.proposed_golden_id
+            r2.golden_record_id = r2.proposed_golden_id
+        out.append(r2)
+        updated.append(r2.row_id)
+    return out, updated
 
 
 # ---------------------------------------------------------------------------
 # Weights
 # ---------------------------------------------------------------------------
+
+def weights_version(weights: dict) -> str:
+    """Stable 12-hex fingerprint of the weights table (sha256 of the canonical
+    JSON). Written onto every scored row so a proposal and its later approval
+    can be checked for score drift when weights were retuned in between."""
+    canonical = json.dumps(weights, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+
 
 def load_weights(path: Union[str, Path, None] = None) -> dict:
     """Load the scoring weights table (criterion -> {band label: points})."""
@@ -370,6 +610,11 @@ def _normalized_status(row: ScoringRow) -> Optional[str]:
     return status.casefold() if status else None
 
 
+def _norm_routing(value: Optional[str]) -> Optional[str]:
+    """Incoming clustering routing, normalised for comparison."""
+    return value.strip().casefold() if value and value.strip() else None
+
+
 def _tiebreak_key(scored: "_Scored", numeric_ids: bool):
     """Sort key: best candidate first, deterministic and order-independent.
 
@@ -405,8 +650,40 @@ class _Scored:
         self.company_codes = derived_counts(row)[0]
 
 
+def _resolve_confidence_threshold(explicit: Optional[float]) -> float:
+    """Election confidence threshold: explicit arg > env > default."""
+    if explicit is not None:
+        return explicit
+    raw = os.getenv("CONFIDENCE_MERGE_THRESHOLD")
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            logger.warning(
+                "Invalid CONFIDENCE_MERGE_THRESHOLD %r; using %.2f",
+                raw, DEFAULT_CONFIDENCE_MERGE_THRESHOLD,
+            )
+    return DEFAULT_CONFIDENCE_MERGE_THRESHOLD
+
+
+def _cluster_merge_confidence(members: List["_Scored"]) -> Optional[float]:
+    """The cluster's merge confidence = the LOWEST non-None member confidence.
+
+    Conservative on purpose: if any member joined below threshold the whole
+    merge is gated. All-None (a deterministic identical-collapse, no LLM merge)
+    returns None and never gates.
+    """
+    confs = [
+        m.row.confidence for m in members if m.row.confidence is not None
+    ]
+    return min(confs) if confs else None
+
+
 def elect_golden_records(
-    rows: List[ScoringRow], weights: Optional[dict] = None
+    rows: List[ScoringRow],
+    weights: Optional[dict] = None,
+    *,
+    confidence_threshold: Optional[float] = None,
 ) -> List[ScoringResultRow]:
     """Score every row and elect one golden record per cluster.
 
@@ -425,6 +702,8 @@ def elect_golden_records(
     """
     if weights is None:
         weights = load_weights()
+    threshold = _resolve_confidence_threshold(confidence_threshold)
+    wv = weights_version(weights)
 
     duplicates = sorted(
         rid for rid, n in Counter(r.row_id for r in rows).items() if n > 1
@@ -439,6 +718,17 @@ def elect_golden_records(
         if s.row.cluster_id is not None:
             clusters.setdefault(s.row.cluster_id, []).append(s)
 
+    # A content-hash cluster_id whose present members don't reproduce the hash
+    # is a PARTIAL cluster: some members were submitted in a different score
+    # call (e.g. split across blocks). Warn — never fail — and elect within
+    # what's seen. (Test/JSON ids like "C1" aren't hashes and never trip this.)
+    partial_clusters: set[str] = set()
+    for cid, members in clusters.items():
+        if cid.startswith(CLUSTER_ID_PREFIX) and cluster_hash(
+            m.row.row_id for m in members
+        ) != cid:
+            partial_clusters.add(cid)
+
     winner_by_cluster: Dict[str, str] = {}
     manual_review_clusters: set[str] = set()
     for cluster_id, members in clusters.items():
@@ -447,7 +737,22 @@ def elect_golden_records(
         numeric_ids = all(_parses_as_int(m.row.row_id) for m in members)
         winner = min(members, key=lambda m: _tiebreak_key(m, numeric_ids))
         winner_by_cluster[cluster_id] = winner.row.row_id
-        if all(_normalized_status(m.row) == "blocked" for m in members):
+        # A cluster is demoted to manual_review when, in precedence order:
+        #   1. clustering already routed a member to manual_review (INHERITED —
+        #      election can never upgrade upstream uncertainty),
+        #   2. every member is blocked (a human confirms before a block), or
+        #   3. the merge confidence is below threshold.
+        # Any one is sufficient; election never leaves such a cluster proposed.
+        inherited_mr = any(
+            _norm_routing(m.row.routing) == "manual_review" for m in members
+        )
+        all_blocked = all(_normalized_status(m.row) == "blocked" for m in members)
+        merge_conf = _cluster_merge_confidence(members)
+        low_confidence = merge_conf is not None and merge_conf < threshold
+        # A zero-signal election (every member scored 0) has no basis to pick a
+        # winner beyond the tie-break — it must not look confident.
+        zero_signal = all(m.total == 0 for m in members)
+        if inherited_mr or all_blocked or low_confidence or zero_signal:
             manual_review_clusters.add(cluster_id)
 
     results: List[ScoringResultRow] = []
@@ -455,34 +760,64 @@ def elect_golden_records(
         cluster_id = s.row.cluster_id
         winner_id = winner_by_cluster.get(cluster_id) if cluster_id else None
         if winner_id is None:
-            # No cluster, or a degraded single-member cluster: unique.
-            results.append(ScoringResultRow(
-                row_id=s.row.row_id,
-                cluster_id=cluster_id,
-                score=s.total,
-                is_golden_record=True,
-                golden_record_id=s.row.row_id,
-                election_status="unique",
-                score_breakdown=s.breakdown,
-                warnings=s.warnings,
-            ))
-            continue
-        status = (
-            "manual_review" if cluster_id in manual_review_clusters else "proposed"
-        )
-        results.append(ScoringResultRow(
-            row_id=s.row.row_id,
-            cluster_id=cluster_id,
-            score=s.total,
-            is_golden_record=s.row.row_id == winner_id,
-            golden_record_id=(
-                s.row.row_id if s.row.row_id == winner_id else winner_id
-            ),
-            election_status=status,
-            score_breakdown=s.breakdown,
-            warnings=s.warnings,
-        ))
+            # No cluster, or a degraded single-member cluster. Normally unique —
+            # but a row clustering flagged manual_review stays manual_review
+            # (election never upgrades uncertainty into a confident unique).
+            lone_status = (
+                "manual_review"
+                if _norm_routing(s.row.routing) == "manual_review"
+                else "unique"
+            )
+            # A lone row is its own proposed winner.
+            result = _build_result(s, lone_status, s.row.row_id, wv)
+        else:
+            status = (
+                "manual_review" if cluster_id in manual_review_clusters else "proposed"
+            )
+            result = _build_result(s, status, winner_id, wv)
+        if cluster_id in partial_clusters:
+            result.warnings = [
+                *result.warnings,
+                f"partial_cluster: submitted rows are a subset of {cluster_id}",
+            ]
+        results.append(result)
     return results
+
+
+def _build_result(
+    s: "_Scored", election_status: str, winner_id: str, wv: Optional[str] = None
+) -> ScoringResultRow:
+    """Assemble one result row with the golden + approval lifecycle fields.
+
+    - unique: golden=true, self-reference, nothing to approve (approval None).
+    - proposed / manual_review: is_golden_record/golden_record_id carry the
+      COMPUTED proposal (winner=true, self-reference; loser=false, points at the
+      winner), proposed_golden_id echoes the winner, approval_status="proposed".
+
+    The manual_review golden BLANKING the spec calls for is applied at the file
+    writeback (dedup.scoring_xlsx), not here — the JSON/model keeps the proposal
+    so summary accounting and Phase-3 promotion-on-approval have it. Phase 3
+    still filters on approval_status/election_status, never is_golden alone.
+    """
+    row_id = s.row.row_id
+    if election_status == "unique":
+        return ScoringResultRow(
+            row_id=row_id, cluster_id=s.row.cluster_id, score=s.total,
+            is_golden_record=True, golden_record_id=row_id,
+            proposed_golden_id=None, election_status="unique",
+            approval_status=None, scored_with_weights_version=wv,
+            score_breakdown=s.breakdown, warnings=s.warnings,
+        )
+    is_winner = row_id == winner_id
+    return ScoringResultRow(
+        row_id=row_id, cluster_id=s.row.cluster_id, score=s.total,
+        is_golden_record=is_winner,
+        golden_record_id=row_id if is_winner else winner_id,
+        proposed_golden_id=winner_id,
+        election_status=election_status,  # "proposed" | "manual_review"
+        approval_status="proposed", scored_with_weights_version=wv,
+        score_breakdown=s.breakdown, warnings=s.warnings,
+    )
 
 
 def _parses_as_int(value: str) -> bool:
@@ -508,19 +843,25 @@ def build_summary(
     cluster_ids: set[str] = set()
     manual_review_ids: set[str] = set()
     for r in results:
-        if r.election_status == "unique":
-            summary.rows_unique += 1
-        else:
-            cluster_ids.add(r.cluster_id)  # type: ignore[arg-type]
-            if r.is_golden_record:
-                summary.rows_elected += 1
-            else:
-                summary.rows_duplicates += 1
-            if r.election_status == "manual_review":
-                summary.rows_manual_review += 1
-                manual_review_ids.add(r.cluster_id)  # type: ignore[arg-type]
         if r.warnings:
             summary.rows_with_warnings += 1
+        if r.election_status == "unique":
+            summary.rows_unique += 1
+            continue
+        if r.election_status == "manual_review":
+            summary.rows_manual_review += 1
+        # A non-unique row is either part of a real cluster, or a lone row that
+        # clustering flagged manual_review (cluster_id None). Both still elect a
+        # record (self for the lone row); only real clusters count toward
+        # cluster / manual_review-cluster tallies.
+        if r.is_golden_record:
+            summary.rows_elected += 1
+        else:
+            summary.rows_duplicates += 1
+        if r.cluster_id is not None:
+            cluster_ids.add(r.cluster_id)
+            if r.election_status == "manual_review":
+                manual_review_ids.add(r.cluster_id)
     summary.clusters = len(cluster_ids)
     summary.all_blocked_clusters = len(manual_review_ids)
     return summary

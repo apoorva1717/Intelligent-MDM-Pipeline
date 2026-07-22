@@ -27,10 +27,15 @@ from dedup.adjudicator import cluster_blocks
 from dedup.llm import DedupLLM
 from dedup.models import DedupRequest, DedupResponse, DedupRow
 from dedup.scoring import (
+    ApprovalRequest,
+    ApprovalResponse,
+    ClusterNotFoundError,
     DuplicateRowIdError,
     ScoringRequest,
     ScoringResponse,
+    apply_approval,
     build_summary,
+    detect_issues as detect_dedup_issues,
     elect_golden_records,
 )
 from dedup.scoring_xlsx import ScoringFileError, score_workbook
@@ -730,23 +735,13 @@ def _rows_to_dedup_rows(row_dicts: list[dict[str, str]]) -> list[DedupRow]:
     return rows
 
 
-def _cluster_labels(response: DedupResponse) -> dict[str, int]:
-    """Assign every row a 1-based ``Cluster`` group number.
-
-    Rows the adjudicator placed in the same duplicate cluster share a number;
-    each remaining row (a unique/manual-review singleton) gets its own. The
-    response's ``cluster_id`` is null for singletons, so it can't be shown
-    directly as a per-row group — this fills that gap so the output column is
-    always populated and sorting by it groups duplicates together.
-    """
-    order: dict[tuple[str, object], int] = {}
-    labels: dict[str, int] = {}
-    for r in response.rows:
-        key = ("c", r.cluster_id) if r.cluster_id is not None else ("r", r.row_id)
-        if key not in order:
-            order[key] = len(order) + 1
-        labels[r.row_id] = order[key]
-    return labels
+# Main-sheet result columns. Exactly ONE cluster key is exposed here —
+# "Cluster ID" (the stable content hash). Internal keys (Block ID, Signature
+# ID) live on the "Dedup Debug" sheet so an approver sees a single cluster
+# column and can never confuse which one is authoritative.
+_DEDUP_RESULT_COLUMNS = ["Cluster ID", "Routing", "LLM Flag", "Confidence", "Reasoning"]
+_DEDUP_DEBUG_SHEET = "Dedup Debug"
+_DEDUP_DEBUG_COLUMNS = ["row_id", "Cluster ID", "Block ID", "Signature ID"]
 
 
 def _build_dedup_xlsx(
@@ -758,44 +753,41 @@ def _build_dedup_xlsx(
 ) -> bytes:
     """Echo the uploaded sheet with cluster-assignment columns appended.
 
-    The original header row and cell values are preserved verbatim. A
-    ``Cluster`` group number (always populated — see ``_cluster_labels``) is
-    appended first, followed by the detailed result columns, joined onto each
-    row by its ``row_id``. Rows the adjudicator did not return (should not
-    happen) get blank result cells rather than being dropped. Extra sheets
+    The original header row and cell values are preserved verbatim, then the
+    result columns in ``_DEDUP_RESULT_COLUMNS`` are appended and joined onto
+    each row by its ``row_id`` — with a SINGLE cluster key ("Cluster ID", the
+    stable content hash). Internal keys (Block ID, Signature ID) are written to
+    a separate "Dedup Debug" sheet. Rows the adjudicator did not return (should
+    not happen) get blank result cells rather than being dropped. Extra sheets
     (e.g. the scoring "Weights" sheet) are copied over so the downstream
     /api/dedup/score/file stage still sees them.
     """
     from openpyxl import Workbook
 
     result_by_id = {r.row_id: r for r in response.rows}
-    labels = _cluster_labels(response)
-    extra = [
-        "Cluster", "Block ID", "Cluster ID", "Routing", "LLM Flag",
-        "Confidence", "Reasoning", "Signature ID",
-    ]
 
     wb = Workbook()
     ws = wb.active
-    ws.append([*headers, *extra])
+    ws.append([*headers, *_DEDUP_RESULT_COLUMNS])
+
+    debug_ws = wb.create_sheet(_DEDUP_DEBUG_SHEET)
+    debug_ws.append(_DEDUP_DEBUG_COLUMNS)
 
     for row_dict, parsed in zip(row_dicts, rows):
         values = [row_dict.get(header, "") for header in headers]
         res = result_by_id.get(parsed.row_id)
         if res is None:
-            ws.append([*values, *([""] * len(extra))])
+            ws.append([*values, *([""] * len(_DEDUP_RESULT_COLUMNS))])
             continue
         ws.append([
             *values,
-            labels.get(res.row_id),
-            res.block_id,
             res.cluster_id,
             res.routing,
             res.llm_flag,
             res.confidence,
             res.reasoning,
-            res.signature_id,
         ])
+        debug_ws.append([res.row_id, res.cluster_id, res.block_id, res.signature_id])
 
     if source_contents is not None:
         _copy_extra_sheets(source_contents, wb)
@@ -924,14 +916,47 @@ async def dedup_score(request: ScoringRequest) -> ScoringResponse:
         ) from exc
 
     summary = build_summary(results)
+    issues = detect_dedup_issues(request.rows, results)
     logger.info(
         "scoring_request",
         extra={
             "summary": summary.model_dump(),
+            "issues": len(issues),
             "total_latency_ms": int((time.perf_counter() - request_start) * 1000),
         },
     )
-    return ScoringResponse(rows=results, summary=summary)
+    return ScoringResponse(rows=results, summary=summary, issues=issues)
+
+
+@router.post("/api/dedup/approve", response_model=ApprovalResponse)
+async def dedup_approve(request: ApprovalRequest) -> ApprovalResponse:
+    """Record a human's approve/reject decision on one proposed cluster.
+
+    Stateless: the caller submits the scored rows, the decision is applied to
+    the named cluster_id (approval_status set; on "approved" the proposed winner
+    is promoted into the golden fields), and the updated rows are echoed back.
+    Persistence is intentionally out of scope — a durable approval store is a
+    future step. Phase 3 consumes ONLY rows with approval_status="approved" or
+    election_status="unique".
+    """
+    logger.info(
+        "dedup_approve: cluster=%s decision=%s approver=%s rows=%d",
+        request.cluster_id, request.decision, request.approver, len(request.rows),
+    )
+    try:
+        rows, updated = apply_approval(
+            request.rows, request.cluster_id, request.decision
+        )
+    except ClusterNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return ApprovalResponse(
+        cluster_id=request.cluster_id,
+        decision=request.decision,
+        approver=request.approver,
+        updated_row_ids=updated,
+        rows=rows,
+    )
 
 
 @router.post("/api/dedup/score/file")

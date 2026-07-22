@@ -17,6 +17,7 @@ from dedup.scoring import (
     ScoringSummary,
     build_summary,
     derived_counts,
+    detect_issues,
     elect_golden_records,
     load_weights,
 )
@@ -24,6 +25,8 @@ from dedup.scoring import (
 logger = logging.getLogger(__name__)
 
 WEIGHTS_SHEET_NAME = "Weights"
+ISSUES_SHEET_NAME = "Issues"
+ISSUES_COLUMNS = ("row_id", "cluster_id", "issue_type", "detail")
 
 # Input column header -> ScoringRow field (matched via _norm, so case /
 # whitespace / punctuation variants of these headers still resolve).
@@ -63,7 +66,10 @@ BREAKDOWN_COLUMNS: Dict[str, str] = {
 }
 
 DERIVED_COLUMNS = ("Company_Code_Count", "Sales_Org_Count", "Salesforce_Instance_Count")
-ELECTION_COLUMNS = ("is_golden_record", "golden_record_id", "election_status")
+ELECTION_COLUMNS = (
+    "is_golden_record", "golden_record_id", "proposed_golden_id",
+    "election_status", "approval_status",
+)
 
 
 class ScoringFileError(ValueError):
@@ -237,11 +243,16 @@ def score_workbook(contents: bytes) -> Tuple[bytes, ScoringSummary]:
         raise ScoringFileError("The data sheet has no 'Customer' column.")
     sf_cols = [columns.get(_norm(h)) for h in SF_ID_HEADERS]
     routing_col, cluster_col = _cluster_columns(columns)
+    # Adjudication merge confidence persisted by clustering — gates
+    # low-confidence merges to manual_review at election time (no LLM re-run).
+    confidence_col = columns.get(_norm("Confidence"))
+    # Adjudication reasoning — surfaced as a verdict_contradiction issue.
+    reasoning_col = columns.get(_norm("Reasoning"))
 
     read_cols = (
         [c for c in input_cols.values() if c]
         + [c for c in sf_cols if c]
-        + [c for c in (routing_col, cluster_col) if c]
+        + [c for c in (routing_col, cluster_col, confidence_col, reasoning_col) if c]
     )
 
     rows: List[ScoringRow] = []
@@ -264,6 +275,9 @@ def score_workbook(contents: bytes) -> Tuple[bytes, ScoringSummary]:
         rows.append(ScoringRow(
             row_id=str(customer).strip(),
             cluster_id=_cluster_id_from_cells(cell(routing_col), cell(cluster_col)),
+            routing=cell(routing_col),
+            confidence=cell(confidence_col),
+            reasoning=cell(reasoning_col),
             salesforce_ids=[cell(c) for c in sf_cols],
             **payload,
         ))
@@ -271,6 +285,7 @@ def score_workbook(contents: bytes) -> Tuple[bytes, ScoringSummary]:
 
     results = elect_golden_records(rows, weights)
     summary = build_summary(results, errors=errors, warnings=request_warnings)
+    issues = detect_issues(rows, results)
 
     # Writeback — locate/append every output column by header name.
     breakdown_cols = {
@@ -281,9 +296,10 @@ def score_workbook(contents: bytes) -> Tuple[bytes, ScoringSummary]:
     cc_col, so_col, sf_count_col = (
         _ensure_column(ws, columns, h) for h in DERIVED_COLUMNS
     )
-    golden_col, golden_id_col, status_col = (
+    golden_col, golden_id_col, proposed_col, status_col, approval_col = (
         _ensure_column(ws, columns, h) for h in ELECTION_COLUMNS
     )
+    weights_ver_col = _ensure_column(ws, columns, "scored_with_weights_version")
 
     for ws_row, row, result in zip(row_indices, rows, results):
         for key, col in breakdown_cols.items():
@@ -295,10 +311,31 @@ def score_workbook(contents: bytes) -> Tuple[bytes, ScoringSummary]:
         ws.cell(row=ws_row, column=cc_col, value=company_codes)
         ws.cell(row=ws_row, column=so_col, value=sales_orgs)
         ws.cell(row=ws_row, column=sf_count_col, value=sf_instances)
-        # Native Excel boolean (TRUE/FALSE), not a string.
-        ws.cell(row=ws_row, column=golden_col, value=result.is_golden_record)
-        ws.cell(row=ws_row, column=golden_id_col, value=result.golden_record_id)
+        # A manual_review row leaves is_golden_record / golden_record_id EMPTY —
+        # nobody filtering is_golden_record alone may act on an unreviewed row.
+        # The computed winner survives in proposed_golden_id.
+        is_mr = result.election_status == "manual_review"
+        ws.cell(row=ws_row, column=golden_col,
+                value=None if is_mr else result.is_golden_record)
+        ws.cell(row=ws_row, column=golden_id_col,
+                value=None if is_mr else result.golden_record_id)
+        ws.cell(row=ws_row, column=proposed_col, value=result.proposed_golden_id)
         ws.cell(row=ws_row, column=status_col, value=result.election_status)
+        ws.cell(row=ws_row, column=approval_col, value=result.approval_status)
+        ws.cell(row=ws_row, column=weights_ver_col,
+                value=result.scored_with_weights_version)
+
+    # Second sheet: the potential-inconsistency list (Bernd's feedback loop).
+    # Rebuilt fresh each run — never round-tripped through pandas — so the
+    # Weights sheet and every original column survive untouched.
+    if ISSUES_SHEET_NAME in wb.sheetnames:
+        del wb[ISSUES_SHEET_NAME]
+    issues_ws = wb.create_sheet(ISSUES_SHEET_NAME)
+    issues_ws.append(list(ISSUES_COLUMNS))
+    for issue in issues:
+        issues_ws.append(
+            [issue.row_id, issue.cluster_id, issue.issue_type, issue.detail]
+        )
 
     buffer = io.BytesIO()
     wb.save(buffer)

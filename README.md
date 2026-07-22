@@ -942,7 +942,21 @@ curl -X POST http://localhost:8000/api/dedup/cluster-block \
 
 ### POST /api/dedup/file
 
-Same clustering as `/api/dedup/cluster-block`, but accepts an `.xlsx`/`.xlsm` upload and returns an `.xlsx` with the cluster-assignment columns appended. It accepts the human SAP headers emitted by `/enrich/file` ("Customer", "Name 1", "Street 1", …) or the snake_case `DedupRow` field names. Multipart form field: `file`.
+Same clustering as `/api/dedup/cluster-block`, but accepts an `.xlsx`/`.xlsm` upload and returns an `.xlsx` with the cluster-assignment columns appended. It accepts the human SAP headers emitted by `/enrich/file` ("Customer", "Name 1", "Street 1", …) or the snake_case `DedupRow` field names. Multipart form field: `file`. Exactly **one** cluster key is exposed on the main sheet — `Cluster ID`, a stable content hash (`c_` + 12 hex of sha256 over the sorted member row_ids); internal keys (`Block ID`, `Signature ID`) are written to a separate `Dedup Debug` sheet.
+
+### POST /api/dedup/score and /api/dedup/score/file
+
+Deterministic golden-record election over the clustered rows (no LLM). Each duplicate cluster elects a proposed winner; losers point at it. A merge is demoted to `manual_review` when clustering already flagged it uncertain, when every member is blocked, or when the adjudication confidence is below `CONFIDENCE_MERGE_THRESHOLD` (default `0.95`, env-overridable — a pure data retune that never re-runs the LLM). A `manual_review` row leaves `is_golden_record`/`golden_record_id` **empty** in the file; its computed winner survives in `proposed_golden_id`.
+
+Both endpoints emit a **potential-inconsistency list** (the reviewer feedback loop): the file gets a second `Issues` sheet (`row_id, cluster_id, issue_type, detail`; the `Weights` sheet and all originals are preserved), and the JSON response returns the same list under `issues`. Issue types: `low_confidence_merge`, `verdict_contradiction`, `all_blocked_cluster`, `tiebreak_decided`, `empty_scoring_payload` (and a reserved `missing_building_inconsistency`).
+
+An offline **evaluation harness** scores a workbook against its `expected_*` fixture columns: `python -m eval.dedup_eval <scored.xlsx>` prints pairwise precision/recall/F1 plus the named business-risk counts (`wrongful_block_candidates`, `competing_goldens`, `uncertainty_upgrades`) with offending row_ids, and writes `eval_report.json`.
+
+### POST /api/dedup/approve
+
+Records a human's approve/reject decision on one cluster. Stateless: submit the scored rows plus `{"cluster_id", "decision": "approved"|"rejected", "approver"}`; the decision is applied to that cluster (on `approved` the proposed winner is promoted into the golden fields) and the updated rows are echoed back. Persistence is out of scope for now.
+
+> **Phase 3 contract:** Phase 3 consumes **only** rows with `approval_status == "approved"` or `election_status == "unique"`. Everything else is a proposal awaiting human sign-off — filtering on `is_golden_record` alone must never be used to act on unreviewed rows.
 
 ### GET /diag/llm
 
