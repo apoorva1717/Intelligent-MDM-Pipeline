@@ -79,7 +79,12 @@ class TestBands:
         (0, 5), (5, 5), (6, 15), (10, 15), (11, 25), (100, 25), (None, 0),
     ])
     def test_sales_order_count(self, count, expected):
-        assert _points({"order_count": count}, "sales_order_count") == expected
+        # G1: count points are only AWARDED when the row owns its (here trivial,
+        # context-free) most-recent year, so a year must be present for the band
+        # mapping to apply. The band VALUES themselves are unchanged.
+        assert _points(
+            {"last_order_year": 2026, "order_count": count}, "sales_order_count"
+        ) == expected
 
     @pytest.mark.parametrize("year,expected", [
         (2026, 20), (2025, 15), (2024, 10), (2023, 5), (2020, 0), (None, 0),
@@ -94,8 +99,11 @@ class TestBands:
         (0, 5), (5, 5), (6, 15), (10, 15), (11, 25), (None, 0),
     ])
     def test_partner_count(self, count, expected):
+        # G1: partner count mirrors the recency gate — a partner year must be
+        # present for the (unchanged) band values to apply.
         assert _points(
-            {"partner_order_count": count}, "sales_order_partner_count"
+            {"partner_last_order_year": 2026, "partner_order_count": count},
+            "sales_order_partner_count",
         ) == expected
 
     @pytest.mark.parametrize("count,expected", [
@@ -191,9 +199,11 @@ class TestCoercion:
         assert _points({"last_order_year": "2026.0"}, "sales_order_last_used") == 20
 
     def test_non_numeric_scores_zero_with_warning(self):
+        # G1: field renamed order_count -> orders_in_last_used_year (old name
+        # still accepted on input via alias; coercion warning uses the new name).
         breakdown, warnings = _score({"order_count": "lots"})
         assert breakdown["sales_order_count"] == 0
-        assert any("order_count" in w for w in warnings)
+        assert any("orders_in_last_used_year" in w for w in warnings)
 
     def test_absence_is_not_activity(self):
         # Absent status / sleeping never default into a scoring band.
@@ -1210,3 +1220,163 @@ class TestEdgeCases:
         assert "scored_with_weights_version" in headers
         col = headers.index("scored_with_weights_version") + 1
         assert ws.cell(row=2, column=col).value  # non-empty fingerprint
+
+
+class TestG1CountRecency:
+    """G1 — Bernd's year-priority rule: sales-order count points are awarded
+    only to the cluster's most-recent-year record(s); an older, higher-volume
+    record can never out-score a more recent one on count."""
+
+    def _comp(self, res):
+        """Combined sales-order component = recency points + awarded count."""
+        b = res.score_breakdown
+        return b["sales_order_last_used"] + b["sales_order_count"]
+
+    def test_bernd_example_2026_three_orders_beats_older_record_with_25(self):
+        # Bernd's verbatim example: 2019+25 vs 2026+3 → the 2026 record is golden.
+        results = elect_golden_records([
+            _cluster_row("A", cluster_id="C1", last_order_year=2019, order_count=25),
+            _cluster_row("B", cluster_id="C1", last_order_year=2026, order_count=3),
+        ], WEIGHTS)
+        by = _by_row(results)
+        assert by["B"].is_golden_record is True
+        assert by["A"].is_golden_record is False
+        assert by["A"].score_breakdown["sales_order_count"] == 0   # suppressed
+        assert by["B"].score_breakdown["sales_order_count"] == 5   # 3 -> band 0-5
+
+    def test_discovered_failure_2023_12_beaten_by_2026_3(self):
+        # The exact regression: flat-additive gave 2023+12=30 > 2026+3=25.
+        results = elect_golden_records([
+            _cluster_row("A", cluster_id="C1", last_order_year=2023, order_count=12),
+            _cluster_row("B", cluster_id="C1", last_order_year=2026, order_count=3),
+        ], WEIGHTS)
+        by = _by_row(results)
+        assert by["B"].is_golden_record is True
+        assert by["A"].score_breakdown["sales_order_count"] == 0
+
+    def test_same_year_count_differentiates(self):
+        # Count only "adds something" WITHIN the same year.
+        results = elect_golden_records([
+            _cluster_row("A", cluster_id="C1", last_order_year=2026, order_count=3),
+            _cluster_row("B", cluster_id="C1", last_order_year=2026, order_count=12),
+        ], WEIGHTS)
+        by = _by_row(results)
+        assert by["A"].score_breakdown["sales_order_count"] == 5
+        assert by["B"].score_breakdown["sales_order_count"] == 25
+        assert by["B"].is_golden_record is True
+
+    # -- Partner mirror -----------------------------------------------------
+
+    def test_partner_bernd_example(self):
+        results = elect_golden_records([
+            _cluster_row("A", cluster_id="C1", partner_last_order_year=2019,
+                         partner_order_count=25),
+            _cluster_row("B", cluster_id="C1", partner_last_order_year=2026,
+                         partner_order_count=3),
+        ], WEIGHTS)
+        by = _by_row(results)
+        assert by["A"].score_breakdown["sales_order_partner_count"] == 0
+        assert by["B"].score_breakdown["sales_order_partner_count"] == 5
+        assert by["B"].is_golden_record is True
+
+    def test_partner_discovered_failure(self):
+        results = elect_golden_records([
+            _cluster_row("A", cluster_id="C1", partner_last_order_year=2023,
+                         partner_order_count=12),
+            _cluster_row("B", cluster_id="C1", partner_last_order_year=2026,
+                         partner_order_count=3),
+        ], WEIGHTS)
+        by = _by_row(results)
+        assert by["B"].is_golden_record is True
+        assert by["A"].score_breakdown["sales_order_partner_count"] == 0
+
+    def test_partner_same_year_differentiates(self):
+        results = elect_golden_records([
+            _cluster_row("A", cluster_id="C1", partner_last_order_year=2026,
+                         partner_order_count=3),
+            _cluster_row("B", cluster_id="C1", partner_last_order_year=2026,
+                         partner_order_count=12),
+        ], WEIGHTS)
+        by = _by_row(results)
+        assert by["A"].score_breakdown["sales_order_partner_count"] == 5
+        assert by["B"].score_breakdown["sales_order_partner_count"] == 25
+
+    # -- Edge cases ---------------------------------------------------------
+
+    def test_singleton_receives_count_points(self):
+        (r,) = elect_golden_records([
+            ScoringRow(row_id="1", cluster_id=None, last_order_year=2023,
+                       order_count=12),
+        ], WEIGHTS)
+        assert r.election_status == "unique"
+        assert r.score_breakdown["sales_order_count"] == 25  # 12 -> >10, awarded
+
+    def test_all_none_year_cluster_no_count_no_exception(self):
+        results = elect_golden_records([
+            _cluster_row("A", cluster_id="C1", order_count=12),
+            _cluster_row("B", cluster_id="C1", order_count=25),
+        ], WEIGHTS)
+        by = _by_row(results)
+        assert by["A"].score_breakdown["sales_order_count"] == 0
+        assert by["B"].score_breakdown["sales_order_count"] == 0
+
+    def test_max_year_record_with_none_count_still_wins_on_recency(self):
+        results = elect_golden_records([
+            _cluster_row("A", cluster_id="C1", last_order_year=2026),          # max, no count
+            _cluster_row("B", cluster_id="C1", last_order_year=2023, order_count=25),
+        ], WEIGHTS)
+        by = _by_row(results)
+        assert by["A"].is_golden_record is True
+        assert by["A"].score_breakdown["sales_order_count"] == 0   # no count field
+        assert by["B"].score_breakdown["sales_order_count"] == 0   # suppressed
+        assert any("count suppressed (G1)" in w for w in by["B"].warnings)
+
+    def test_suppression_emits_issue(self):
+        rows = [
+            _cluster_row("A", cluster_id="C1", last_order_year=2023, order_count=12),
+            _cluster_row("B", cluster_id="C1", last_order_year=2026, order_count=3),
+        ]
+        results = elect_golden_records(rows, WEIGHTS)
+        issues = detect_issues(rows, results)
+        supp = [i for i in issues if i.issue_type == "count_suppressed_by_recency"]
+        assert supp and supp[0].row_id == "A"
+
+    # -- Provable invariant -------------------------------------------------
+
+    def test_sales_component_never_contradicts_recency(self):
+        """Within any cluster, ordering by the sales-order component (recency +
+        awarded count) never contradicts ordering by last_order_year: a strictly
+        more recent year yields a strictly greater component (years drawn from
+        the strictly-decreasing tier range 2023-2026)."""
+        rng = random.Random(20260723)
+        YEARS = [2023, 2024, 2025, 2026]
+        for _ in range(300):
+            n = rng.randint(2, 5)
+            spec = [(str(i), rng.choice(YEARS), rng.randint(0, 30)) for i in range(n)]
+            rows = [_cluster_row(rid, cluster_id="C1", last_order_year=y,
+                                 order_count=c) for rid, y, c in spec]
+            by = _by_row(elect_golden_records(rows, WEIGHTS))
+            comp = {rid: self._comp(by[rid]) for rid, _, _ in spec}
+            year = {rid: y for rid, y, _ in spec}
+            for a in year:
+                for b in year:
+                    if year[a] > year[b]:
+                        assert comp[a] > comp[b], (spec, comp)
+
+    def test_partner_component_never_contradicts_recency(self):
+        rng = random.Random(7770723)
+        YEARS = [2023, 2024, 2025, 2026]
+        for _ in range(300):
+            n = rng.randint(2, 5)
+            spec = [(str(i), rng.choice(YEARS), rng.randint(0, 30)) for i in range(n)]
+            rows = [_cluster_row(rid, cluster_id="C1", partner_last_order_year=y,
+                                 partner_order_count=c) for rid, y, c in spec]
+            by = _by_row(elect_golden_records(rows, WEIGHTS))
+            comp = {rid: by[rid].score_breakdown["sales_order_partner_last_used"]
+                         + by[rid].score_breakdown["sales_order_partner_count"]
+                    for rid, _, _ in spec}
+            year = {rid: y for rid, y, _ in spec}
+            for a in year:
+                for b in year:
+                    if year[a] > year[b]:
+                        assert comp[a] > comp[b], (spec, comp)

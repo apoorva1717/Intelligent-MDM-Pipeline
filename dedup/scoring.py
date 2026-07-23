@@ -26,7 +26,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from dedup.cluster_key import CLUSTER_ID_PREFIX, cluster_hash
 
@@ -97,9 +97,24 @@ class ScoringRow(BaseModel):
         ),
     )
     last_order_year: Scalar = None
-    order_count: Scalar = None
+    # G1 (Bernd's year-priority rule): this is the number of sales orders WITHIN
+    # the record's last-used year, NOT a lifetime total. It only differentiates
+    # records that share the most-recent year in a cluster (see score_row /
+    # elect_golden_records). The legacy name ``order_count`` is still accepted on
+    # input (deprecated — remove once callers migrate).
+    orders_in_last_used_year: Scalar = Field(
+        default=None,
+        validation_alias=AliasChoices("orders_in_last_used_year", "order_count"),
+    )
     partner_last_order_year: Scalar = None
-    partner_order_count: Scalar = None
+    # G1: within-year partner order count (mirror of orders_in_last_used_year).
+    # Legacy name ``partner_order_count`` accepted on input (deprecated).
+    partner_orders_in_last_used_year: Scalar = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "partner_orders_in_last_used_year", "partner_order_count"
+        ),
+    )
     equipment_count: Scalar = None
     sleeping_band: Optional[str] = None  # expected "No" | "3-4" | ">5"
     customer_status: Optional[str] = None  # expected "active" | "blocked"
@@ -223,7 +238,11 @@ ISSUE_TYPES = (
     "all_blocked_cluster",
     "tiebreak_decided",
     "empty_scoring_payload",
+    "count_suppressed_by_recency",
 )
+
+# Marker written by score_row when the G1 recency gate zeroes a count component.
+_COUNT_SUPPRESSED_MARKER = "count suppressed (G1)"
 
 _CONTRADICTION_MARKERS = (
     "should not be merged", "should not merge", "must not be merged",
@@ -266,9 +285,9 @@ def detect_issues(
 ) -> List[DedupIssue]:
     """Derive the potential-inconsistency list from scored rows + results.
 
-    Row-level: verdict_contradiction. Cluster-level (keyed on the proposed
-    winner): low_confidence_merge, all_blocked_cluster, tiebreak_decided,
-    empty_scoring_payload. Deterministic and offline.
+    Row-level: verdict_contradiction, count_suppressed_by_recency. Cluster-level
+    (keyed on the proposed winner): low_confidence_merge, all_blocked_cluster,
+    tiebreak_decided, empty_scoring_payload. Deterministic and offline.
     """
     threshold = _resolve_confidence_threshold(confidence_threshold)
     by_id = {r.row_id: r for r in rows}
@@ -282,6 +301,16 @@ def detect_issues(
                 issue_type="verdict_contradiction",
                 detail=row.reasoning.strip()[:200],  # type: ignore[union-attr]
             ))
+
+    # Row-level — G1 recency gate zeroed a count component (Bernd's rule firing).
+    for res in results:
+        for warning in res.warnings:
+            if _COUNT_SUPPRESSED_MARKER in warning:
+                issues.append(DedupIssue(
+                    row_id=res.row_id, cluster_id=res.cluster_id,
+                    issue_type="count_suppressed_by_recency",
+                    detail=warning,
+                ))
 
     clusters: Dict[str, List[ScoringResultRow]] = {}
     for res in results:
@@ -535,37 +564,97 @@ def _single_band_value(bands: Dict[str, int]) -> int:
 # Scoring
 # ---------------------------------------------------------------------------
 
-def score_row(row: ScoringRow, weights: dict) -> Tuple[Dict[str, int], List[str]]:
+def _award_count(row_year: Optional[int], cluster_max_year: Optional[int]) -> bool:
+    """G1 recency-dominance gate for a sales-order count component.
+
+    Bernd's rule: the count is always "in relation to the year" — it only
+    differentiates records sharing the most-recent year, and "does not define
+    what is the golden record, it just adds something".
+
+    - A row with no year (None) never receives count points.
+    - cluster_max_year is None means context-free scoring (a singleton / unique
+      row is trivially its own max) → award (given the row has a year).
+    - In a cluster, award only when the row's year equals the cluster maximum.
+      (If every member's year is None the maximum is None, but the first guard
+      already denies all of them — nobody receives count points.)
+    """
+    if row_year is None:
+        return False
+    if cluster_max_year is None:
+        return True
+    return row_year == cluster_max_year
+
+
+def score_row(
+    row: ScoringRow,
+    weights: dict,
+    cluster_max_year: Optional[int] = None,
+    cluster_max_partner_year: Optional[int] = None,
+) -> Tuple[Dict[str, int], List[str]]:
     """Per-criterion points + warnings for one row.
 
-    The breakdown always carries every criterion key (0 where nothing
-    matched) so the audit trail and the file writeback are column-stable.
+    The breakdown always carries every criterion key (0 where nothing matched)
+    so the audit trail and the file writeback are column-stable.
+
+    G1: the two sales-order COUNT criteria are cluster-context-dependent. Count
+    points are awarded only when the row's last-used year is the most recent in
+    its cluster (see ``_award_count``); otherwise the count component scores 0
+    and a suppression warning is emitted. Pass ``cluster_max_year`` /
+    ``cluster_max_partner_year`` = None for context-free scoring (singletons /
+    unique rows, where the row is trivially its own maximum). Every other
+    criterion is unconditional.
     """
     warnings: List[str] = []
     breakdown: Dict[str, int] = {}
 
     last_year = _coerce_int(row.last_order_year, "last_order_year", warnings)
-    order_count = _coerce_int(row.order_count, "order_count", warnings)
+    order_count = _coerce_int(
+        row.orders_in_last_used_year, "orders_in_last_used_year", warnings
+    )
     partner_year = _coerce_int(
         row.partner_last_order_year, "partner_last_order_year", warnings
     )
-    partner_count = _coerce_int(row.partner_order_count, "partner_order_count", warnings)
+    partner_count = _coerce_int(
+        row.partner_orders_in_last_used_year,
+        "partner_orders_in_last_used_year", warnings,
+    )
     equipment = _coerce_int(row.equipment_count, "equipment_count", warnings)
     company_codes, sales_orgs, sf_instances = derived_counts(row)
 
     breakdown["sales_order_last_used"] = _match_numeric_band(
         last_year, weights["sales_order_last_used"]
     )
-    breakdown["sales_order_count"] = _match_numeric_band(
-        order_count, weights["sales_order_count"]
-    )
+    # G1: count only "adds something" when this row owns the cluster's most
+    # recent year — otherwise an older, higher-volume record could out-score a
+    # more recent one, which Bernd said must never happen.
+    count_pts = _match_numeric_band(order_count, weights["sales_order_count"])
+    if _award_count(last_year, cluster_max_year):
+        breakdown["sales_order_count"] = count_pts
+    else:
+        breakdown["sales_order_count"] = 0
+        if count_pts > 0:
+            warnings.append(
+                f"order count suppressed (G1): last-used year {last_year} is not "
+                f"the cluster's most recent ({cluster_max_year})"
+            )
     breakdown["sales_order_partner_last_used"] = _match_numeric_band(
         partner_year, weights["sales_order_partner_last_used"]
     )
     # UNCONFIRMED: partner count tiers mirror sales order count. CONFIRM w/ Bernd.
-    breakdown["sales_order_partner_count"] = _match_numeric_band(
+    # G1: mirror the recency-dominance gate on the partner pair.
+    partner_count_pts = _match_numeric_band(
         partner_count, weights["sales_order_partner_count"]
     )
+    if _award_count(partner_year, cluster_max_partner_year):
+        breakdown["sales_order_partner_count"] = partner_count_pts
+    else:
+        breakdown["sales_order_partner_count"] = 0
+        if partner_count_pts > 0:
+            warnings.append(
+                f"partner order count suppressed (G1): partner last-used year "
+                f"{partner_year} is not the cluster's most recent "
+                f"({cluster_max_partner_year})"
+            )
     breakdown["equipment_count"] = _match_numeric_band(
         equipment, weights["equipment_count"]
     )
@@ -640,14 +729,44 @@ class _Scored:
     __slots__ = ("row", "breakdown", "warnings", "total", "last_year",
                  "equipment", "company_codes")
 
-    def __init__(self, row: ScoringRow, weights: dict):
+    def __init__(
+        self,
+        row: ScoringRow,
+        weights: dict,
+        cluster_max_year: Optional[int] = None,
+        cluster_max_partner_year: Optional[int] = None,
+    ):
         self.row = row
-        self.breakdown, self.warnings = score_row(row, weights)
+        self.breakdown, self.warnings = score_row(
+            row, weights, cluster_max_year, cluster_max_partner_year
+        )
         self.total = sum(self.breakdown.values())
         silent: List[str] = []  # coercion warnings already captured by score_row
         self.last_year = _coerce_int(row.last_order_year, "last_order_year", silent)
         self.equipment = _coerce_int(row.equipment_count, "equipment_count", silent)
         self.company_codes = derived_counts(row)[0]
+
+
+def _cluster_year_maxima(
+    members: List[ScoringRow],
+) -> Tuple[Optional[int], Optional[int]]:
+    """(max last_order_year, max partner_last_order_year) over a cluster's rows,
+    ignoring None. Both None when no member carries the respective year."""
+    silent: List[str] = []
+    years = [
+        y for y in (
+            _coerce_int(m.last_order_year, "last_order_year", silent)
+            for m in members
+        ) if y is not None
+    ]
+    partner_years = [
+        y for y in (
+            _coerce_int(m.partner_last_order_year, "partner_last_order_year", silent)
+            for m in members
+        ) if y is not None
+    ]
+    return (max(years) if years else None,
+            max(partner_years) if partner_years else None)
 
 
 def _resolve_confidence_threshold(explicit: Optional[float]) -> float:
@@ -711,7 +830,24 @@ def elect_golden_records(
     if duplicates:
         raise DuplicateRowIdError(duplicates)
 
-    scored = [_Scored(row, weights) for row in rows]
+    # G1: count criteria are cluster-context-dependent, so compute each real
+    # cluster's most-recent year BEFORE scoring, then score every row against
+    # its cluster's maxima. Single-member clusters (which degrade to unique) and
+    # uncluster rows are scored context-free (their own year is the max).
+    rows_by_cluster: Dict[str, List[ScoringRow]] = {}
+    for row in rows:
+        if row.cluster_id is not None:
+            rows_by_cluster.setdefault(row.cluster_id, []).append(row)
+    cluster_maxima: Dict[str, Tuple[Optional[int], Optional[int]]] = {
+        cid: _cluster_year_maxima(members)
+        for cid, members in rows_by_cluster.items()
+        if len(members) >= 2
+    }
+
+    scored = [
+        _Scored(row, weights, *cluster_maxima.get(row.cluster_id, (None, None)))
+        for row in rows
+    ]
 
     clusters: Dict[str, List[_Scored]] = {}
     for s in scored:

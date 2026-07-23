@@ -34,9 +34,15 @@ INPUT_HEADERS: Dict[str, str] = {
     "Customer": "row_id",
     "Account group": "account_group",  # note the space in the column name
     "Sales_Order_Last_Used": "last_order_year",
-    "Sales_Order_Total_Count": "order_count",
+    # G1: despite the "_Total_" header, this is interpreted as the count of
+    # sales orders WITHIN the last-used year (Bernd's year-priority rule). The
+    # count only differentiates records sharing the most-recent year in a
+    # cluster. OPEN ITEM P2-21: confirm the click-report column layout actually
+    # supplies a within-year count here (not a lifetime total) before go-live.
+    "Sales_Order_Total_Count": "orders_in_last_used_year",
     "Sales_Order_Partner_Last_Used": "partner_last_order_year",
-    "Sales_Order_Partner_Total_Count": "partner_order_count",
+    # G1: within-year partner count (same P2-21 caveat as above).
+    "Sales_Order_Partner_Total_Count": "partner_orders_in_last_used_year",
     "Equipment_Total_Count": "equipment_count",
     "SleepingCustomer": "sleeping_band",
     "CustomerStatus": "customer_status",
