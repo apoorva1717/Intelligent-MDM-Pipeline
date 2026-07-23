@@ -632,7 +632,12 @@ def score_row(
         breakdown["sales_order_count"] = count_pts
     else:
         breakdown["sales_order_count"] = 0
-        if count_pts > 0:
+        # Only flag GENUINE recency losses: points that would have scored (>0),
+        # suppressed because a strictly more recent record exists in the cluster
+        # (cluster_max_year not None). A context-free suppression — a lone
+        # year-None row with no cluster competitor — is not evidence of "volume
+        # losing to recency" and would only be noise.
+        if count_pts > 0 and cluster_max_year is not None:
             warnings.append(
                 f"order count suppressed (G1): last-used year {last_year} is not "
                 f"the cluster's most recent ({cluster_max_year})"
@@ -649,7 +654,9 @@ def score_row(
         breakdown["sales_order_partner_count"] = partner_count_pts
     else:
         breakdown["sales_order_partner_count"] = 0
-        if partner_count_pts > 0:
+        # Same genuine-loss guard as the sales pair: skip context-free (no
+        # recency competitor) suppressions.
+        if partner_count_pts > 0 and cluster_max_partner_year is not None:
             warnings.append(
                 f"partner order count suppressed (G1): partner last-used year "
                 f"{partner_year} is not the cluster's most recent "

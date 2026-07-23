@@ -1312,13 +1312,33 @@ class TestG1CountRecency:
         assert r.score_breakdown["sales_order_count"] == 25  # 12 -> >10, awarded
 
     def test_all_none_year_cluster_no_count_no_exception(self):
-        results = elect_golden_records([
+        rows = [
             _cluster_row("A", cluster_id="C1", order_count=12),
             _cluster_row("B", cluster_id="C1", order_count=25),
-        ], WEIGHTS)
+        ]
+        results = elect_golden_records(rows, WEIGHTS)
         by = _by_row(results)
         assert by["A"].score_breakdown["sales_order_count"] == 0
         assert by["B"].score_breakdown["sales_order_count"] == 0
+        # No recency competitor (cluster max year is None) → not flagged as noise.
+        assert not any(
+            i.issue_type == "count_suppressed_by_recency"
+            for i in detect_issues(rows, results)
+        )
+
+    def test_context_free_year_none_suppression_is_not_flagged(self):
+        """A lone (unique) year-None row with a present count is still zeroed by
+        rule 1, but produces NO suppression warning/issue — there is no cluster
+        and no more-recent competitor, so it is not 'volume lost to recency'."""
+        rows = [ScoringRow(row_id="1", cluster_id=None, order_count=12)]  # no year
+        results = elect_golden_records(rows, WEIGHTS)
+        (r,) = results
+        assert r.score_breakdown["sales_order_count"] == 0   # rule 1 still applies
+        assert not any("count suppressed" in w for w in r.warnings)
+        assert not any(
+            i.issue_type == "count_suppressed_by_recency"
+            for i in detect_issues(rows, results)
+        )
 
     def test_max_year_record_with_none_count_still_wins_on_recency(self):
         results = elect_golden_records([
