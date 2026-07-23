@@ -239,7 +239,12 @@ ISSUE_TYPES = (
     "tiebreak_decided",
     "empty_scoring_payload",
     "count_suppressed_by_recency",
+    "candidate_cap_exceeded",
 )
+
+# Marker written by the adjudicator's residue pass when a block exceeds the
+# per-block candidate cap and is routed to manual_review.
+_CANDIDATE_CAP_MARKER = "candidate_cap_exceeded"
 
 # Marker written by score_row when the G1 recency gate zeroes a count component.
 _COUNT_SUPPRESSED_MARKER = "count suppressed (G1)"
@@ -293,7 +298,9 @@ def detect_issues(
     by_id = {r.row_id: r for r in rows}
     issues: List[DedupIssue] = []
 
-    # Row-level — a persisted reasoning that argues against its own merge.
+    # Row-level — a persisted reasoning that argues against its own merge, or a
+    # block routed to manual_review because it blew the candidate cap.
+    seen_cap_clusters: set = set()
     for row in rows:
         if _reasoning_is_contradiction(row.reasoning):
             issues.append(DedupIssue(
@@ -301,6 +308,16 @@ def detect_issues(
                 issue_type="verdict_contradiction",
                 detail=row.reasoning.strip()[:200],  # type: ignore[union-attr]
             ))
+        if row.reasoning and _CANDIDATE_CAP_MARKER in row.reasoning:
+            # One issue per capped block (keyed by cluster_id, or row when none).
+            key = row.cluster_id or row.row_id
+            if key not in seen_cap_clusters:
+                seen_cap_clusters.add(key)
+                issues.append(DedupIssue(
+                    row_id=row.row_id, cluster_id=row.cluster_id,
+                    issue_type="candidate_cap_exceeded",
+                    detail=row.reasoning.strip()[:200],
+                ))
 
     # Row-level — G1 recency gate zeroed a count component (Bernd's rule firing).
     for res in results:

@@ -598,6 +598,20 @@ class TestIssues:
         vc = by_type["verdict_contradiction"]
         assert vc[0].row_id == "5" and "Split:" in vc[0].detail
 
+    def test_candidate_cap_exceeded_issue_from_reasoning_marker(self):
+        """The adjudicator's candidate_cap_exceeded marker (persisted in the
+        Reasoning column) surfaces as a scoring issue, one per capped block."""
+        rows = [
+            ScoringRow(row_id="1", cluster_id="C1", routing="manual_review",
+                       reasoning="candidate_cap_exceeded: 80 candidate pairs exceed the per-block cap of 50"),
+            ScoringRow(row_id="2", cluster_id="C1", routing="manual_review",
+                       reasoning="candidate_cap_exceeded: 80 candidate pairs exceed the per-block cap of 50"),
+        ]
+        results = elect_golden_records(rows, WEIGHTS)
+        caps = [i for i in detect_issues(rows, results)
+                if i.issue_type == "candidate_cap_exceeded"]
+        assert len(caps) == 1 and caps[0].cluster_id == "C1"
+
     def test_no_issues_on_clean_confident_cluster(self):
         rows = [
             _cluster_row("1", cluster_id="cA", confidence=0.99, last_order_year=2026),

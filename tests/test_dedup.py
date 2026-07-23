@@ -349,34 +349,36 @@ async def test_lei_and_ror_hints_passed_to_llm():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_name2_asymmetry_never_merged_even_if_llm_says_merge():
-    """Empty vs populated Name 2 → never merged. Deterministic: the
-    empty/populated pair is never even sent to the LLM."""
+async def test_name2_asymmetry_pair_is_nominated_and_adjudicated():
+    """Residue widening (Option A — LLM verdict wins for nominated pairs): an
+    empty-Name2 vs populated-Name2 pair sharing a name is NO LONGER silently
+    skipped. It is nominated (name similarity) and sent to the LLM; on a
+    'distinct' verdict both stay unique but WITH reasoning recorded. (The
+    deterministic _enforce_name2_split safety net is still unit-tested by
+    test_name2_asymmetry_split_when_llm_violates_within_bucket.)"""
     rows = [
         _row("r1", "Siemens AG", None),
         _row("r2", "Siemens AG", "Healthineers Division"),
     ]
 
     def responder(system, user):
-        # Mock tries to merge everything into one entity.
+        # Residue pairwise call → the LLM judges them distinct (HQ vs division).
         return json.dumps({
-            "entities": [
-                {"signature_ids": ["s1", "s2"], "institution": "Siemens",
-                 "department": "", "confidence": 0.99, "reasoning": "merge!"},
-            ],
-            "uncertain_signature_ids": [],
+            "decision": "new", "matched_entity_id": None, "confidence": 0.9,
+            "reasoning": "same company, different department",
         })
 
     llm = ScriptedLLM(responder)
     resp = await cluster_blocks(rows, llm)
     by = _by_row(resp)
 
-    # Two singleton buckets → no LLM call needed at all.
-    assert llm.calls == 0
-    assert resp.summary.clusters == 0
-    assert by["r1"].cluster_id is None
-    assert by["r2"].cluster_id is None
-    assert by["r1"].cluster_id != by["r2"].cluster_id or by["r1"].cluster_id is None
+    assert llm.calls == 1                    # the residue pair WAS adjudicated
+    assert resp.summary.clusters == 0        # distinct verdict → no merge
+    assert by["r1"].cluster_id is None and by["r2"].cluster_id is None
+    assert by["r1"].routing == "unique" and by["r2"].routing == "unique"
+    # A rejected candidate now records reasoning (empty == never nominated).
+    assert by["r1"].reasoning and "distinct" in by["r1"].reasoning
+    assert by["r2"].reasoning and "distinct" in by["r2"].reasoning
 
 
 @pytest.mark.asyncio
@@ -398,6 +400,190 @@ async def test_name2_asymmetry_split_when_llm_violates_within_bucket():
     assert len(out) == 2
     groups = [{s.signature_id for s in e.signatures} for e in out]
     assert {"s1"} in groups and {"s2"} in groups
+
+
+# ---------------------------------------------------------------------------
+# Residue candidate pass — widened nomination (cross-boundary / lone bucket)
+# ---------------------------------------------------------------------------
+
+import re as _re
+_ENT_ID_RE = _re.compile(r'"entity_id"\s*:\s*"([^"]+)"')
+
+
+def _residue_responder(decision, *, reasoning="r", confidence=0.9):
+    """A ScriptedLLM responder: Mode A returns each sig distinct (no merge);
+    the residue pairwise call ('Decide whether the candidate') returns the
+    given decision, matching the canonical entity_id from the prompt."""
+    def responder(system, user):
+        if "Decide whether the candidate" in user:
+            target = _ENT_ID_RE.search(user)
+            return json.dumps({
+                "decision": decision,
+                "matched_entity_id": target.group(1) if target else None,
+                "confidence": confidence, "reasoning": reasoning,
+            })
+        # Mode A: return every signature as its own (adjudicated) entity.
+        ids = _re.findall(r'"signature_id"\s*:\s*"([^"]+)"', user)
+        return json.dumps({
+            "entities": [
+                {"signature_ids": [sid], "institution": "x", "department": "",
+                 "confidence": 0.9, "reasoning": f"mode-a distinct {sid}"}
+                for sid in ids
+            ],
+            "uncertain_signature_ids": [],
+        })
+    return responder
+
+
+@pytest.mark.asyncio
+async def test_residue_same_lei_cross_boundary_merges_on_match():
+    """Rule 1: a converging-LEI pair split across the Name2 boundary is
+    nominated and, on an LLM 'match', joins into one cluster."""
+    rows = [
+        DedupRow(row_id="1", block_id="b1", name1="Pfizer Inc.", name2="Oncology",
+                 lei_id="LEI-PFE"),
+        DedupRow(row_id="2", block_id="b1", name1="Pfizer AG", name2=None,
+                 lei_id="LEI-PFE"),
+    ]
+    llm = ScriptedLLM(_residue_responder("match", reasoning="same LEI"))
+    resp = await cluster_blocks(rows, llm)
+    by = _by_row(resp)
+
+    assert resp.summary.candidates_generated == 1
+    assert by["1"].cluster_id == by["2"].cluster_id is not None
+    assert by["1"].routing == "cluster" and by["2"].routing == "cluster"
+    assert "merged" in (by["2"].reasoning or "")
+
+
+@pytest.mark.asyncio
+async def test_residue_distinct_records_reasoning_on_reject():
+    """A nominated pair the LLM rejects stays unique but WITH reasoning — an
+    empty Reasoning must mean 'never nominated', nothing else."""
+    rows = [
+        DedupRow(row_id="1", block_id="b1", name1="Pfizer Inc.", name2="Oncology",
+                 lei_id="LEI-PFE"),
+        DedupRow(row_id="2", block_id="b1", name1="Pfizer AG", name2=None,
+                 lei_id="LEI-PFE"),
+    ]
+    llm = ScriptedLLM(_residue_responder("new", reasoning="HQ vs division"))
+    resp = await cluster_blocks(rows, llm)
+    by = _by_row(resp)
+
+    assert by["1"].cluster_id is None and by["2"].cluster_id is None
+    assert by["1"].routing == "unique" and by["2"].routing == "unique"
+    assert "distinct" in (by["1"].reasoning or "")
+    assert "distinct" in (by["2"].reasoning or "")
+    assert resp.summary.rejected_with_reasoning == 1
+
+
+@pytest.mark.asyncio
+async def test_residue_singleton_joins_multi_member_signature():
+    """A lone signature converging by LEI onto a 3-row signature (across the
+    Name2 boundary) joins it on an LLM 'match'."""
+    rows = [
+        DedupRow(row_id=f"i{i}", block_id="b1", name1="Pfizer Inc.",
+                 name2="Oncology", lei_id="LEI-PFE") for i in range(3)
+    ] + [
+        DedupRow(row_id="ag", block_id="b1", name1="Pfizer AG", name2=None,
+                 lei_id="LEI-PFE"),
+    ]
+    llm = ScriptedLLM(_residue_responder("match"))
+    resp = await cluster_blocks(rows, llm)
+    by = _by_row(resp)
+    # All four rows end in one cluster.
+    cids = {r.cluster_id for r in resp.rows}
+    assert len(cids) == 1 and None not in cids
+    assert by["ag"].cluster_id == by["i0"].cluster_id
+
+
+@pytest.mark.asyncio
+async def test_mode_a_reject_now_carries_reasoning():
+    """Two same-bucket singletons (the Bayer pattern) are adjudicated by Mode A;
+    on a distinct verdict both are unique but now carry reasoning."""
+    rows = [
+        _row("1", "Bayer AG", None),
+        _row("2", "Bayer Pharma", None),  # same (empty) bucket, distinct sigs
+    ]
+    llm = ScriptedLLM(_residue_responder("new"))  # Mode A path returns distinct
+    resp = await cluster_blocks(rows, llm)
+    by = _by_row(resp)
+    assert by["1"].routing == "unique" and by["2"].routing == "unique"
+    assert by["1"].reasoning and by["2"].reasoning  # never empty after adjudication
+
+
+@pytest.mark.asyncio
+async def test_no_signal_pair_not_nominated_reason_empty_ok():
+    """Different names, no shared IDs, low overlap across the boundary → NOT
+    nominated; both unique; empty reasoning is acceptable ONLY here."""
+    rows = [
+        DedupRow(row_id="1", block_id="b1", name1="Acme Metals", name2="Sales"),
+        DedupRow(row_id="2", block_id="b1", name1="Globex Systems", name2=None),
+    ]
+    llm = ScriptedLLM(_residue_responder("match"))  # would merge IF nominated
+    resp = await cluster_blocks(rows, llm)
+    by = _by_row(resp)
+    assert resp.summary.candidates_generated == 0
+    assert by["1"].routing == "unique" and by["2"].routing == "unique"
+    assert by["1"].reasoning is None and by["2"].reasoning is None
+
+
+@pytest.mark.asyncio
+async def test_candidate_cap_routes_block_to_manual_review(monkeypatch):
+    """Over MAX_CANDIDATES_PER_BLOCK the whole block routes to manual_review
+    with a candidate_cap_exceeded marker; id-convergence pairs are retained
+    first in the (capped) ordering."""
+    monkeypatch.setenv("MAX_CANDIDATES_PER_BLOCK", "1")
+    rows = [
+        DedupRow(row_id="1", block_id="b1", name1="Pfizer Inc.", name2="Oncology",
+                 lei_id="LEI-PFE"),
+        DedupRow(row_id="2", block_id="b1", name1="Pfizer AG", name2=None,
+                 lei_id="LEI-PFE"),
+        DedupRow(row_id="3", block_id="b1", name1="Pfizer GmbH", name2=None,
+                 lei_id="LEI-PFE"),
+    ]
+    llm = ScriptedLLM(_residue_responder("match"))
+    resp = await cluster_blocks(rows, llm)
+    by = _by_row(resp)
+
+    assert resp.summary.candidate_cap_exceeded_blocks == 1
+    assert all(r.routing == "manual_review" for r in resp.rows)
+    assert "candidate_cap_exceeded" in (by["1"].reasoning or "")
+
+
+@pytest.mark.asyncio
+async def test_residue_determinism_under_input_shuffle():
+    """Shuffled input yields identical row->cluster assignment and LLM call
+    count — candidate generation and ordering are deterministic."""
+    def make_rows():
+        return [
+            DedupRow(row_id="1", block_id="b1", name1="Pfizer Inc.",
+                     name2="Oncology", lei_id="LEI-PFE"),
+            DedupRow(row_id="2", block_id="b1", name1="Pfizer AG", name2=None,
+                     lei_id="LEI-PFE"),
+            DedupRow(row_id="3", block_id="b1", name1="Roche Ltd", name2="Dx"),
+        ]
+    llm1 = ScriptedLLM(_residue_responder("match"))
+    r1 = await cluster_blocks(make_rows(), llm1)
+    map1 = {r.row_id: r.cluster_id for r in r1.rows}
+
+    shuffled = list(reversed(make_rows()))
+    llm2 = ScriptedLLM(_residue_responder("match"))
+    r2 = await cluster_blocks(shuffled, llm2)
+    map2 = {r.row_id: r.cluster_id for r in r2.rows}
+
+    assert map1 == map2
+    assert llm1.calls == llm2.calls
+
+
+def test_step_a_does_not_collapse_suffix_variants():
+    """Suffix stripping is for candidacy only — Step A keeps 'Pfizer AG' and
+    'Pfizer Inc.' as DIFFERENT signatures (no deterministic auto-merge)."""
+    rows = [
+        DedupRow(row_id="1", block_id="b1", name1="Pfizer AG"),
+        DedupRow(row_id="2", block_id="b1", name1="Pfizer Inc."),
+    ]
+    sigs = build_signatures(rows)
+    assert len(sigs) == 2  # not collapsed
 
 
 # ---------------------------------------------------------------------------

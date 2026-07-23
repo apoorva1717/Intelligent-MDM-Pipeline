@@ -27,6 +27,7 @@ from dedup.prompts import (
     build_mode_a_user_prompt,
     build_mode_b_user_prompt,
 )
+from dedup.candidates import CandidateUnit, generate_candidate_pairs
 from dedup.cluster_key import cluster_hash
 from dedup.signatures import Signature, build_signatures, group_rows_by_block
 
@@ -34,6 +35,18 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SIG_PARTITION_THRESHOLD = 12
 DEFAULT_DEDUP_MAX_CONCURRENCY = 5
+DEFAULT_NAME_CANDIDATE_THRESHOLD = 0.85
+DEFAULT_TOKEN_CANDIDATE_THRESHOLD = 0.6
+DEFAULT_MAX_CANDIDATES_PER_BLOCK = 50
+
+
+@dataclass
+class _CandidateConfig:
+    """Resolved residue-nomination knobs (settings > env > default)."""
+
+    name_threshold: float = DEFAULT_NAME_CANDIDATE_THRESHOLD
+    token_threshold: float = DEFAULT_TOKEN_CANDIDATE_THRESHOLD
+    max_candidates: int = DEFAULT_MAX_CANDIDATES_PER_BLOCK
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +63,11 @@ class Entity:
     department: Optional[str] = None
     confidence: Optional[float] = None
     reasoning: Optional[str] = None
+    # True once this entity's membership has been decided by the LLM (a Mode A/B
+    # verdict or a residue-pass adjudication). A deterministic bucket-size-1 /
+    # seed entity that never reached the LLM stays False — that is the ONLY case
+    # allowed to emit an empty Reasoning field.
+    adjudicated: bool = False
 
     @property
     def has_name2(self) -> bool:
@@ -93,6 +111,11 @@ class BlockStats:
     completion_tokens: int = 0
     latency_ms: int = 0
     model_version: str = ""
+    # Residue candidate-nomination telemetry.
+    candidates_generated: int = 0
+    candidates_by_rule: Counter = field(default_factory=Counter)
+    rejected_with_reasoning: int = 0
+    candidate_cap_exceeded: bool = False
 
 
 def _confidence_to_float(value: Any) -> Optional[float]:
@@ -304,7 +327,9 @@ async def _mode_a(
             )
             for sig in bucket:
                 sig.uncertain = True
-                entities.append(Entity(entity_id=f"e{next_index}", signatures=[sig]))
+                entities.append(Entity(
+                    entity_id=f"e{next_index}", signatures=[sig], adjudicated=True,
+                ))
                 next_index += 1
             continue
 
@@ -333,6 +358,7 @@ async def _mode_a(
                 department=(ent_obj.get("department") or None),
                 confidence=confidence,
                 reasoning=reasoning,
+                adjudicated=True,
             ))
             next_index += 1
 
@@ -343,7 +369,9 @@ async def _mode_a(
             assigned.add(sid)
             decision_counts["uncertain"] += 1
             sig.uncertain = True
-            entities.append(Entity(entity_id=f"e{next_index}", signatures=[sig]))
+            entities.append(Entity(
+                entity_id=f"e{next_index}", signatures=[sig], adjudicated=True,
+            ))
             next_index += 1
 
         # Any signature the LLM dropped from its partition: treat as uncertain
@@ -352,7 +380,9 @@ async def _mode_a(
             if sig.signature_id not in assigned:
                 decision_counts["missing"] += 1
                 sig.uncertain = True
-                entities.append(Entity(entity_id=f"e{next_index}", signatures=[sig]))
+                entities.append(Entity(
+                    entity_id=f"e{next_index}", signatures=[sig], adjudicated=True,
+                ))
                 next_index += 1
 
         _log_llm_call("A", stats, call, dict(decision_counts))
@@ -453,6 +483,7 @@ async def _mode_b(
                 # a fallback for the seed signature only.
                 target.confidence = confidence
                 target.reasoning = reasoning
+                target.adjudicated = True
                 _log_llm_call("B", stats, call, {"match": 1})
                 continue
             # Claimed a match to an unknown/incompatible id → treat as new.
@@ -460,11 +491,21 @@ async def _mode_b(
                 "Dedup Mode B: match to unknown entity_id %r for signature %s; "
                 "treating as new", parsed.get("matched_entity_id"), sig.signature_id,
             )
-            canonicals.append(Entity(entity_id=f"e{next_index}", signatures=[sig]))
+            sig.merge_reasoning = reasoning
+            canonicals.append(Entity(
+                entity_id=f"e{next_index}", signatures=[sig], adjudicated=True,
+                reasoning=reasoning,
+            ))
             next_index += 1
             _log_llm_call("B", stats, call, {"new": 1})
         elif decision == "new":
-            canonicals.append(Entity(entity_id=f"e{next_index}", signatures=[sig]))
+            # Adjudicated as a distinct entity — record the reason so the row is
+            # never left with an empty (never-nominated) Reasoning field.
+            sig.merge_reasoning = reasoning
+            canonicals.append(Entity(
+                entity_id=f"e{next_index}", signatures=[sig], adjudicated=True,
+                reasoning=reasoning,
+            ))
             next_index += 1
             _log_llm_call("B", stats, call, {"new": 1})
         else:
@@ -477,12 +518,200 @@ async def _mode_b(
                 signatures=[sig],
                 confidence=confidence,
                 reasoning=reasoning,
+                adjudicated=True,
             )
             canonicals.append(ent)
             next_index += 1
             _log_llm_call("B", stats, call, {"uncertain": 1})
 
     return canonicals
+
+
+# ---------------------------------------------------------------------------
+# Residue candidate pass — nominate + adjudicate the pairs bucketing skipped
+# ---------------------------------------------------------------------------
+
+def _entity_unit(index: int, ent: Entity) -> CandidateUnit:
+    return CandidateUnit(
+        index=index,
+        name=ent.signatures[0].name1 if ent.signatures else "",
+        ror_id=next((s.ror_id for s in ent.signatures if s.ror_id), None),
+        lei_id=next((s.lei_id for s in ent.signatures if s.lei_id), None),
+        has_name2=ent.has_name2,
+        adjudicated=ent.adjudicated,
+    )
+
+
+def _entity_prompt_fields(ent: Entity) -> dict:
+    sig = ent.signatures[0]
+    return {
+        "signature_id": sig.signature_id,
+        "name1": sig.name1,
+        "name2": sig.name2,
+        "ror_id": next((s.ror_id for s in ent.signatures if s.ror_id), "none"),
+        "lei_id": next((s.lei_id for s in ent.signatures if s.lei_id), "none"),
+    }
+
+
+async def _adjudicate_residue(
+    block_id: str,
+    entities: List[Entity],
+    llm: DedupLLM,
+    semaphore: asyncio.Semaphore,
+    stats: BlockStats,
+    cfg: _CandidateConfig,
+) -> List[Entity]:
+    """Nominate residue pairs (ID / name / token) the bucketed pass never
+    compared, adjudicate each via a pairwise LLM call, and apply the verdicts.
+
+    Nomination never merges — the LLM decides. Every nominated pair records
+    reasoning on BOTH sides, including rejects. On exceeding the candidate cap
+    the whole block is routed to manual_review (deterministic priority already
+    put id-convergence pairs first). Fully deterministic ordering.
+    """
+    if len(entities) < 2:
+        return entities
+
+    units = [_entity_unit(i, e) for i, e in enumerate(entities)]
+    candidates = generate_candidate_pairs(
+        units,
+        name_threshold=cfg.name_threshold,
+        token_threshold=cfg.token_threshold,
+    )
+    stats.candidates_generated += len(candidates)
+    for c in candidates:
+        stats.candidates_by_rule[c.rule] += 1
+
+    if len(candidates) > cfg.max_candidates:
+        stats.candidate_cap_exceeded = True
+        logger.warning(
+            "Dedup: block %s generated %d candidate pairs > cap %d; routing the "
+            "whole block to manual_review", block_id, len(candidates), cfg.max_candidates,
+        )
+        marker = (
+            f"candidate_cap_exceeded: {len(candidates)} candidate pairs exceed the "
+            f"per-block cap of {cfg.max_candidates}; block routed to manual review"
+        )
+        for ent in entities:
+            ent.adjudicated = True
+            for sig in ent.signatures:
+                sig.uncertain = True
+                if sig.merge_reasoning is None:
+                    sig.merge_reasoning = marker
+        return entities
+
+    # Union-find over entity indices; lowest index stays root for a stable id.
+    parent = list(range(len(entities)))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x: int, y: int) -> None:
+        rx, ry = find(x), find(y)
+        if rx != ry:
+            lo, hi = (rx, ry) if rx < ry else (ry, rx)
+            parent[hi] = lo
+
+    nominated: set[int] = set()
+    distinct_note: dict[int, str] = {}
+
+    for c in candidates:
+        nominated.add(c.a)
+        nominated.add(c.b)
+        if find(c.a) == find(c.b):
+            continue  # already merged transitively — don't re-ask
+        canon_ent, cand_ent = entities[c.a], entities[c.b]
+        user_prompt = build_mode_b_user_prompt(
+            _entity_prompt_fields(cand_ent),
+            [{
+                "entity_id": canon_ent.entity_id,
+                "institution": canon_ent.institution or canon_ent.signatures[0].name1,
+                "department": canon_ent.department or canon_ent.signatures[0].name2,
+                **{k: v for k, v in _entity_prompt_fields(canon_ent).items()
+                   if k != "signature_id"},
+            }],
+        )
+        async with semaphore:
+            call = await llm.adjudicate(SYSTEM_PROMPT, user_prompt, max_tokens=1000)
+        stats.llm_calls += 1
+        _record_call_stats(stats, call)
+
+        canon_name = canon_ent.signatures[0].name1
+        cand_name = cand_ent.signatures[0].name1
+        canon_ent.adjudicated = True
+        cand_ent.adjudicated = True
+
+        parsed = parse_json_object(call.raw) if call.error is None else None
+        if parsed is None:
+            # Ambiguous / unusable verdict → route both sides to manual_review.
+            stats.errors += 1
+            for e in (canon_ent, cand_ent):
+                for s in e.signatures:
+                    s.uncertain = True
+            _log_llm_call("R", stats, call, {"error": 1})
+            continue
+
+        decision = str(parsed.get("decision", "")).strip().lower()
+        confidence = _confidence_to_float(parsed.get("confidence"))
+        reasoning = parsed.get("reasoning") or None
+        tail = f" ({reasoning})" if reasoning else ""
+
+        if decision == "match":
+            note = f"adjudicated vs {canon_name}: merged{tail}"
+            for s in cand_ent.signatures:
+                s.merge_reasoning = note
+                s.merge_confidence = confidence
+            union(c.a, c.b)
+            _log_llm_call("R", stats, call, {"match": 1})
+        elif decision in ("new", "distinct"):
+            distinct_note[c.b] = f"adjudicated vs {canon_name}: distinct{tail}"
+            distinct_note[c.a] = f"adjudicated vs {cand_name}: distinct{tail}"
+            stats.rejected_with_reasoning += 1
+            _log_llm_call("R", stats, call, {"distinct": 1})
+        else:
+            # uncertain / unrecognised → manual_review, reasoning recorded.
+            for e in (canon_ent, cand_ent):
+                for s in e.signatures:
+                    s.uncertain = True
+                    if s.merge_reasoning is None:
+                        s.merge_reasoning = reasoning
+            _log_llm_call("R", stats, call, {"uncertain": 1})
+
+    # Rebuild entities from the union-find groups (deterministic root order).
+    groups: dict[int, List[int]] = {}
+    for i in range(len(entities)):
+        groups.setdefault(find(i), []).append(i)
+
+    rebuilt: List[Entity] = []
+    for root in sorted(groups):
+        idxs = groups[root]
+        if len(idxs) == 1:
+            ent = entities[idxs[0]]
+            note = distinct_note.get(idxs[0])
+            # A nominated-but-unmerged reject records its distinct rationale so
+            # its Reasoning is never empty.
+            if note is not None:
+                for s in ent.signatures:
+                    if s.merge_reasoning is None:
+                        s.merge_reasoning = note
+                if ent.reasoning is None:
+                    ent.reasoning = note
+            rebuilt.append(ent)
+            continue
+        members = [entities[i] for i in idxs]
+        rebuilt.append(Entity(
+            entity_id=entities[root].entity_id,
+            signatures=[s for e in members for s in e.signatures],
+            institution=entities[root].institution,
+            department=entities[root].department,
+            confidence=next((e.confidence for e in members if e.confidence is not None), None),
+            reasoning=next((e.reasoning for e in members if e.reasoning), None),
+            adjudicated=True,
+        ))
+    return rebuilt
 
 
 # ---------------------------------------------------------------------------
@@ -525,27 +754,31 @@ def _emit_rows(
                     routing = "unique"
                     stats.rows_unique += 1
 
-                # Confidence/reasoning are MERGE signals: surface them only for
-                # a genuine LLM merge (>=2 distinct signatures) or an uncertain
-                # row — never for a pure identical-signature collapse, whose
-                # duplicate-ness is deterministic and carries no merge decision
-                # (a spurious confidence there would wrongly trip the election
-                # confidence gate). Prefer the per-signature membership
-                # rationale; fall back to the entity-level value.
-                if ent.llm_merged or sig.uncertain:
-                    confidence = (
-                        sig.merge_confidence
-                        if sig.merge_confidence is not None
-                        else ent.confidence
-                    )
+                # REASONING is an ADJUDICATION signal: surface it for any entity
+                # the LLM decided (merged, rejected, or uncertain) so a rejected
+                # candidate still records why. An empty Reasoning therefore means
+                # exactly "never nominated" (a deterministic collapse / lone
+                # bucket that never reached the LLM).
+                if ent.adjudicated or sig.uncertain:
                     reasoning = (
                         sig.merge_reasoning
                         if sig.merge_reasoning is not None
                         else ent.reasoning
                     )
                 else:
-                    confidence = None
                     reasoning = None
+                # CONFIDENCE is a MERGE signal: surface it only for a genuine
+                # merge (>=2 signatures) or an uncertain row — never for a pure
+                # identical-collapse or a distinct verdict, where a spurious
+                # confidence would wrongly trip the election confidence gate.
+                if ent.llm_merged or sig.uncertain:
+                    confidence = (
+                        sig.merge_confidence
+                        if sig.merge_confidence is not None
+                        else ent.confidence
+                    )
+                else:
+                    confidence = None
 
                 out.append(DedupResultRow(
                     row_id=rid,
@@ -601,6 +834,7 @@ async def _process_block(
     llm: DedupLLM,
     threshold: int,
     semaphore: asyncio.Semaphore,
+    cfg: _CandidateConfig,
 ) -> tuple[List[DedupResultRow], BlockStats]:
     stats = BlockStats(block_id=block_id, rows_in=len(rows))
 
@@ -618,6 +852,13 @@ async def _process_block(
     else:
         stats.mode = "B"
         entities = await _mode_b(signatures, llm, semaphore, stats)
+
+    # Residue widening: nominate + adjudicate the pairs the bucketed pass never
+    # compared (cross-Name2-boundary, lone-bucket). Runs BEFORE the identity
+    # guard so a bad name/token merge across conflicting ROR/LEI is still split.
+    entities = await _adjudicate_residue(
+        block_id, entities, llm, semaphore, stats, cfg
+    )
 
     # Deterministic verdict guards, applied uniformly to both modes' output.
     # 1) A merge across different non-empty ROR/LEI ids is split to
@@ -650,9 +891,39 @@ async def _process_block(
             "clusters": stats.clusters,
             "rows_manual_review": stats.rows_manual_review,
             "errors": stats.errors,
+            "candidates_generated": stats.candidates_generated,
+            "candidates_by_rule": dict(stats.candidates_by_rule),
+            "rejected_with_reasoning": stats.rejected_with_reasoning,
+            "candidate_cap_exceeded": stats.candidate_cap_exceeded,
         },
     )
     return out, stats
+
+
+def _resolve_candidate_config(settings: Any) -> _CandidateConfig:
+    """Residue knobs: settings attrs > env vars > module defaults."""
+    def pick(attr: str, env: str, cast, default):
+        if settings is not None and getattr(settings, attr, None) is not None:
+            return getattr(settings, attr)
+        raw = os.getenv(env)
+        if raw:
+            try:
+                return cast(raw)
+            except ValueError:
+                logger.warning("Invalid %s=%r; using default", env, raw)
+        return default
+
+    return _CandidateConfig(
+        name_threshold=pick(
+            "name_candidate_threshold", "NAME_CANDIDATE_THRESHOLD",
+            float, DEFAULT_NAME_CANDIDATE_THRESHOLD),
+        token_threshold=pick(
+            "token_candidate_threshold", "TOKEN_CANDIDATE_THRESHOLD",
+            float, DEFAULT_TOKEN_CANDIDATE_THRESHOLD),
+        max_candidates=pick(
+            "max_candidates_per_block", "MAX_CANDIDATES_PER_BLOCK",
+            int, DEFAULT_MAX_CANDIDATES_PER_BLOCK),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -679,12 +950,13 @@ async def cluster_blocks(
     if concurrency is None:
         concurrency = int(os.getenv("DEDUP_MAX_CONCURRENCY", str(DEFAULT_DEDUP_MAX_CONCURRENCY)))
     semaphore = asyncio.Semaphore(max(1, concurrency))
+    cfg = _resolve_candidate_config(settings)
 
     blocks = group_rows_by_block(rows)
 
     block_outputs = await asyncio.gather(
         *[
-            _process_block(block_id, block_rows, llm, threshold, semaphore)
+            _process_block(block_id, block_rows, llm, threshold, semaphore, cfg)
             for block_id, block_rows in blocks.items()
         ]
     )
@@ -693,6 +965,10 @@ async def cluster_blocks(
     summary = DedupSummary(blocks=len(blocks), rows_in=len(rows))
     total_prompt_tokens = 0
     total_completion_tokens = 0
+    candidates_generated = 0
+    candidates_by_rule: Counter = Counter()
+    rejected_with_reasoning = 0
+    candidate_cap_exceeded_blocks = 0
     # cluster_id is a content hash of member row_ids (see cluster_hash) —
     # already globally unique and order-independent, so no cross-block
     # renumbering is required.
@@ -707,6 +983,14 @@ async def cluster_blocks(
         summary.errors += stats.errors
         total_prompt_tokens += stats.prompt_tokens
         total_completion_tokens += stats.completion_tokens
+        candidates_generated += stats.candidates_generated
+        candidates_by_rule.update(stats.candidates_by_rule)
+        rejected_with_reasoning += stats.rejected_with_reasoning
+        candidate_cap_exceeded_blocks += int(stats.candidate_cap_exceeded)
+
+    summary.candidates_generated = candidates_generated
+    summary.rejected_with_reasoning = rejected_with_reasoning
+    summary.candidate_cap_exceeded_blocks = candidate_cap_exceeded_blocks
 
     total_latency_ms = int((time.perf_counter() - request_start) * 1000)
     logger.info(
@@ -718,6 +1002,11 @@ async def cluster_blocks(
             "total_tokens": total_prompt_tokens + total_completion_tokens,
             "total_latency_ms": total_latency_ms,
             "prompt_version": PROMPT_VERSION,
+            # Residue candidate telemetry (measures this change's volume effect).
+            "candidates_generated": candidates_generated,
+            "candidates_by_rule": dict(candidates_by_rule),
+            "rejected_candidates_with_reasoning": rejected_with_reasoning,
+            "candidate_cap_exceeded_blocks": candidate_cap_exceeded_blocks,
         },
     )
 

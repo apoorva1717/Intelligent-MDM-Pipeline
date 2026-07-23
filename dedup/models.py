@@ -94,6 +94,10 @@ class DedupSummary(BaseModel):
     rows_manual_review: int = 0
     llm_calls: int = 0
     errors: int = 0
+    # Residue candidate-nomination telemetry.
+    candidates_generated: int = 0
+    rejected_with_reasoning: int = 0
+    candidate_cap_exceeded_blocks: int = 0
 
 
 class DedupResponse(BaseModel):

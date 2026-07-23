@@ -97,6 +97,15 @@ OPTIONAL_VARS_WITH_DEFAULTS = {
     # never re-runs the LLM — election reads the confidence persisted by
     # clustering.
     "CONFIDENCE_MERGE_THRESHOLD": "0.95",
+    # Dedup candidate NOMINATION (residue pass). A pair of signatures becomes an
+    # LLM adjudication candidate when suffix-stripped name similarity (Jaro-
+    # Winkler) reaches NAME_CANDIDATE_THRESHOLD, or token-set Jaccard reaches
+    # TOKEN_CANDIDATE_THRESHOLD, or their ROR/LEI converge. Nomination never
+    # merges — the LLM verdict decides. MAX_CANDIDATES_PER_BLOCK caps LLM calls
+    # per block; over the cap the block routes to manual_review.
+    "NAME_CANDIDATE_THRESHOLD": "0.85",
+    "TOKEN_CANDIDATE_THRESHOLD": "0.6",
+    "MAX_CANDIDATES_PER_BLOCK": "50",
     "PAGE_FETCH_TIMEOUT_SECONDS": "10",
     "MOCK_EXTERNAL_CALLS": "false",
     "ENV": "production",
@@ -208,6 +217,18 @@ class Settings:
     # retune (no LLM re-run).
     confidence_merge_threshold: float = field(
         default_factory=lambda: float(os.getenv("CONFIDENCE_MERGE_THRESHOLD", "0.95"))
+    )
+
+    # Dedup candidate nomination (residue pass). Nominate-only thresholds — the
+    # LLM verdict still decides; nomination never merges.
+    name_candidate_threshold: float = field(
+        default_factory=lambda: float(os.getenv("NAME_CANDIDATE_THRESHOLD", "0.85"))
+    )
+    token_candidate_threshold: float = field(
+        default_factory=lambda: float(os.getenv("TOKEN_CANDIDATE_THRESHOLD", "0.6"))
+    )
+    max_candidates_per_block: int = field(
+        default_factory=lambda: int(os.getenv("MAX_CANDIDATES_PER_BLOCK", "50"))
     )
 
     # Feature flags
