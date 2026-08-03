@@ -26,7 +26,15 @@ from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple, Union
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
 from dedup.cluster_key import CLUSTER_ID_PREFIX, cluster_hash
 
@@ -43,6 +51,28 @@ DEFAULT_CONFIDENCE_MERGE_THRESHOLD = 0.95
 # value in a real extract can never 422 the whole request; coercion (and the
 # warning for unrecognised values) happens in the scorer, not the model.
 Scalar = Union[int, float, str, None]
+
+# score_breakdown key -> flat output column header (the exact name the file
+# endpoint writes). Single source of truth shared by the JSON model (which
+# flattens score_breakdown into these columns) and dedup.scoring_xlsx (which
+# writes them). Keep in sync with nothing else — both consumers import THIS.
+SCORE_BREAKDOWN_COLUMNS: Dict[str, str] = {
+    "sales_order_last_used": "score_SalesOrderLastUsed",
+    "sales_order_count": "score_SalesOrderCount",
+    "sales_order_partner_last_used": "score_SalesOrderPartnerLastUsed",
+    "sales_order_partner_count": "score_SalesOrderPartnerCount",
+    "equipment_count": "score_EquipmentCount",
+    "sleeping_customer": "score_SleepingCustomer",
+    "customer_status": "score_CustomerStatus",
+    "account_group": "score_AccountGroup",
+    "company_code_count": "score_CompanyCodeCount",
+    "combined_presence_bonus": "score_CombinedPresence",
+    "salesforce_instance_count": "score_SalesforceInstances",
+}
+
+# The 8 flat Salesforce id fields, in slot order (sf1 = Biosystems, sf2 = AXS,
+# sf3..sf8). Each is its own scalar column — no list/object on the wire.
+SF_FIELDS: Tuple[str, ...] = ("sf1", "sf2", "sf3", "sf4", "sf5", "sf6", "sf7", "sf8")
 
 
 class DuplicateRowIdError(ValueError):
@@ -66,15 +96,21 @@ class ScoringRow(BaseModel):
     normalises them and maps unknowns to 0 points plus a warning.
     """
 
+    # populate_by_name lets every field be supplied EITHER by its exact file
+    # column header (the alias, e.g. "Customer") OR by its snake_case name
+    # ("row_id"), so existing JSON callers keep working while the wire format
+    # matches /api/dedup/score/file exactly.
     model_config = ConfigDict(populate_by_name=True)
 
-    row_id: str = Field(..., description="SAP Customer / BP number, join key.")
+    row_id: str = Field(
+        ..., alias="Customer", description="SAP Customer / BP number, join key."
+    )
     cluster_id: Optional[str] = Field(
-        default=None,
+        default=None, alias="Cluster ID",
         description="Stable cluster key from the adjudicator. None => no cluster.",
     )
     confidence: Optional[float] = Field(
-        default=None,
+        default=None, alias="Confidence",
         description=(
             "Adjudication merge confidence from clustering (0-1). Below the "
             "configured threshold the merge is demoted to manual_review. None "
@@ -82,7 +118,7 @@ class ScoringRow(BaseModel):
         ),
     )
     routing: Optional[str] = Field(
-        default=None,
+        default=None, alias="Routing",
         description=(
             "Incoming clustering routing: cluster | unique | manual_review. A "
             "manual_review from clustering is INHERITED by election and can "
@@ -90,13 +126,13 @@ class ScoringRow(BaseModel):
         ),
     )
     reasoning: Optional[str] = Field(
-        default=None,
+        default=None, alias="Reasoning",
         description=(
             "Adjudication reasoning from clustering. Surfaced in the issue list "
             "to flag a verdict_contradiction (reasoning that disowns a merge)."
         ),
     )
-    last_order_year: Scalar = None
+    last_order_year: Scalar = Field(default=None, alias="Sales_Order_Last_Used")
     # G1 (Bernd's year-priority rule): this is the number of sales orders WITHIN
     # the record's last-used year, NOT a lifetime total. It only differentiates
     # records that share the most-recent year in a cluster (see score_row /
@@ -104,27 +140,64 @@ class ScoringRow(BaseModel):
     # input (deprecated — remove once callers migrate).
     orders_in_last_used_year: Scalar = Field(
         default=None,
-        validation_alias=AliasChoices("orders_in_last_used_year", "order_count"),
+        validation_alias=AliasChoices(
+            "Sales_Order_Total_Count", "orders_in_last_used_year", "order_count"
+        ),
+        serialization_alias="Sales_Order_Total_Count",
     )
-    partner_last_order_year: Scalar = None
+    partner_last_order_year: Scalar = Field(
+        default=None, alias="Sales_Order_Partner_Last_Used"
+    )
     # G1: within-year partner order count (mirror of orders_in_last_used_year).
     # Legacy name ``partner_order_count`` accepted on input (deprecated).
     partner_orders_in_last_used_year: Scalar = Field(
         default=None,
         validation_alias=AliasChoices(
-            "partner_orders_in_last_used_year", "partner_order_count"
+            "Sales_Order_Partner_Total_Count",
+            "partner_orders_in_last_used_year",
+            "partner_order_count",
         ),
+        serialization_alias="Sales_Order_Partner_Total_Count",
     )
-    equipment_count: Scalar = None
-    sleeping_band: Optional[str] = None  # expected "No" | "3-4" | ">5"
-    customer_status: Optional[str] = None  # expected "active" | "blocked"
-    account_group: Optional[str] = None
-    company_code_consolidated: Optional[str] = None  # ";"-delimited
-    sales_org_consolidated: Optional[str] = None  # ";"-delimited
-    salesforce_ids: List[Optional[str]] = Field(
-        default_factory=list,
-        description="8 slots: biosystems, AXS, 3..8. Only non-empty ids count.",
+    equipment_count: Scalar = Field(default=None, alias="Equipment_Total_Count")
+    # expected "No" | "3-4" | ">5"
+    sleeping_band: Optional[str] = Field(default=None, alias="SleepingCustomer")
+    # expected "active" | "blocked"
+    customer_status: Optional[str] = Field(default=None, alias="CustomerStatus")
+    account_group: Optional[str] = Field(default=None, alias="Account group")
+    company_code_consolidated: Optional[str] = Field(
+        default=None, alias="Company_Code_Consolidated"  # ";"-delimited
     )
+    sales_org_consolidated: Optional[str] = Field(
+        default=None, alias="Sales_Org_Consolidated"  # ";"-delimited
+    )
+    # Salesforce ids as 8 flat scalar columns (no list/object on the wire).
+    # Only non-empty ids count toward Salesforce_Instance_Count.
+    sf1: Optional[str] = Field(default=None, description="Salesforce id slot 1 (Biosystems).")
+    sf2: Optional[str] = Field(default=None, description="Salesforce id slot 2 (AXS).")
+    sf3: Optional[str] = None
+    sf4: Optional[str] = None
+    sf5: Optional[str] = None
+    sf6: Optional[str] = None
+    sf7: Optional[str] = None
+    sf8: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _unpack_salesforce_ids(cls, data):
+        """Backward-compat: accept a legacy ``salesforce_ids`` list (still used by
+        the file endpoint and older callers) and spread it across sf1..sf8. The
+        canonical shape is the flat sf1..sf8 columns; explicit sf* keys win."""
+        if (
+            isinstance(data, dict)
+            and "salesforce_ids" in data
+            and not any(f in data for f in SF_FIELDS)
+        ):
+            ids = data.get("salesforce_ids") or []
+            data = dict(data)
+            for i, field in enumerate(SF_FIELDS):
+                data[field] = ids[i] if i < len(ids) else None
+        return data
 
     @field_validator(
         "cluster_id",
@@ -135,6 +208,7 @@ class ScoringRow(BaseModel):
         "account_group",
         "company_code_consolidated",
         "sales_org_consolidated",
+        "sf1", "sf2", "sf3", "sf4", "sf5", "sf6", "sf7", "sf8",
         mode="before",
     )
     @classmethod
@@ -146,13 +220,6 @@ class ScoringRow(BaseModel):
         if isinstance(v, float) and v.is_integer():
             return str(int(v))
         return str(v)
-
-    @field_validator("salesforce_ids", mode="before")
-    @classmethod
-    def _stringify_ids(cls, v):
-        if v is None:
-            return []
-        return [None if item is None else str(item) for item in v]
 
     @field_validator("confidence", mode="before")
     @classmethod
@@ -175,6 +242,16 @@ class ScoringRequest(BaseModel):
     """
 
     rows: List[ScoringRow] = Field(default_factory=list)
+    weights: Optional[dict] = Field(
+        default=None,
+        description=(
+            "Optional weights override (same structure as dedup/weights.json: "
+            "criterion -> {band label: points}). Applied wholesale when valid; "
+            "a malformed override is ignored wholesale with a warning in "
+            "summary.warnings — identical semantics to the /api/dedup/score/file "
+            "Weights sheet. Omit to use dedup/weights.json."
+        ),
+    )
 
 
 class ScoringResultRow(BaseModel):
@@ -191,9 +268,22 @@ class ScoringResultRow(BaseModel):
     human sign-off (see POST /api/dedup/approve).
     """
 
-    row_id: str
-    cluster_id: Optional[str] = None
-    score: int
+    # Every serialized key is the EXACT file column header (see the aliases),
+    # so the JSON /api/dedup/score output matches /api/dedup/score/file column
+    # for column. populate_by_name keeps snake_case construction/validation
+    # working for internal callers and round-tripped /approve payloads.
+    model_config = ConfigDict(populate_by_name=True)
+
+    row_id: str = Field(alias="Customer")
+    cluster_id: Optional[str] = Field(default=None, alias="Cluster ID")
+    score: int = Field(alias="score_final")
+    # Raw derived counts (from the consolidated fields / SF id slots), mirroring
+    # the Company_Code_Count / Sales_Org_Count / Salesforce_Instance_Count
+    # columns the file endpoint writes. NOTE: these are the RAW counts, distinct
+    # from the *points* in the score_* columns. Source: ``derived_counts``.
+    company_code_count: int = Field(default=0, alias="Company_Code_Count")
+    sales_org_count: int = Field(default=0, alias="Sales_Org_Count")
+    salesforce_instance_count: int = Field(default=0, alias="Salesforce_Instance_Count")
     is_golden_record: bool
     golden_record_id: Optional[str] = None
     # The computed winner for this row's cluster — always present for a cluster
@@ -208,8 +298,87 @@ class ScoringResultRow(BaseModel):
     # 12-hex fingerprint of the weights the row was scored with — detects score
     # drift if weights were retuned between a proposal and its approval.
     scored_with_weights_version: Optional[str] = None
-    score_breakdown: Dict[str, int]
-    warnings: List[str] = Field(default_factory=list)
+    # Internal only: the per-criterion points. Flattened into the score_*
+    # columns below for output (so excluded here); still read by the file
+    # writeback and internal callers. Optional so a /score output (which has the
+    # flat score_* columns, not this dict) round-trips back into /approve.
+    score_breakdown: Dict[str, int] = Field(default_factory=dict, exclude=True)
+    # Not a file column — kept internal for summary.rows_with_warnings only.
+    warnings: List[str] = Field(default_factory=list, exclude=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fold_score_columns(cls, data):
+        """Reassemble score_breakdown from the flat score_* columns on input, so
+        a /score output round-trips losslessly back into /approve."""
+        if isinstance(data, dict) and "score_breakdown" not in data:
+            present = {
+                key: data[col]
+                for key, col in SCORE_BREAKDOWN_COLUMNS.items()
+                if col in data
+            }
+            if present:
+                data = dict(data)
+                data["score_breakdown"] = {k: int(v) for k, v in present.items()}
+        return data
+
+    # Flattened per-criterion points — one computed field per file score column,
+    # read from score_breakdown so the serialized output is exactly the file's
+    # score_* columns. Serialized under the alias (FastAPI dumps by_alias).
+    @computed_field(alias="score_SalesOrderLastUsed")
+    @property
+    def _pts_sales_order_last_used(self) -> int:
+        return int(self.score_breakdown.get("sales_order_last_used", 0))
+
+    @computed_field(alias="score_SalesOrderCount")
+    @property
+    def _pts_sales_order_count(self) -> int:
+        return int(self.score_breakdown.get("sales_order_count", 0))
+
+    @computed_field(alias="score_SalesOrderPartnerLastUsed")
+    @property
+    def _pts_sales_order_partner_last_used(self) -> int:
+        return int(self.score_breakdown.get("sales_order_partner_last_used", 0))
+
+    @computed_field(alias="score_SalesOrderPartnerCount")
+    @property
+    def _pts_sales_order_partner_count(self) -> int:
+        return int(self.score_breakdown.get("sales_order_partner_count", 0))
+
+    @computed_field(alias="score_EquipmentCount")
+    @property
+    def _pts_equipment_count(self) -> int:
+        return int(self.score_breakdown.get("equipment_count", 0))
+
+    @computed_field(alias="score_SleepingCustomer")
+    @property
+    def _pts_sleeping_customer(self) -> int:
+        return int(self.score_breakdown.get("sleeping_customer", 0))
+
+    @computed_field(alias="score_CustomerStatus")
+    @property
+    def _pts_customer_status(self) -> int:
+        return int(self.score_breakdown.get("customer_status", 0))
+
+    @computed_field(alias="score_AccountGroup")
+    @property
+    def _pts_account_group(self) -> int:
+        return int(self.score_breakdown.get("account_group", 0))
+
+    @computed_field(alias="score_CompanyCodeCount")
+    @property
+    def _pts_company_code_count(self) -> int:
+        return int(self.score_breakdown.get("company_code_count", 0))
+
+    @computed_field(alias="score_CombinedPresence")
+    @property
+    def _pts_combined_presence_bonus(self) -> int:
+        return int(self.score_breakdown.get("combined_presence_bonus", 0))
+
+    @computed_field(alias="score_SalesforceInstances")
+    @property
+    def _pts_salesforce_instance_count(self) -> int:
+        return int(self.score_breakdown.get("salesforce_instance_count", 0))
 
 
 class ScoringSummary(BaseModel):
@@ -454,6 +623,43 @@ def load_weights(path: Union[str, Path, None] = None) -> dict:
     return {k: v for k, v in weights.items() if not k.startswith("_")}
 
 
+def coerce_weights(
+    candidate: dict, expected: dict, *, source: str = "Weights"
+) -> Tuple[Optional[dict], Optional[str]]:
+    """Validate a candidate weights mapping against ``expected``'s structure.
+
+    The single source of truth for the weights-override rule shared by BOTH
+    the JSON ``/api/dedup/score`` body and the ``/api/dedup/score/file`` Weights
+    sheet: all-or-nothing. Every (criterion, band) pair in ``expected``
+    (dedup/weights.json) must be present with a numeric Points value, else the
+    WHOLE candidate is rejected — a half-applied retune is worse than none.
+    Returns ``(weights, None)`` on success or ``(None, reason)`` on rejection;
+    ``source`` names the candidate in the reason string.
+    """
+    parsed: dict = {}
+    for criterion, bands in expected.items():
+        crit_in = candidate.get(criterion)
+        crit_map = crit_in if isinstance(crit_in, dict) else {}
+        parsed[criterion] = {}
+        for band in bands:
+            if band not in crit_map:
+                return None, (
+                    f"{source} ignored: missing (criterion, band) pair "
+                    f"({criterion!r}, {band!r}); using dedup/weights.json"
+                )
+            points = crit_map[band]
+            if isinstance(points, bool) or not isinstance(points, (int, float)):
+                try:
+                    points = float(str(points).strip())
+                except (TypeError, ValueError):
+                    return None, (
+                        f"{source} ignored: non-numeric Points for "
+                        f"({criterion!r}, {band!r}); using dedup/weights.json"
+                    )
+            parsed[criterion][band] = int(points)
+    return parsed, None
+
+
 # ---------------------------------------------------------------------------
 # Coercion helpers — permissive, never guess, never raise
 # ---------------------------------------------------------------------------
@@ -505,7 +711,9 @@ def derived_counts(row: ScoringRow) -> Tuple[int, int, int]:
     company_codes = len(split_consolidated(row.company_code_consolidated))
     sales_orgs = len(split_consolidated(row.sales_org_consolidated))
     sf_instances = sum(
-        1 for sid in row.salesforce_ids if sid is not None and str(sid).strip()
+        1
+        for field in SF_FIELDS
+        if (sid := getattr(row, field)) is not None and str(sid).strip()
     )
     return company_codes, sales_orgs, sf_instances
 
@@ -960,9 +1168,15 @@ def _build_result(
     still filters on approval_status/election_status, never is_golden alone.
     """
     row_id = s.row.row_id
+    company_code_count, sales_org_count, salesforce_instance_count = derived_counts(
+        s.row
+    )
     if election_status == "unique":
         return ScoringResultRow(
             row_id=row_id, cluster_id=s.row.cluster_id, score=s.total,
+            company_code_count=company_code_count,
+            sales_org_count=sales_org_count,
+            salesforce_instance_count=salesforce_instance_count,
             is_golden_record=True, golden_record_id=row_id,
             proposed_golden_id=None, election_status="unique",
             approval_status=None, scored_with_weights_version=wv,
@@ -971,6 +1185,9 @@ def _build_result(
     is_winner = row_id == winner_id
     return ScoringResultRow(
         row_id=row_id, cluster_id=s.row.cluster_id, score=s.total,
+        company_code_count=company_code_count,
+        sales_org_count=sales_org_count,
+        salesforce_instance_count=salesforce_instance_count,
         is_golden_record=is_winner,
         golden_record_id=row_id if is_winner else winner_id,
         proposed_golden_id=winner_id,

@@ -35,8 +35,10 @@ from dedup.scoring import (
     ScoringResponse,
     apply_approval,
     build_summary,
+    coerce_weights,
     detect_issues as detect_dedup_issues,
     elect_golden_records,
+    load_weights,
 )
 from dedup.scoring_xlsx import ScoringFileError, score_workbook
 from enrichment.issue_detection import ISSUE_CATALOGUE, detect_issues
@@ -907,15 +909,28 @@ async def dedup_score(request: ScoringRequest) -> ScoringResponse:
     request_start = time.perf_counter()
     logger.info("Scoring request received: %d rows", len(request.rows))
 
+    # Optional weights override — same all-or-nothing semantics as the
+    # /api/dedup/score/file Weights sheet: a valid override applies wholesale,
+    # a malformed one is ignored wholesale with a warning (never a hard error).
+    weights = None
+    request_warnings: list[str] = []
+    if request.weights is not None:
+        weights, reason = coerce_weights(
+            request.weights, load_weights(), source="Weights payload"
+        )
+        if weights is None:
+            request_warnings.append(reason)
+            logger.warning("scoring request: %s", reason)
+
     try:
-        results = elect_golden_records(request.rows)
+        results = elect_golden_records(request.rows, weights)
     except DuplicateRowIdError as exc:
         raise HTTPException(
             status_code=400,
             detail=f"Duplicate row_id(s) in request: {', '.join(exc.row_ids)}",
         ) from exc
 
-    summary = build_summary(results)
+    summary = build_summary(results, warnings=request_warnings)
     issues = detect_dedup_issues(request.rows, results)
     logger.info(
         "scoring_request",

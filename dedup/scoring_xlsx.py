@@ -13,9 +13,11 @@ import logging
 from typing import Dict, List, Optional, Tuple
 
 from dedup.scoring import (
+    SCORE_BREAKDOWN_COLUMNS as BREAKDOWN_COLUMNS,
     ScoringRow,
     ScoringSummary,
     build_summary,
+    coerce_weights,
     derived_counts,
     detect_issues,
     elect_golden_records,
@@ -56,20 +58,8 @@ SF_ID_HEADERS: List[str] = [
     "SF_ID_3", "SF_ID_4", "SF_ID_5", "SF_ID_6", "SF_ID_7", "SF_ID_8",
 ]
 
-# score_breakdown key -> output column header.
-BREAKDOWN_COLUMNS: Dict[str, str] = {
-    "sales_order_last_used": "score_SalesOrderLastUsed",
-    "sales_order_count": "score_SalesOrderCount",
-    "sales_order_partner_last_used": "score_SalesOrderPartnerLastUsed",
-    "sales_order_partner_count": "score_SalesOrderPartnerCount",
-    "equipment_count": "score_EquipmentCount",
-    "sleeping_customer": "score_SleepingCustomer",
-    "customer_status": "score_CustomerStatus",
-    "account_group": "score_AccountGroup",
-    "company_code_count": "score_CompanyCodeCount",
-    "combined_presence_bonus": "score_CombinedPresence",
-    "salesforce_instance_count": "score_SalesforceInstances",
-}
+# score_breakdown key -> output column header: imported from dedup.scoring as
+# BREAKDOWN_COLUMNS (single source of truth shared with the JSON model).
 
 DERIVED_COLUMNS = ("Company_Code_Count", "Sales_Org_Count", "Salesforce_Instance_Count")
 ELECTION_COLUMNS = (
@@ -104,36 +94,17 @@ def _parse_weights_sheet(ws, expected: dict) -> Tuple[Optional[dict], Optional[s
     Points cell rejects the WHOLE sheet — a half-applied retune is worse
     than none. Returns (weights, None) or (None, reason).
     """
-    cells: Dict[Tuple[str, str], object] = {}
+    nested: Dict[str, Dict[str, object]] = {}
     for raw in ws.iter_rows(min_row=2, values_only=True):
         criterion = raw[0] if len(raw) > 0 else None
         band = raw[1] if len(raw) > 1 else None
         points = raw[2] if len(raw) > 2 else None
         if _is_blank(criterion) and _is_blank(band):
             continue
-        cells[(str(criterion).strip(), str(band).strip())] = points
+        nested.setdefault(str(criterion).strip(), {})[str(band).strip()] = points
 
-    parsed: dict = {}
-    for criterion, bands in expected.items():
-        parsed[criterion] = {}
-        for band in bands:
-            key = (criterion, band)
-            if key not in cells:
-                return None, (
-                    f"Weights sheet ignored: missing (criterion, band) pair "
-                    f"({criterion!r}, {band!r}); using dedup/weights.json"
-                )
-            points = cells[key]
-            if isinstance(points, bool) or not isinstance(points, (int, float)):
-                try:
-                    points = float(str(points).strip())
-                except (TypeError, ValueError):
-                    return None, (
-                        f"Weights sheet ignored: non-numeric Points for "
-                        f"({criterion!r}, {band!r}); using dedup/weights.json"
-                    )
-            parsed[criterion][band] = int(points)
-    return parsed, None
+    # Same all-or-nothing rule as the JSON /score weights override.
+    return coerce_weights(nested, expected, source="Weights sheet")
 
 
 # ---------------------------------------------------------------------------

@@ -666,7 +666,8 @@ class TestScoreEndpoint:
         data = resp.json()
         assert data["approver"] == "bernd"
         assert set(data["updated_row_ids"]) == {"1", "2"}
-        by = {r["row_id"]: r for r in data["rows"]}
+        # Output columns use the exact file headers ("Customer", not "row_id").
+        by = {r["Customer"]: r for r in data["rows"]}
         assert all(r["approval_status"] == "approved" for r in data["rows"])
         assert by["1"]["is_golden_record"] is True
         assert by["2"]["golden_record_id"] == "1"
@@ -704,8 +705,9 @@ class TestScoreEndpoint:
         ]})
         assert resp.status_code == 200
         data = resp.json()
-        by = {r["row_id"]: r for r in data["rows"]}
-        assert by["1"]["warnings"]  # unrecognised values surfaced, not fatal
+        by = {r["Customer"]: r for r in data["rows"]}
+        # Per-row warnings are not a file column (not serialized); the dirty
+        # value is surfaced via the aggregate summary instead.
         assert by["2"]["is_golden_record"] is True
         assert data["summary"]["rows_with_warnings"] == 1
 
