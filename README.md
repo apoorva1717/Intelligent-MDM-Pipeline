@@ -1,4 +1,4 @@
-# SAP Customer Master Data Name Enrichment API / 20/06/26
+# SAP Customer Master Data Name Enrichment API / 24/07/26
 
 An intelligent, multi-tier enrichment service built for Bruker Corporation's Master Data Management (MDM) pipeline. It resolves incomplete, abbreviated, misspelled, or incorrectly formatted SAP customer master data records — specifically institution and company names — through a pipeline that combines deterministic preprocessing, API lookups, web search, contact verification, and LLM inference.
 
@@ -38,6 +38,7 @@ Both phases share the same FastAPI app, configuration system, Azure Functions de
     - [The Per-Block Algorithm](#the-per-block-algorithm)
     - [Mode A vs Mode B](#mode-a-vs-mode-b)
     - [The Deterministic Name 2 Asymmetry Rule](#the-deterministic-name-2-asymmetry-rule)
+    - [Residue Candidate Nomination](#residue-candidate-nomination)
     - [LLM Call Details](#llm-call-details)
     - [Routing, Clusters, and the llm_flag](#routing-clusters-and-the-llm_flag)
     - [Telemetry](#telemetry)
@@ -948,7 +949,7 @@ Same clustering as `/api/dedup/cluster-block`, but accepts an `.xlsx`/`.xlsm` up
 
 Deterministic golden-record election over the clustered rows (no LLM). Each duplicate cluster elects a proposed winner; losers point at it. A merge is demoted to `manual_review` when clustering already flagged it uncertain, when every member is blocked, or when the adjudication confidence is below `CONFIDENCE_MERGE_THRESHOLD` (default `0.95`, env-overridable — a pure data retune that never re-runs the LLM). A `manual_review` row leaves `is_golden_record`/`golden_record_id` **empty** in the file; its computed winner survives in `proposed_golden_id`.
 
-Both endpoints emit a **potential-inconsistency list** (the reviewer feedback loop): the file gets a second `Issues` sheet (`row_id, cluster_id, issue_type, detail`; the `Weights` sheet and all originals are preserved), and the JSON response returns the same list under `issues`. Issue types: `low_confidence_merge`, `verdict_contradiction`, `all_blocked_cluster`, `tiebreak_decided`, `empty_scoring_payload` (and a reserved `missing_building_inconsistency`).
+Both endpoints emit a **potential-inconsistency list** (the reviewer feedback loop): the file gets a second `Issues` sheet (`row_id, cluster_id, issue_type, detail`; the `Weights` sheet and all originals are preserved), and the JSON response returns the same list under `issues`. Issue types: `low_confidence_merge`, `verdict_contradiction`, `all_blocked_cluster`, `tiebreak_decided`, `empty_scoring_payload`, `count_suppressed_by_recency` (a sales-order count zeroed by the G1 recency gate), `candidate_cap_exceeded` (a block routed to manual_review for blowing the residue-candidate cap), and a reserved `missing_building_inconsistency`.
 
 An offline **evaluation harness** scores a workbook against its `expected_*` fixture columns: `python -m eval.dedup_eval <scored.xlsx>` prints pairwise precision/recall/F1 plus the named business-risk counts (`wrongful_block_candidates`, `competing_goldens`, `uncertainty_upgrades`) with offending row_ids, and writes `eval_report.json`.
 
@@ -1110,6 +1111,16 @@ This is an institution-level vs department-level distinction and is **never dele
 - **Mode A** partitions signatures into an empty-Name 2 bucket and a populated-Name 2 bucket *before* any call, so the two are never compared by the model. A post-LLM safety net (`_enforce_name2_split`) additionally splits any entity that ever mixes the two, in case a future prompt change lets it slip through.
 - **Mode B** only ever presents canonicals whose `has_name2` matches the candidate; an incompatible candidate starts a new entity with no LLM call.
 
+### Residue Candidate Nomination
+
+Mode A/B only compare signatures *within* a `has_name2` bucket. Two kinds of pair therefore slip through untouched and default to `unique` with no reasoning: an **empty-Name 2** signature vs a **populated-Name 2** one, and a signature **alone in its bucket**. After Mode A/B, `_adjudicate_residue` (backed by `dedup/candidates.py`) widens coverage over exactly this residue:
+
+1. **Nominate** each residue pair that carries a same-entity signal, in priority order — converging **ROR/LEI id**, then suffix-stripped **name similarity** (Jaro-Winkler ≥ `NAME_CANDIDATE_THRESHOLD`, default `0.85`), then **token-set overlap** (Jaccard ≥ `TOKEN_CANDIDATE_THRESHOLD`, default `0.6`). Legal-form suffixes (AG/GmbH/Inc/…) are stripped for the similarity math only, never from the signature. Nomination is deterministic and pure — same units in any order yield the same ordered candidate list.
+2. **Adjudicate** each nominated pair with a pairwise LLM call. Nomination never merges — the verdict + the two-level identity rule decide, and the residue pass runs **before** the identity guard so a bad name/token merge across conflicting ROR/LEI is still split. Every nominated pair records reasoning on both sides, including rejects.
+3. **Cap:** if a block nominates more than `MAX_CANDIDATES_PER_BLOCK` pairs (default `50`), the whole block is routed to `manual_review` (deterministic ordering already put id-convergence pairs first) and a `candidate_cap_exceeded` issue is emitted.
+
+Telemetry adds `candidates_generated`, `candidates_by_rule`, `rejected_with_reasoning`, and `candidate_cap_exceeded` per block and per request.
+
 ### LLM Call Details
 
 | Aspect | Value |
@@ -1190,12 +1201,21 @@ enrichment_api/
 │   ├── output_columns.py         # Response-field → XLSX column mapping
 │   └── middleware.py             # Request logging, timing, error handling
 │
-├── dedup/                        # Phase 2: deduplication adjudicator
+├── dedup/                        # Phase 2: deduplication adjudicator + election
 │   ├── models.py                 # Pydantic schemas: DedupRow/Request/ResultRow/Summary/Response
 │   ├── signatures.py             # STEP A: normalization, block derivation, signature collapsing
 │   ├── prompts.py                # System + Mode A/B prompts, PROMPT_VERSION
 │   ├── llm.py                    # DedupLLM (reuses get_openai_client), defensive JSON parsing
-│   └── adjudicator.py            # STEP B/C: entity grouping, modes, clustering, telemetry
+│   ├── candidates.py             # Residue candidate nomination (ID / name / token) for STEP B widening
+│   ├── cluster_key.py            # Stable content-hash cluster id (shared by adjudicator + scorer)
+│   ├── adjudicator.py            # STEP B/C: entity grouping, modes, residue pass, clustering, telemetry
+│   ├── scoring.py                # Pass 3: deterministic scoring + golden-record election (no LLM)
+│   ├── scoring_xlsx.py           # XLSX in-place scoring/election writeback (openpyxl, Issues sheet)
+│   └── weights.json              # Editable scoring weights table (criterion → band → points)
+│
+├── eval/                         # Offline evaluation harness (thesis metrics)
+│   ├── dedup_eval.py             # Pairwise P/R/F1 + named business-risk counts vs expected_* columns
+│   └── __init__.py
 │
 ├── enrichment/                   # Core enrichment pipeline
 │   ├── orchestrator.py           # Main pipeline controller (tier escalation, finalization)
@@ -1335,7 +1355,27 @@ The shared system prompt (entity-resolution adjudicator with the two-level ident
 
 ### `dedup/adjudicator.py` — Block Algorithm
 
-The core of Phase 2. `cluster_blocks` is the request entry point; `_process_block` runs STEP A → B → C per block; `_mode_a`/`_mode_b` implement the two grouping strategies; `_enforce_name2_split` is the deterministic Name 2 safety net; `_emit_rows` assigns clusters and routing; the global cluster-id remap and all telemetry logging live here.
+The core of Phase 2. `cluster_blocks` is the request entry point; `_process_block` runs STEP A → B → C per block; `_mode_a`/`_mode_b` implement the two grouping strategies; `_adjudicate_residue` runs the [residue candidate pass](#residue-candidate-nomination) (nominate + pairwise-adjudicate the pairs bucketing skipped); `_enforce_name2_split` is the deterministic Name 2 safety net; `_emit_rows` assigns clusters and routing. Cluster ids are the content hash from `cluster_key.py`; residue-candidate telemetry (`candidates_generated`, `candidates_by_rule`, `candidate_cap_exceeded`) is logged here.
+
+### `dedup/candidates.py` — Residue Candidate Nomination
+
+Deterministic, pure (no LLM/network) nomination of the residue pairs Mode A/B never compared — an empty-Name 2 signature vs a populated one, or a signature alone in its bucket. `generate_candidate_pairs` nominates a pair when there is a same-entity signal: converging ROR/LEI (`id`), suffix-stripped Jaro-Winkler name similarity (`name`), or token-set Jaccard overlap (`token`), ordered by that priority. `strip_legal_suffix` removes trailing legal-form tokens (AG/GmbH/Inc/…) for similarity only — never from the canonical signature. Nomination is candidacy only; it never merges (the LLM verdict + identity rule decide).
+
+### `dedup/cluster_key.py` — Stable Cluster Id
+
+A tiny, dependency-free module (so `dedup.scoring` can import it without the LLM stack). `cluster_hash` returns `c_` + first 12 hex of sha256 over the sorted member `row_id`s — the same membership yields the same id across runs, machines, and input orderings; the scorer re-derives it to detect a *partial* cluster (members split across score calls).
+
+### `dedup/scoring.py` — Golden-Record Election (Pass 3)
+
+Pure-arithmetic scoring + election over an editable weights table (`weights.json`), separate from the LLM adjudicator so it can be re-run on retuned weights without paying for adjudication again. `elect_golden_records` scores every row (`score_row`) and elects one winner per cluster; `_award_count` implements **G1 (Bernd's year-priority rule)** — a sales-order count only "adds something" when the row owns its cluster's most-recent year. Demotes a cluster to `manual_review` when clustering already flagged it, every member is blocked, the merge confidence is below `CONFIDENCE_MERGE_THRESHOLD`, or the whole cluster scored 0. `detect_issues` derives the potential-inconsistency list; `apply_approval` promotes a proposed winner into the golden fields on human sign-off; `weights_version` fingerprints the weights for drift detection. Permissive throughout — a missing/dirty value scores 0 and never fails the batch; the one hard error is a duplicated `row_id` (broken upstream join).
+
+### `dedup/scoring_xlsx.py` — Scoring Workbook I/O
+
+`score_workbook` fills the empty `score_*` / election columns of an uploaded scoring workbook **in place** with openpyxl (never round-trips through pandas, so the `Weights` sheet and every original column survive). Locates all columns by header name; reads an optional `Weights` sheet as an all-or-nothing weights override; rebuilds a second `Issues` sheet each run. A `manual_review` row is written with `is_golden_record`/`golden_record_id` blank (winner kept in `proposed_golden_id`).
+
+### `eval/dedup_eval.py` — Evaluation Harness
+
+Offline, no-LLM evaluation of a *scored* workbook that still carries its `expected_cluster`/`expected_routing` fixture columns. `python -m eval.dedup_eval <scored.xlsx>` prints pairwise precision/recall/F1, the three named business-risk counts (`wrongful_block_candidates`, `competing_goldens`, `uncertainty_upgrades`) with offending `row_id`s, and election/tie-break counts, then writes `eval_report.json`. Flags a workbook that mixes multiple weights versions (score drift).
 
 ### `llm/openai_client.py` — OpenAI Client
 
@@ -1422,6 +1462,10 @@ Copy `.env.example` to `.env` and configure:
 | `MAX_PAGE_CONTENT_CHARS` | `3000` | Maximum body text extracted per page |
 | `PAGE_FETCH_TIMEOUT_SECONDS` | `10` | HTTP timeout for page fetching |
 | `DEFAULT_MAX_CONCURRENCY` | `5` | Default concurrent record processing limit |
+| `CONFIDENCE_MERGE_THRESHOLD` | `0.95` | Election: a merge below this adjudication confidence is demoted to `manual_review` (pure data retune, no LLM re-run) |
+| `NAME_CANDIDATE_THRESHOLD` | `0.85` | Residue nomination: suffix-stripped Jaro-Winkler name similarity to nominate a pair for LLM adjudication |
+| `TOKEN_CANDIDATE_THRESHOLD` | `0.6` | Residue nomination: token-set Jaccard overlap to nominate a pair |
+| `MAX_CANDIDATES_PER_BLOCK` | `50` | Residue nomination: over this many candidate pairs, the block routes to `manual_review` |
 | `SERPAPI_KEY` | *(none)* | SerpAPI key; if absent, DuckDuckGo is used |
 | `MOCK_EXTERNAL_CALLS` | `false` | Use mock clients (no real API calls) |
 | `ENV` | `production` | Set to `local` for development (enables dotenv loading) |
@@ -1460,6 +1504,10 @@ The company counterpart to ROR. For company-type records, resolves the official 
 | `SIG_PARTITION_THRESHOLD` | `12` | Distinct-signature count at/below which a block uses one partition call (Mode A); above it, incremental canonical assignment (Mode B) |
 | `DEDUP_MAX_CONCURRENCY` | `5` | Max in-flight adjudicator LLM calls across all blocks in a request |
 | `DEDUP_MAX_RETRIES` | `3` | Max attempts per adjudicator call (retries 429/5xx with exponential backoff) |
+| `NAME_CANDIDATE_THRESHOLD` | `0.85` | Residue pass: suffix-stripped Jaro-Winkler name similarity to nominate a pair |
+| `TOKEN_CANDIDATE_THRESHOLD` | `0.6` | Residue pass: token-set Jaccard overlap to nominate a pair |
+| `MAX_CANDIDATES_PER_BLOCK` | `50` | Residue pass: candidate-pair cap per block; over it the block → `manual_review` |
+| `CONFIDENCE_MERGE_THRESHOLD` | `0.95` | Election (`/api/dedup/score`): demote a below-threshold merge to `manual_review`; never re-runs the LLM |
 
 > The adjudicator resolves its API version as `AOAI_API_VERSION_DEDUP` → `AZURE_OPENAI_API_VERSION` → `2025-04-01-preview`. If everything routes to `manual_review` with `errors > 0`, the API version or deployment name is almost always the cause — confirm with `GET /diag/dedup-llm`.
 
@@ -1558,6 +1606,9 @@ pytest tests/test_tier1.py::test_acronym_resolution -v
 
 # Phase 2 dedup adjudicator only
 pytest tests/test_dedup.py -v
+
+# Phase 2 scoring / election, residue nomination, and eval harness
+pytest tests/test_scoring.py tests/test_candidates.py tests/test_dedup_eval.py -v
 ```
 
 ### Phase 2 Dedup Test Coverage
@@ -1793,6 +1844,18 @@ RETURN EnrichmentResponse (JSON)
 - **Mock & tests** — `tests/mocks/dedup_mock.py` (conservative offline LLM) and `tests/test_dedup.py` (algorithm + route coverage, see [Testing](#testing)).
 - **Diagnostics** — `GET /diag/dedup-llm` surfaces the real adjudicator LLM error, API version, and reasoning-effort state.
 
+### Phase 2 — Golden-record election, residue nomination & evaluation harness (new)
+
+- **Golden-record election (Pass 3)** — `dedup/scoring.py` + `dedup/weights.json`: deterministic, no-LLM scoring over an editable weights table, electing one proposed winner per cluster. Re-runnable on retuned weights without re-adjudicating. Implements **G1 (Bernd's year-priority rule)** — a sales-order count only scores when the row owns its cluster's most-recent year (`_award_count`). New endpoints `POST /api/dedup/score` + `/api/dedup/score/file` (workbook I/O in `dedup/scoring_xlsx.py`, filled in place so the `Weights` sheet and originals survive).
+- **Approval lifecycle** — `POST /api/dedup/approve` applies a human approve/reject to one cluster (stateless; on approve the proposed winner is promoted into the golden fields). A `manual_review` row leaves `is_golden_record`/`golden_record_id` blank — the winner lives in `proposed_golden_id`. **Phase 3 contract:** consume only `approval_status == "approved"` or `election_status == "unique"`.
+- **Confidence-gated merges** — a merge below `CONFIDENCE_MERGE_THRESHOLD` (default `0.95`), an all-blocked cluster, an inherited clustering `manual_review`, or a zero-signal cluster is demoted to `manual_review` at election time (never re-runs the LLM).
+- **Potential-inconsistency list** — `detect_issues` emits `low_confidence_merge`, `verdict_contradiction`, `all_blocked_cluster`, `tiebreak_decided`, `empty_scoring_payload`, `count_suppressed_by_recency`, `candidate_cap_exceeded` to a second `Issues` sheet and the JSON `issues` field (reviewer feedback loop).
+- **Residue candidate nomination** — `dedup/candidates.py` + `_adjudicate_residue`: nominates the pairs Mode A/B never compared (empty-vs-populated Name 2, lone-bucket signatures) via converging ROR/LEI, suffix-stripped Jaro-Winkler name similarity, or token-set Jaccard, then pairwise-adjudicates each. Nomination never merges; runs before the identity guard. Capped by `MAX_CANDIDATES_PER_BLOCK` (default 50). New telemetry: `candidates_generated`, `candidates_by_rule`, `rejected_with_reasoning`, `candidate_cap_exceeded`.
+- **Stable cluster id** — `dedup/cluster_key.py`: `cluster_hash` (`c_` + 12 hex sha256 over sorted member row_ids). The adjudicator mints it; the scorer re-derives it to detect a partial cluster (members split across score calls).
+- **Evaluation harness** — `eval/dedup_eval.py`: `python -m eval.dedup_eval <scored.xlsx>` reports pairwise precision/recall/F1, the named business-risk counts (`wrongful_block_candidates`, `competing_goldens`, `uncertainty_upgrades`) with offending row_ids, and election/tie-break counts against the `expected_*` fixture columns; writes `eval_report.json`.
+- **Weights drift detection** — every scored row carries `scored_with_weights_version` (12-hex fingerprint of the weights); the eval harness flags a workbook that mixes versions.
+- **Tests** — `tests/test_scoring.py`, `tests/test_candidates.py`, `tests/test_dedup_eval.py`.
+
 ### Shared client change
 
 - **`llm/openai_client.py::get_openai_client(api_version=None)`** was parameterized. It now resolves the API version as `api_version` arg → `AZURE_OPENAI_API_VERSION` env → `DEFAULT_AZURE_OPENAI_API_VERSION` (`2024-08-01-preview`). **Phase 1 behaviour is unchanged** (its callers pass nothing). The Phase 2 adjudicator passes a newer version (`AOAI_API_VERSION_DEDUP`, default `2025-04-01-preview`) because GPT-5.x reasoning models and the `reasoning_effort` parameter require it — this was the root cause of an early failure mode where every dedup row came back as `manual_review` with `errors > 0`.
@@ -1811,4 +1874,4 @@ RETURN EnrichmentResponse (JSON)
 
 ### New environment variables
 
-`AOAI_DEPLOYMENT_DEDUP`, `AOAI_API_VERSION_DEDUP`, `DEDUP_REASONING_EFFORT`, `SIG_PARTITION_THRESHOLD`, `DEDUP_MAX_CONCURRENCY`, `DEDUP_MAX_RETRIES`, `AZURE_OPENAI_API_VERSION`, and the Tier 1 LEI vars (`LEI_LOOKUP_ENABLED`, `GLEIF_API_BASE`, `GLEIF_TIMEOUT_SECONDS`, `LEI_NAME_MATCH_THRESHOLD`, `LEI_MAX_RETRIES`) — all documented in [Configuration and Environment Variables](#configuration-and-environment-variables) and `.env.example`.
+`AOAI_DEPLOYMENT_DEDUP`, `AOAI_API_VERSION_DEDUP`, `DEDUP_REASONING_EFFORT`, `SIG_PARTITION_THRESHOLD`, `DEDUP_MAX_CONCURRENCY`, `DEDUP_MAX_RETRIES`, `AZURE_OPENAI_API_VERSION`, the Phase 2 election / residue-nomination vars (`CONFIDENCE_MERGE_THRESHOLD`, `NAME_CANDIDATE_THRESHOLD`, `TOKEN_CANDIDATE_THRESHOLD`, `MAX_CANDIDATES_PER_BLOCK`), and the Tier 1 LEI vars (`LEI_LOOKUP_ENABLED`, `GLEIF_API_BASE`, `GLEIF_TIMEOUT_SECONDS`, `LEI_NAME_MATCH_THRESHOLD`, `LEI_MAX_RETRIES`) — all documented in [Configuration and Environment Variables](#configuration-and-environment-variables) and `.env.example`.
