@@ -47,7 +47,7 @@ from enrichment.preprocess import (
     _extract_addresses,
     _street_person_name,
 )
-from utils.text_utils import is_logistics_location
+from utils.text_utils import is_logistics_location, smart_title_case
 
 logger = logging.getLogger(__name__)
 
@@ -216,12 +216,34 @@ def _extract_po_box(text: str) -> tuple[str, str | None]:
 # Sub-location markers. Order matters: most specific first so "Mail Stop"
 # wins over a bare "MS".
 _SUITE_PATTERNS = [
+    # "Campus Box 7212" / "Campus Box 90" — a mail stop; keep the full phrase.
+    (re.compile(r"\b(Campus\s+Box\s+[\w\-]+)\b", re.IGNORECASE), "mail_stop"),
     (re.compile(r"\b(?:Mail\s+Stop|MS)\s+(\w[\w\-]*)\b", re.IGNORECASE), "mail_stop"),
     (re.compile(r"\b(?:Suite|Ste\.?)\s+(\w[\w\-]*)\b", re.IGNORECASE), "suite"),
     (re.compile(r"\b(?:Bldg\.?|Building)\s+(\w[\w\-]*)\b", re.IGNORECASE), "building"),
+    # Marker-before-value ("Floor 3", "Fl. 3").
     (re.compile(r"\b(?:Floor|Fl\.?)\s+(\w[\w\-]*)\b", re.IGNORECASE), "floor"),
+    # Value-before-marker ("7th Floor", "22nd Floor", "3 Fl"). The ordinal
+    # suffix is optional; only the number is kept as the floor value.
+    (re.compile(r"\b(\d+)(?:st|nd|rd|th)?\s+(?:Floor|Fl)\b\.?", re.IGNORECASE), "floor"),
     (re.compile(r"\b(\d+)F\b"), "floor"),
-    (re.compile(r"\b(?:Room|Rm\.?)\s+(\w[\w\-]*)\b", re.IGNORECASE), "room"),
+    # A bare trailing ordinal as its own segment ("51 Sleeper St, 7th") is a
+    # floor. Anchored to a comma/start on the left and end on the right so a
+    # street name ("5th Ave") is never matched.
+    (re.compile(r"(?:^|,)\s*(\d+)(?:st|nd|rd|th)\s*$", re.IGNORECASE), "floor"),
+    # Room with optional filler between the marker and the value:
+    # "Room 12", "Rm. 5", "Room number: F107", "Room No. 3", "Room #4".
+    (re.compile(
+        r"\b(?:Room|Rm)\b\.?\s*(?:number|no|nr)?\.?\s*[:#]?\s*(\w[\w\-]*)\b",
+        re.IGNORECASE,
+    ), "room"),
+    # "Lab 576" / "Lab A12" — a lab room (Lab + a numeric id). Keeps the full
+    # phrase. "Smith Lab" (no id) is left alone — it is a named lab, not a room.
+    (re.compile(r"\b(Lab\.?\s+\w*\d[\w\-]*)\b", re.IGNORECASE), "room"),
+    # A trailing room code ("1500 Graduate Ln A104", "…C13.217", "…F107"): a
+    # letter followed by 2+ digits (optionally .digits) as the final token. The
+    # street name + house number stays; only the room code is pulled.
+    (re.compile(r"(?:^|\s)([A-Za-z]\d{2,}(?:\.\d+)?)\s*$"), "room"),
     (re.compile(r"\bUnit\s+(\w[\w\-]*)\b", re.IGNORECASE), "unit"),
     # "#" alone is shorthand for Suite.
     (re.compile(r"#\s*(\w[\w\-]*)\b"), "suite"),
@@ -300,8 +322,9 @@ def _extract_sublocations(text: str) -> tuple[str, dict[str, str], bool]:
     return work, found, bare
 
 
+# ``att?n+`` also catches the common misspelling "Atnn:" (and "attnn").
 _CARE_OF_RE = re.compile(
-    r"(?:c\s*/\s*o|Attn(?:ention)?|ATT)\s*[:\-]?\s*(.+)",
+    r"(?:c\s*/\s*o|att?n+(?:ention|tion)?|ATT)\s*[:\-\.]?\s*(.+)",
     re.IGNORECASE,
 )
 
@@ -323,8 +346,20 @@ def _extract_care_of(text: str) -> tuple[str, str | None]:
     m = _CARE_OF_RE.search(text)
     if not m:
         return text, None
-    value = m.group(1).strip(" ,;-")
-    new = text[: m.start()].rstrip(" ,;-")
+    payload = m.group(1)
+    before = text[: m.start()]
+    # If the payload runs on into a street address ("Att. Bayard Huck 200
+    # Clarendon Street 22nd Floor"), only the leading person/company part is the
+    # care_of; the street (and everything after it) is returned to the working
+    # string so the street / sub-location extractors handle it downstream.
+    addr_m = _STREET_START_RE.search(payload)
+    if addr_m and addr_m.start() > 0:
+        care = payload[: addr_m.start()].strip(" ,;-.")
+        tail = payload[addr_m.start():].strip()
+        remaining = _strip_residue((before.rstrip(" ,;-") + " " + tail).strip())
+        return remaining, (care or None)
+    value = payload.strip(" ,;-.")
+    new = before.rstrip(" ,;-")
     return _strip_residue(new), value or None
 
 
@@ -466,6 +501,14 @@ _STREET_TYPES_ALT = (
     r"St|Street|Ave|Avenue|Blvd|Boulevard|Rd|Road|Dr|Drive|Ln|Lane|"
     r"Hwy|Highway|Pkwy|Parkway|Ct|Court|Way|Pl|Place|Ter|Terrace|Cir|Circle"
 )
+# Start of a street address inside a longer string: a house number, then one or
+# more words, then a street-type word. Used by ``_extract_care_of`` to split the
+# street part off a c/o / Attn payload. Defined here (after _STREET_TYPES_ALT)
+# but only USED at call time, so definition order is fine.
+_STREET_START_RE = re.compile(
+    rf"\b\d+\s+.*?\b(?:{_STREET_TYPES_ALT})\b\.?",
+    re.IGNORECASE,
+)
 _LOC_QUALIFIER_LEAD = (
     r"Near|Behind|Beside|Adjacent|Across|Opposite|Next\s+To|In\s+Front\s+Of|"
     r"Gate|Dock|Loading|Unloading|Warehouse|Entrance|Entry|Bay|Ramp|Elevator"
@@ -499,6 +542,70 @@ def _looks_like_street(value: str | None) -> bool:
         _HOUSE_NUMBER_RE.search(value)
         and _STREET_TYPE_WORD_RE.search(value)
     )
+
+
+# A UK postcode ("BT7 1NH", "SW1A 1AA") — used to recognise a location-only
+# street segment ("Belfast BT7 1NH") that belongs in the postal field.
+_UK_POSTCODE_RE = re.compile(r"\b[A-Z]{1,2}\d[A-Z\d]?\s+\d[A-Z]{2}\b", re.IGNORECASE)
+# A named building: a descriptor phrase ending in a building word. Covers the
+# "House"/"Hall" forms the scope table lists as buildings ("Aster House",
+# "Polaris House") plus the "... Building"/"... Bldg" suffix form ("The Sherard
+# Bldg", "Emerging Technologies Building"). A leading house number makes it a
+# street address, not a bare building.
+_BUILDING_SUFFIX_RE = re.compile(
+    r"\S.*\s(?:Building|Bldg|House|Hall|Pavilion|Tower)\.?\s*$",
+    re.IGNORECASE,
+)
+_CAMPUS_FRAGMENT_RE = re.compile(
+    r"\b(?:Campus|Science\s+Park|Research\s+Park|Technology\s+Park|"
+    r"Business\s+Park|Innovation\s+Campus|Science\s+&\s+Innovation)\b",
+    re.IGNORECASE,
+)
+
+
+def _named_building_value(seg: str | None) -> str | None:
+    """Return the segment when it names a building (routed to the Building
+    field), else None. A leading house number or a full street pattern means it
+    is a street address, not a bare building."""
+    if not seg or not seg.strip():
+        return None
+    s = seg.strip()
+    if re.match(r"^\d+\s", s):
+        return None
+    if _looks_like_street(s):
+        return None
+    if _looks_like_department(s):
+        return None
+    return s if _BUILDING_SUFFIX_RE.match(s) else None
+
+
+def _is_campus_fragment(seg: str | None) -> bool:
+    """True for a campus / science-park / site fragment (its own street slot)."""
+    return bool(seg and _CAMPUS_FRAGMENT_RE.search(seg) and not _looks_like_street(seg))
+
+
+def _segment_is_location_only(
+    seg: str, city: str | None, state: str | None, zip_code: str | None,
+) -> bool:
+    """True when a segment is only a city / region / postcode already carried in
+    its own field ("Belfast BT7 1NH", "San Francisco") — dropped from the street.
+    """
+    if not seg or not seg.strip() or _looks_like_street(seg):
+        return False
+    s = seg.strip()
+    low = s.lower()
+    for own in (city, state, zip_code):
+        if own and low == own.strip().lower():
+            return True
+    has_postcode = bool(_UK_POSTCODE_RE.search(s)) or bool(re.search(r"\b\d{5}(?:-\d{4})?\b", s))
+    tmp = _UK_POSTCODE_RE.sub(" ", s)
+    tmp = re.sub(r"\b\d{5}(?:-\d{4})?\b", " ", tmp)
+    for own in (city, state):
+        if own and own.strip():
+            tmp = re.sub(re.escape(own.strip()), " ", tmp, flags=re.IGNORECASE)
+    tmp = re.sub(r"[,\s]+", " ", tmp).strip()
+    # Nothing left once the postcode + own city/region are removed → location only.
+    return has_postcode and tmp == ""
 
 
 def _cross_field_checks(
@@ -691,6 +798,100 @@ def _normalise_street_value(value: str | None) -> str | None:
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _reduce_primary_street(
+    res: AddressResult,
+    primary: str | None,
+    *,
+    city: str | None,
+    state: str | None,
+    zip_code: str | None,
+) -> list[str] | None:
+    """Per-segment reduction of a mixed primary street value, per the scope
+    table. Runs only for the complex cases — a c/o line, a named building, or a
+    pipe separator present — so simple "51 Sleeper St, 7th" values keep their
+    existing per-value extraction path.
+
+    Splits the value on pipe/comma and routes each segment: a c/o line →
+    Care Of, a named building → Building (a second building overflows to the
+    next street slot), a city/region/postcode → dropped, a campus/park →
+    its own street slot. Returns the ordered street lines (main street(s) first,
+    then campus fragments, then overflow buildings/residue), or None when the
+    value is a simple case the caller should handle as before.
+    """
+    if not primary:
+        return None
+    has_pipe = "|" in primary
+    segs = [s.strip(" ;-") for s in re.split(r"[|,]", primary) if s and s.strip(" ;-")]
+    if len(segs) < 2:
+        return None
+    has_building = any(_named_building_value(s) for s in segs)
+    has_care_of = any(_CARE_OF_RE.match(s) for s in segs)
+    if not (has_pipe or has_building or has_care_of):
+        return None
+
+    addresses: list[str] = []
+    campuses: list[str] = []
+    overflow: list[str] = []
+    for seg in segs:
+        # A bare campus mail code ("3120 TAMU"): digits + an all-caps code.
+        if re.match(r"^\d{3,4}\s+[A-Z]{2,5}$", seg):
+            if res.mail_code is None:
+                res.mail_code = seg
+            continue
+        # A numbered building ("5045 Emerging Technologies Building"): the
+        # leading number is a building number, not a street house number (there
+        # is no street-type word). Restricted to Building/Bldg so a campus
+        # street like "104 Rhines Hall" stays a street address.
+        num_bldg = re.match(r"^\d+\s+(.+\b(?:Building|Bldg))\.?$", seg, re.IGNORECASE)
+        if num_bldg and not _STREET_TYPE_WORD_RE.search(seg):
+            b = smart_title_case(num_bldg.group(1)) or num_bldg.group(1)
+            if res.building is None:
+                res.building = b
+            else:
+                overflow.append(b)
+            continue
+        m = _CARE_OF_RE.match(seg)
+        if m:
+            payload = m.group(1).strip(" ,;-.")
+            if _looks_like_department(payload):
+                if res.department_addendum is None:
+                    res.department_addendum = payload
+            elif not (res.care_of_enriched and res.care_of_enriched.strip()):
+                res.care_of_enriched = payload or None
+            continue
+        building = _named_building_value(seg)
+        if building:
+            building = smart_title_case(building) or building
+            if res.building is None:
+                res.building = building
+            else:
+                overflow.append(building)  # 2nd building → next free street slot
+            continue
+        if _segment_is_location_only(seg, city, state, zip_code):
+            continue
+        if _is_campus_fragment(seg):
+            campuses.append(seg)
+            continue
+        # A department segment ("Chemistry Dept.") → a Name slot (via the
+        # department addendum), not the street.
+        if _looks_like_department(seg):
+            if res.department_addendum is None:
+                res.department_addendum = seg.strip(" .")
+            else:
+                overflow.append(seg)
+            continue
+        # The main street line: a house-numbered street OR a bare street name
+        # ("North Star Avenue") — its street-type word marks it as the street.
+        if _looks_like_street(seg) or _STREET_TYPE_WORD_RE.search(seg):
+            addresses.append(seg)
+            continue
+        overflow.append(seg)
+
+    if len(addresses) >= 2:
+        res.issue("G3-ADDR-013")  # a second, distinct street address
+    return addresses + campuses + overflow
+
+
 async def process_address(
     *,
     record_id: str,
@@ -777,11 +978,40 @@ async def process_address(
 
     po_box_present = bool(po_box and po_box.strip())
 
+    # Step 2a.5 — per-segment reduction of a mixed primary street (c/o line,
+    # named building, or pipe). Routes buildings / c-o / campus / location-only
+    # segments per the scope table and rebuilds the street slots from the
+    # ordered street lines it returns (main street → Street 1, a second street →
+    # Street 2, campus/overflow buildings → later slots). Existing populated
+    # secondary slots are appended after. Simple values return None and fall
+    # through to the per-value extractors below unchanged.
+    reduced = _reduce_primary_street(
+        res, slots["s1"], city=city, state=state, zip_code=zip_code,
+    )
+    if reduced is not None:
+        tail = [slots[k] for k in ("s2", "s3", "s4", "s5") if slots[k]]
+        lines = reduced + tail
+        keys = ("s1", "s2", "s3", "s4", "s5")
+        for i, k in enumerate(keys):
+            slots[k] = lines[i] if i < len(lines) else None
+        if len(lines) > len(keys):
+            res.issue("G3-ADDR-011")  # street slots full — content left over
+
     # Step 2b — extractors over each street slot.
     for slot_name in ("s1", "s2", "s3", "s4", "s5"):
         value = slots[slot_name]
         if not value:
             continue
+
+        # A whole slot that is a named building ("Chemistry Bldg", "Aster
+        # House") → Building field (the first one; a second building is left in
+        # its street slot per the scope table).
+        nb = _named_building_value(value)
+        if nb and res.building is None:
+            res.building = smart_title_case(nb) or nb
+            slots[slot_name] = None
+            continue
+
         work = value
 
         # PO Box. Spec: if a po_box is already populated AND we find

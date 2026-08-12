@@ -1,8 +1,10 @@
-"""Async OpenAI client for LLM calls.
+"""Async Azure OpenAI client for LLM calls.
 
-FIX(Bug 6): replaced Azure OpenAI with direct OpenAI client for local testing.
-For production at Bruker, replace AsyncOpenAI with AsyncAzureOpenAI and add
-azure_endpoint and api_version. The rest of the code stays identical.
+Azure OpenAI is the only LLM backend, in every environment — there is no
+direct-OpenAI / "local" path. The deployment is read from
+``AZURE_OPENAI_DEPLOYMENT`` (the dedup adjudicator may override it via
+``AOAI_DEPLOYMENT_DEDUP``); the endpoint and key come from
+``AZURE_OPENAI_ENDPOINT`` / ``AZURE_OPENAI_API_KEY``.
 """
 
 from __future__ import annotations

@@ -13,6 +13,7 @@ caller falls through to the next tier.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 
 from llm.openai_client import OpenAIClient
@@ -22,6 +23,26 @@ from llm.prompts import (
 )
 
 logger = logging.getLogger(__name__)
+
+# A leading academic-unit prefix ("Department of", "Division of", …). Used to
+# detect a DOWNGRADE — a canonical that is just the input with the unit prefix
+# stripped ("Department of Biology" → "Biology"). The canonical direction is
+# bare → "Department of X", never the reverse.
+_UNIT_PREFIX_RE = re.compile(
+    r"^(?:the\s+)?(?:Department|Dept\.?|Division|Div\.?|School|Faculty|"
+    r"Institute|Center|Centre|College|Office)\s+of\s+",
+    re.IGNORECASE,
+)
+
+
+def _is_prefix_downgrade(original: str, cleaned: str) -> bool:
+    """True when *cleaned* is *original* with only a leading unit prefix removed
+    ("Department of Biology" → "Biology")."""
+    m = _UNIT_PREFIX_RE.match(original.strip())
+    if not m:
+        return False
+    remainder = original.strip()[m.end():].strip()
+    return bool(remainder) and remainder.lower() == cleaned.strip().lower()
 
 
 @dataclass
@@ -76,6 +97,16 @@ async def run_tier2_canonical(
         logger.info(
             "[%s] Tier 2 canonical: rejecting '%s' (confidence=%s)",
             record_id, cleaned, confidence,
+        )
+        return result
+
+    # Guard against a DOWNGRADE: never accept a canonical that is just the input
+    # with a unit prefix stripped ("Department of Biology" → "Biology"). The
+    # canonical direction is bare → "Department of X", never the reverse.
+    if _is_prefix_downgrade(name2, cleaned):
+        logger.info(
+            "[%s] Tier 2 canonical: rejecting downgrade '%s' → '%s'",
+            record_id, name2, cleaned,
         )
         return result
 

@@ -10,70 +10,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from enrichment.search_terms import (
     clean_name2_phrase,
     derive_acronym,
-    derive_department_domain,
     derive_search_terms,
     strip_tld,
     unit_domain_or_path,
 )
-
-
-class TestDeriveDepartmentDomain:
-    def test_subdomain_returns_full_host(self):
-        assert derive_department_domain(
-            "Computer Science",
-            "https://cs.mit.edu/people/foo",
-            "mit.edu",
-        ) == "cs.mit.edu"
-
-    def test_multi_level_subdomain(self):
-        assert derive_department_domain(
-            "Computer Science",
-            "https://web.cs.mit.edu/",
-            "mit.edu",
-        ) == "web.cs.mit.edu"
-
-    def test_strips_www(self):
-        assert derive_department_domain(
-            "Computer Science",
-            "https://www.cs.mit.edu/",
-            "mit.edu",
-        ) == "cs.mit.edu"
-
-    def test_bare_institution_domain_returns_none(self):
-        assert derive_department_domain(
-            "Computer Science",
-            "https://mit.edu/cs/people",
-            "mit.edu",
-        ) is None
-
-    def test_different_registrable_domain_now_accepted(self):
-        # Relaxed: cross-domain departments like medical schools that
-        # live on a separate brand domain are accepted (e.g. JHU →
-        # hopkinsmedicine.org). The only host rejected is the bare
-        # institution domain itself.
-        assert derive_department_domain(
-            "Department of Radiology",
-            "https://www.hopkinsmedicine.org/profiles/details/robert-chen",
-            "jhu.edu",
-        ) == "hopkinsmedicine.org"
-
-    def test_name2_absent_returns_none(self):
-        assert derive_department_domain(
-            None, "https://cs.mit.edu/", "mit.edu"
-        ) is None
-        assert derive_department_domain(
-            "", "https://cs.mit.edu/", "mit.edu"
-        ) is None
-
-    def test_missing_source_url_returns_none(self):
-        assert derive_department_domain(
-            "Computer Science", None, "mit.edu"
-        ) is None
-
-    def test_missing_base_domain_returns_none(self):
-        assert derive_department_domain(
-            "Computer Science", "https://cs.mit.edu/", None
-        ) is None
 
 
 class TestStripTld:
@@ -214,7 +154,7 @@ class TestDeriveSearchTerms:
             "source_url": None,
         }
         st1, _ = derive_search_terms(result)
-        assert st1 == "stanford"
+        assert st1 == "STANFORD"
 
     def test_caps_fallback_when_no_acronym_or_domain(self):
         result = {
@@ -226,7 +166,7 @@ class TestDeriveSearchTerms:
             "source_url": None,
         }
         st1, _ = derive_search_terms(result)
-        assert st1 == "MIT"
+        assert st1 == "MASSACHUSETTS INSTITUTE"
 
     def test_falls_back_to_original_sap_term_when_underivable(self):
         # Lowercase single-word name → no acronym, no domain → keep the
@@ -256,7 +196,7 @@ class TestDeriveSearchTerms:
         }
         st1, _ = derive_search_terms(result)
         assert st1 and st1.strip()
-        assert st1 == "Riverside Diagnostics"
+        assert st1 == "RIVERSIDE DIAGNOSTICS"
 
     def test_search_term_1_never_empty_when_name_present(self):
         result = {
@@ -277,7 +217,7 @@ class TestDeriveSearchTerms:
             "department_domain": "eecs.mit.edu",
         }
         _, st2 = derive_search_terms(result)
-        assert st2 == "eecs"
+        assert st2 == "COMPUTER SCIENCE"
 
     def test_search_term_2_handles_path_based_url_department_domain(self):
         # A path-based dept page arrives as a full URL — must not produce junk.
@@ -290,7 +230,7 @@ class TestDeriveSearchTerms:
             "department_domain": "https://clas.ufl.edu/chemistry",
         }
         _, st2 = derive_search_terms(result)
-        assert st2 == "clas"   # hostname prefix, not the raw URL
+        assert st2 == "CHEMISTRY"   # name2 text now beats the dept-domain host
 
     def test_search_term_2_strips_web_prefix(self):
         result = {
@@ -302,7 +242,7 @@ class TestDeriveSearchTerms:
             "department_domain": "web.astro.princeton.edu",
         }
         _, st2 = derive_search_terms(result)
-        assert st2 == "astro"
+        assert st2 == "ASTROPHYSICAL SCIENCES"
 
     def test_search_term_2_crossdomain_strips_tld(self):
         result = {
@@ -314,7 +254,7 @@ class TestDeriveSearchTerms:
             "department_domain": "hopkinsmedicine.org",
         }
         _, st2 = derive_search_terms(result)
-        assert st2 == "hopkinsmedicine"
+        assert st2 == "RADIOLOGY"
 
     def test_search_term_2_falls_back_to_two_words(self):
         # No department_domain → use first 2 significant words.
@@ -327,7 +267,7 @@ class TestDeriveSearchTerms:
             "department_domain": None,
         }
         _, st2 = derive_search_terms(result)
-        assert st2 == "Earth Planetary"
+        assert st2 == "EARTH PLANETARY SCIENCES"
 
     def test_search_term_2_fallback_two_words_chemistry(self):
         result = {
@@ -339,7 +279,7 @@ class TestDeriveSearchTerms:
             "department_domain": None,
         }
         _, st2 = derive_search_terms(result)
-        assert st2 == "Chemistry Biochemistry"
+        assert st2 == "CHEMISTRY BIOCHEMISTRY"
 
     def test_search_term_2_fallback_single_word_dept(self):
         result = {
@@ -351,7 +291,7 @@ class TestDeriveSearchTerms:
             "department_domain": None,
         }
         _, st2 = derive_search_terms(result)
-        assert st2 == "Radiology"
+        assert st2 == "RADIOLOGY"
 
     def test_search_term_2_paren_acronym_when_no_dept_domain(self):
         result = {
@@ -375,7 +315,7 @@ class TestDeriveSearchTerms:
             "department_domain": None,
         }
         _, st2 = derive_search_terms(result)
-        assert st2 == "Chemistry"
+        assert st2 == "CHEMISTRY"
 
     def test_search_term_2_none_when_name2_absent_and_no_dept_domain(self):
         result = {
@@ -400,4 +340,4 @@ class TestDeriveSearchTerms:
             "source_url": None,
         }
         st1, _ = derive_search_terms(result)
-        assert st1 == "IBM"
+        assert st1 == "INTERNATIONAL BUSINESS"

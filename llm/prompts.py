@@ -358,5 +358,62 @@ TIER3_USER_PROMPT_TEMPLATE = (
     "5. Do NOT return name2_suggestion equal to name1, and do NOT "
     "return a parent of name1 (e.g. name1='Harvard Medical School' "
     "must not yield name2='Harvard University').\n"
-    "6. No fabrication of institutions or invented people."
+    "6. No fabrication of institutions or invented people.\n"
+    "7. NEVER put address content in a name field. The street, house "
+    "number, postal code, and city provided as context are address "
+    "fields — name1_suggestion, name2_suggestion and name3_suggestion "
+    "must never contain a street name, house number, postal/ZIP code, "
+    "or a city/site string copied from the address. If you cannot infer "
+    "a real organisation or department name, return null for that field."
 )
+
+
+# ---------------------------------------------------------------------------
+# Person affiliation (Stage 2b) — discover a contact's institution + department
+# ---------------------------------------------------------------------------
+#
+# Used ONLY when Name 1 held just a person's name (moved to Contact), so the
+# record has a contact but no organisation. Reads web-search snippets and
+# proposes the person's CURRENT employer/institution + department. The caller
+# then confirms the institution against ROR in the record's country before
+# accepting it — so this prompt must be GROUNDED (only what the snippets say)
+# and must never guess to fill the field.
+PERSON_AFFILIATION_SYSTEM_PROMPT = (
+    "You identify the CURRENT primary employer/institution and department of a "
+    "named person from web-search result snippets.\n"
+    "\n"
+    "Rules:\n"
+    "1. Ground every answer in the provided snippets. If the snippets do not "
+    "clearly tie THIS person (by full name) to an institution, return "
+    "institution=null. Never guess from the name alone.\n"
+    "2. institution = the organisation the person works at now (university, "
+    "research institute, hospital, or company) — its full proper name, not an "
+    "acronym.\n"
+    "3. department = the person's sub-unit/department if a snippet states it; "
+    "otherwise null.\n"
+    "4. Match the person by full name. If the snippets are about a different "
+    "person with a similar name, return institution=null.\n"
+    "5. confidence: 'high' when a snippet explicitly names this person AND their "
+    "institution together; 'medium' when the tie is strongly implied by one "
+    "snippet; 'low' when uncertain or conflicting.\n"
+    "6. Never output an address, street, city, or postal code in institution or "
+    "department. These are name fields, not address fields.\n"
+    "7. No fabrication. Prefer institution=null over a plausible guess.\n"
+    "\n"
+    "Return ONLY JSON: "
+    '{"institution": string|null, "department": string|null, '
+    '"confidence": "high"|"medium"|"low"}.'
+)
+
+PERSON_AFFILIATION_USER_PROMPT_TEMPLATE = (
+    "Person: {contact}\n"
+    "Known location (from the record): {location}\n"
+    "\n"
+    "Web search results:\n"
+    "{results}\n"
+    "\n"
+    "Identify this person's current institution and department per the rules. "
+    "Return the JSON object only."
+)
+
+

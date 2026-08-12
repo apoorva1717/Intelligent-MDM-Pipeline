@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
+from typing import Optional
 
 import certifi
 from dotenv import load_dotenv
@@ -110,7 +111,11 @@ OPTIONAL_VARS_WITH_DEFAULTS = {
     "MOCK_EXTERNAL_CALLS": "false",
     "ENV": "production",
     "LOG_LEVEL": "INFO",
-    "DEPT_PROBE_CROSS_DOMAIN": "true",
+    "DEPT_PROBE_CROSS_DOMAIN": "false",
+    # Diagnostic-only: when true, the Path B / Path C website resolver emits a
+    # structured per-candidate JSON trace on the `enrichment.trace.website`
+    # logger. Purely additive — resolution behaviour is unchanged. Default off.
+    "WEBSITE_TRACE": "false",
 }
 
 
@@ -159,7 +164,7 @@ class Settings:
     # (e.g. hopkinsmedicine.org) — only runs when this is enabled, so the
     # common case stays at one SERP call per record.
     dept_probe_cross_domain: bool = field(
-        default_factory=lambda: _bool(os.getenv("DEPT_PROBE_CROSS_DOMAIN"), default=True)
+        default_factory=lambda: _bool(os.getenv("DEPT_PROBE_CROSS_DOMAIN"), default=False)
     )
 
     # ROR
@@ -237,6 +242,14 @@ class Settings:
     )
     env: str = field(default_factory=lambda: os.getenv("ENV", "production"))
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
+    # Diagnostic-only per-candidate website-resolution trace (Path B / Path C).
+    # Off by default; enabling it only adds logging, never changes resolution.
+    website_trace: bool = field(
+        default_factory=lambda: _bool(os.getenv("WEBSITE_TRACE"), default=False)
+    )
+    # Log file path. None => configure_logging uses its default
+    # (logs/enrichment_api.log); set LOG_FILE="" to disable file logging.
+    log_file: Optional[str] = field(default_factory=lambda: os.getenv("LOG_FILE"))
 
 
 def get_settings() -> Settings:

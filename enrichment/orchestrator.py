@@ -37,6 +37,7 @@ from enrichment.address_processing import (
 from enrichment.company_canonical import run_company_canonical
 from enrichment.lab_resolver import run_lab_resolver
 from enrichment.overflow_check import run_overflow_check
+from enrichment.person_affiliation import run_person_affiliation
 from enrichment.search_terms import (
     clean_name2_phrase,
     derive_acronym,
@@ -75,6 +76,7 @@ from utils.text_utils import (
     country_to_iso_code,
     expand_abbreviations,
     extract_domain,
+    is_admin_unit,
     is_blank,
     is_granular_unit,
     looks_like_research_institution,
@@ -128,6 +130,44 @@ def _is_third_party_host(host: str) -> bool:
         if last_two in _THIRD_PARTY_DOMAINS:
             return True
     return False
+
+# §5b: path segments that are non-department content (news, events, archived
+# stories, calendars). A candidate whose path contains one of these is not a
+# department landing page. Mirrors _GENERIC_HOST_PREFIXES but for the path.
+_GENERIC_PATH_SEGMENTS = {
+    "news", "news-events", "events", "event", "story", "stories",
+    "article", "articles", "blog", "calendar", "archive", "colloquium",
+    "seminar", "admin", "hr", "library", "libraries", "careers", "career",
+    "directory", "media", "press",
+}
+# §5c: sub-pages of a department (penalised, not rejected — the landing page is
+# preferred over "…/chemistry/undergrad/").
+_SUBPAGE_PATH_SEGMENTS = {
+    "undergrad", "undergraduate", "graduate", "grad", "people", "faculty",
+    "staff", "contact", "admissions", "apply", "courses", "alumni", "giving",
+}
+_YEAR_SEG_RE = re.compile(r"^\d{4}$")
+
+
+def _path_is_generic(path: str) -> bool:
+    """True when any path segment is non-department content (§5b)."""
+    return any(
+        seg.lower() in _GENERIC_PATH_SEGMENTS
+        for seg in (path or "").split("/") if seg
+    )
+
+
+def _path_canonicality_penalty(path: str) -> int:
+    """§5c: a penalty (≥0) for deep / dated / sub-page paths, so a department
+    landing page outranks an archived or sub-section page at the same host."""
+    segs = [s for s in (path or "").split("/") if s]
+    penalty = max(0, len(segs) - 1)              # prefer shallower
+    if any(_YEAR_SEG_RE.match(s) for s in segs):  # dated / archive content
+        penalty += 5
+    if any(s.lower() in _SUBPAGE_PATH_SEGMENTS for s in segs):
+        penalty += 3
+    return penalty
+
 
 _TOKEN_RE = re.compile(r"[A-Za-z]{3,}")
 
@@ -208,8 +248,11 @@ def _score_dept_candidate(
     score = 3
     path_lower = (path or "").lower()
     title_lower = (title or "").lower()
-    if any(n in path_lower for n in needles):
+    # §5b/§5c: only reward a path match on a real department path — a generic
+    # (news/events) path earns no bonus and a deep/dated path is penalised.
+    if any(n in path_lower for n in needles) and not _path_is_generic(path):
         score += 1
+        score -= min(2, _path_canonicality_penalty(path))
     if any(n in title_lower for n in needles):
         score += 1
     return score
@@ -341,6 +384,29 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
         val = result.get(field)
         if val is not None and not str(val).strip():
             result[field] = None
+
+    # Item 6c: a Name 2 that was blank in the input and was populated ONLY by
+    # Tier 3 (LLM inference) is a guess. Require high confidence, otherwise
+    # return null rather than emit a fabricated department (e.g. "St. Louis
+    # Site" invented from nothing).
+    if (
+        result.get("tier_used") == 3
+        and result.get("_name2_from_tier3")
+        and result.get("name2_enriched")
+        and not (result.get("name2_original") and str(result.get("name2_original")).strip())
+        and str(result.get("confidence") or "").lower() != "high"
+    ):
+        logger.info(
+            "[%s] Tier 3 name2 guess dropped (input blank, confidence=%s): %r",
+            result.get("record_id"), result.get("confidence"),
+            result.get("name2_enriched"),
+        )
+        result["name2_enriched"] = None
+        result["flag_for_review"] = True
+        result["flag_reason"] = (
+            "Tier 3 Name 2 guess dropped — input Name 2 blank and not "
+            "high confidence"
+        )
 
     # Normalise Name 1 when it was passed through uncanonicalised (a ROR miss
     # left the raw source value — often ALL-CAPS and abbreviated, e.g. "LARGO
@@ -546,6 +612,7 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     result.pop("_pp_name1", None)
     result.pop("_ror_acronym", None)
     result.pop("_search_term_1_original", None)
+    result.pop("_name1_was_person", None)
     return result
 
 
@@ -650,6 +717,7 @@ def _apply_tier3(result: dict, tier3: Tier3Result) -> None:
                 )
         if tier3.name2_suggestion and tier3.name2_suggestion.strip():
             result["name2_enriched"] = tier3.name2_suggestion.strip()
+            result["_name2_from_tier3"] = True
         if tier3.name3_suggestion and tier3.name3_suggestion.strip():
             result["name3_enriched"] = tier3.name3_suggestion.strip()
 
@@ -823,6 +891,7 @@ class Orchestrator:
             record_type=rec_type,
             search_client=self._search_client,
             cache=cache,
+            trace=self._settings.website_trace,
         )
         if serp_res.url:
             result["website_url"] = serp_res.url
@@ -842,6 +911,7 @@ class Orchestrator:
             state=record.state,
             country=record.country,
             llm_client=self._llm_client,
+            trace=self._settings.website_trace,
         )
         if llm_res.url:
             result["website_url"] = llm_res.url
@@ -849,6 +919,46 @@ class Orchestrator:
                 result,
                 "Website inferred by LLM — verify",
             )
+
+    async def _resolve_probe_base(
+        self, result: dict[str, Any], registrable: str, cache: BatchCache,
+    ) -> str:
+        """§5e/§5f: the base host the department probe keys off.
+
+        Follows the institution website's redirect chain once (ROR's stale
+        ``dur.ac.uk`` → live ``durham.ac.uk``) and, when the institution host is
+        itself a subdomain (``gc.cuny.edu``), uses the FULL host so
+        ``site:gc.cuny.edu`` does not leak other CUNY campuses. Cached per batch
+        (one resolution per institution). Falls back to the registrable domain.
+        """
+        website = (result.get("website_url") or "").strip() or f"https://{registrable}/"
+        cached = cache.get_resolved_host(website)
+        if cached is not None:
+            return cached
+
+        base = registrable
+        try:
+            final = await self._page_fetcher.resolve_final_url(website)
+        except Exception:
+            final = None
+        if final:
+            host = (urlparse(final).hostname or "").lower()
+            for pref in ("www.", "web."):
+                if host.startswith(pref):
+                    host = host[len(pref):]
+            if host:
+                final_registrable = extract_domain(final) or host
+                if final_registrable and final_registrable != registrable:
+                    base = final_registrable   # §5f: redirect landed on a new domain
+                else:
+                    base = host                # §5e: subdomain (or == registrable)
+        cache.set_resolved_host(website, base)
+        if base != registrable:
+            logger.info(
+                "[%s] dept probe base resolved: %s → %s",
+                result.get("record_id"), registrable, base,
+            )
+        return base
 
     async def _probe_department_url(
         self,
@@ -904,6 +1014,15 @@ class Orchestrator:
         )
         if not name2:
             return
+        # §5a: an administrative desk (accounts payable, finance, …) has no
+        # department web home and its search_term_2 is "ADMIN" regardless — skip
+        # BEFORE any page fetch or SERP call.
+        if is_admin_unit(name2):
+            logger.info(
+                "[%s] dept domain probe: skipped (admin unit name2=%r)",
+                record_id, name2,
+            )
+            return
         # An address or pure location fragment that a tier dropped into name2
         # ("104 Rhines Hall", "Annex D Pod 2") is NOT a department. The
         # name→street cleanup (address stage / finalise) moves it out, but
@@ -939,6 +1058,13 @@ class Orchestrator:
                 record_id, cleaned, core,
             )
             return
+
+        # §5e/§5f: resolve the base the probe keys off — follow the institution
+        # website's redirect once (dur.ac.uk → durham.ac.uk) and use the FULL
+        # host when the institution is itself a subdomain (gc.cuny.edu). `base`
+        # was the registrable domain up to here; every stage below now keys off
+        # the resolved value.
+        base = await self._resolve_probe_base(result, base, cache)
 
         def _host_of(url: str) -> str | None:
             try:
@@ -1104,7 +1230,12 @@ class Orchestrator:
         needles: set[str] = set(tokens)
         if acronym and len(acronym) >= 2:
             needles.add(acronym.lower())
-        for sr in serp_results:
+        # §5b/§5c: collect the on-domain path candidates, DROP any whose path is
+        # non-department content (news/events/archive), and rank by canonicality
+        # (a shallow department landing page beats a deep dated sub-page) before
+        # verifying — so an archived event URL no longer ties a landing page.
+        path_candidates: list[tuple[int, int, str]] = []
+        for idx, sr in enumerate(serp_results):
             try:
                 parsed = urlparse(sr.url)
             except Exception:
@@ -1117,14 +1248,20 @@ class Orchestrator:
             path = (parsed.path or "").strip("/")
             if not path:
                 continue  # bare domain handled by the host scan above
+            if _path_is_generic(path):
+                continue  # §5b: news/events/archive path — not a dept home
             hay = re.sub(r"[/\-_]+", " ", path).lower() + " " + (sr.title or "").lower()
             if not any(n in hay for n in needles):
                 continue
-            if await self._verify_candidate_url(sr.url, cleaned, tokens, acronym):
-                result["department_domain"] = sr.url
+            # Sort key: lowest canonicality penalty first, then SERP order.
+            path_candidates.append((_path_canonicality_penalty(path), idx, sr.url))
+        path_candidates.sort()
+        for _penalty, _idx, cand_url in path_candidates:
+            if await self._verify_candidate_url(cand_url, cleaned, tokens, acronym):
+                result["department_domain"] = cand_url
                 logger.info(
                     "[%s] dept domain via on-domain path page: %s for name2=%r",
-                    record_id, sr.url, name2,
+                    record_id, cand_url, name2,
                 )
                 return
 
@@ -1248,10 +1385,167 @@ class Orchestrator:
             needles.add(acronym.lower())
         if not needles:
             return False
-        matches = sum(1 for n in needles if n in text)
+        # §5d: accept morphological variants, not just the literal token, so
+        # physics.nist.gov ("Physical Measurement Laboratory") verifies for a
+        # "Physics" needle. A text word matches a needle when _seg_matches_needle
+        # holds (substring / one a full prefix of the other — "chem" ← "chemistry")
+        # OR they share a ≥5-char leading prefix ("physic"al ← "physic"s). The
+        # needle-count thresholds are unchanged (≥2, or ≥1 for a single needle),
+        # so science.mit.edu still fails a Computer Science query.
+        text_words = re.findall(r"[a-z]+", text)
+
+        def _needle_hit(n: str) -> bool:
+            for w in text_words:
+                if _seg_matches_needle(w, n):
+                    return True
+                i = 0
+                while i < len(w) and i < len(n) and w[i] == n[i]:
+                    i += 1
+                if i >= 5:
+                    return True
+            return False
+
+        matches = sum(1 for n in needles if _needle_hit(n))
         if len(needles) == 1:
             return matches >= 1
         return matches >= 2
+
+    async def _resolve_person_affiliation(
+        self,
+        result: dict[str, Any],
+        record: EnrichmentRecord,
+        contact: str,
+        pp_name2: str | None,
+        start: float,
+        cache: BatchCache,
+    ) -> EnrichmentResult:
+        """Stage 2b: find a person-only contact's institution + department.
+
+        Runs a grounded web lookup, CONFIRMS the proposed institution against
+        ROR in the record's country, and — only on confirmation — writes
+        Name 1 (ROR's official name), the registry id/domain/website, and the
+        department (via Tier 2A on the confirmed domain, falling back to the
+        web-proposed department). Everything is flagged for review. On any
+        failure the contact is kept, Name 1 is left empty, and the record is
+        flagged for a manual lookup. ALWAYS short-circuits — Tier 3 never runs
+        for these records, so it can neither fabricate nor overwrite.
+        """
+        affil = await run_person_affiliation(
+            contact=contact,
+            city=record.city,
+            region=record.state,
+            country=record.country,
+            email=result.get("email_enriched") or record.email,
+            search_client=self._search_client,
+            llm_client=self._llm_client,
+            settings=self._settings,
+        )
+
+        confirmed = None
+        if affil.institution and affil.confidence in ("high", "medium"):
+            country_code = country_to_iso_code(record.country)
+            try:
+                confirmed = await self._ror_client.call(
+                    affil.institution,
+                    country_code=country_code,
+                    country=record.country,
+                    city=record.city,
+                    state=record.state,
+                )
+            except Exception:
+                logger.exception(
+                    "[%s] person_affiliation: ROR confirm failed", record.record_id,
+                )
+                confirmed = None
+
+        if confirmed and confirmed.get("matched"):
+            official = (confirmed.get("official_name") or affil.institution).strip()
+            result["name1_enriched"] = official
+            result["ror_id"] = confirmed.get("ror_id")
+            result["tier_used"] = 1
+            # Name/id/domain are ROR's; the affiliation origin (web lookup on the
+            # contact) is recorded in flag_reason. Confidence is capped at medium
+            # because the person→org link came from the web, not the registry.
+            result["source"] = "ROR"
+            result["confidence"] = "medium"
+            result["record_type"] = (
+                "research_institution"
+                if confirmed.get("is_research_institution")
+                else "company"
+            )
+            domain = confirmed.get("domain")
+            if domain:
+                result["domain"] = domain
+            if confirmed.get("website"):
+                result["website_url"] = confirmed.get("website")
+            if confirmed.get("acronym") and confirmed["acronym"].strip():
+                result["_ror_acronym"] = confirmed["acronym"].strip()
+
+            # Department: prefer a Tier 2A lookup on the CONFIRMED domain (the
+            # contact searched on the institution's own site), fall back to the
+            # web-proposed department.
+            department = affil.department
+            if is_blank(pp_name2) and domain:
+                try:
+                    t2a = await run_tier2a(
+                        record.record_id,
+                        contact=contact,
+                        institution=official,
+                        domain=domain,
+                        name2=None,
+                        name3=None,
+                        search_client=self._search_client,
+                        page_fetcher=self._page_fetcher,
+                        llm_client=self._llm_client,
+                        cache=cache,
+                        settings=self._settings,
+                    )
+                    if t2a.name2_enriched:
+                        department = t2a.name2_enriched
+                except Exception:
+                    logger.exception(
+                        "[%s] person_affiliation: Tier 2A dept lookup failed",
+                        record.record_id,
+                    )
+            if department and is_blank(pp_name2):
+                result["name2_enriched"] = department
+
+            result["flag_for_review"] = True
+            result["flag_reason"] = (
+                f"Name 1 inferred from contact's web affiliation — verify "
+                f"({official})"
+            )
+            result["_pp_name1"] = official
+            logger.info({
+                "record_id": record.record_id,
+                "step": "person_affiliation_confirmed",
+                "contact": contact,
+                "institution": official,
+                "department": result.get("name2_enriched"),
+            })
+        else:
+            result["flag_for_review"] = True
+            if affil.institution:
+                result["flag_reason"] = (
+                    f"person in Name 1 — web affiliation '{affil.institution}' "
+                    f"not confirmed by registry in {record.country or 'record country'}; "
+                    f"manual lookup needed"
+                )
+            else:
+                result["flag_reason"] = (
+                    "person in Name 1 — affiliation could not be resolved; "
+                    "manual lookup needed"
+                )
+            result["_pp_name1"] = None
+            logger.info({
+                "record_id": record.record_id,
+                "step": "person_affiliation_unresolved",
+                "contact": contact,
+                "proposed": affil.institution,
+                "confidence": affil.confidence,
+            })
+
+        return await self._finalise_and_return(result, start, record, cache)
 
     async def _finalise_and_return(
         self,
@@ -1290,17 +1584,27 @@ class Orchestrator:
         def _pick(base: str) -> str | None:
             return result.get(f"{base}_enriched") or result.get(f"{base}_original")
 
+        # Streets: preprocessing owns them (it may have emptied a slot). Use the
+        # recorded post-preprocess values when present, so a cleared slot stays
+        # cleared instead of falling back to the raw original.
+        pp_streets = result.get("_pp_streets")
+
+        def _street(base: str) -> str | None:
+            if pp_streets is not None and base in pp_streets:
+                return pp_streets[base]
+            return _pick(base)
+
         try:
             addr = await process_address(
                 record_id=record.record_id,
                 name1=_pick("name1"),
                 name2=_pick("name2"),
                 name3=_pick("name3"),
-                street=_pick("street1"),
-                street_2=_pick("street2"),
-                street_3=_pick("street3"),
-                street_4=_pick("street4"),
-                street_5=_pick("street5"),
+                street=_street("street1"),
+                street_2=_street("street2"),
+                street_3=_street("street3"),
+                street_4=_street("street4"),
+                street_5=_street("street5"),
                 city=record.city,
                 state=record.state,
                 zip_code=record.zip,
@@ -1472,6 +1776,7 @@ class Orchestrator:
                 street3=record.street3,
                 street4=record.street4,
                 street5=record.street5,
+                house_number=record.house_number,
                 llm_person_verdicts=person_verdicts,
             )
 
@@ -1523,6 +1828,12 @@ class Orchestrator:
                 for f in pre.dba_fields
                 if getattr(pre, f)
             }
+            # UC 7 person signal (Name 1 held only a person). Read by
+            # derive_search_terms so an unresolved person row emits no ST1
+            # (its original SAP name is a person, not an institution).
+            result["_name1_was_person"] = bool(
+                getattr(pre, "name1_was_person", False)
+            )
 
             # If preprocessing populated any care_of/contact/email/
             # street/name field, record the enriched value now. (Final
@@ -1538,6 +1849,16 @@ class Orchestrator:
                 v = getattr(pre, slot)
                 if v is not None and v != result[f"{slot}_original"]:
                     result[f"{slot}_enriched"] = v
+            # Preprocessing is the source of truth for the street slots (it may
+            # have EMPTIED a slot by routing its content to a Name/Building
+            # field). Record the post-preprocess street values — including the
+            # cleared Nones — so the address stage uses them instead of falling
+            # back to the raw original street ("Finance/Procurement" routed to a
+            # Name must not reappear in Street 1).
+            result["_pp_streets"] = {
+                slot: getattr(pre, slot)
+                for slot in ("street1", "street2", "street3", "street4", "street5")
+            }
             # A named building pulled out of a name field. Stashed as a
             # transient and applied in finalise() AFTER the address stage, so
             # a building extracted from the street fields takes precedence and
@@ -1552,6 +1873,29 @@ class Orchestrator:
             pp_name4 = pre.name4
             pp_contact = pre.contact
             pp_street1 = pre.street1
+
+            # ── Person-only Name 1: discover the contact's affiliation ───
+            # Name 1 held only a person's name (now moved to Contact), leaving
+            # no organisation for the tiers to enrich. Fetching the contact's
+            # institution + department is a core deliverable, so we run a
+            # grounded web lookup (Stage 2b) — but guard it hard against the
+            # ways it went wrong before:
+            #   * confirm the web-proposed institution against ROR IN THE
+            #     RECORD'S COUNTRY (rejects wrong-country matches), and
+            #   * take the official name / id / domain from ROR — never a
+            #     website-resolver guess, and
+            #   * ALWAYS short-circuit here (whether or not we found an org) so
+            #     Tier 3 can never fabricate an institution or overwrite the
+            #     confirmed one.
+            if (
+                is_blank(pp_name1)
+                and pp_contact and pp_contact.strip()
+                and getattr(pre, "name1_was_person", False)
+            ):
+                return await self._resolve_person_affiliation(
+                    result, record, pp_contact, pp_name2, start, cache,
+                )
+
             # Stash for the post-Tier-1 website resolver. Read by
             # _maybe_resolve_website_bc at every return path.
             result["_pp_name1"] = pp_name1
@@ -1567,12 +1911,16 @@ class Orchestrator:
             )
             result["_multi_contact"] = has_multiple_contacts(pp_contact)
 
-            # Flag if preprocessing triggered a conflict
-            if "contact-conflict" in pre.flags or "email-conflict" in pre.flags or "street-slots-full" in pre.flags:
+            # Flag if preprocessing triggered a conflict or ran out of slots
+            # (street OR name slots full — content it could not place).
+            if any(
+                "conflict" in f or "slots-full" in f or "acronym-ambiguous" in f
+                for f in pre.flags
+            ):
                 result["flag_for_review"] = True
                 result["flag_reason"] = "; ".join(
                     f for f in pre.flags
-                    if "conflict" in f or "slots-full" in f
+                    if "conflict" in f or "slots-full" in f or "acronym-ambiguous" in f
                 )
 
             institution_domain: str | None = None
@@ -1637,23 +1985,41 @@ class Orchestrator:
                         # distinctive token — but still use ROR's id/domain/
                         # website below (it is the same entity).
                         #
-                        # Compare on the abbreviation-expanded input too, so an
-                        # abbreviated form adopts ROR's fuller official name
-                        # ("Uni Stuttgart" → "University of Stuttgart"): the
-                        # raw guard misses it because "Uni" (3 chars) is below
-                        # _token_covers' 4-char floor for "University".
-                        expanded_name1 = expand_abbreviations(name1_cleaned) or name1_cleaned
-                        if (
-                            canonical_preserves_identity(name1_cleaned, official.strip())
-                            or canonical_preserves_identity(expanded_name1, official.strip())
-                        ):
-                            result["name1_enriched"] = official.strip()
+                        # Item 2: compare against the ORIGINAL Name 1 (pp_name1),
+                        # NOT the address-stripped query form. strip_address_
+                        # fragments removes a campus city that equals the record's
+                        # City ("UNIVERSITY OF CALIFORNIA, DAVIS" + City "Davis"
+                        # → "University of California"), and that campus is part of
+                        # the org identity — ROR restoring it ("…, Davis") must
+                        # not read as an identity change. On a genuine drop fall
+                        # back to the original, never the stripped fragment.
+                        # Abbreviation-expanded forms are compared too, so an
+                        # abbreviated input adopts ROR's fuller official name
+                        # ("Uni Stuttgart" → "University of Stuttgart").
+                        off = official.strip()
+                        original_name1 = (pp_name1 or name1_cleaned or "").strip()
+                        candidates = {
+                            original_name1,
+                            expand_abbreviations(original_name1) or original_name1,
+                            name1_cleaned,
+                            expand_abbreviations(name1_cleaned) or name1_cleaned,
+                        }
+                        if any(canonical_preserves_identity(c, off) for c in candidates if c):
+                            result["name1_enriched"] = off
                         else:
-                            result["name1_enriched"] = name1_cleaned
+                            # Keep the user's name over ROR's divergent official
+                            # form (e.g. ROR's German "Hochschule für Technik
+                            # Stuttgart" vs input "Stuttgart Univ of Applied
+                            # Sciences"), but still STANDARDISE it: expand
+                            # abbreviations ("Univ" → "University") and title-case
+                            # ALL-CAPS, exactly as a ROR-miss passthrough is
+                            # cleaned. Otherwise the kept name ships raw.
+                            kept = original_name1 or name1_cleaned
+                            result["name1_enriched"] = clean_passthrough_org_name(kept) or kept
                             logger.info(
                                 "[%s] ROR name '%s' drops a distinctive token "
-                                "from '%s' — keeping the input name",
-                                record.record_id, official.strip(), name1_cleaned,
+                                "from '%s' — keeping the standardised input name",
+                                record.record_id, off, original_name1,
                             )
 
                     # Carry the ROR acronym (when present) for the

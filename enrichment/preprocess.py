@@ -76,6 +76,10 @@ class PreprocessResult:
     # naturally fire on (name2=null, contact set, domain), but we
     # surface the flag explicitly so callers / tests can assert it.
     trigger_dept_lookup: bool = False
+    # A person name was extracted from Name 1 (the institution slot), leaving
+    # Name 1 empty. The orchestrator uses this to run a person-affiliation
+    # web lookup so the discovered institution + department can be fetched.
+    name1_was_person: bool = False
 
     def note(self, uc: int, reason: str) -> None:
         if uc not in self.use_cases:
@@ -193,6 +197,49 @@ _ADDRESS_PATTERNS = [
 ]
 
 
+_STREET_TYPE_NORM = {
+    "boulevard": "blvd", "avenue": "ave", "street": "st", "road": "rd",
+    "drive": "dr", "lane": "ln", "parkway": "pkwy", "highway": "hwy",
+    "court": "ct", "place": "pl", "terrace": "ter", "circle": "cir",
+    "square": "sq", "suite": "ste",
+}
+
+
+def _norm_street_key(value: str | None) -> str:
+    """Normalise a street value for duplicate comparison: lowercase, drop
+    punctuation, canonicalise street-type words, collapse whitespace."""
+    if not value:
+        return ""
+    s = re.sub(r"[.,]", " ", value.lower())
+    toks = [_STREET_TYPE_NORM.get(t, t) for t in s.split()]
+    return " ".join(toks).strip()
+
+
+def _duplicates_existing_street(
+    fragment: str, res: "PreprocessResult", house_number: str | None,
+) -> bool:
+    """True when *fragment* duplicates a populated street field — either the
+    field verbatim, or the field prefixed with the record's House Number
+    ("4200 Research Blvd" duplicates Street 1 "RESEARCH BLVD" + House Number
+    "4200"). Normalised and case-insensitive."""
+    nf = _norm_street_key(fragment)
+    if not nf:
+        return False
+    hn = (house_number or "").strip()
+    for slot in ("street1", "street2", "street3", "street4", "street5"):
+        v = getattr(res, slot)
+        if not (v and v.strip()):
+            continue
+        nv = _norm_street_key(v)
+        if not nv:
+            continue
+        if nf == nv:
+            return True
+        if hn and nf == _norm_street_key(f"{hn} {v}"):
+            return True
+    return False
+
+
 def _extract_addresses(text: str) -> tuple[list[str], str]:
     """Return (list of address fragments found, text with them removed)."""
     if not text:
@@ -303,6 +350,155 @@ def _collapse_repeated_phrase(value: str | None) -> str | None:
         unit = low[:p]
         if all(low[i * p:(i + 1) * p] == unit for i in range(n // p)):
             return " ".join(tokens[:p])
+    return value
+
+
+# Words skipped when computing an initialism, so "University of California, Los
+# Angeles" → UCLA (not UOCLA).
+_ACRONYM_STOPWORDS = {
+    "of", "and", "the", "for", "at", "in", "on", "de", "la", "le", "du",
+    "des", "von", "van", "der", "el", "&", "a",
+}
+
+
+def _is_acronym_token(token: str) -> bool:
+    """True when *token* looks like an all-caps acronym (2-8 letters, allowing
+    interior dots / ampersands): "MIT", "U.C.L.A.", "AT&T"."""
+    letters = re.sub(r"[^A-Za-z]", "", token)
+    if not (2 <= len(letters) <= 8):
+        return False
+    # Every letter present must be upper-case (so "MIT" qualifies, "Mit" does not).
+    return letters.isupper()
+
+
+def _acronym_matches_phrase(acronym: str, phrase: str) -> bool:
+    """True when *acronym* is the initialism of *phrase* (a multi-word full
+    form). Tries initials of the significant words (skipping stopwords) and of
+    all words, so both "UCLA" (University California Los Angeles) and "IBM"
+    (International Business Machines) match.
+    """
+    acro = re.sub(r"[^A-Za-z]", "", acronym).upper()
+    if len(acro) < 2:
+        return False
+    words = re.findall(r"[A-Za-z]+", phrase)
+    if len(words) < 2:
+        return False
+    initials_all = "".join(w[0] for w in words).upper()
+    sig = [w for w in words if w.lower() not in _ACRONYM_STOPWORDS]
+    initials_sig = "".join(w[0] for w in sig).upper()
+    return acro in (initials_all, initials_sig)
+
+
+# Dash-delimited acronym+full form: "ACRO - Full" or "Full - ACRO". The full
+# side must have >=3 words so proper-noun hyphenations ("Heriot-Watt University",
+# "Bio-Rad", "Dana-Farber", "Hahn-Schickard-Gesellschaft") are never split.
+_DASH_ACRONYM_RE = re.compile(r"^\s*(.+?)\s*[-‐-―]\s*(.+?)\s*$")
+# A dash with whitespace on at least one side (" - ", "- ", " -"). This marks an
+# abbreviation-expansion pair ("Tuhh - Hamburg University of Technology"); an
+# UNSPACED hyphen ("Dana-Farber") is a compound proper noun and never split
+# unless the acronym is a verified initialism ("…TECHNOLOGY-NIST").
+_SPACED_DASH_RE = re.compile(r"\s[-‐-―]|[-‐-―]\s")
+
+
+def _dash_acronym_full(value: str) -> tuple[str, str, bool] | None:
+    """For a dash-delimited value where one side is a single short token and the
+    other is a >=3-word phrase, return (acronym, full, is_verified_initialism)
+    or None."""
+    m = _DASH_ACRONYM_RE.match(value)
+    if not m:
+        return None
+    a, b = m.group(1).strip(), m.group(2).strip()
+
+    def _short_tok(t: str) -> bool:
+        letters = re.sub(r"[^A-Za-z]", "", t)
+        return " " not in t and 2 <= len(letters) <= 8
+
+    def _nwords(t: str) -> int:
+        return len(re.findall(r"[A-Za-z]+", t))
+
+    if _short_tok(a) and _nwords(b) >= 3:
+        acro, full = a, b
+    elif _short_tok(b) and _nwords(a) >= 3:
+        acro, full = b, a
+    else:
+        return None
+    return acro, full, _acronym_matches_phrase(acro, full)
+
+
+def _syllabic_dash_abbrev(value: str | None) -> str | None:
+    """Flag reason when a dash-delimited value pairs a full org name with a
+    SYLLABIC abbreviation that is not a verified initialism ("CALIBR -
+    California Institute for Biomedical Research", "Tuhh - Hamburg University of
+    Technology") — so it is not silently kept as-is. Else None."""
+    if not value or not value.strip():
+        return None
+    dash = _dash_acronym_full(re.sub(r"\s+", " ", value.strip()))
+    if dash and not dash[2]:
+        return (
+            f"dash abbreviation {dash[0]!r} is not a verified initialism of "
+            f"{dash[1]!r} — review"
+        )
+    return None
+
+
+def _strip_redundant_acronym(value: str | None) -> str | None:
+    """When a name carries BOTH an acronym and its full form for the same
+    entity, keep only the full form.
+
+    "MIT Massachusetts Institute of Technology" → "Massachusetts Institute of Technology"
+    "Massachusetts Institute of Technology (MIT)" → "Massachusetts Institute of Technology"
+    "MIT (Massachusetts Institute of Technology)" → "Massachusetts Institute of Technology"
+    "FDA - Food & Drug Administration" → "Food and Drug Administration"
+
+    Only fires when the acronym is the verified initialism of the full form, so
+    unrelated leading/trailing tokens ("UC Berkeley", "3M Company") and
+    hyphenated proper nouns ("Heriot-Watt University", "Bio-Rad") are untouched.
+    """
+    if not value or not value.strip():
+        return value
+    v = re.sub(r"\s+", " ", value.strip())
+
+    # Dash form: "ACRO - Full" / "Full - ACRO". Always resolve to the full form
+    # (an abbreviation and its full form must never coexist in Name 1). The
+    # caller flags the value when the abbreviation was syllabic, not a verified
+    # initialism. "&" → "and", case-matched so an ALL-CAPS full form is still
+    # title-cased downstream.
+    dash = _dash_acronym_full(v)
+    if dash and (dash[2] or _SPACED_DASH_RE.search(v)):
+        # Strip when the acronym is a verified initialism (spaced or not), OR
+        # when it is a spaced abbreviation-expansion pair ("Tuhh - Hamburg …").
+        # An unspaced, unverified hyphen ("Dana-Farber Cancer Institute") is a
+        # proper noun and left intact.
+        full = dash[1]
+        repl = " AND " if full.isupper() else " and "
+        full = re.sub(r"\s*&\s*", repl, full).strip(" ,;-")
+        return full or value
+
+    # Parenthetical form: "Full (ACRO)" or "ACRO (Full)".
+    m = re.search(r"^(.*?)\s*\(([^)]+)\)\s*(.*)$", v)
+    if m:
+        outer = (m.group(1) + " " + m.group(3)).strip(" ,;-")
+        inner = m.group(2).strip(" ,;-")
+        if _is_acronym_token(inner) and _acronym_matches_phrase(inner, outer):
+            return outer or v
+        if (
+            outer and _is_acronym_token(outer)
+            and _acronym_matches_phrase(outer, inner)
+        ):
+            return inner or v
+
+    # Adjacent form: leading or trailing acronym next to the full phrase.
+    tokens = v.split()
+    if len(tokens) >= 3:
+        if _is_acronym_token(tokens[0]) and _acronym_matches_phrase(
+            tokens[0], " ".join(tokens[1:])
+        ):
+            return " ".join(tokens[1:]).strip(" ,;-")
+        if _is_acronym_token(tokens[-1]) and _acronym_matches_phrase(
+            tokens[-1], " ".join(tokens[:-1])
+        ):
+            return " ".join(tokens[:-1]).strip(" ,;-")
+
     return value
 
 
@@ -455,8 +651,9 @@ _INSTITUTION_PREFIX_RE = re.compile(
 # is unambiguously a job title (ends in Manager / Director / etc.).
 
 # Anchored to the start so "c/o" inside a phrase doesn't accidentally match.
+# ``att?n+`` also catches the common misspelling "Atnn:" (and "attnn").
 _CO_ATTN_PREFIX_RE = re.compile(
-    r"^\s*(?:c\s*/\s*o|attn(?:ention)?|att)\s*[:\-]?\s*",
+    r"^\s*(?:c\s*/\s*o|att?n+(?:ention|tion)?|att)\s*[:\-]?\s*",
     re.IGNORECASE,
 )
 
@@ -518,6 +715,10 @@ def _named_building(text: str | None) -> str | None:
     if not text or not text.strip():
         return None
     stripped = text.strip()
+    # A multi-segment value ("… Laboratory, Lab 576, Chemistry Bldg") is not a
+    # single named building — let the comma/pipe splitters route each segment.
+    if "," in stripped or "|" in stripped:
+        return None
     # A leading house number makes this a street address ("100 Rhines Hall",
     # "20 Smith Building"), not a bare named building — leave it for the
     # address extractor to route into a street slot.
@@ -794,9 +995,71 @@ _ORG_SIGNAL_RE = re.compile(
 # "O'Brien", "Smith-Jones") — without that, hyphenated surnames never surface
 # for person classification.
 _NAME_WORD = r"[A-Z][a-z]+(?:[-'][A-Za-z][a-z]*)*"
+# IGNORECASE so an ALL-CAPS SAP export ("ALBERT KAKKIS") is detected as well as
+# mixed case; the candidate is title-cased by ``_titlecase_person`` before it
+# reaches the classifier / Contact field.
 _PLAIN_NAME_RE = re.compile(
     rf"^\s*{_NAME_WORD}\s+(?:[A-Z]\.?\s+)?{_NAME_WORD}(?:\s+{_NAME_WORD})?\s*$",
+    re.IGNORECASE,
 )
+
+
+def _titlecase_person(text: str) -> str:
+    """Title-case a person name token-wise for the Contact field.
+
+    Only ALL-CAPS or all-lower tokens are re-cased ("ALBERT" → "Albert",
+    "F" → "F"); already-mixed-case tokens are preserved so "McIntyre",
+    "O'Brien" and "de la Cruz" survive. ``str.title`` handles apostrophes and
+    hyphens ("O'BRIEN" → "O'Brien", "SMITH-JONES" → "Smith-Jones"). Person
+    names — not org names — so no acronym preservation (unlike smart_title_case).
+    """
+    if not text:
+        return text
+    out = []
+    for tok in text.split():
+        cased = tok.title() if (tok.isupper() or tok.islower()) else tok
+        # Restore the internal capital in an "Mc" surname ("MCINTYRE" → title →
+        # "Mcintyre" → "McIntyre"). "Mac" is left alone (mangles ordinary names).
+        m = re.match(r"^(Mc)([a-z])(.+)$", cased)
+        if m:
+            cased = f"{m.group(1)}{m.group(2).upper()}{m.group(3)}"
+        out.append(cased)
+    return " ".join(out)
+
+# Trailing academic / professional credentials that decorate a person name
+# ("John Anderson, PhD", "Jane Smith M.D.", "Sam Lee, MSc, MBA"). Stripped
+# before person classification so the bare name surfaces.
+_CREDENTIALS_RE = re.compile(
+    r"(?:,?\s*\b(?:Ph\.?\s*D|D\.?\s*Phil|M\.?\s*D|M\.?\s*S\.?c?|M\.?\s*B\.?\s*A|"
+    r"M\.?\s*P\.?\s*H|B\.?\s*S\.?c?|B\.?\s*A|D\.?\s*D\.?\s*S|D\.?\s*V\.?\s*M|"
+    r"R\.?\s*N|J\.?\s*D|LL\.?\s*[MB]|P\.?\s*E|C\.?\s*P\.?\s*A|Esq|FACS|FRCP)\.?)+\s*$",
+    re.IGNORECASE,
+)
+
+
+def _person_candidate(text: str | None) -> str | None:
+    """Normalise a field value to a bare person-name candidate for the LLM
+    person/org classifier, or None.
+
+    Strips trailing credentials ("John Anderson, PhD" → "John Anderson") and
+    reorders a single "Last, First" comma form ("Smith, John" → "John Smith").
+    Returns None when the normalised value carries an organisation signal or is
+    not a plain 2-3 word name — so the LLM still makes the final call, but on a
+    clean candidate.
+    """
+    if not text or not text.strip():
+        return None
+    s = _CREDENTIALS_RE.sub("", text.strip()).strip(" ,;")
+    if s.count(",") == 1:
+        last, first = (p.strip() for p in s.split(","))
+        if last and first and " " not in last and not _ORG_SIGNAL_RE.search(s):
+            s = f"{first} {last}"
+    s = re.sub(r"\s+", " ", s).strip()
+    if not s or _ORG_SIGNAL_RE.search(s):
+        return None
+    if not _PLAIN_NAME_RE.match(s):
+        return None
+    return _titlecase_person(s)
 
 
 _MULTI_CONTACT_SEPARATOR_RE = re.compile(
@@ -859,9 +1122,11 @@ def _extract_contact_from_field(text: str, allow_llm: bool = False, llm_client=N
 
     stripped = text.strip()
 
-    # Pattern B1: title prefix + capitalised name
-    if _TITLE_PREFIX_RE.match(stripped):
-        return stripped, "", "title-prefix"
+    # Pattern B1: title prefix + capitalised name. Strip trailing credentials
+    # first so "Dr. Jane Smith, PhD" still matches → contact "Dr. Jane Smith".
+    core = _CREDENTIALS_RE.sub("", stripped).strip(" ,;")
+    if _TITLE_PREFIX_RE.match(core):
+        return core, "", "title-prefix"
 
     # Pattern B2: plain name without title. Only if:
     #   - no org signal words
@@ -914,6 +1179,7 @@ def preprocess_record(
     name4: str | None = None,
     street4: str | None = None,
     street5: str | None = None,
+    house_number: str | None = None,
     llm_person_verdicts: dict[str, str] | None = None,
 ) -> PreprocessResult:
     """Run all deterministic preprocessing.
@@ -956,6 +1222,26 @@ def preprocess_record(
         if collapsed != val:
             setattr(res, slot, collapsed)
             res.note(12, f"repeated phrase collapsed in {slot} (was {val!r})")
+
+    # ---------------------------------------------------------------
+    # Name 1 acronym + full-form dedupe. When Name 1 carries BOTH an
+    # abbreviation and its expansion for the same entity ("MIT Massachusetts
+    # Institute of Technology", "Massachusetts Institute of Technology (MIT)"),
+    # keep only the full form.
+    # ---------------------------------------------------------------
+    if res.name1 and res.name1.strip():
+        original = res.name1
+        deduped = _strip_redundant_acronym(original)
+        if deduped and deduped != original:
+            res.name1 = deduped
+            # When the removed abbreviation was syllabic (not a verified
+            # initialism, e.g. "Tuhh - Hamburg University of Technology") the
+            # full form is kept but the assumed match is flagged for review.
+            syllabic = _syllabic_dash_abbrev(original)
+            if syllabic:
+                res.flags.append(f"acronym-ambiguous: {syllabic}")
+            else:
+                res.note(12, f"redundant acronym dropped from name1 (was {original!r})")
 
     # ---------------------------------------------------------------
     # UC 15 — c/o + ATTN extraction from Name 2 (5-case classifier).
@@ -1002,6 +1288,73 @@ def preprocess_record(
             setattr(res, target, frag)
             setattr(res, slot, None)
             res.note(9, f"location fragment moved from {slot} to {target} ({frag!r})")
+
+    # ---------------------------------------------------------------
+    # Pipe-delimited street that concatenates an org hierarchy with the
+    # address ("Dept X | Division Y | ... | U.S. FDA | 5100 Paint Branch Pkwy").
+    # Keep the address segment(s) in the street field and route each org /
+    # department segment to the first empty Name slot; overflow beyond Name 4
+    # is dropped (redundant hierarchy) and noted. Runs BEFORE the single-value
+    # org/dept routers below.
+    # ---------------------------------------------------------------
+    for slot in ("street1", "street2", "street3", "street4", "street5"):
+        split = _split_pipe_street(getattr(res, slot))
+        if not split:
+            continue
+        address, name_parts = split
+        setattr(res, slot, address or None)
+        _route_org_parts_to_names(res, name_parts, slot)
+
+    # ---------------------------------------------------------------
+    # Comma-delimited street that MIXES org/department names with a real
+    # address ("Institute ... Chemistry, Faculty of Sustainability,
+    # Scharnhorststraße 1 C13.217"). Keep the address segment(s) in the street
+    # field and route the org/department (and other non-address) segments to
+    # Name slots. Only fires when both an org segment and an address segment
+    # are present, so a plain address ("51 Sleeper Street, 7th Floor") is never
+    # split. Runs after the pipe split, before the single-value org/dept routers.
+    # ---------------------------------------------------------------
+    for slot in ("street1", "street2", "street3", "street4", "street5"):
+        split = _split_comma_street(getattr(res, slot))
+        if not split:
+            continue
+        address, name_parts, other_parts = split
+        setattr(res, slot, address or None)
+        _route_org_parts_to_names(res, name_parts, slot)
+        # Bare location fragments ("Queens Campus") are kept as street lines in
+        # the next empty street slot(s), not routed to a Name field.
+        for frag in other_parts:
+            target = _first_empty_street_slot(res)
+            if target is None:
+                if "street-slots-full" not in res.flags:
+                    res.flags.append("street-slots-full")
+                res.note(16, f"street slots full — fragment left for review: {frag!r}")
+                continue
+            setattr(res, target, frag)
+            res.note(16, f"location fragment {frag!r} from {slot} → {target}")
+
+    # ---------------------------------------------------------------
+    # Semicolon-delimited street that puts an org/building label before the
+    # address ("UCSF; 600 16th Avenue"). Like the comma split, but the
+    # non-address segment may be a bare acronym. Keep the address in the street
+    # field and route the org segment(s) to Name slots.
+    # ---------------------------------------------------------------
+    for slot in ("street1", "street2", "street3", "street4", "street5"):
+        split = _split_semicolon_street(getattr(res, slot))
+        if not split:
+            continue
+        address, name_parts, other_parts = split
+        setattr(res, slot, address or None)
+        _route_org_parts_to_names(res, name_parts, slot)
+        for frag in other_parts:
+            target = _first_empty_street_slot(res)
+            if target is None:
+                if "street-slots-full" not in res.flags:
+                    res.flags.append("street-slots-full")
+                res.note(16, f"street slots full — fragment left for review: {frag!r}")
+                continue
+            setattr(res, target, frag)
+            res.note(16, f"location fragment {frag!r} from {slot} → {target}")
 
     # ---------------------------------------------------------------
     # Organisation name in a street slot → name block. An institution name
@@ -1174,6 +1527,13 @@ def preprocess_record(
         if not addrs:
             continue
         for addr in addrs:
+            # Item 5: never write a fragment that duplicates an existing street
+            # field (or that field + House Number). "4200 Research Blvd" from a
+            # name field is dropped when Street 1 already holds "RESEARCH BLVD"
+            # and House Number is "4200".
+            if _duplicates_existing_street(addr, res, house_number):
+                res.note(9, f"address '{addr}' from {field_name} duplicates an existing street field — discarded")
+                continue
             slot = _first_empty_street_slot(res)
             if slot is None:
                 res.note(9, f"address '{addr}' found in {field_name} but all street slots full — flag for review")
@@ -1231,12 +1591,22 @@ def preprocess_record(
         # Pattern A + B1 (deterministic)
         extracted, remaining, reason = _extract_contact_from_field(val)
 
-        # Pattern B2: check LLM verdict if available
-        if not extracted and val.strip().lower() in llm_person_verdicts:
-            if llm_person_verdicts[val.strip().lower()] == "person":
-                extracted = val.strip()
+        # Pattern B2: check LLM verdict if available — against the raw value,
+        # then against a normalised person candidate (credentials stripped,
+        # "Last, First" reordered) so "Smith, John" and "John Anderson, PhD"
+        # are extracted too.
+        if not extracted and val.strip().rstrip(",").strip().lower() in llm_person_verdicts:
+            if llm_person_verdicts[val.strip().rstrip(",").strip().lower()] == "person":
+                # Title-case the raw (possibly ALL-CAPS) value for the Contact field.
+                extracted = _titlecase_person(val.strip().rstrip(",").strip())
                 remaining = ""
                 reason = "llm-person"
+        if not extracted:
+            cand = _person_candidate(val)
+            if cand and llm_person_verdicts.get(cand.lower()) == "person":
+                extracted = cand
+                remaining = ""
+                reason = "llm-person-normalised"
 
         # Defensive: never extract an Accounts Payable reference as a
         # contact, regardless of which pattern matched. The AP detector
@@ -1255,6 +1625,10 @@ def preprocess_record(
                 res.contact = extracted
                 res.note(7, f"extracted contact from {field_name} ({reason})")
             setattr(res, field_name, remaining or None)
+            # Name 1 held only a person → signal the affiliation lookup so the
+            # institution + department can be fetched from the web.
+            if field_name == "name1" and not (remaining and remaining.strip()):
+                res.name1_was_person = True
 
     # ---------------------------------------------------------------
     # UC 16 — Split an institution + embedded department in Name 1.
@@ -1337,6 +1711,23 @@ def preprocess_record(
     # extraction is not promoted, and before UC 12 so dedup sees the
     # post-shift state.
     # ---------------------------------------------------------------
+    # When Name 1 was ONLY a person (now moved to Contact) and the street→name
+    # routing had to park the organisation in Name 2 (because Name 1 was still
+    # occupied by the person at routing time), promote that organisation into
+    # the now-empty Name 1 — the org, not the person's absence, must drive
+    # enrichment. Gated so a bare department is left in place (a person + dept
+    # record with no institution still flags for a lookup rather than treating
+    # the department as the institution).
+    if (
+        res.name1_was_person
+        and not (res.name1 and res.name1.strip())
+        and res.name2 and res.name2.strip()
+        and (_looks_like_institution(res.name2) or _looks_like_org_acronym(res.name2))
+    ):
+        res.note(14, f"organisation promoted from name2 to empty name1 after person extraction ({res.name2!r})")
+        res.name1 = res.name2
+        res.name2 = None
+
     # Pack the dept slots (name2, name3, name4) leftward so any gap left
     # by a cleared field is closed and the dept lands in name2 where the
     # tiers look for it. With only name3 populated this reduces to the
@@ -1435,12 +1826,39 @@ def _street_is_org_name(value: str | None) -> bool:
     v = value.strip()
     if re.match(r"^\s*\d", v):           # leading house number → address
         return False
+    if _CO_ATTN_PREFIX_RE.match(v):      # c/o line → care-of content, not an org
+        return False
     if is_logistics_location(v):         # distribution centre etc. → not an org
         return False
     addrs, _ = _extract_addresses(v)     # matches a street pattern → address
     if addrs:
         return False
-    return looks_like_research_institution(v) or bool(_LEGAL_SUFFIX_RE.search(v))
+    if _UK_POSTCODE_RE.search(v):        # a UK postcode → address, not an org
+        return False
+    # "University Road" / "College Street" is a street name, not an institution —
+    # mask those before testing for research-institution wording.
+    masked = _mask_street_institution_words(v)
+    return looks_like_research_institution(masked) or bool(_LEGAL_SUFFIX_RE.search(v))
+
+
+# Functional business units ("Finance", "Procurement") that name a desk, not an
+# address. Recognised even slash/comma/and-separated ("Finance/Procurement").
+_FUNCTIONAL_UNIT_WORDS = {
+    "finance", "procurement", "accounting", "purchasing", "payroll", "legal",
+    "logistics", "operations", "marketing", "sales", "administration", "admin",
+    "hr", "human resources", "accounts payable", "accounts receivable",
+    "it", "information technology", "shipping", "receiving",
+}
+
+
+def _is_functional_dept(value: str | None) -> bool:
+    """True when a value is only functional-unit words, optionally slash/comma/
+    and-separated ("Finance/Procurement", "Finance & Procurement")."""
+    if not value or not value.strip():
+        return False
+    parts = re.split(r"[/,&]|\band\b", value.strip(), flags=re.IGNORECASE)
+    parts = [p.strip().lower() for p in parts if p.strip()]
+    return bool(parts) and all(p in _FUNCTIONAL_UNIT_WORDS for p in parts)
 
 
 def _street_is_department(value: str | None) -> bool:
@@ -1460,7 +1878,314 @@ def _street_is_department(value: str | None) -> bool:
     addrs, _ = _extract_addresses(v)
     if addrs:
         return False
-    return is_unit_construction(v) or is_granular_unit(v)
+    # "Accounts Payable" / "A/P Dept" is an accounting desk, not an address —
+    # route it to a Name slot (Name 2) like any other department.
+    return (
+        is_unit_construction(v)
+        or is_granular_unit(v)
+        or _is_ap_reference(v)
+        or _is_functional_dept(v)
+    )
+
+
+def _split_pipe_street(value: str | None) -> tuple[str | None, list[str]] | None:
+    """Route the ORGANISATION/DEPARTMENT segments of a pipe-delimited street to
+    the Name block, classifying each segment individually.
+
+    SAP exports sometimes dump an org hierarchy, a c/o line, a building and the
+    address into one pipe-separated Street field:
+
+        "MRC - Medical Research Council | C/O RCUK SSC Ltd | Polaris House |
+         North Star House | North Star Avenue"
+
+    Only org/department segments move to the Name block. Every other kind of
+    segment — a c/o line, a named building, the street address, a campus
+    fragment — is kept in the street field (pipe separators dropped) for the
+    late address stage (``process_address``) to place into its own output field
+    per the scope table. This is the correct direction: earlier the splitter
+    routed an unsplit blob to a Name slot and left the org name in the street.
+
+    Returns ``(street_remainder, org_parts)`` — ``street_remainder`` is the kept
+    segments rejoined with ", " (or None), ``org_parts`` the org/department
+    segments in order. Returns None when no segment is an org/department (a
+    plain multi-line address keeps its pipes for ``process_address`` to strip).
+    """
+    if not value or "|" not in value:
+        return None
+    parts = [p.strip(" ,;-") for p in value.split("|")]
+    parts = [p for p in parts if p]
+    if len(parts) < 2:
+        return None
+    org_parts: list[str] = []
+    keep_parts: list[str] = []
+    for part in parts:
+        if _CO_ATTN_PREFIX_RE.match(part) or _named_building(part):
+            # c/o line or a named building → leave for the address stage.
+            keep_parts.append(part)
+        elif _looks_like_name_content(part):
+            org_parts.append(part)
+        else:
+            # Address, campus/site fragment, mail code, bare residue.
+            keep_parts.append(part)
+    if not org_parts:
+        return None
+    street_remainder = ", ".join(keep_parts) if keep_parts else None
+    return street_remainder, org_parts
+
+
+# A German-style street ("Scharnhorststraße 1", "Hauptstr. 5", "Lindenallee 12").
+_GERMAN_STREET_RE = re.compile(
+    r"\b[\wäöüÄÖÜß\-]+(?:stra(?:ße|sse)|str\.?|weg|platz|allee|gasse|ring|damm)\b\s+\d+",
+    re.IGNORECASE,
+)
+# A US "ST 12345" state+zip tail.
+_STATE_ZIP_RE = re.compile(r"\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b")
+# A sub-location segment ("7th Floor", "Room F107", "Suite 400", "Unit 3").
+_SUBLOC_SEG_RE = re.compile(
+    r"\b(?:Floor|Fl|Room|Rm|Suite|Ste|Unit|Bldg|Building|Mail\s*Stop|MS|"
+    r"P\.?\s*O\.?\s*Box|Box)\b",
+    re.IGNORECASE,
+)
+# A UK postcode ("BT7 1NH", "SW1A 1AA", "M1 1AE", "EC1A 1BB") — an address tail.
+_UK_POSTCODE_RE = re.compile(r"\b[A-Z]{1,2}\d[A-Z\d]?\s+\d[A-Z]{2}\b", re.IGNORECASE)
+# An institution keyword used as a STREET-NAME modifier ("University Road",
+# "College Street", "Church Ave") is a STREET, not an institution — so the org
+# detectors must not read it as one.
+_INSTITUTION_STREET_RE = re.compile(
+    r"\b(?:University|College|Institute|Hospital|Church|Academy|School)\s+"
+    r"(?:St|Street|Ave|Avenue|Blvd|Boulevard|Rd|Road|Dr|Drive|Ln|Lane|"
+    r"Way|Hwy|Highway|Pl|Place|Pkwy|Parkway|Ct|Court|Ter|Terrace|"
+    r"Cir|Circle|Sq|Square)\b",
+    re.IGNORECASE,
+)
+
+
+def _mask_street_institution_words(value: str) -> str:
+    """Blank out institution keywords that are really street-name modifiers
+    ("University Road") so the org detectors don't read a street as an org."""
+    return _INSTITUTION_STREET_RE.sub(" ", value)
+
+
+def _segment_is_address(seg: str) -> bool:
+    """True when a comma-segment looks like address content (US or German
+    street, US state+zip or UK postcode tail, or a numbered sub-location)."""
+    if not seg or not seg.strip():
+        return False
+    addrs, _ = _extract_addresses(seg)
+    if addrs:
+        return True
+    if _GERMAN_STREET_RE.search(seg):
+        return True
+    if _STATE_ZIP_RE.search(seg):
+        return True
+    if _UK_POSTCODE_RE.search(seg):
+        return True
+    if _SUBLOC_SEG_RE.search(seg) and any(c.isdigit() for c in seg):
+        return True
+    return False
+
+
+# A sub-unit / department (either led by a unit word + of/for, or trailing one).
+_DEPT_LEAD_RE = re.compile(
+    r"^(?:the\s+)?(?:Division|Office|Department|Dept|Center|Centre|Faculty|Branch|"
+    r"School|Section|Unit|Group|Laborator(?:y|ies)|Lab|Program|Programme|Bureau|"
+    r"Directorate)\b",
+    re.IGNORECASE,
+)
+_DEPT_TRAILING_RE = re.compile(
+    r"\b(?:Branch|Division|Office|Section|Unit|Group|Laborator(?:y|ies)|Lab)\s*$",
+    re.IGNORECASE,
+)
+# "Lab 576" / "Lab A12" — a room identifier (Lab + a numeric id), NOT a
+# department. Distinguished from "Smith Lab" (a named lab) by the trailing id.
+_LAB_ROOM_RE = re.compile(r"^Lab\.?\s+\w*\d[\w\-]*$", re.IGNORECASE)
+# Top-level institution keywords (an institution, not a sub-unit of one).
+_INSTITUTION_RE = re.compile(
+    r"\b(?:University|Universit[äa]t|College|Administration|Agency|Ministry|"
+    r"Corporation|Company|Hospital|Clinic|Institute|Institut|Foundation|Society)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_institution(seg: str) -> bool:
+    """True when a segment names a top-level institution (→ Name 1), not a
+    department/sub-unit. "U.S. Food and Drug Administration" and "Institute of
+    X" are institutions; "Division of X", "Center for Y", "... Branch" are not.
+    """
+    if not seg or not seg.strip():
+        return False
+    if _DEPT_LEAD_RE.match(seg) or _DEPT_TRAILING_RE.search(seg):
+        return False
+    masked = _mask_street_institution_words(seg)
+    return bool(_INSTITUTION_RE.search(masked) or looks_like_research_institution(masked))
+
+
+def _looks_like_name_content(seg: str) -> bool:
+    """True when a segment is org/department/institution content that belongs in
+    a Name slot (as opposed to an address or a bare location fragment)."""
+    if not seg or not seg.strip():
+        return False
+    # A c/o line, a named building, or a "Lab 576" room code is address-stage
+    # content, never a Name.
+    if _CO_ATTN_PREFIX_RE.match(seg) or _named_building(seg) or _LAB_ROOM_RE.match(seg.strip()):
+        return False
+    return (
+        _segment_is_org(seg)
+        or _looks_like_institution(seg)
+        or bool(_DEPT_LEAD_RE.match(seg))
+        or bool(_DEPT_TRAILING_RE.search(seg))
+    )
+
+
+def _segment_is_org(seg: str) -> bool:
+    """True when a comma-segment is a recognised organisation / department /
+    accounting desk — the trigger signal for splitting a mixed street value."""
+    if not seg or not seg.strip():
+        return False
+    # A c/o line ("C/O RCUK SSC Ltd") carries a legal suffix but is a care-of
+    # address, not an organisation — leave it for the address stage.
+    if _CO_ATTN_PREFIX_RE.match(seg):
+        return False
+    masked = _mask_street_institution_words(seg)
+    return (
+        looks_like_research_institution(masked)
+        or is_unit_construction(seg)
+        or is_granular_unit(seg)
+        or bool(_LEGAL_SUFFIX_RE.search(seg))
+        or _is_ap_reference(seg)
+    )
+
+
+def _route_org_parts_to_names(res: "PreprocessResult", parts: list[str], slot: str) -> None:
+    """Route org/department segments to the Name block. The institution (if any)
+    always takes Name 1 when Name 1 is empty; the remaining segments fill the
+    next empty Name slots in order. Overflow beyond Name 4 is dropped and noted.
+    """
+    # Strip a redundant acronym dash form on each routed segment ("MRC -
+    # Medical Research Council" → "Medical Research Council"). The name1 acronym
+    # dedupe pass has already run by the time a street segment lands in a Name
+    # slot, so apply it here too.
+    remaining = [(_strip_redundant_acronym(p) or p) for p in parts]
+    if remaining and not (res.name1 and res.name1.strip()):
+        inst_idx = next(
+            (i for i, p in enumerate(remaining) if _looks_like_institution(p)),
+            None,
+        )
+        idx = inst_idx if inst_idx is not None else 0
+        res.name1 = remaining.pop(idx)
+        res.note(16, f"institution from {slot} → name1 ({res.name1!r})")
+    for part in remaining:
+        target = _first_empty_name_slot(res)
+        if target is None:
+            # No empty Name slot — do NOT silently drop. Raise the same
+            # slots-full flag the orchestrator turns into flag_for_review
+            # (see orchestrator's preprocessing-flag handling).
+            if "name-slots-full" not in res.flags:
+                res.flags.append("name-slots-full")
+            res.note(16, f"name slots full — segment left for review: {part!r}")
+            continue
+        setattr(res, target, part)
+        res.note(16, f"street segment {part!r} from {slot} → {target}")
+
+
+def _split_comma_street(
+    value: str | None,
+) -> tuple[str | None, list[str], list[str]] | None:
+    """Split a comma-delimited street value that mixes org/department names
+    with a real address, e.g.
+
+        "Institute of ... Chemistry, Faculty of Sustainability,
+         Scharnhorststraße 1 C13.217"
+        "Room number: F107, Wolfson Research Institute, Queens Campus"
+
+    Returns ``(address, name_parts)`` where address is the address segment(s)
+    rejoined (kept in the street field) and name_parts are the org/department
+    (and other non-address) segments in order (routed to Name slots).
+
+    Only fires when the value contains BOTH a recognised org/department
+    segment AND a recognised address segment — a plain address ("51 Sleeper
+    Street, 7th Floor", "200 Clarendon Street, Boston, MA 02210") has no org
+    segment and is therefore left untouched.
+    """
+    if not value or "," not in value:
+        return None
+    segments = [s.strip(" ;-") for s in value.split(",")]
+    segments = [s for s in segments if s]
+    if len(segments) < 2:
+        return None
+    if not any(_segment_is_org(s) for s in segments):
+        return None
+    # Fire when an org coexists with an address OR a named building (a value
+    # like "ICB&DD ... Laboratory, Lab 576, Chemistry Bldg" has no street at all
+    # but still needs the org routed to a Name and the building/room left for
+    # the address stage). A plain address ("51 Sleeper Street, 7th Floor") has
+    # no org segment and is left untouched.
+    if not any(_segment_is_address(s) or _named_building(s) for s in segments):
+        return None
+    addr_parts: list[str] = []
+    name_parts: list[str] = []
+    other_parts: list[str] = []
+    for seg in segments:
+        if _segment_is_address(seg):
+            addr_parts.append(seg)
+        elif _looks_like_name_content(seg):
+            name_parts.append(seg)
+        else:
+            # Neither address nor org — a named building ("Chemistry Bldg"), a
+            # room code ("Lab 576"), or a bare location fragment ("Queens
+            # Campus"). Kept as a street line for the address stage to place.
+            other_parts.append(seg)
+    if not name_parts or (not addr_parts and not other_parts):
+        return None
+    address = ", ".join(addr_parts) if addr_parts else None
+    return address, name_parts, other_parts
+
+
+# A bare institution acronym as a street segment ("UCSF", "MIT", "UCLA", "NIH").
+_ORG_ACRONYM_RE = re.compile(r"^[A-Z]{2,6}$")
+
+
+def _looks_like_org_acronym(seg: str) -> bool:
+    """True for a bare institution acronym ("UCSF"). Used only for the
+    semicolon splitter, where a short all-caps token before an address is
+    reliably an organisation label rather than an address line."""
+    return bool(seg and _ORG_ACRONYM_RE.match(seg.strip()))
+
+
+def _split_semicolon_street(
+    value: str | None,
+) -> tuple[str | None, list[str], list[str]] | None:
+    """Split a semicolon-delimited street that puts an organisation/building
+    label before the address, e.g. "UCSF; 600 16th Avenue".
+
+    Semicolons in these SAP street dumps reliably separate an org label from
+    the address, so the non-address segment can be a bare acronym ("UCSF") that
+    the comma splitter would not recognise as an org. Returns
+    ``(address, name_parts, other_parts)`` like ``_split_comma_street``. Fires
+    only when a segment is address-like AND another is name content or an
+    institution acronym — a semicolon between two address lines is untouched.
+    """
+    if not value or ";" not in value:
+        return None
+    segments = [s.strip(" ,-") for s in value.split(";")]
+    segments = [s for s in segments if s]
+    if len(segments) < 2:
+        return None
+    if not any(_segment_is_address(s) for s in segments):
+        return None
+    addr_parts: list[str] = []
+    name_parts: list[str] = []
+    other_parts: list[str] = []
+    for seg in segments:
+        if _segment_is_address(seg):
+            addr_parts.append(seg)
+        elif _looks_like_name_content(seg) or _looks_like_org_acronym(seg):
+            name_parts.append(seg)
+        else:
+            other_parts.append(seg)
+    if not addr_parts or not name_parts:
+        return None
+    return ", ".join(addr_parts), name_parts, other_parts
 
 
 def _name_block_has_department(res: PreprocessResult) -> bool:
@@ -1510,17 +2235,25 @@ def find_suspicious_plain_names(
     def _maybe_add(candidate: str) -> None:
         if not candidate:
             return
+        # Strip a trailing comma ("JOHN F FLOREK," → "JOHN F FLOREK") before the
+        # shape checks so a stray SAP comma doesn't block detection.
+        candidate = candidate.strip().rstrip(",").strip()
+        if not candidate:
+            return
         if _TITLE_PREFIX_RE.match(candidate):
             return
         if _ORG_SIGNAL_RE.search(candidate):
             return
         if not _PLAIN_NAME_RE.match(candidate):
             return
-        key = candidate.lower()
+        # Title-case ALL-CAPS / all-lower candidates before the LLM sees them
+        # and before they key the verdict map (so the Contact write is clean).
+        normalised = _titlecase_person(candidate)
+        key = normalised.lower()
         if key in seen:
             return
         seen.add(key)
-        out.append(candidate)
+        out.append(normalised)
 
     for field_name, val in (("name1", name1), ("name2", name2),
                             ("name3", name3), ("name4", name4)):
@@ -1545,6 +2278,12 @@ def find_suspicious_plain_names(
         if _ATTN_RE.search(stripped):
             continue
         _maybe_add(stripped)
+        # Also surface a normalised candidate ("Smith, John" → "John Smith",
+        # "John Anderson, PhD" → "John Anderson") so credentialed / reversed
+        # person names reach the classifier.
+        cand = _person_candidate(stripped)
+        if cand:
+            _maybe_add(cand)
     return out
 
 

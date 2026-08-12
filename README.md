@@ -1,4 +1,4 @@
-# SAP Customer Master Data Name Enrichment API / 24/07/26
+# SAP Customer Master Data Name Enrichment API / 09/08/26
 
 An intelligent, multi-tier enrichment service built for Bruker Corporation's Master Data Management (MDM) pipeline. It resolves incomplete, abbreviated, misspelled, or incorrectly formatted SAP customer master data records — specifically institution and company names — through a pipeline that combines deterministic preprocessing, API lookups, web search, contact verification, and LLM inference.
 
@@ -19,12 +19,14 @@ Both phases share the same FastAPI app, configuration system, Azure Functions de
 4. [Architecture Overview](#architecture-overview)
 5. [The Enrichment Pipeline: Stage by Stage](#the-enrichment-pipeline-stage-by-stage)
    - [Stage 0: Name1 Overflow Check (UC 0)](#stage-0-name1-overflow-check-uc-0)
-   - [Stage 1: Preprocessing (UC 6-12)](#stage-1-preprocessing-uc-6-10)
+   - [Stage 1: Preprocessing (UC 6-12)](#stage-1-preprocessing-uc-6-12)
    - [Stage 2: Tier 1 — ROR API Lookup](#stage-2-tier-1--ror-api-lookup)
    - [Stage 2 (Company): Tier 1 — GLEIF / LEI Registry Lookup](#stage-2-company-tier-1--gleif--lei-registry-lookup)
+   - [Stage 2b: Person Affiliation Lookup](#stage-2b-person-affiliation-lookup)
    - [Stage 3: Tier 2 — Multi-Mode Canonicalization](#stage-3-tier-2--multi-mode-canonicalization)
    - [Stage 4: Tier 3 — LLM Inference (Last Resort)](#stage-4-tier-3--llm-inference-last-resort)
    - [Finalization](#finalization)
+   - [Website, Domain, Department-Domain & Search-Term Resolution](#website-domain-department-domain--search-term-resolution)
 6. [Use Case Reference Table](#use-case-reference-table)
 7. [Record Classification Logic](#record-classification-logic)
 8. [Confidence, Flags, and Enrichment Status](#confidence-flags-and-enrichment-status)
@@ -207,21 +209,24 @@ Preprocessing runs entirely on regex patterns with **no network calls** (except 
 
 **Detects patterns like:** "Accounts Payable", "A/P", "AP Dept", "AP Invoice", "Attn AP"
 
-**Action:** Normalizes to "Accounts Payable" and flags the field. The orchestrator handles AP records specially — they are often not real organization names but payment routing labels.
+**Action:** Normalizes to "Accounts Payable" and flags the field. The orchestrator handles AP records specially — they are often not real organization names but payment routing labels. An AP reference that lands in a **street field** is treated as a department and routed to the first empty Name slot (usually Name 2) — see [Organisation/department content in a street field](#organisationdepartment-content-in-a-street-field).
 
 #### UC 7 — Contact Person Extraction
 
 Detects person names stored in Name1/Name2/Name3 fields and moves them to the `contact` field.
 
-Three detection patterns:
+Detection patterns:
 - **Pattern A:** Explicit prefix — `Attn: Jane Smith`, `c/o Dr. Robert Lee`
-- **Pattern B1:** Title-prefixed names — `Dr. Jane Smith`, `Prof. John Doe`, `Mr. Robert Lee`
+- **Pattern B1:** Title-prefixed names — `Dr. Jane Smith`, `Prof. John Doe`, `Mr. Robert Lee`. Trailing academic/professional credentials are stripped first, so `Dr. Jane Smith, PhD` still matches → contact `Dr. Jane Smith`.
 - **Pattern B2:** Plain capitalized names (2-3 words, no title) — `Jane Smith`, `Robert Alan Lee`
   - This pattern is ambiguous: "Jane Smith" is a person, but "Bell Labs" is not
   - B2 triggers an **LLM classification call** (`llm_classify_plain_names_async()`) only when `allow_llm=True`
   - Names with organization signals (Inc, Corp, Department, University, etc.) are rejected before the LLM call
+  - **Normalised candidates** — before classification, `find_suspicious_plain_names` also surfaces a normalised form of each name so credentialed and reversed formats reach the LLM: `Smith, John` → `John Smith` (reordered), `John Anderson, PhD` / `Jane Smith MD` → the bare name. When the verdict is "person", the normalised name is written to `contact`.
 
 **Guard:** Any name containing organization keywords (Inc, Corp, LLC, Department, University, Hospital, Institute, Laboratory, etc.) is never classified as a person.
+
+**Person in Name 1 → affiliation lookup.** When the person is extracted from **Name 1** (the institution slot), Name 1 is left empty and `PreprocessResult.name1_was_person` is set. The orchestrator then runs a **person-affiliation lookup** (`enrichment/person_affiliation.py`) that discovers the institution + department from the web and **confirms it against ROR in the record's country** before accepting it — so the record is not left with just a contact and no organisation, and a wrong-country guess is never written. See [Stage 2b](#stage-2b-person-affiliation-lookup).
 
 #### UC 8 — Email Copy (Non-Destructive)
 
@@ -240,6 +245,38 @@ Three detection patterns:
 - PO Box patterns
 
 **Action:** Extracts address fragments to `street1`/`street2`/`street3` fields. Residual text retained in name field.
+
+#### Name 1 Acronym + Full-Form Dedupe
+
+When Name 1 carries **both** an acronym and its expansion for the same entity, only the full form is kept (`_strip_redundant_acronym`). All four positions are handled — leading/trailing adjacent, and either side of a parenthetical:
+
+- `MIT Massachusetts Institute of Technology` → `Massachusetts Institute of Technology`
+- `Massachusetts Institute of Technology (MIT)` → `Massachusetts Institute of Technology`
+- `MIT (Massachusetts Institute of Technology)` → `Massachusetts Institute of Technology`
+- `University of California, Los Angeles (UCLA)` → `University of California, Los Angeles`
+
+It fires only when the acronym is the **verified initialism** of the full form (initials of the significant words, skipping stopwords — so `UCLA` = University **of** California Los Angeles matches). Unrelated tokens are left untouched: `UC Berkeley`, `3M Company`, `AT&T`, `IT University of Copenhagen`, `US Army Corps of Engineers`.
+
+#### Organisation/Department Content in a Street Field
+
+SAP exports sometimes place organisation/department names in a Street field (with or without the real address). These are routed to the Name block, keeping only the address in the street:
+
+- **Pipe-delimited** (`_split_pipe_street`) — `Bioanalytical Methods Branch | Division of Bioanalytical Chemistry | … | U.S. Food and Drug Administration | 5100 Paint Branch Pkwy` → the address segment stays in Street 1; each org/department segment is routed to a Name slot.
+- **Comma-delimited, mixed** (`_split_comma_street`) — fires only when a value contains **both** a recognised org/department **and** an address (incl. German streets like `Scharnhorststraße 1`), so a plain address (`51 Sleeper Street, 7th Floor`; `200 Clarendon Street, Boston, MA 02210`) is never split. Example: `Institute of … Chemistry, Faculty of Sustainability, Scharnhorststraße 1 C13.217` → Name 1/2 = the org units, Street 1 = the German address.
+- **Single-value org/department** (`_street_is_org_name` / `_street_is_department`) — an institution or department alone in a street field ("University of Miami Hospital", "Department of Neuroscience", "Accounts Payable") is moved to the Name block.
+
+Routing rules:
+- The **institution** always takes Name 1 when Name 1 is empty (`_looks_like_institution`); sub-units (`Division of…`, `… Branch`, `Center for…`) fill Name 2+.
+- A **bare location fragment** that is neither an address nor an org (e.g. "Queens Campus") goes to the next empty **street** slot, not a Name field.
+- **Overflow is flagged, never silently dropped** — when org segments exceed the four Name slots (or location fragments exceed the street slots), a `name-slots-full` / `street-slots-full` flag is raised, which the orchestrator turns into `flag_for_review` with a reason.
+
+#### Address Sub-Location Extraction (Floor / Room / c-o)
+
+The address stage (`enrichment/address_processing.py`) pulls sub-locations out of street values into their own fields:
+
+- **Floor** — both `Floor 3` (marker-before-value) and `7th Floor` / `22nd Floor` (value-before-marker) are parsed → `floor`, and the orphan is no longer left dangling in the street.
+- **Room** — `Room 12`, `Rm. 5`, `Room number: F107`, `Room No. 3`, `Room #4` (filler words `number`/`No.`/`#`/`:` are skipped) → `room`.
+- **c/o and Attn** — the capture stops at the start of a street address, so `Att. Bayard Huck 200 Clarendon Street 22nd Floor` → `care_of` = `Bayard Huck`, Street 1 = `200 Clarendon St`, `floor` = `22` (rather than swallowing the whole thing into `care_of`).
 
 #### UC 12 — Duplicate Name Field Clearing
 
@@ -328,6 +365,10 @@ The scoring system (`_compute_name_score()`) is carefully designed to prevent fa
 
 Some institutions are referenced by an acronym that ROR does **not** carry as an alias — e.g. "HFT Stuttgart" (ROR has no "HFT" alias, so the bare query returns unrelated same-city orgs). A small ROR-local map (`_INSTITUTION_ACRONYMS`, e.g. `HFT → Hochschule für Technik`) drives an **additive** affiliation retry: when the raw name misses, the affiliation endpoint is tried once more with the acronym expanded ("HFT Stuttgart" → "Hochschule für Technik Stuttgart"). It is kept out of the global `expand_abbreviations` map so it never affects search terms or output names, and names that already resolve never reach it. Extend the map as new institution acronyms come up.
 
+#### US State-Abbreviation Expansion (ROR-local)
+
+A US state-name abbreviation in the query is expanded before the ROR lookup (`_expand_state_abbrevs`, `_US_STATE_ABBREVS`): `Fla State Univ` → `Florida State Univ`, `Wash State Univ` → `Washington State Univ`, `Penn State Univ` → `Pennsylvania State Univ`. Without this, the distinctive geographic token is lost and the query `… State University` matches **any** "_ State University" — e.g. `Fla State Univ` was resolving to **Kent State University** (whose only shared tokens are the generic `State`/`University`). Like the acronym map, this is applied **only** when building the ROR affiliation string / query / local rescore — never in the global `expand_abbreviations`, so output names and search terms are untouched. Two-letter postal codes (`FL`, `IN`, `OR`) are intentionally excluded (too collision-prone).
+
 #### Child Matching
 
 Once Tier 1 matches a parent organization, it attempts to match Name2 and Name3 against the ROR **children list** (related organizations of type "child"):
@@ -398,6 +439,24 @@ ROR is the registry for *research institutions* and has no good coverage of ordi
 **Telemetry:** `lei_attempts`, `lei_hits_exact`, `lei_hits_fuzzy`, `lei_misses`, `lei_errors`, and `tier1_lei_count` in the batch `summary`.
 
 **Caching & TLS:** a module-level `_lei_cache` (keyed on name + country) dedupes calls within a batch, cleared per batch like the ROR cache. The client uses the shared `resolve_tls_verify()` so it survives a TLS-inspecting corporate VPN.
+
+---
+
+### Stage 2b: Person Affiliation Lookup
+
+**File:** `enrichment/person_affiliation.py`
+
+**Trigger:** Name 1 held **only a person's name** (moved to `contact` by [UC 7](#uc-7--contact-person-extraction), leaving Name 1 empty — `PreprocessResult.name1_was_person`). Runs right after preprocessing, **before** Tier 1.
+
+**Why:** the normal tiers need an institution to enrich — Tier 1 (ROR) needs a name, Tier 2A (contact lookup) needs a *known* institution + domain. A record that is just a person name has neither, so without this step the person moves to `contact` and the organisation is never fetched. Fetching the contact's institution + department is a core deliverable.
+
+**How (with hard reliability guards):**
+1. **Propose** — one grounded web lookup: SERP on the person (`"Jane Smith" mit.edu` when the email domain is corporate/edu, else `"Jane Smith" <city, region, country>`), then a single LLM extraction over the result **snippets only** (`PERSON_AFFILIATION_*`) returning `{institution, department, confidence}`. The prompt is grounded — it must return `institution=null` rather than guess from the name alone. `enrichment/person_affiliation.py` never writes any field.
+2. **Confirm** — the proposed institution is verified against **ROR in the record's country**. ROR's country filter rejects a wrong-country match (e.g. an Irish university proposed for a Belfast/GB address).
+3. **Accept** — only on a ROR match: Name 1 = **ROR's official name**, and the **id / domain / website come from ROR** (never a website-resolver guess). Department = a Tier 2A lookup on the *confirmed* domain, falling back to the web-proposed department. `source = "ROR"`, `confidence = "medium"`, and `flag_for_review = True` (reason `"Name 1 inferred from contact's web affiliation — verify (…)"`).
+4. **Fail safe** — no proposal, low confidence, or ROR does not confirm → the contact is kept, Name 1 is left **empty**, and the record is flagged (`"… not confirmed by registry in <country>; manual lookup needed"` or `"… could not be resolved; manual lookup needed"`).
+
+In **all** cases the pipeline **short-circuits after Stage 2b** (Tier 3 never runs for person-only records), so Tier 3 can neither fabricate an institution nor overwrite the ROR-confirmed one. Cost is ~1 SERP + 1 LLM (+ Tier 2A on accept) and is incurred **only** for person-only Name 1 records.
 
 ---
 
@@ -631,14 +690,92 @@ Records are classified as either `research_institution` or `company`. Classifica
 
 ---
 
-## Domain Resolution
+## Website, Domain, Department-Domain & Search-Term Resolution
 
-Each result carries a `domain` field — the registrable domain (e.g. `mit.edu`, `example.co.uk`) for the organization in Name1. It is populated from two sources, in priority order:
+Four related output columns are produced during finalisation. They are distinct and computed by different subsystems:
 
-1. **ROR website** (primary). When Tier 1 matches an ROR record, its declared website link is parsed by `extract_domain()` and written to `domain`. This covers the vast majority of research institutions.
-2. **`source_url` host** (fallback). When ROR didn't match but a successful Tier 2A or Tier 2B run produced a `source_url`, `finalise()` derives the domain from that URL's host. Tier 2A URLs are on-domain by construction (the contact's faculty page); Tier 2B URLs may or may not be on the institution's own site, so use this value cautiously when `source != "ROR"`.
+| Output column | Internal field | What it is | Owner |
+|---|---|---|---|
+| **Domain** | `website_url` | The org's homepage URL (`https://web.mit.edu`) | `website_resolver.py` (Paths A/B/C) + ROR |
+| *(internal, excluded from response)* | `domain` | The registrable domain (`mit.edu`, `example.co.uk`) — feeds search terms and the dept probe | `extract_domain()` |
+| **Department Domain** | `department_domain` | The department's subdomain/URL (`chem.ufl.edu`) | `orchestrator._probe_department_url` |
+| **Search Term 1 / 2** | `search_term_1` / `search_term_2` | Compact search handles for the institution / department | `search_terms.derive_search_terms` |
 
-If neither is available, `domain` is `null`. **Companies resolved via Tier 1 LEI carry `domain = null`** — GLEIF has no website field — unless a later web-search tier supplies one.
+> ⚠️ The public **"Domain"** column carries `website_url` (the homepage). The bare registrable `domain` is internal-only (`api/models.py`). `department_domain` is a separate column, emitted as a full `https://…` URL.
+
+### 1 · Institution website (`website_url`) — Path A / B / C
+
+Resolution follows a strict precedence; the first source that fills `website_url` wins (it is only ever written while empty). All of Paths B/C live in `enrichment/website_resolver.py`, driven by `orchestrator._maybe_resolve_website_bc` (which returns early if `website_url` is already set — so ROR always wins — or if Name 1 is blank).
+
+**Path A — ROR (highest precedence).** When Tier 1 matches, ROR's first `links[]` entry of `type == "website"` becomes `website_url`, and `extract_domain()` of it becomes `domain`. The person-affiliation path (Stage 2b) does the same after a ROR-confirmed match. For companies matched via GLEIF/LEI, ROR's website/domain survive — LEI has no website field, and can overwrite `name1` but never the domain.
+
+**Path B — SERP resolution** (`resolve_website_via_serp`, any record type):
+- **Query.** `"{name1}" official website` plus geo — research institutions append the country; companies/unknown append `city state` (else country, else nothing). `num_results = 10`.
+- **Valid filter.** Each result must (a) be a real `http(s)://` URL, (b) not be on the `DOMAIN_BLACKLIST` (wikipedia, linkedin, facebook, twitter/x, instagram, youtube, ratemyprofessors, glassdoor, yelp, bbb, crunchbase, bloomberg, indeed, ziprecruiter — host or subdomain), and (c) pass **name-overlap** (a ≥4-char significant Name-1 token appears in the URL or title).
+- **Ranking (both branches — §7b).** Every valid candidate is ranked 0/1/2:
+  - **2** — a *distinctive* Name-1 token (not on the generic blocklist) is in the **host**, with no foreign-brand label. Clean match.
+  - **1** — host match but a foreign-brand label is introduced (`siemens-healthineers.com` for "Siemens AG"). Sub-brand.
+  - **0** — the name only overlaps the **title**, not the host → **rejected** (defers to Path C). This is how `scup.org` for "Bayfront Research" is now blocked.
+  - **Distinctive-token requirement (§7a).** Generic industry words (`research, therapeutics, diagnostics, medical, sciences, laboratories, technologies, solutions, systems, group, holdings, international, global, pharma, bio, biotech, health, services, consulting, partners, associates`, …) do **not** count as a host match on their own — mirrors ROR's upstream distinctive-token guard.
+  - **Acronym-in-host (research institutions only).** An institution whose host is its acronym (`fit.edu` ↔ "Florida Institute of Technology", `mit.edu` ↔ "MIT") counts as a host match even without a name word in the host, so acronym-domain institutions still resolve while `scup.org` (≠ "BR") is rejected.
+- **Confidence (§7c).** Company rank 2 → `high`, rank 1 → `low`. For research institutions, an authoritative TLD (`.edu`/`.gov`/`.org`) grants `high` **only** with a clean (rank-2) host match — a bare `.org` never grants high confidence on its own.
+- **Unquoted retry (§8).** If the exact-phrase query yields no valid candidate, one **unquoted** retry runs (`{name1} official website …`) — a site that brands itself slightly differently ("…Laboratories" vs input "…Labs") is then reachable. One retry maximum, only on a first-pass miss. Both attempts are logged in the `WEBSITE_TRACE` output (`attempt: "quoted" | "unquoted_retry"`).
+
+**Path C — LLM inference** (`infer_website_via_llm`, only when Path B found nothing). One LLM call with Name 1 + city/state/country; `""/null/none/unknown/n-a` are treated as no result; the URL shape is validated. Always returned `low` confidence.
+
+**Confidence → write/flag semantics.** `high` → write `website_url`, no flag. `low` → write + `flag_for_review` ("resolved by SERP with low confidence — verify" / "inferred by LLM — verify"). `none` → leave empty.
+
+**`WEBSITE_TRACE` diagnostic** (`config.WEBSITE_TRACE`, default off). When on, `resolve_website_via_serp` / `infer_website_via_llm` emit one structured JSON line per attempt on the `enrichment.trace.website` logger — per-candidate `rejected_by` (`url_shape`/`blacklist`/`name_overlap`/`rank_0`), matched token, foreign label, rank, chosen, confidence, and the outcome. Read-only: it never changes resolution. Driver script: `scripts/trace_website.py` (six records, writes `logs/website_trace.json`).
+
+### 2 · Registrable `domain` (internal)
+
+`domain` is filled, first-non-empty-wins: **ROR** (`extract_domain` of ROR's website, during Tier 1) → **website-derived** (`extract_domain(website_url)` right after Paths B/C) → **`source_url`-derived** (from a Tier 2A/2B faculty page, in `finalise`). A website- or source-derived domain never overwrites a ROR domain. Companies resolved via LEI carry `domain = null` unless a web tier supplies a website.
+
+### 3 · `department_domain` — the department probe
+
+Resolved by `orchestrator._probe_department_url` (writes `result["department_domain"]` directly; never touches `website_url`). Runs on every return path.
+
+**Preconditions (all must hold, else `None`):** `record_type == "research_institution"`; `department_domain` not already set; the institution **`domain`** (base) is present; a usable Name 2 that is **not** an admin desk (`is_admin_unit` — §5a, skipped before any fetch/SERP), **not** an address/location fragment, and **not** a granular unit (lab/group/core/facility); and at least one significant token or acronym derives from the cleaned Name 2.
+
+**Base resolution (§5e/§5f).** Before the stages run, the base host is resolved once (cached per batch): the institution website's redirect chain is followed once (`PageFetcher.resolve_final_url`) so a stale ROR site is corrected (`dur.ac.uk` → `durham.ac.uk`, §5f); and when the institution host is itself a subdomain the **full host** is used (`gc.cuny.edu`, so `site:gc.cuny.edu` doesn't leak other CUNY campuses, §5e). `www.`/`web.` prefixes are stripped (`web.mit.edu` → base `mit.edu`).
+
+**Stages (first verified winner short-circuits):**
+0. **Constructed subdomain** — build prefixes (acronym if 2–6 chars; the two longest ≥4-char tokens; plus their 4/3-char prefixes, `chem`←`chemistry`), form `{prefix}.{base}`, fetch concurrently, first that verifies wins.
+1. **Homepage link scrape** — fetch the homepage, score outgoing off-base links, verify the top few.
+2. **Site-restricted SERP** — `"{cleaned} site:{base}"` (`num_results=5`), score → top-5 → verify.
+2b. **On-domain path page** (reuses stage-2 results, no new SERP) — for departments hosted at a *path* (`clas.ufl.edu/chemistry`). Candidates whose path is non-department content (**§5b** generic-path blocklist: `news, news-events, events, story, article, blog, calendar, archive, colloquium, seminar, …`) are dropped; the rest are ranked by **canonicality (§5c)** — a shallow landing page beats a deep, dated (`/2020/`), or sub-page (`/undergrad`, `/people`, `/faculty`, …) URL — then verified best-first. Stores the full URL.
+3. **Cross-domain SERP** (`DEPT_PROBE_CROSS_DOMAIN`, **default `false` — §6**) — `"{cleaned} {name1}"`; skips third-party hosts; first verified host wins (`hopkinsmedicine.org` for a JHU dept). A second, unrestricted SERP call; enable only for split-domain academic medical centres.
+
+**Scoring — `_score_dept_candidate`** (host-based stages). `needles = tokens ∪ {acronym}`. `first_seg` (the subdomain prefix) is dropped if it's a generic admin host, and **must** match a needle (`_seg_matches_needle`: substring or shared ≥3-char leading prefix, `chem`↔`chemistry`), else score 0 — path/title matches alone are never enough. Base `3` for the host match, `+1` for a needle in a **non-generic** path (§5b) minus its canonicality penalty (§5c), `+1` for a needle in the title.
+
+**Verification — `_verify_candidate_url` (§5d).** Fetches the page; passes if the cleaned phrase appears verbatim, or ≥2 needles match (≥1 for a single needle). A needle matches a page word via `_seg_matches_needle` **or** a ≥5-char common prefix — so `physics.nist.gov` ("Physical Measurement Laboratory") verifies for a Physics query, while `science.mit.edu` still fails a Computer Science query. (`_seg_matches_needle` alone uses full-prefix and does not bridge `physics`↔`physical`; the common-prefix rule covers that.)
+
+**Output.** Bare-host winners are stored as `chem.ufl.edu`; stage-2b path winners as a full URL. In `finalise` — **after** search terms are derived (they need the bare host) — a bare host is prefixed to `https://chem.ufl.edu`.
+
+### 4 · Search terms (`search_term_1`, `search_term_2`)
+
+Computed by `search_terms.derive_search_terms(result)` once in `finalise`. `search_term_1` mirrors Name 1 (institution); `search_term_2` mirrors Name 2 (department). Both pass a **terminal normalisation (§4)**: trim → collapse internal whitespace → uppercase → truncate to **32 chars** on a word boundary (SAP SORT1/SORT2 width).
+
+**`search_term_1` chain** (first non-empty wins):
+1. **ROR acronym, currency-checked (§2).** ROR may carry several acronym entries (current + historical); the one whose letters are the initials of the *current* official name is chosen (`NIST` ✓, `NBS` ✗ for "National Institute of Standards and Technology"). If none matches, no ROR acronym.
+2. **`strip_tld(domain)`** verbatim — hyphens kept (`uni-tuebingen.de` → `UNI-TUEBINGEN`).
+3. **Required handle**, but only when Name 1 is **usable** — non-blank **and** not an unresolved person (`_name1_was_person`; a Stage-2b-resolved affiliation that now holds an institution *is* usable): the original SAP Search Term 1, else the first two significant words of Name 1 (legal suffixes dropped, so `Verdox, Inc.` → `VERDOX`; `Silverline Biotech` → `SILVERLINE BIOTECH`).
+4. `None`.
+
+`derive_acronym` was **removed** from this chain (§1) — it produced initials with no corroborating evidence (`VI`, `SB`, `JFF`). It remains for internal use by the department probe.
+
+**`search_term_2` chain** (first non-empty wins):
+0. **`ADMIN`** — if Name 2 is an administrative desk (`is_admin_unit`: accounts payable/receivable, finance, billing, invoicing, purchasing, procurement, controlling, treasury, bursar, comptroller, general accounting, shared services — English only). `Office of Research` is **not** admin → resolves to `RESEARCH`.
+1. **Subdomain acronym** — the `department_domain` subdomain prefix, only when it genuinely is an acronym: 2–6 chars, not a leading prefix of any Name 2 token, and its letters match the initials of Name 2's significant words (`eecs.mit.edu` + "Electrical Engineering and Computer Science" → `EECS`; `chem.ufl.edu` + "Chemistry" → rejected as a truncated word → falls through to `CHEMISTRY`).
+2. **Name 2 phrase** — `clean_name2_phrase` (strip `Department of`, `School of`, … prefix and unit suffix), then **fill to 32 chars** on a word boundary (`Earth and Planetary Sciences` → `EARTH PLANETARY SCIENCES`; `Organic Process Chemistry and Analytical Technology Development` → `ORGANIC PROCESS CHEMISTRY`).
+3. **Department-domain host** — subdomain prefix, else TLD-stripped host.
+4. `None`.
+
+> This **inverts** the old precedence — Name 2 text now beats the department-domain host, which had produced junk handles (`scrippscollege`, `leuphana`, `uwm`).
+
+**Field-content guards on Name 2.** If UC 11 flagged Name 2 as a **DBA** trade name, or Name 2 is an **institution** in the department slot (`looks_like_research_institution` and not a unit phrase → probable field swap, e.g. `John F Florek` / `Tufts University`), Name 2 is not used for a handle (the field swap also sets `flag_for_review`).
+
+**Name-1 standardisation on a kept ROR name.** When Tier 1 matches but the identity guard keeps *your* Name 1 over ROR's divergent official form (e.g. ROR's German `Hochschule für Technik Stuttgart` vs input `Stuttgart Univ of Applied Sciences`), the kept name is still run through `clean_passthrough_org_name` — so `Univ` → `University` and ALL-CAPS is title-cased, exactly as a ROR-miss passthrough is cleaned.
 
 ---
 
@@ -948,6 +1085,12 @@ Same clustering as `/api/dedup/cluster-block`, but accepts an `.xlsx`/`.xlsm` up
 ### POST /api/dedup/score and /api/dedup/score/file
 
 Deterministic golden-record election over the clustered rows (no LLM). Each duplicate cluster elects a proposed winner; losers point at it. A merge is demoted to `manual_review` when clustering already flagged it uncertain, when every member is blocked, or when the adjudication confidence is below `CONFIDENCE_MERGE_THRESHOLD` (default `0.95`, env-overridable — a pure data retune that never re-runs the LLM). A `manual_review` row leaves `is_golden_record`/`golden_record_id` **empty** in the file; its computed winner survives in `proposed_golden_id`.
+
+**Identical columns, two transports.** The JSON `/api/dedup/score` endpoint and the XLSX `/api/dedup/score/file` endpoint are functionally identical and use the **exact same column names**, so a caller can move between them without remapping fields:
+
+- **Input columns** (both) — `Customer`, `Cluster ID`, `Routing`, `Confidence`, `Reasoning`, `Sales_Order_Last_Used`, `Sales_Order_Total_Count`, `Sales_Order_Partner_Last_Used`, `Sales_Order_Partner_Total_Count`, `Equipment_Total_Count`, `SleepingCustomer`, `CustomerStatus`, `Account group`, `Company_Code_Consolidated`, `Sales_Org_Consolidated`, and the eight flat Salesforce id columns `sf1`…`sf8` (`sf1` = Biosystems, `sf2` = AXS, `sf3`…`sf8`). The JSON body accepts these exact keys; snake_case names (`row_id`, `last_order_year`, …) and a legacy `salesforce_ids` list still validate for backward compatibility (`populate_by_name`).
+- **Output columns** (both) — `score_final` (total) and the eleven per-criterion point columns (`score_SalesOrderLastUsed`, `score_SalesOrderCount`, `score_SalesOrderPartnerLastUsed`, `score_SalesOrderPartnerCount`, `score_EquipmentCount`, `score_SleepingCustomer`, `score_CustomerStatus`, `score_AccountGroup`, `score_CompanyCodeCount`, `score_CombinedPresence`, `score_SalesforceInstances`), the derived counts `Company_Code_Count` / `Sales_Org_Count` / `Salesforce_Instance_Count`, and the election columns `is_golden_record`, `golden_record_id`, `proposed_golden_id`, `election_status`, `approval_status`, `scored_with_weights_version`. The JSON serializes these exact keys (the per-criterion points, exposed as a `score_breakdown` dict internally, are flattened to the `score_*` columns on output).
+- **Weights override** (both) — a caller may supply a custom weights table (same structure as `dedup/weights.json`): the file endpoint reads it from an optional `Weights` sheet, and the JSON endpoint accepts an optional `weights` object in the request body. Both use the same all-or-nothing rule (`coerce_weights`): a valid override applies wholesale; a malformed one is ignored wholesale with a warning in `summary.warnings` (never a hard error). Omit it to use `dedup/weights.json`.
 
 Both endpoints emit a **potential-inconsistency list** (the reviewer feedback loop): the file gets a second `Issues` sheet (`row_id, cluster_id, issue_type, detail`; the `Weights` sheet and all originals are preserved), and the JSON response returns the same list under `issues`. Issue types: `low_confidence_merge`, `verdict_contradiction`, `all_blocked_cluster`, `tiebreak_decided`, `empty_scoring_payload`, `count_suppressed_by_recency` (a sales-order count zeroed by the G1 recency gate), `candidate_cap_exceeded` (a block routed to manual_review for blowing the residue-candidate cap), and a reserved `missing_building_inconsistency`.
 
@@ -1299,11 +1442,11 @@ The heart of the system. The `Orchestrator` class coordinates the full pipeline 
 
 ### `enrichment/preprocess.py` — Deterministic Cleanup
 
-Pattern-matching engine for UC 6-10. Runs before any network call. Returns `PreprocessResult` with cleaned fields and tracking of which use cases fired.
+Pattern-matching engine for UC 6-12. Runs before any network call. Returns `PreprocessResult` with cleaned fields and tracking of which use cases fired. Also handles: contact-person extraction (incl. credentialed/`Last, First` normalisation and the `name1_was_person` signal), Name 1 acronym/full-form dedupe (`_strip_redundant_acronym`), and routing organisation/department content out of street fields into the Name block (`_split_pipe_street`, `_split_comma_street`, `_street_is_org_name`, `_street_is_department`) with institution→Name 1 ordering and `name-slots-full` overflow flagging.
 
 ### `enrichment/tier1_ror.py` — ROR Client
 
-Async ROR API client with hybrid lookup (affiliation + query), sophisticated name scoring with distinctive-token guards, legal-form suffix normalization, an identifier-acronym guard, local child matching, and organization type extraction for classification. Includes `_INSTITUTION_ACRONYMS` + an additive acronym-expanded affiliation retry (e.g. "HFT Stuttgart" → "Hochschule für Technik Stuttgart"). Uses `resolve_tls_verify()` for corporate-VPN TLS.
+Async ROR API client with hybrid lookup (affiliation + query), sophisticated name scoring with distinctive-token guards, legal-form suffix normalization, an identifier-acronym guard, local child matching, and organization type extraction for classification. Includes `_INSTITUTION_ACRONYMS` + an additive acronym-expanded affiliation retry (e.g. "HFT Stuttgart" → "Hochschule für Technik Stuttgart"), and `_US_STATE_ABBREVS` state-abbreviation expansion applied ROR-locally to the query ("Fla State Univ" → "Florida State Univ", so it resolves to Florida State rather than Kent State). Uses `resolve_tls_verify()` for corporate-VPN TLS.
 
 ### `enrichment/tier1_lei.py` — GLEIF / LEI Client (company Tier 1)
 
@@ -1325,6 +1468,10 @@ Single LLM call to normalize department names to official wording. No web search
 
 Last-resort LLM call using all available fields. Always flagged for review. High/medium confidence suggestions are written; low confidence preserves originals.
 
+### `enrichment/person_affiliation.py` — Person Affiliation Lookup
+
+`run_person_affiliation`: when Name 1 held only a person's name, PROPOSES the institution + department from web-search snippets (one SERP + one grounded LLM extraction). It only proposes — the orchestrator ([Stage 2b](#stage-2b-person-affiliation-lookup)) confirms the institution against ROR in the record's country and uses ROR's official name/domain before writing anything; otherwise the record is flagged for a manual lookup. Never fabricates.
+
 ### `enrichment/company_canonical.py` — Company Canonicalization
 
 Specializes in normalizing company names with geographic context. Used when Tier 1 misses and the record doesn't look like a research institution.
@@ -1332,6 +1479,14 @@ Specializes in normalizing company names with geographic context. Used when Tier
 ### `enrichment/overflow_check.py` — Overflow Detection
 
 LLM-based check for Name1+Name2 being a single split organization name. Early-exit mechanism that prevents mis-enrichment of overflow records.
+
+### `enrichment/website_resolver.py` — Website Resolution (Paths B/C)
+
+`resolve_website_via_serp` (Path B — SERP, with the distinctive/acronym-in-host ranking, generic-token guard, TLD-needs-host-match confidence rule, and the unquoted retry) and `infer_website_via_llm` (Path C — LLM fallback). `select_website_from_serp` holds the pure ranking logic; `_assemble_path_b_trace` builds the read-only `WEBSITE_TRACE` diagnostic. Path A (ROR's `links[]` website) is handled inline in the orchestrator. See [Website, Domain, Department-Domain & Search-Term Resolution](#website-domain-department-domain--search-term-resolution).
+
+### `enrichment/search_terms.py` — Search-Term Derivation
+
+`derive_search_terms(result)` computes `search_term_1` (institution) and `search_term_2` (department) and applies terminal normalisation (uppercase, trimmed, ≤32 chars on a word boundary). Also exposes the shared helpers `strip_tld`, `clean_name2_phrase`, `extract_dept_core`, `derive_acronym`, and `_dept_domain_to_search_term`. See [Website, Domain, Department-Domain & Search-Term Resolution](#website-domain-department-domain--search-term-resolution).
 
 ### `enrichment/confidence.py` — Scoring and Flags
 
@@ -1401,7 +1556,7 @@ Free search fallback using the `duckduckgo-search` library. No API key required.
 
 ### `search/page_fetcher.py` — Page Fetcher
 
-HTTP page fetcher with BeautifulSoup parsing. Extracts structured elements: URL path, page title, H1, breadcrumb navigation, and truncated body text. Detects breadcrumbs via `aria-label`, `role="navigation"`, and class patterns. User-Agent: "BrukerMDM-Enrichment/1.0".
+HTTP page fetcher with BeautifulSoup parsing. Extracts structured elements: URL path, page title, H1, breadcrumb navigation, and truncated body text. Detects breadcrumbs via `aria-label`, `role="navigation"`, and class patterns. `resolve_final_url()` follows a URL's redirect chain once (HEAD, GET fallback) so the department probe can key off the live host (`dur.ac.uk` → `durham.ac.uk`). User-Agent: "BrukerMDM-Enrichment/1.0".
 
 ### `utils/text_utils.py` — Text Utilities
 
@@ -1412,10 +1567,15 @@ HTTP page fetcher with BeautifulSoup parsing. Extracts structured elements: URL 
 - `looks_like_research_institution()`: Keyword-based fallback classification
 - `extract_domain()`: URL -> registrable domain (handles two-part TLDs)
 - `score_search_result()`: Heuristic scoring for people/faculty page detection
+- `name_initials()` / `acronym_matches_name()`: initials of a name; whether an acronym matches them (ROR acronym currency check + subdomain-acronym search term)
+- `seg_matches_needle()`: host/subdomain-vs-token match (substring or shared ≥3-char leading prefix) — shared by the department probe and the search-term rules
+- `is_admin_unit()`: detects administrative / back-office desks (accounts payable, finance, billing, procurement, treasury, …) — drives `search_term_2 = "ADMIN"` and department-probe suppression
+- `clean_passthrough_org_name()`: title-cases ALL-CAPS + expands abbreviations for names that pass through un-canonicalised (and for a ROR name kept over a divergent official form)
+- `smart_title_case()`: ALL-CAPS → title case while preserving acronyms (`MRI`, `NIST`, `UCSF`), `Mc` surnames, and hyphen segments
 
 ### `utils/cache.py` — Batch Cache
 
-Per-batch in-memory cache with separate ROR and SERP namespaces. Keyed on lowercased query strings. Prevents duplicate API calls within a single batch. Created fresh for each `/enrich` request.
+Per-batch in-memory cache with separate ROR, SERP, and resolved-host namespaces (`get/set_resolved_host` caches the department probe's redirect-resolved base so it costs one request per institution). Keyed on lowercased strings. Prevents duplicate API calls within a single batch. Created fresh for each `/enrich` request. An optional process-level `SerpCache` lets overlapping SERP queries reuse results across batches.
 
 ---
 
@@ -1467,13 +1627,16 @@ Copy `.env.example` to `.env` and configure:
 | `TOKEN_CANDIDATE_THRESHOLD` | `0.6` | Residue nomination: token-set Jaccard overlap to nominate a pair |
 | `MAX_CANDIDATES_PER_BLOCK` | `50` | Residue nomination: over this many candidate pairs, the block routes to `manual_review` |
 | `SERPAPI_KEY` | *(none)* | SerpAPI key; if absent, DuckDuckGo is used |
+| `DEPT_PROBE_CROSS_DOMAIN` | `false` | Department probe stage 3 (unrestricted cross-domain SERP). Off by default — one SERP call per unresolved department. Enable for split-domain academic medical centres (e.g. `hopkinsmedicine.org`) at the cost of a second SERP call and off-domain-result risk |
+| `WEBSITE_TRACE` | `false` | Diagnostic-only: emit a per-candidate JSON trace of Path B / Path C website resolution on the `enrichment.trace.website` logger. No behaviour change |
 | `MOCK_EXTERNAL_CALLS` | `false` | Use mock clients (no real API calls) |
 | `ENV` | `production` | Set to `local` for development (enables dotenv loading) |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
+| `LOG_FILE` | `logs/enrichment_api.log` | Log file path. Records go to **both** the console and this rotating file (~10 MB, 5 backups); uvicorn access/error lines are captured too. Set `LOG_FILE=` (empty) for console-only |
 
 ### Azure OpenAI / AI Foundry (Phase 1)
 
-The same Azure credentials are used locally and in production — the only difference is delivery: a local `.env` file versus **Azure Application Settings** in the deployed Function App. The client is `AsyncAzureOpenAI`, constructed in `llm/openai_client.py::get_openai_client`; its TLS `verify` is resolved by `resolve_tls_verify()` (corporate CA bundle → certifi), the same helper now used by the ROR and GLEIF clients. See [TLS and Corporate VPN](#tls-and-corporate-vpn).
+Azure OpenAI is the **only** LLM backend, in every environment — there is no direct-OpenAI / "local" path (a legacy `OPENAI_API_KEY` / `OPENAI_MODEL=gpt-4o` pair was dead config and has been removed). The same Azure credentials are used locally and in production — the only difference is delivery: a local `.env` file versus **Azure Application Settings** in the deployed Function App. The client is `AsyncAzureOpenAI`, constructed in `llm/openai_client.py::get_openai_client`; its TLS `verify` is resolved by `resolve_tls_verify()` (corporate CA bundle → certifi), the same helper now used by the ROR and GLEIF clients. See [TLS and Corporate VPN](#tls-and-corporate-vpn).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -1815,6 +1978,34 @@ RETURN EnrichmentResponse (JSON)
 ---
 
 ## Changelog
+
+### Search terms, website / domain / department-domain resolution (newest)
+
+Full detail in [Website, Domain, Department-Domain & Search-Term Resolution](#website-domain-department-domain--search-term-resolution).
+
+- **Search Term 1 rewrite** — chain is now ROR-acronym → `strip_tld(domain)` → required handle (SAP term, else Name-1 words with legal suffixes dropped) → `None`. `derive_acronym` was **removed** from ST1 (it produced evidence-free initials `VI`/`SB`/`JFF`). The required handle is emitted **only when Name 1 is usable** — non-blank *and* not an unresolved person (`_name1_was_person` propagated from UC 7) — so a blank row no longer ships its passthrough SAP term and a person row emits `None`. Tests `test_search_terms_fixes.py`.
+- **ROR acronym currency selection** — ROR may carry several `acronym` entries (current + historical); `_extract_org_fields` now selects the one whose letters are the initials of the *current* official name (`NIST` ✓ / `NBS` ✗), else none. `name_initials` / `acronym_matches_name` added to `text_utils`.
+- **Search Term 2 rewrite** — chain is `ADMIN` (admin desk via `is_admin_unit`) → subdomain acronym (only when genuinely an acronym) → **Name 2 phrase filled to 32 chars** → department-domain host → `None`. This **inverts** the old precedence (Name 2 text now beats the department-domain host, which had produced `scrippscollege`/`leuphana`/`uwm`). Guards: a UC 11 **DBA** trade name and an **institution in the Name 2 slot** (probable field swap → `flag_for_review`) are not used for a handle.
+- **Terminal normalisation** — both search terms are trimmed, internal-whitespace-collapsed, uppercased, and truncated to **32 chars** on a word boundary (SAP SORT1/SORT2 width).
+- **Website Path B guards (§7)** — a *distinctive* (non-generic) Name-1 token must appear in the **host** (or, for research institutions, the acronym — `fit.edu` ↔ "Florida Institute of Technology"); both branches now rank 0/1/2 and **reject rank 0** (title-only matches like `scup.org` for "Bayfront Research"); an authoritative TLD grants `high` **only** with a clean host match. Tests `test_website_resolver.py::TestPathBGuards`.
+- **Website Path B retrieval (§8)** — `num_results` 5 → 10, plus one **unquoted retry** when the exact-phrase query finds nothing (recovers `Atlantic Testing Labs` → `atlantictesting.com`, `Fine Organics Limited` → `fineorganics.com`). Logged in `WEBSITE_TRACE`. Tests `TestPathBRetry`.
+- **Department probe fixes (§5)** — admin rows skip the probe entirely (`is_admin_unit`, no fetch/SERP); the generic blocklist now applies to **path segments** (`news`/`events`/`archive`) and paths are ranked by canonicality (shallow landing page beats deep/dated/sub-page); verification accepts **morphological variants** (`physics.nist.gov` ↔ "Physical Measurement Laboratory") while still rejecting `science.mit.edu` for a Computer Science query; the base is **subdomain-aware** (`gc.cuny.edu`) and **redirect-resolved** (`dur.ac.uk` → `durham.ac.uk`, one HEAD per institution, cached per batch). Tests `test_dept_domain_probe.py`.
+- **`DEPT_PROBE_CROSS_DOMAIN` default → `false`** (§6) — matches the documented intent; the unrestricted cross-domain stage-3 SERP is now opt-in.
+- **`WEBSITE_TRACE` diagnostic flag** — off by default; when on, emits a read-only per-candidate JSON trace of Path B/C resolution on `enrichment.trace.website`. Driver: `scripts/trace_website.py`. Tests `TestWebsiteTraceFlag`.
+- **Dead code removed** — `search_terms.derive_department_domain` (superseded by `_probe_department_url`) and its test.
+- **Name 1 standardised when a ROR name is kept** — when Tier 1 matches but the identity guard keeps *your* Name 1 over ROR's divergent official form (ROR's German `Hochschule für Technik Stuttgart` vs input `Stuttgart Univ of Applied Sciences`), the kept name now runs through `clean_passthrough_org_name` (`Univ` → `University`, ALL-CAPS → title case). Tests `test_ror_name_verbatim.py`.
+
+### Name / address routing, person affiliation & scoring column contract
+
+- **Person in Name 1 → Contact + affiliation lookup** — UC 7 now moves more person formats out of Name 1 to `contact`: ALL-CAPS names (case-insensitive, title-cased, `Mc`/hyphen preserved), title + credentials (`Dr. Jane Smith, PhD`), `Last, First` (reordered to `John Smith`), and `Name, credentials` / `Name MD` (surfaced to the LLM classifier via a normalised candidate). When the person was the whole of Name 1, Stage 2b (`enrichment/person_affiliation.py`) discovers the institution + department from the web and **confirms it against ROR in the record's country** before writing anything — Name 1/id/domain come from ROR, the department from a Tier 2A lookup on the confirmed domain, everything flagged `verify`. A wrong-country or unconfirmed proposal is rejected (Name 1 stays empty, flagged for manual lookup), and Tier 3 is always short-circuited so it can never fabricate or overwrite. See [Stage 2b](#stage-2b-person-affiliation-lookup). Tests `test_person_in_name1.py`, `test_person_affiliation.py`, `test_person_affiliation_guard.py`, `test_person_in_name1_flag.py`.
+- **Organisation/department content in a street field → Name block** — a pipe-delimited org hierarchy (`Dept | Div | … | U.S. FDA | 5100 Paint Branch Pkwy`) or a comma-delimited mix of org + address (incl. **German streets** like `Scharnhorststraße 1`) is split: org/department segments go to the Name fields, the address stays in the street. The **institution** always takes Name 1; sub-units fill Name 2+; a bare location fragment ("Queens Campus") goes to the next street slot. Guarded so a plain address is never split. Overflow raises `name-slots-full` / `street-slots-full` → `flag_for_review` (never a silent drop). "Accounts Payable" in a street field routes to Name 2. Tests `test_street_org_split.py`.
+- **Street reduced to one line — full scope table** (items 3 & 4) — the late `process_address` stage now reduces a mixed street to a single main street line, routing every other segment to its own field: **Building** (named buildings too — `Aster House`, `Polaris House`, `The Sherard Bldg`, `Emerging Technologies Building`; a *second* building → next free street slot), **Floor** (bare ordinal `7th`), **Room** (`A104`, `Lab 576`), **Mail Stop** (`Campus Box 7212`), **Mail Code** (`3120 TAMU`), **Care Of** (per-segment, incl. the misspelled `Atnn:`), campus/science-park → next street slot, and city/region/postcode already in their own fields → dropped. The pipe splitter is no longer inverted: each pipe segment is classified individually, only org/dept routes to a Name (acronym-deduped), and the source street is cleaned (`|` dropped). A functional desk (`Finance/Procurement`) routes to a Name. Preprocessing owns the street values end-to-end (`_pp_streets`), so a slot it empties never reappears from the raw original. Tests `test_street_scope_table.py`, `test_street_scope_routing.py`, `test_pipe_splitter_inversion.py`, `test_person_org_in_street.py`.
+- **Name 1 acronym/full-form dedupe** — when Name 1 carries both an acronym and its expansion (`MIT Massachusetts Institute of Technology`, `… (MIT)`, `MIT (…)`, and dash forms like `MRC - Medical Research Council`), only the verified full form is kept; unrelated tokens (`UC Berkeley`, `3M Company`, `AT&T`) are untouched. University acronyms (`UCSF`, `UCLA`, `SUNY`, …) keep their casing. Tests `test_acronym_dedupe.py`, `test_smart_title_case.py`.
+- **Address sub-location fixes** ([address_processing.py](enrichment/address_processing.py)) — value-before-marker floors (`7th Floor`, `22nd Floor`) now populate `floor`; `Room number: F107` / `Room No. 3` now populate `room` (filler words skipped); a `c/o` / `Attn` capture stops at the start of a street address so `Att. Bayard Huck 200 Clarendon Street 22nd Floor` splits into contact + street + floor. Tests `test_address_cleanup.py`.
+- **ROR US state-abbreviation expansion** — `Fla State Univ` was resolving to **Kent State University** (only the generic `State`/`University` tokens matched). A ROR-local `_US_STATE_ABBREVS` map now expands the state abbreviation for the ROR query only (`Fla` → `Florida`), so it resolves to Florida State. Kept out of the global `expand_abbreviations`. Test `test_ror_state_abbrev.py`. See [US State-Abbreviation Expansion](#us-state-abbreviation-expansion-ror-local).
+- **`/api/dedup/score` ↔ `/api/dedup/score/file` column contract** — the JSON and XLSX scoring endpoints are now functionally identical and use the **exact same input/output column names** (`Customer`, `Sales_Order_Last_Used`, `score_final`, the `score_*` point columns, `sf1`…`sf8`, the derived `*_Count` columns, …). The JSON `/score` endpoint gained an optional `weights` override (same all-or-nothing semantics as the file's `Weights` sheet) and the derived-count outputs; Salesforce ids are eight flat `sf1`…`sf8` columns instead of a list. snake_case keys still validate for backward compatibility. See [POST /api/dedup/score](#post-apidedupscore-and-apidedupscorefile).
+- **File logging** — logs now write to **both** the console and a rotating file (`LOG_FILE`, default `logs/enrichment_api.log`, ~10 MB × 5 backups), including uvicorn access/error lines. See [Configuration](#optional-with-defaults).
+- **Azure-only LLM backend** — the dead direct-OpenAI config (`OPENAI_API_KEY` / `OPENAI_MODEL=gpt-4o`) was removed; Azure OpenAI is the only backend in every environment (the `openai_client.py` docstring was corrected).
 
 ### Phase 1 — Tier 1 LEI (GLEIF) company lookup (new)
 

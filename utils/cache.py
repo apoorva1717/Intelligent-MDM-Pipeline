@@ -57,6 +57,18 @@ class BatchCache:
         self._ror: dict[str, Any] = {}
         self._serp: dict[str, Any] = {}
         self._shared_serp = shared_serp
+        # Per-batch cache of a resolved institution host (redirect-followed /
+        # subdomain-aware) so the department probe costs one resolution per
+        # institution, not one per stage.
+        self._resolved_host: dict[str, str] = {}
+
+    # -- Resolved institution host (department probe base) --------------------
+
+    def get_resolved_host(self, key: str) -> str | None:
+        return self._resolved_host.get((key or "").strip().lower())
+
+    def set_resolved_host(self, key: str, value: str) -> None:
+        self._resolved_host[(key or "").strip().lower()] = value
 
     # -- ROR -----------------------------------------------------------------
 

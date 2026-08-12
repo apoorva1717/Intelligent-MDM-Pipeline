@@ -22,7 +22,7 @@ import httpx
 from rapidfuzz import fuzz
 
 from llm.openai_client import resolve_tls_verify
-from utils.text_utils import expand_abbreviations, extract_domain
+from utils.text_utils import acronym_matches_name, expand_abbreviations, extract_domain
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,32 @@ def _expand_institution_acronyms(name: str) -> str:
     def _sub(m: "re.Match[str]") -> str:
         return _INSTITUTION_ACRONYMS.get(m.group(1).lower(), m.group(0))
     return _INSTITUTION_ACRONYM_RE.sub(_sub, name)
+
+
+# US state-name abbreviations (traditional newspaper forms) → full state name.
+# ROR-LOCAL only — applied when building the ROR query so "Fla State Univ"
+# resolves to "Florida State University" (not "Kent State University", whose
+# only shared tokens are the generic "State"/"University"). Kept out of the
+# global expand_abbreviations map so it never touches output names or search
+# terms. Two-letter postal codes are intentionally excluded (too collision-prone).
+_US_STATE_ABBREVS: dict[str, str] = {
+    "fla": "Florida", "calif": "California", "ariz": "Arizona",
+    "colo": "Colorado", "conn": "Connecticut", "tenn": "Tennessee",
+    "wisc": "Wisconsin", "minn": "Minnesota", "okla": "Oklahoma",
+    "nebr": "Nebraska", "mich": "Michigan", "tex": "Texas",
+    "wash": "Washington", "penn": "Pennsylvania", "ill": "Illinois",
+    "ind": "Indiana", "mass": "Massachusetts", "miss": "Mississippi",
+    "ore": "Oregon", "kan": "Kansas", "ark": "Arkansas", "ala": "Alabama",
+}
+_US_STATE_ABBREV_RE = re.compile(r"\b([A-Za-z]{3,5})\b\.?")
+
+
+def _expand_state_abbrevs(name: str) -> str:
+    """Expand a US state-name abbreviation token to its full form
+    ("Fla State Univ" → "Florida State Univ"). ROR-local; token-scoped."""
+    def _sub(m: "re.Match[str]") -> str:
+        return _US_STATE_ABBREVS.get(m.group(1).lower(), m.group(0))
+    return _US_STATE_ABBREV_RE.sub(_sub, name)
 
 
 _DASH_RE = re.compile(r"[\u2010-\u2015\-]+")
@@ -456,13 +482,21 @@ def _extract_org_fields(org: dict[str, Any]) -> dict[str, Any]:
     # company name is cleaner without it.
     display_name = _strip_ror_country_suffix(display_name)
 
+    # ROR may carry SEVERAL acronym entries, including historical ones ("NBS"
+    # for NIST, "PHS" for Mass General Brigham). Take the one whose letters are
+    # the initials of the CURRENT official name; if none match, take no acronym
+    # rather than the first (stale) one.
     acronym = None
-    for name_entry in org_names:
-        if "acronym" in name_entry.get("types", []):
-            value = (name_entry.get("value") or "").strip()
-            if value:
-                acronym = value
-                break
+    acronym_candidates = [
+        (name_entry.get("value") or "").strip()
+        for name_entry in org_names
+        if "acronym" in name_entry.get("types", [])
+        and (name_entry.get("value") or "").strip()
+    ]
+    for cand in acronym_candidates:
+        if acronym_matches_name(cand, display_name):
+            acronym = cand
+            break
 
     website = extract_website_from_ror(org)
     domain = extract_domain(website) if website else None
@@ -538,8 +572,13 @@ async def call_ror(
 
     threshold = float(os.getenv("ROR_CONFIDENCE_THRESHOLD", "0.8"))
 
+    # Expand a US state-name abbreviation for the ROR query only ("Fla State
+    # Univ" → "Florida State Univ"), so the distinctive geographic token
+    # survives and ROR does not fall back to a generic "State University" match.
+    ror_name = _expand_state_abbrevs(name)
+
     # Build a rich affiliation string: "name, city, state, country"
-    aff_parts = [name]
+    aff_parts = [ror_name]
     for part in (city, state, country):
         if part and part.strip():
             aff_parts.append(part.strip())
@@ -643,8 +682,15 @@ async def call_ror(
                 return res
 
             expanded_name = expand_abbreviations(name) or name
+            # Include the state-expanded forms among the rescore names so the
+            # local re-validation of ROR's chosen org uses the distinctive
+            # geographic token too.
+            ror_expanded = expand_abbreviations(ror_name) or ror_name
+            rescore_names = list(dict.fromkeys(
+                [name, expanded_name, ror_name, ror_expanded]
+            ))
             result_a = await _try_affiliation(
-                affiliation_string, [name, expanded_name], "affiliation",
+                affiliation_string, rescore_names, "affiliation",
             )
             if result_a is not None:
                 return result_a
@@ -673,7 +719,9 @@ async def call_ror(
             )
 
             # ── Strategy B: query endpoint with country filter ─────────
-            query_params: dict[str, str] = {"query": name}
+            # Use the state-expanded name so "Fla State Univ" queries as
+            # "Florida State Univ" rather than matching every "State University".
+            query_params: dict[str, str] = {"query": ror_name}
             if country_code:
                 query_params["filter"] = (
                     f"locations.geonames_details.country_code:{country_code}"
@@ -689,7 +737,7 @@ async def call_ror(
                     "ROR query returned 0 items for '%s' with country=%s, retrying without filter",
                     name[:60], country_code,
                 )
-                resp_q = await client.get(base_url, params={"query": name})
+                resp_q = await client.get(base_url, params={"query": ror_name})
                 resp_q.raise_for_status()
                 q_data = resp_q.json()
 
@@ -717,7 +765,7 @@ async def call_ror(
             # 'Stanford University' rather than tying with every other
             # variant that contains 'Stanford'. Prefer exact display
             # name match over mere token-subset matches.
-            expanded_query = expand_abbreviations(name) or name
+            expanded_query = expand_abbreviations(ror_name) or ror_name
             exp_lower = expanded_query.strip().lower()
 
             def _rank_key(item: dict) -> tuple:

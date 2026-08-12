@@ -408,3 +408,173 @@ class TestOrchestratorWebsiteFields:
         response = await orchestrator.enrich_batch([record], default_options)
         result = response.results[0]
         assert result.website_url is None
+
+
+# ---------------------------------------------------------------------------
+# WEBSITE_TRACE diagnostic flag (Step 6 — no behaviour change when off)
+# ---------------------------------------------------------------------------
+
+import json
+import logging
+
+
+class _CollectHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(level=logging.INFO)
+        self.lines: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.lines.append(record.getMessage())
+
+
+class TestWebsiteTraceFlag:
+    def test_defaults_false(self, monkeypatch):
+        # With no WEBSITE_TRACE env var, the setting defaults to False.
+        monkeypatch.delenv("WEBSITE_TRACE", raising=False)
+        assert Settings().website_trace is False
+
+    @pytest.mark.asyncio
+    async def test_no_trace_records_when_off(self):
+        handler = _CollectHandler()
+        trace_log = logging.getLogger("enrichment.trace.website")
+        trace_log.addHandler(handler)
+        try:
+            client = _ListSearchClient([
+                _sr("Acme Co", "https://www.acmeco.com/"),
+            ])
+            # trace defaults to False → no records emitted.
+            res = await resolve_website_via_serp(
+                record_id="OFF", name1="Acme Co",
+                city="Pittsburgh", state="PA", country="US", record_type="company",
+                search_client=client, cache=BatchCache(),
+            )
+            assert res.url == "https://www.acmeco.com"   # behaviour unchanged
+            assert handler.lines == []                    # nothing traced
+        finally:
+            trace_log.removeHandler(handler)
+
+    @pytest.mark.asyncio
+    async def test_trace_records_emitted_when_on(self):
+        handler = _CollectHandler()
+        trace_log = logging.getLogger("enrichment.trace.website")
+        trace_log.setLevel(logging.INFO)
+        trace_log.addHandler(handler)
+        try:
+            client = _ListSearchClient([
+                _sr("Acme Co — Pittsburgh", "https://www.acmeco.com/"),
+            ])
+            await resolve_website_via_serp(
+                record_id="ON", name1="Acme Co",
+                city="Pittsburgh", state="PA", country="US", record_type="company",
+                search_client=client, cache=BatchCache(), trace=True,
+            )
+            assert len(handler.lines) == 1
+            rec = json.loads(handler.lines[0])
+            assert rec["phase"] == "path_b"
+            assert rec["record_id"] == "ON"
+            assert rec["results_returned"] == 1
+            assert rec["candidates"][0]["chosen"] is True
+            assert rec["candidates"][0]["rank"] == 2
+            assert rec["chosen_url"] == "https://www.acmeco.com"
+            assert rec["fell_through_to_path_c"] is False
+        finally:
+            trace_log.removeHandler(handler)
+
+
+# ---------------------------------------------------------------------------
+# §7 Path B guards / §8 retrieval (mocked — assert direction, not live hosts)
+# ---------------------------------------------------------------------------
+
+class TestPathBGuards:
+    def test_generic_token_only_host_not_accepted(self):
+        # "research" is generic; only-generic host match must not validate (§7a).
+        res = select_website_from_serp(
+            "Precision Research",
+            [_sr("Precision Research Inc", "https://researchgate.net/x")],
+            record_type="company",
+        )
+        assert res.url is None
+
+    def test_institution_title_only_rejected(self):
+        # §7b: institution candidate matching only in the title (no host match)
+        # → rank 0 → rejected. "scup.org" ≠ acronym of "Bayfront Research".
+        res = select_website_from_serp(
+            "Bayfront Research",
+            [_sr("Bayfront Research — planning", "https://scup.org/about")],
+            record_type="research_institution",
+        )
+        assert res.url is None
+
+    def test_org_tld_no_host_match_not_high(self):
+        # §7c: an authoritative TLD alone must not grant high confidence.
+        res = select_website_from_serp(
+            "Bayfront Research",
+            [_sr("Bayfront Research", "https://scup.org/")],
+            record_type="research_institution",
+        )
+        assert res.confidence != "high"
+
+    def test_acronym_domain_institution_still_high(self):
+        # Guard against over-tightening: fit.edu ↔ Florida Institute of
+        # Technology (acronym-in-host) must still resolve high (§7 decision).
+        res = select_website_from_serp(
+            "Florida Institute of Technology",
+            [_sr("Florida Institute of Technology", "https://www.fit.edu/")],
+            record_type="research_institution",
+        )
+        assert res.url == "https://www.fit.edu"
+        assert res.confidence == "high"
+
+    def test_distinctive_host_match_company_high(self):
+        res = select_website_from_serp(
+            "Verdox",
+            [_sr("Verdox — direct air capture", "https://www.verdox.com/")],
+            record_type="company",
+        )
+        assert res.url == "https://www.verdox.com"
+        assert res.confidence == "high"
+
+
+class _QuoteAwareSearch:
+    """Returns *quoted_results* only for a quoted query, *unquoted_results* for
+    the unquoted retry."""
+
+    def __init__(self, quoted_results, unquoted_results):
+        self._q = quoted_results
+        self._u = unquoted_results
+        self.calls: list[str] = []
+
+    async def search(self, query, num_results=5):
+        self.calls.append(query)
+        return (self._q if '"' in query else self._u)[:num_results]
+
+
+class TestPathBRetry:
+    @pytest.mark.asyncio
+    async def test_unquoted_retry_on_quoted_miss(self):
+        client = _QuoteAwareSearch(
+            quoted_results=[],  # exact phrase finds nothing usable
+            unquoted_results=[_sr("Atlantic Testing Laboratories",
+                                  "https://www.atlantictesting.com/")],
+        )
+        res = await resolve_website_via_serp(
+            record_id="R1", name1="Atlantic Testing Labs",
+            city=None, state=None, country="US", record_type="company",
+            search_client=client, cache=BatchCache(),
+        )
+        assert res.url == "https://www.atlantictesting.com"
+        assert len(client.calls) == 2
+        assert '"' in client.calls[0] and '"' not in client.calls[1]
+
+    @pytest.mark.asyncio
+    async def test_no_retry_when_quoted_succeeds(self):
+        client = _QuoteAwareSearch(
+            quoted_results=[_sr("Verdox", "https://www.verdox.com/")],
+            unquoted_results=[],
+        )
+        res = await resolve_website_via_serp(
+            record_id="R2", name1="Verdox", city=None, state=None, country="US",
+            record_type="company", search_client=client, cache=BatchCache(),
+        )
+        assert res.url == "https://www.verdox.com"
+        assert len(client.calls) == 1  # no retry

@@ -231,42 +231,82 @@ _FORCE_TITLE_SHORT = {
 # Longer tokens (≥4 letters, vowel-bearing) that should stay uppercase.
 _KEEP_UPPER_ACRONYMS = {
     "NASA", "NOAA", "NIH", "FDA", "USDA", "EMSL", "IEEE",
+    # Vowel-bearing institution acronyms that the length/vowel heuristics would
+    # otherwise title-case ("TUHH" → "Tuhh"). Extend as they come up.
+    "NIST", "NJIT", "TUHH", "NREL", "SLAC", "CERN", "CNRS", "CSIRO", "CCSF",
+    # University acronyms (4-6 chars, vowel-bearing) that the heuristics would
+    # otherwise lower-case ("UCSF" → "Ucsf"). Surface directly from a street
+    # field (e.g. "UCSF; 600 16th Ave") before ROR resolves them, so they must
+    # keep their casing. The 3-char campuses (UCI, UCR, UCB, UCD) are already
+    # kept by the length rule.
+    "UCSF", "UCSD", "UCLA", "UCSB", "UCSC", "SUNY", "CUNY", "UMASS",
+    "UPENN", "UCONN",
 }
 _VOWELS = set("AEIOU")
+
+# Whole-token known mixed forms — checked case-insensitively before the
+# heuristics so a hyphenated proper noun whose segments would misfire is emitted
+# exactly. Extend as they come up.
+_CASE_EXCEPTIONS = {
+    "bio-rad": "Bio-Rad",
+    "abx-cro": "ABX-CRO",
+    "dana-farber": "Dana-Farber",
+    "at&t": "AT&T",
+}
+
+
+def _mc_name(word: str) -> str:
+    """Restore the internal capital in an "Mc" surname ("Mcintyre" → "McIntyre").
+    ``word`` is already Capitalized. "Mac" is intentionally left alone — blindly
+    capitalising after it mangles ordinary words ("Macron", "Macmillan")."""
+    m = re.match(r"^(Mc)([a-z])(.+)$", word)
+    return f"{m.group(1)}{m.group(2).upper()}{m.group(3)}" if m else word
+
+
+def _case_segment(seg: str) -> str:
+    """Case one hyphen-free segment, preserving acronyms/connectors."""
+    letters = re.sub(r"[^A-Za-z]", "", seg)
+    upper = letters.upper()
+    if not letters:
+        return seg
+    if seg.lower() in _TITLE_CASE_CONNECTORS:
+        return seg.lower()
+    if upper in _FORCE_TITLE_SHORT:
+        return _mc_name(seg.capitalize())
+    if upper in _KEEP_UPPER_ACRONYMS:
+        return seg
+    if len(letters) <= 3:
+        return seg  # short → assume acronym: IBM, MRI, LLC, USA, HCA
+    if len(letters) <= 5 and not (set(upper) & _VOWELS):
+        return seg  # no-vowel 4-5 char acronym: MGMT, PLLC
+    return _mc_name(seg.capitalize())
 
 
 def smart_title_case(value: str | None) -> str | None:
     """Title-case an ALL-CAPS value, preserving acronyms and connectors.
 
     "CHEMISTRY DEPARTMENT" → "Chemistry Department"
-    "LARGO MEDICAL CENTER" → "Largo Medical Center"
     "SOUTH BAY HOSPITAL"   → "South Bay Hospital"      (word "Bay" cased)
     "STERLING INDUSTRY LLC" → "Sterling Industry LLC"  (acronym kept)
     "MRI DEPARTMENT"       → "MRI Department"          (acronym kept)
+    "DANA-FARBER"          → "Dana-Farber"             (each hyphen segment cased)
+    "MCINTYRE"             → "McIntyre"                (Mc surname preserved)
 
-    Mixed-case input is returned unchanged, so canonical ROR / LLM names
-    (which are never ALL-CAPS) are never altered.
+    Each hyphen-separated segment is cased independently, so the part after a
+    hyphen is no longer lower-cased. Mixed-case input is returned unchanged, so
+    canonical ROR / LLM names (never ALL-CAPS) are never altered.
     """
     if not value or not value.strip() or not value.isupper():
         return value
     out = []
     for w in value.split():
-        letters = re.sub(r"[^A-Za-z]", "", w)
-        upper = letters.upper()
-        if w.lower() in _TITLE_CASE_CONNECTORS:
-            out.append(w.lower())
-        elif not letters:
-            out.append(w)  # punctuation-only token
-        elif upper in _FORCE_TITLE_SHORT:
-            out.append(w.capitalize())  # Inc, Bay, New, …
-        elif upper in _KEEP_UPPER_ACRONYMS:
-            out.append(w)  # NASA, USDA, EMSL, …
-        elif len(letters) <= 3:
-            out.append(w)  # short → assume acronym: IBM, MRI, LLC, USA, HCA
-        elif len(letters) <= 5 and not (set(upper) & _VOWELS):
-            out.append(w)  # no-vowel 4-5 char acronym: MGMT, PLLC
+        key = w.lower()
+        if key in _CASE_EXCEPTIONS:
+            out.append(_CASE_EXCEPTIONS[key])
+        elif "-" in w:
+            out.append("-".join(_case_segment(s) if s else s for s in w.split("-")))
         else:
-            out.append(w.capitalize())  # real word: South, Brandon, Delr
+            out.append(_case_segment(w))
     return " ".join(out)
 
 
@@ -866,3 +906,106 @@ def country_to_iso_code(country: str | None) -> str | None:
         return None
     key = country.strip().upper()
     return _COUNTRY_TO_ISO.get(key)
+
+
+# ---------------------------------------------------------------------------
+# Shared acronym / admin helpers (search-term derivation, ROR acronym currency,
+# department-probe admin suppression). Kept here so search_terms.py,
+# tier1_ror.py, and the orchestrator share one convention without a circular
+# import.
+# ---------------------------------------------------------------------------
+
+# Stopwords skipped when reading the initials of a name (same convention as
+# search_terms.derive_acronym).
+_INITIALS_STOPWORDS = {
+    "of", "for", "the", "and", "in", "on", "at", "to",
+    "a", "an", "de", "du", "des", "la", "le", "les", "&",
+}
+_INITIALS_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9&\-]*")
+
+
+def name_initials(name: str | None) -> str:
+    """Uppercase initials of *name*'s significant (non-stopword) words.
+
+    ``'National Institute of Standards and Technology'`` → ``'NIST'``
+    ``'University of Florida'``                          → ``'UF'``
+    """
+    if not name:
+        return ""
+    out: list[str] = []
+    for tok in _INITIALS_WORD_RE.findall(name):
+        if tok.lower() in _INITIALS_STOPWORDS:
+            continue
+        if tok[0].isalpha():
+            out.append(tok[0].upper())
+    return "".join(out)
+
+
+def acronym_matches_name(acronym: str | None, name: str | None) -> bool:
+    """True when *acronym*'s letters equal the initials of *name*.
+
+    Used to pick the CURRENT acronym from ROR's several ``acronym`` entries
+    (``NIST`` matches ``National Institute of Standards and Technology``; the
+    historical ``NBS`` does not).
+    """
+    if not acronym or not name:
+        return False
+    letters = "".join(ch for ch in acronym.upper() if ch.isalpha())
+    return bool(letters) and letters == name_initials(name)
+
+
+def seg_matches_needle(seg: str | None, needle: str | None) -> bool:
+    """Match a host/subdomain segment against a token/acronym: substring, or a
+    shared leading prefix of ≥3 chars in either direction ("chem" ← "chemistry").
+    Shared by the department probe and the subdomain-acronym search-term rule.
+    """
+    seg = (seg or "").lower()
+    needle = (needle or "").lower()
+    if not seg or not needle:
+        return False
+    if needle in seg:
+        return True
+    return (
+        min(len(seg), len(needle)) >= 3
+        and (needle.startswith(seg) or seg.startswith(needle))
+    )
+
+
+# Administrative / back-office units. English only (German deferred). Matched
+# after stripping a leading "Office of" / "Department of" style prefix, so
+# "Office of Finance" is admin but "Office of Research" is not.
+_ADMIN_UNIT_TERMS = {
+    "accounts payable", "accounts receivable", "ap", "ar",
+    "finance", "financial services", "billing", "invoicing",
+    "invoice processing", "purchasing", "procurement", "controlling",
+    "treasury", "bursar", "comptroller", "general accounting",
+    "shared services",
+}
+_ADMIN_PREFIXES = (
+    "office of ", "department of ", "dept of ", "dept. ", "dept ",
+    "division of ", "div of ", "div. ",
+)
+
+
+def is_admin_unit(text: str | None) -> bool:
+    """True when *text* names an administrative / back-office desk (accounts
+    payable, finance, billing, procurement, treasury, …). English only.
+
+    ``'Accounts Payable'``   → True
+    ``'Office of Finance'``   → True
+    ``'Office of Research'``   → False
+    """
+    if not text or not text.strip():
+        return False
+    t = text.strip().lower()
+    for pref in _ADMIN_PREFIXES:
+        if t.startswith(pref):
+            t = t[len(pref):].strip()
+            break
+    t = re.sub(r"[^a-z/& ]", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    if t in _ADMIN_UNIT_TERMS:
+        return True
+    if t in {"a/p", "a/r"}:
+        return True
+    return False

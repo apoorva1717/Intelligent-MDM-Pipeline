@@ -9,7 +9,7 @@ from api.routes import router
 from config import get_settings, validate_env
 
 settings = get_settings()
-configure_logging(settings.log_level)
+configure_logging(settings.log_level, settings.log_file)
 
 # FIX(Bug 6): warn at startup if required env vars are missing
 validate_env()

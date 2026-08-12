@@ -79,6 +79,11 @@ class MockPageFetcher(PageFetcher):
     def __init__(self) -> None:
         super().__init__(timeout=10, max_chars=3000)
 
+    async def resolve_final_url(self, url: str, timeout: int = 5) -> str | None:
+        """No redirect resolution in tests — return the URL unchanged so the
+        department probe's base stays deterministic (no network)."""
+        return url
+
     async def fetch_page_text(self, url: str) -> str | None:
         """Return mock page text matched by URL substring."""
         url_lower = url.lower()

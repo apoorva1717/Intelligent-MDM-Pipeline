@@ -108,6 +108,39 @@ class PageFetcher:
         except Exception:
             return False
 
+    async def resolve_final_url(self, url: str, timeout: int = 5) -> str | None:
+        """Follow *url*'s redirect chain once and return the FINAL URL (or None
+        on failure). Lets the department probe key off the live host when ROR's
+        website is stale (``dur.ac.uk`` → ``durham.ac.uk``)."""
+        loop = asyncio.get_running_loop()
+        try:
+            return await loop.run_in_executor(
+                None, partial(self._sync_resolve_final_url, url, timeout),
+            )
+        except Exception:
+            return None
+
+    def _sync_resolve_final_url(self, url: str, timeout: int) -> str | None:
+        try:
+            resp = requests.head(
+                url, timeout=timeout, allow_redirects=True,
+                headers={"User-Agent": "BrukerMDM-Enrichment/1.0"},
+                verify=certifi.where(),
+            )
+            if resp.status_code >= 400:
+                # Some servers reject HEAD — retry with a streamed GET.
+                resp = requests.get(
+                    url, timeout=timeout, allow_redirects=True, stream=True,
+                    headers={"User-Agent": "BrukerMDM-Enrichment/1.0"},
+                    verify=certifi.where(),
+                )
+                final = resp.url
+                resp.close()
+                return final or None
+            return resp.url or None
+        except Exception:
+            return None
+
     def _sync_subdomain_exists(self, host: str, timeout: int) -> bool:
         try:
             resp = requests.head(

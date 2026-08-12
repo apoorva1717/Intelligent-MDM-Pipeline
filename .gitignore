@@ -17,6 +17,8 @@ env/
 htmlcov/
 .coverage
 *.log
+*.log.*
+logs/
 .DS_Store
 local.settings.json
 .python_packages/

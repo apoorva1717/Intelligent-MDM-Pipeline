@@ -19,6 +19,7 @@ the orchestrator using
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -31,9 +32,15 @@ from llm.prompts import (
 )
 from search.base import SearchClient, SearchResult
 from utils.cache import BatchCache
-from utils.text_utils import extract_domain
+from utils.text_utils import acronym_matches_name, extract_domain
 
 logger = logging.getLogger(__name__)
+
+# Diagnostic-only per-candidate trace (see config.WEBSITE_TRACE). Records are
+# emitted ONLY when the caller passes ``trace=True``; with tracing off this
+# logger never fires, so default log volume and resolution behaviour are
+# unchanged. Each record is a single JSON line for grep/parse.
+trace_logger = logging.getLogger("enrichment.trace.website")
 
 
 # Domains to exclude from SERP candidate selection — directories,
@@ -94,12 +101,60 @@ def _name_overlap(name1: str, candidate: SearchResult) -> bool:
     return any(t in haystack for t in _significant_tokens(name1))
 
 
+# Generic industry words that do NOT distinctively identify an organisation —
+# a stranger's domain must not be validated just because it shares one of these
+# (§7a / W1). Mirrors the distinctive-token guard ROR applies upstream.
+_GENERIC_NAME_TOKENS: frozenset[str] = frozenset({
+    "research", "therapeutics", "diagnostics", "medical", "instruments",
+    "sciences", "science", "laboratories", "laboratory", "labs",
+    "technologies", "technology", "solutions", "systems", "group", "holdings",
+    "international", "global", "pharma", "pharmaceutical", "bio", "biotech",
+    "health", "healthcare", "services", "consulting", "partners", "associates",
+})
+
+
+def _distinctive_tokens(name1: str) -> set[str]:
+    """Significant name1 tokens minus the generic industry blocklist."""
+    return {t for t in _significant_tokens(name1) if t not in _GENERIC_NAME_TOKENS}
+
+
 def _name_in_domain(name1: str, url: str) -> bool:
     """True if a significant name1 token is a substring of the host."""
     domain = (extract_domain(url) or "").lower()
     if not domain:
         return False
     return any(t in domain for t in _significant_tokens(name1))
+
+
+def _distinctive_in_host(name1: str, url: str) -> bool:
+    """True if a DISTINCTIVE (non-generic) name1 token is a substring of the
+    host. A generic-token-only match (e.g. 'research' in a stranger's host) is
+    not sufficient to validate a candidate (§7a)."""
+    domain = (extract_domain(url) or "").lower()
+    if not domain:
+        return False
+    return any(t in domain for t in _distinctive_tokens(name1))
+
+
+def _acronym_in_host(name1: str, url: str) -> bool:
+    """True when the host's first label equals the institution's initials
+    ('fit.edu' ↔ 'Florida Institute of Technology'). Lets acronym-domain
+    institutions pass the host-match requirement without a name word in the
+    host, while a stranger's host ('scup.org' for 'Bayfront Research') fails."""
+    domain = (extract_domain(url) or "").lower()
+    if not domain:
+        return False
+    return acronym_matches_name(domain.split(".")[0], name1)
+
+
+def _has_host_match(name1: str, url: str, record_type: str | None) -> bool:
+    """§7a/§7b host-match test used by ranking. A distinctive name token in the
+    host, OR (research institutions only) an acronym-in-host match."""
+    if _distinctive_in_host(name1, url):
+        return True
+    if record_type == "research_institution" and _acronym_in_host(name1, url):
+        return True
+    return False
 
 
 def _domain_introduces_foreign_brand(name1: str, url: str) -> bool:
@@ -141,6 +196,157 @@ def _root_url(url: str) -> str:
     return url
 
 
+# ---------------------------------------------------------------------------
+# Diagnostic trace assembly (read-only — never affects resolution)
+# ---------------------------------------------------------------------------
+
+def _overlap_detail(
+    name1: str, candidate: SearchResult, host: str,
+) -> tuple[str | None, str | None]:
+    """Re-derive which Name 1 token satisfied ``_name_overlap`` and where.
+
+    Mirrors ``_name_overlap`` (haystack = URL + title) exactly, but returns the
+    matched token and whether it hit the ``host`` (netloc), the ``title``, or
+    only the URL path (``url``). Tokens are scanned in a deterministic (sorted)
+    order. Returns ``(None, None)`` when overlap fails.
+    """
+    title = (candidate.title or "").lower()
+    url = (candidate.url or "").lower()
+    haystack = f"{candidate.url} {candidate.title}".lower()
+    for token in sorted(_significant_tokens(name1)):
+        if token in haystack:
+            if token in host:
+                return token, "host"
+            if token in title:
+                return token, "title"
+            if token in url:
+                return token, "url"
+            return token, "url"
+    return None, None
+
+
+def _foreign_label(name1: str, url: str) -> str | None:
+    """Re-derive the host label part that triggers ``_domain_introduces_foreign_
+    brand`` (the distinctive word the name never carried). Read-only."""
+    domain = (extract_domain(url) or "").lower()
+    if not domain:
+        return None
+    label = domain.split(".")[0]
+    parts = [p for p in re.split(r"[-_]", label) if p]
+    if len(parts) <= 1:
+        return None
+    tokens = _significant_tokens(name1)
+    for part in parts:
+        if len(part) < 4:
+            continue
+        if not any(part.startswith(t) or t.startswith(part) for t in tokens):
+            return part
+    return None
+
+
+def _assemble_path_b_trace(
+    *,
+    record_id: str,
+    name1: str,
+    record_type: str | None,
+    query: str,
+    num_results: int,
+    results: list[SearchResult],
+    chosen: WebsiteResolution,
+    error: str | None = None,
+    attempt: str = "quoted",
+) -> dict:
+    """Build the per-candidate Path B trace record.
+
+    Purely read-only: it re-evaluates the same pure guards (``_URL_RE``,
+    ``_is_blacklisted``, ``_name_overlap``, ``_rank``) that
+    ``select_website_from_serp`` used, in the SAME short-circuit order, to
+    attribute each candidate's ``rejected_by`` to the FIRST guard that fired.
+    It never mutates state or changes what was resolved.
+    """
+    # Recompute valid + chosen exactly as select_website_from_serp does, so the
+    # per-candidate `chosen`/`rank` fields match the real decision.
+    valid = [
+        sr for sr in results
+        if sr.url and _URL_RE.match(sr.url)
+        and not _is_blacklisted(sr.url)
+        and _name_overlap(name1, sr)
+    ]
+    ranks: dict[int, int] = {}
+    chosen_sr: SearchResult | None = None
+    if valid:
+        for sr in valid:
+            ranks[id(sr)] = (
+                0 if not _has_host_match(name1, sr.url, record_type)
+                else (1 if _domain_introduces_foreign_brand(name1, sr.url) else 2)
+            )
+        best = max(valid, key=lambda sr: ranks[id(sr)])
+        if ranks[id(best)] != 0:
+            chosen_sr = best
+
+    candidates: list[dict] = []
+    for i, sr in enumerate(results, 1):
+        host = ""
+        if sr.url:
+            try:
+                host = urlparse(sr.url).netloc.lower()
+            except Exception:
+                host = ""
+        entry: dict = {
+            "position": i,
+            "url": sr.url,
+            "host": host,
+            "title": (sr.title or "")[:120],
+            "rejected_by": None,
+            "matched_token": None,
+            "matched_in": None,
+            "foreign_label": None,
+            "rank": None,
+            "chosen": False,
+        }
+        # First-firing guard, in the real short-circuit order.
+        if not (sr.url and _URL_RE.match(sr.url)):
+            entry["rejected_by"] = "url_shape"
+        elif _is_blacklisted(sr.url):
+            entry["rejected_by"] = "blacklist"
+        else:
+            token, where = _overlap_detail(name1, sr, host)
+            if token is None:
+                entry["rejected_by"] = "name_overlap"
+            else:
+                entry["matched_token"] = token
+                entry["matched_in"] = where
+                rank = ranks.get(id(sr))
+                entry["rank"] = rank
+                if rank == 0:
+                    entry["rejected_by"] = "rank_0"
+                elif rank == 1:
+                    entry["foreign_label"] = _foreign_label(name1, sr.url)
+                entry["chosen"] = sr is chosen_sr
+        if entry["chosen"]:
+            entry["confidence"] = chosen.confidence
+        candidates.append(entry)
+
+    record: dict = {
+        "phase": "path_b",
+        "attempt": attempt,
+        "record_id": record_id,
+        "name1": name1,
+        "record_type": record_type,
+        "query": query,
+        "num_results": num_results,
+        "results_returned": len(results),
+        "candidates": candidates,
+        "chosen_url": chosen.url,
+        "confidence": chosen.confidence if chosen.url else None,
+        "flagged": bool(chosen.url) and chosen.confidence != "high",
+        "fell_through_to_path_c": chosen.url is None,
+    }
+    if error is not None:
+        record["error"] = error
+    return record
+
+
 def select_website_from_serp(
     name1: str,
     results: list[SearchResult],
@@ -168,36 +374,33 @@ def select_website_from_serp(
     if not valid:
         return WebsiteResolution()
 
-    if record_type == "research_institution":
-        sr = valid[0]
-        high = _tld(sr.url) in _OFFICIAL_TLDS
-        return WebsiteResolution(
-            url=_root_url(sr.url),
-            confidence="high" if high else "low",
-            source="serp",
-        )
-
-    # Company / unknown: rank so a clean root-domain match wins over a
-    # subsidiary domain that merely contains the name token.
-    #   2 = name token in host AND no foreign brand word (clean match)
-    #   1 = name token in host but the label adds a foreign brand (sub-brand)
-    #   0 = name only overlaps the title, not the host
+    # Both branches now rank 0/1/2 on WHERE the name matched (§7b):
+    #   2 = distinctive/acronym host match, no foreign brand word (clean)
+    #   1 = host match but the label adds a foreign brand (sub-brand)
+    #   0 = name only overlaps the title, not the host → rejected
     def _rank(sr: SearchResult) -> int:
-        if not _name_in_domain(name1, sr.url):
+        if not _has_host_match(name1, sr.url, record_type):
             return 0
         return 1 if _domain_introduces_foreign_brand(name1, sr.url) else 2
 
     best = max(valid, key=_rank)  # first max preserves SERP order on ties
     best_rank = _rank(best)
     if best_rank == 0:
-        # No candidate has a name token in its HOST — the overlap is only a
-        # word in the title/snippet (a neighbour business, a listings page).
-        # Too weak to trust as the official site: return nothing and let
-        # Path C (LLM) try, rather than emit a stranger's domain like
-        # "universitysurgical.com" for "Sign A Rama USA".
+        # No candidate has a distinctive name token (or, for institutions, the
+        # acronym) in its HOST — the overlap is only a word in the title. Too
+        # weak to trust ('scup.org' for 'Bayfront Research'); defer to Path C.
         return WebsiteResolution()
-    confidence = "high" if best_rank == 2 else "low"
-    return WebsiteResolution(url=_root_url(best.url), confidence=confidence, source="serp")
+
+    if record_type == "research_institution":
+        # §7c: an authoritative TLD grants HIGH only with a clean host match.
+        high = best_rank == 2 and _tld(best.url) in _OFFICIAL_TLDS
+    else:
+        high = best_rank == 2
+    return WebsiteResolution(
+        url=_root_url(best.url),
+        confidence="high" if high else "low",
+        source="serp",
+    )
 
 
 def _build_serp_query(
@@ -206,6 +409,8 @@ def _build_serp_query(
     state: str | None,
     country: str | None,
     record_type: str | None,
+    *,
+    quoted: bool = True,
 ) -> str:
     """Construct the website-search query for *name1*.
 
@@ -218,7 +423,7 @@ def _build_serp_query(
     company names ("Smith Industries" exists in many cities), and
     fall back on country only when neither is available.
     """
-    base = f'"{name1}" official website'
+    base = f'"{name1}" official website' if quoted else f"{name1} official website"
     if record_type == "research_institution":
         if country and country.strip():
             return f"{base} {country.strip()}"
@@ -243,6 +448,7 @@ async def resolve_website_via_serp(
     cache: BatchCache,
     *,
     prefetched_results: list[SearchResult] | None = None,
+    trace: bool = False,
 ) -> WebsiteResolution:
     """Path B: find the official site for *name1* via SERP.
 
@@ -253,7 +459,13 @@ async def resolve_website_via_serp(
     If *prefetched_results* is provided (the orchestrator already ran a
     Tier 2B search for the same record), they are reused directly — no
     additional SERP call is made.
+
+    When *trace* is True, a single per-candidate JSON diagnostic record is
+    emitted on the ``enrichment.trace.website`` logger. Tracing is read-only:
+    the resolution is computed exactly as before and the trace is assembled
+    from the same results afterwards.
     """
+    num_results = 10
     if not name1 or not name1.strip():
         return WebsiteResolution()
 
@@ -263,28 +475,58 @@ async def resolve_website_via_serp(
             "[%s] website Path B (reused SERP): url=%s confidence=%s",
             record_id, chosen.url, chosen.confidence,
         )
+        if trace:
+            trace_logger.info(json.dumps(_assemble_path_b_trace(
+                record_id=record_id, name1=name1, record_type=record_type,
+                query="(reused Tier 2B SERP results)", num_results=num_results,
+                results=prefetched_results, chosen=chosen, attempt="quoted",
+            )))
         return chosen
 
-    query = _build_serp_query(name1, city, state, country, record_type)
-    cached = cache.get_serp(query)
-    if cached is not None:
-        results = cached
-    else:
-        try:
-            results = await search_client.search(query, num_results=5)
-        except Exception as exc:
-            logger.info(
-                "[%s] website Path B: SERP call failed: %s",
-                record_id, exc,
-            )
-            return WebsiteResolution()
-        cache.set_serp(query, results)
+    async def _run(query: str, attempt: str) -> WebsiteResolution:
+        cached = cache.get_serp(query)
+        if cached is not None:
+            results = cached
+        else:
+            try:
+                results = await search_client.search(query, num_results=num_results)
+            except Exception as exc:
+                logger.info("[%s] website Path B: SERP call failed: %s", record_id, exc)
+                if trace:
+                    trace_logger.info(json.dumps(_assemble_path_b_trace(
+                        record_id=record_id, name1=name1, record_type=record_type,
+                        query=query, num_results=num_results, results=[],
+                        chosen=WebsiteResolution(), error=f"serp_call_failed: {exc}",
+                        attempt=attempt,
+                    )))
+                return WebsiteResolution()
+            cache.set_serp(query, results)
+        chosen = select_website_from_serp(name1, results, record_type)
+        logger.info(
+            "[%s] website Path B (%s): query=%r url=%s confidence=%s",
+            record_id, attempt, query[:80], chosen.url, chosen.confidence,
+        )
+        if trace:
+            trace_logger.info(json.dumps(_assemble_path_b_trace(
+                record_id=record_id, name1=name1, record_type=record_type,
+                query=query, num_results=num_results, results=results,
+                chosen=chosen, attempt=attempt,
+            )))
+        return chosen
 
-    chosen = select_website_from_serp(name1, results, record_type)
-    logger.info(
-        "[%s] website Path B: query=%r url=%s confidence=%s",
-        record_id, query[:80], chosen.url, chosen.confidence,
+    quoted_query = _build_serp_query(name1, city, state, country, record_type)
+    chosen = await _run(quoted_query, "quoted")
+    if chosen.url:
+        return chosen
+
+    # §8: one unquoted retry when the exact-phrase query found no valid
+    # candidate — the site may brand itself slightly differently ("…Labs" vs
+    # "…Laboratories"). Only runs on a first-pass miss; one retry maximum.
+    unquoted_query = _build_serp_query(
+        name1, city, state, country, record_type, quoted=False,
     )
+    if unquoted_query != quoted_query:
+        return await _run(unquoted_query, "unquoted_retry")
     return chosen
 
 
@@ -312,6 +554,8 @@ async def infer_website_via_llm(
     state: str | None,
     country: str | None,
     llm_client: OpenAIClient,
+    *,
+    trace: bool = False,
 ) -> WebsiteResolution:
     """Path C: ask the LLM for an organisation's official website.
 
@@ -319,6 +563,10 @@ async def infer_website_via_llm(
     produced — the orchestrator writes it to ``website_url`` and flags
     the record for manual review. Path C runs as the Path B fallback
     for any record type, including research institutions.
+
+    When *trace* is True, a single JSON diagnostic record is emitted on the
+    ``enrichment.trace.website`` logger (inputs, raw response, sentinel/URL-
+    shape outcome, final value). Read-only — behaviour is unchanged.
     """
     if not name1 or not name1.strip():
         return WebsiteResolution()
@@ -329,6 +577,23 @@ async def infer_website_via_llm(
         state=state or "(unknown)",
         country=country or "(unknown)",
     )
+
+    def _emit(**extra: object) -> None:
+        if not trace:
+            return
+        rec = {
+            "phase": "path_c",
+            "record_id": record_id,
+            "name1": name1,
+            "inputs": {
+                "city": city or "(unknown)",
+                "state": state or "(unknown)",
+                "country": country or "(unknown)",
+            },
+        }
+        rec.update(extra)
+        trace_logger.info(json.dumps(rec))
+
     try:
         payload = await llm_client.extract_json(
             WEBSITE_INFERENCE_SYSTEM_PROMPT, user_prompt,
@@ -337,23 +602,32 @@ async def infer_website_via_llm(
         logger.info(
             "[%s] website Path C: LLM call failed: %s", record_id, exc,
         )
+        _emit(llm_error=str(exc), raw_response=None, treated_as_sentinel=None,
+              url_shape_ok=False, final_value=None)
         return WebsiteResolution()
 
-    raw = payload.get("website_url") if isinstance(payload, dict) else None
+    raw_response = payload.get("website_url") if isinstance(payload, dict) else None
+    raw = raw_response
+    treated_as_sentinel = False
     if isinstance(raw, str):
         raw = raw.strip()
         if raw.lower() in {"", "null", "none", "unknown", "n/a", "na"}:
             raw = None
+            treated_as_sentinel = True
 
     if not _looks_like_url(raw):
         logger.info(
             "[%s] website Path C: LLM returned no usable URL for %r",
             record_id, name1[:60],
         )
+        _emit(raw_response=raw_response, treated_as_sentinel=treated_as_sentinel,
+              url_shape_ok=False, final_value=None)
         return WebsiteResolution()
 
     logger.info(
         "[%s] website Path C: LLM proposed %s for %r",
         record_id, raw, name1[:60],
     )
+    _emit(raw_response=raw_response, treated_as_sentinel=treated_as_sentinel,
+          url_shape_ok=True, final_value=raw)
     return WebsiteResolution(url=raw, confidence="low", source="llm")
