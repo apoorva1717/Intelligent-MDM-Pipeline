@@ -1271,11 +1271,12 @@ Telemetry adds `candidates_generated`, `candidates_by_rule`, `rejected_with_reas
 | **Model** | GPT-5.4 (full, not mini/nano), AI Foundry deployment from env `AOAI_DEPLOYMENT_DEDUP` |
 | **Client** | Reuses the Phase 1 AI Foundry client factory (`llm/openai_client.py::get_openai_client`) — no new client is written |
 | **API version** | `AOAI_API_VERSION_DEDUP` (default `2025-04-01-preview`) — newer than Phase 1's default because reasoning models / `reasoning_effort` require it |
-| **Reasoning effort** | `low` (`DEDUP_REASONING_EFFORT`). Temperature is **not** sent — reasoning models may ignore it |
+| **Reasoning effort** | `low` (`DEDUP_REASONING_EFFORT`) |
+| **Temperature** | `0.0`, but sent **only when `reasoning_effort` is not in use**. The two are mutually exclusive on a reasoning deployment: gpt-5.4 answers a request carrying both with `400 Unsupported value: 'temperature' does not support 0.0 with this model. Only the default (1) value is supported.` On the default config (`reasoning_effort=low`) temperature is therefore not sent, and adjudication output is **not** bit-reproducible. `seed` **is** accepted by the deployment alongside `reasoning_effort` and is the stronger control, but is not yet sent |
 | **Response format** | `{"type": "json_object"}`, parsed defensively (plain JSON, fenced ```json blocks, or embedded objects) |
 | **Concurrency** | Bounded by `DEDUP_MAX_CONCURRENCY` (default 5) via a shared semaphore across all blocks |
 | **Retries** | 429/5xx and connection/timeout errors retried with exponential backoff, max `DEDUP_MAX_RETRIES` (default 3) |
-| **Resilience** | If the deployment rejects `reasoning_effort`, it is dropped and the call retried (the parameter is a tuning preference, not a correctness gate) |
+| **Resilience** | If the deployment rejects `reasoning_effort` — or `temperature`, where it is sent — the offending parameter is dropped and the call retried (both are tuning preferences, not correctness gates) |
 | **Prompt version** | `PROMPT_VERSION = "p2-dedup-v3"`, logged on every decision and echoed in every output row |
 
 A single bad LLM call **never fails a whole block**. The affected signature(s) are marked uncertain (→ `manual_review`) and processing continues; the error is logged with the `block_id` and offending `signature_id`s and counted in `summary.errors`.
@@ -1663,7 +1664,7 @@ The company counterpart to ROR. For company-type records, resolves the official 
 |----------|---------|-------------|
 | `AOAI_DEPLOYMENT_DEDUP` | `gpt-5.4` | AI Foundry deployment for the full GPT-5.4 adjudicator model |
 | `AOAI_API_VERSION_DEDUP` | `2025-04-01-preview` | REST API version for the adjudicator. GPT-5.x reasoning models and `reasoning_effort` need a newer version than the Phase 1 default. Override to match what your resource exposes |
-| `DEDUP_REASONING_EFFORT` | `low` | Reasoning effort for adjudication calls (reasoning models may ignore temperature, so temperature is not sent) |
+| `DEDUP_REASONING_EFFORT` | `low` | Reasoning effort for adjudication calls. While set, `temperature` is not sent — a reasoning deployment rejects any temperature but its default. Set it empty to fall back to a plain sampled call with `temperature=0.0` |
 | `SIG_PARTITION_THRESHOLD` | `12` | Distinct-signature count at/below which a block uses one partition call (Mode A); above it, incremental canonical assignment (Mode B) |
 | `DEDUP_MAX_CONCURRENCY` | `5` | Max in-flight adjudicator LLM calls across all blocks in a request |
 | `DEDUP_MAX_RETRIES` | `3` | Max attempts per adjudicator call (retries 429/5xx with exponential backoff) |

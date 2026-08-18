@@ -3,9 +3,16 @@
 Reuses the Phase 1 AI Foundry client construction (``get_openai_client`` in
 ``llm.openai_client``) — it does NOT build a new client. The only differences
 from the Phase 1 tier calls are dedup-specific: a separate deployment
-(``AOAI_DEPLOYMENT_DEDUP``), ``reasoning_effort`` instead of temperature
-(reasoning models may ignore temperature), bounded retries on 429/5xx, and
-per-call token/latency capture for telemetry.
+(``AOAI_DEPLOYMENT_DEDUP``), ``reasoning_effort``, bounded retries on 429/5xx,
+and per-call token/latency capture for telemetry.
+
+``temperature=0.0`` is sent when ``reasoning_effort`` is not in play, matching
+the Phase 1 enrichment path so both phases make the same reproducibility claim
+wherever the deployment permits it. On a reasoning deployment the two are
+mutually exclusive — gpt-5.4 rejects any temperature but its default while
+``reasoning_effort`` is set — so on such a deployment reasoning_effort wins and
+temperature is not sent. A deployment that rejects temperature for any other
+reason falls back to omitting it, exactly as ``reasoning_effort`` does.
 """
 
 from __future__ import annotations
@@ -30,20 +37,44 @@ except Exception:  # noqa: BLE001
     APIConnectionError = APITimeoutError = ()  # type: ignore[assignment]
 
 
-def _is_unsupported_reasoning_effort(exc: Exception) -> bool:
-    """True when an error looks like the deployment/API rejecting the
-    ``reasoning_effort`` parameter (a 400 about an unknown/unsupported arg)."""
+def _is_unsupported_param(exc: Exception, *names: str) -> bool:
+    """True when an error looks like the deployment/API rejecting one of
+    ``names`` (a 400 about an unknown/unsupported/out-of-range arg)."""
     text = str(exc).lower()
     status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
-    mentions_param = "reasoning_effort" in text or "reasoning effort" in text
+    mentions_param = any(n in text for n in names)
     looks_like_bad_arg = any(
         phrase in text
-        for phrase in ("unrecognized", "unsupported", "unknown", "not supported", "extra inputs")
+        for phrase in (
+            "unrecognized", "unsupported", "unknown", "not supported",
+            "extra inputs",
+            # Reasoning deployments that accept the argument but only at its
+            # default phrase it as an unsupported *value*, not an unknown key.
+            "does not support", "only the default",
+        )
     )
     if mentions_param and (looks_like_bad_arg or status == 400):
         return True
     # Some SDKs raise TypeError for an unexpected kwarg before any HTTP call.
     return isinstance(exc, TypeError) and mentions_param
+
+
+def _is_unsupported_reasoning_effort(exc: Exception) -> bool:
+    """True when an error looks like the deployment/API rejecting the
+    ``reasoning_effort`` parameter (a 400 about an unknown/unsupported arg)."""
+    return _is_unsupported_param(exc, "reasoning_effort", "reasoning effort")
+
+
+def _is_unsupported_temperature(exc: Exception) -> bool:
+    """True when an error looks like the deployment/API rejecting the
+    ``temperature`` parameter.
+
+    Reasoning deployments come in two flavours: those that reject the key
+    outright, and those that accept it but only at the default value and
+    return "does not support 0.0 ... only the default (1) is supported".
+    Both are handled the same way — drop it and retry.
+    """
+    return _is_unsupported_param(exc, "temperature")
 
 
 def _is_retryable(exc: Exception) -> bool:
@@ -111,6 +142,12 @@ class DedupLLM:
     # exposes a different one.
     DEFAULT_API_VERSION = "2025-04-01-preview"
 
+    # Sampling temperature for adjudication. Fixed at 0.0 rather than made
+    # configurable: this is a reproducibility control, and an env knob would
+    # let it drift silently between runs. Matches the Phase 1 enrichment path,
+    # which hardcodes temperature=0.0 in ``llm.openai_client.call_openai``.
+    TEMPERATURE = 0.0
+
     def __init__(self, settings: Any = None) -> None:
         # Prefer a dedup-specific deployment; otherwise reuse the Phase 1
         # deployment so a single configured deployment works for both phases.
@@ -126,13 +163,19 @@ class DedupLLM:
             or os.getenv("AZURE_OPENAI_API_VERSION")
             or self.DEFAULT_API_VERSION
         )
-        # Disabled at runtime if the deployment rejects the parameter, so a
-        # single bad-request doesn't sink every block.
+        # Both disabled at runtime if the deployment rejects the parameter, so
+        # a single bad-request doesn't sink every block.
         self._use_reasoning_effort = bool(self._reasoning_effort)
+        self._use_temperature = True
         self._client: Any = None
         logger.info(
-            "Dedup LLM initialised (deployment=%s, api_version=%s, reasoning_effort=%s)",
+            "Dedup LLM initialised (deployment=%s, api_version=%s, "
+            "reasoning_effort=%s, temperature=%s)",
             self._deployment, self._api_version, self._reasoning_effort,
+            # Report what will actually be sent, not the constant: while
+            # reasoning_effort is active, temperature is suppressed.
+            "not sent (reasoning_effort active)"
+            if self._use_reasoning_effort else self.TEMPERATURE,
         )
 
     @property
@@ -182,6 +225,16 @@ class DedupLLM:
             }
             if self._use_reasoning_effort:
                 params["reasoning_effort"] = self._reasoning_effort
+            # Temperature and reasoning_effort are mutually exclusive on
+            # reasoning deployments: gpt-5.4 answers a request carrying both
+            # with "temperature does not support 0.0 ... only the default (1)
+            # is supported". Sending it anyway would cost a guaranteed 400 and
+            # a retry on the first call of every request, since the client is
+            # built per request. So it is sent only when reasoning_effort is
+            # not in play — including when it was disabled at runtime by the
+            # fallback above, which is the case where it can actually apply.
+            elif self._use_temperature:
+                params["temperature"] = self.TEMPERATURE
             try:
                 response = await client.chat.completions.create(**params)
                 latency_ms = int((time.perf_counter() - start) * 1000)
@@ -205,6 +258,16 @@ class DedupLLM:
                         "disabling it and retrying: %s", exc,
                     )
                     self._use_reasoning_effort = False
+                    continue
+                # Same fallback for temperature: a deployment that rejects it
+                # (or only accepts its default) still adjudicates correctly
+                # without it. Determinism is the goal, not a precondition.
+                if self._use_temperature and _is_unsupported_temperature(exc):
+                    logger.warning(
+                        "Dedup LLM: deployment rejected temperature; "
+                        "disabling it and retrying: %s", exc,
+                    )
+                    self._use_temperature = False
                     continue
                 if _is_retryable(exc) and attempt < self._max_retries - 1:
                     delay = 0.5 * (2 ** attempt)

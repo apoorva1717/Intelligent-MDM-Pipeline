@@ -27,6 +27,7 @@ from dedup.llm import (
     DedupLLM,
     DedupLLMResult,
     _is_unsupported_reasoning_effort,
+    _is_unsupported_temperature,
     parse_json_object,
 )
 from dedup.models import DedupRow
@@ -835,6 +836,112 @@ async def test_adjudicate_drops_reasoning_effort_and_recovers():
     # First attempt included the param (rejected), second omitted it (ok).
     assert "reasoning_effort" in llm._client.calls[0]
     assert "reasoning_effort" not in llm._client.calls[1]
+
+
+# ---------------------------------------------------------------------------
+# temperature (3.2) — sent only when reasoning_effort is not in play
+# ---------------------------------------------------------------------------
+
+class _TempRejectingCompletions:
+    """Rejects temperature the way gpt-5.4 does: an unsupported *value*."""
+
+    def __init__(self, owner):
+        self._owner = owner
+
+    async def create(self, **kwargs):
+        self._owner.calls.append(kwargs)
+        if "temperature" in kwargs:
+            raise RuntimeError(
+                "Error code: 400 - Unsupported value: 'temperature' does not "
+                "support 0.0 with this model. Only the default (1) value is "
+                "supported."
+            )
+        return _FakeResponse('{"decision": "new"}')
+
+
+class _TempRejectingClient:
+    def __init__(self):
+        self.calls = []
+        self.chat = type(
+            "Chat", (), {"completions": _TempRejectingCompletions(self)},
+        )()
+
+    async def close(self):
+        return None
+
+
+def test_is_unsupported_temperature_detection():
+    # The gpt-5.4 phrasing: the key is known, the value is not accepted.
+    assert _is_unsupported_temperature(
+        RuntimeError(
+            "Unsupported value: 'temperature' does not support 0.0 with this "
+            "model. Only the default (1) value is supported."
+        )
+    )
+    # The plain unknown-argument phrasing.
+    assert _is_unsupported_temperature(
+        RuntimeError("Unrecognized request argument supplied: temperature")
+    )
+    assert _is_unsupported_temperature(
+        TypeError("create() got an unexpected keyword argument 'temperature'")
+    )
+    # Unrelated failures are not temperature problems.
+    assert not _is_unsupported_temperature(RuntimeError("429 too many requests"))
+    assert not _is_unsupported_temperature(
+        RuntimeError("Unrecognized request argument supplied: reasoning_effort")
+    )
+
+
+@pytest.mark.asyncio
+async def test_temperature_not_sent_while_reasoning_effort_is_active():
+    """The two are mutually exclusive on a reasoning deployment.
+
+    Sending both earns a guaranteed 400, and the client is built per request,
+    so reasoning_effort wins and temperature is simply not sent.
+    """
+    llm = DedupLLM()
+    llm._client = _FakeClient()
+    assert llm._use_reasoning_effort is True
+    assert llm._use_temperature is True
+
+    await llm.adjudicate("sys", "user", max_tokens=100)
+
+    # _FakeClient rejects reasoning_effort, so call 0 carries it and call 1
+    # does not. Temperature must be absent from the first call (reasoning_effort
+    # active) and present on the second (reasoning_effort now disabled).
+    assert "temperature" not in llm._client.calls[0]
+    assert llm._client.calls[1]["temperature"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_temperature_sent_when_reasoning_effort_disabled(monkeypatch):
+    """With reasoning_effort off, temperature=0.0 is sent."""
+    monkeypatch.setenv("DEDUP_REASONING_EFFORT", "")
+    llm = DedupLLM()
+    llm._client = _FakeClient()
+    assert llm._use_reasoning_effort is False
+
+    result = await llm.adjudicate("sys", "user", max_tokens=100)
+
+    assert result.error is None
+    assert llm._client.calls[0]["temperature"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_adjudicate_drops_temperature_and_recovers(monkeypatch):
+    """A deployment that rejects temperature must not sink the call."""
+    monkeypatch.setenv("DEDUP_REASONING_EFFORT", "")
+    llm = DedupLLM()
+    llm._client = _TempRejectingClient()
+    assert llm._use_temperature is True
+
+    result = await llm.adjudicate("sys", "user", max_tokens=100)
+
+    assert result.error is None
+    assert result.raw == '{"decision": "new"}'
+    assert llm._use_temperature is False  # disabled after the rejection
+    assert "temperature" in llm._client.calls[0]
+    assert "temperature" not in llm._client.calls[1]
 
 
 # ---------------------------------------------------------------------------
