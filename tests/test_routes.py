@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import os
 import sys
 from pathlib import Path
@@ -462,6 +463,66 @@ class TestRoutes:
         assert resp.status_code == 400
 
 
+# ---------------------------------------------------------------------------
+# Shared dedup fixture: one block, every DedupRow field, spelled the way
+# /enrich/file writes it (api.output_columns.RESPONSE_COLUMNS). Used by both
+# the file-route tests and the JSON/file equivalence test below.
+# ---------------------------------------------------------------------------
+
+# Header spelling -> DedupRow field:
+#   Customer->row_id, Block ID->block_id, Name 1->name1, Name 2->name2,
+#   Street 1->street, House Number->house_no, Postal Code->postal_code,
+#   City->city, Country/Region Key->country, ROR ID->ror_id, LEI ID->lei_id,
+#   Enriched Name->enriched_name
+_FULL_DEDUP_HEADERS = [
+    "Customer", "Block ID", "Name 1", "Name 2", "Street 1", "House Number",
+    "Postal Code", "City", "Country/Region Key", "ROR ID", "LEI ID",
+    "Enriched Name",
+]
+
+_FULL_DEDUP_ROWS = [
+    ["SAP-1", "b1", "University of Stuttgart", "Department of Chemistry",
+     "Pfaffenwaldring", "55", "70569", "Stuttgart", "DE",
+     "https://ror.org/04vnq7t77", None, "University of Stuttgart"],
+    ["SAP-2", "b1", "Universitaet Stuttgart", "Institut fuer Chemie",
+     "Pfaffenwaldring", "55", "70569", "Stuttgart", "DE",
+     "https://ror.org/04vnq7t77", None, "University of Stuttgart"],
+    ["SAP-3", "b1", "Carl Zeiss AG", None,
+     "Pfaffenwaldring", "55", "70569", "Stuttgart", "DE",
+     None, "529900W18LQJJN6SJ336", "Carl Zeiss AG"],
+]
+
+# The same three rows as JSON-route payload dicts, keyed by DedupRow field.
+_FULL_DEDUP_JSON = [
+    dict(zip(
+        ["row_id", "block_id", "name1", "name2", "street", "house_no",
+         "postal_code", "city", "country", "ror_id", "lei_id", "enriched_name"],
+        row,
+    ))
+    for row in _FULL_DEDUP_ROWS
+]
+
+
+def _capture_cluster_rows(monkeypatch) -> dict:
+    """Intercept the DedupRow list each route hands to ``cluster_blocks``.
+
+    Both endpoints call ``cluster_blocks`` from the ``api.routes`` namespace,
+    so patching it there captures what the route actually built — the real
+    wiring, not a re-run of the parsing helper.
+    """
+    import api.routes as routes
+
+    captured: dict = {}
+    real = routes.cluster_blocks
+
+    async def _spy(rows, llm, **kwargs):
+        captured["rows"] = list(rows)
+        return await real(rows, llm, **kwargs)
+
+    monkeypatch.setattr(routes, "cluster_blocks", _spy)
+    return captured
+
+
 class TestDedupFile:
     """The /api/dedup/file XLSX endpoint (file twin of cluster-block)."""
 
@@ -539,6 +600,58 @@ class TestDedupFile:
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
+    async def test_dedup_file_carries_lei_and_ror_ids(self, client, monkeypatch):
+        """The registry identifiers must reach the adjudicator, not just the
+        output file.
+
+        "LEI ID" bound to nothing before this was fixed: the column was echoed
+        into the output workbook (so a column-presence check passed) while the
+        value never reached DedupRow, and adjudication ran without the
+        company legal-entity signal the JSON route carries.
+        """
+        captured = _capture_cluster_rows(monkeypatch)
+        data = self._xlsx_bytes(_FULL_DEDUP_HEADERS, *_FULL_DEDUP_ROWS)
+
+        resp = await client.post("/api/dedup/file", files=self._upload(data))
+        assert resp.status_code == 200
+
+        by_id = {r.row_id: r for r in captured["rows"]}
+        assert by_id["SAP-1"].ror_id == "https://ror.org/04vnq7t77"
+        assert by_id["SAP-1"].lei_id is None
+        assert by_id["SAP-3"].lei_id == "529900W18LQJJN6SJ336"
+        assert by_id["SAP-3"].ror_id is None
+
+    @pytest.mark.asyncio
+    async def test_dedup_file_warns_on_unrecognised_header(self, client, caplog):
+        """A header the alias table does not know is named at WARNING level.
+
+        One missing alias is a typo; silently discarding the column is what
+        let it survive unnoticed.
+
+        Note "LEI Code" is used rather than a whitespace variant like
+        "LEI  I D": ``_norm_header`` strips all non-alphanumerics, so the
+        latter normalises to "leiid" and is correctly recognised.
+        """
+        data = self._xlsx_bytes(
+            ["Customer", "Name 1", "LEI Code", "Widget Count"],
+            ["R1", "Acme GmbH", "529900W18LQJJN6SJ336", "7"],
+        )
+        with caplog.at_level(logging.WARNING, logger="api.routes"):
+            resp = await client.post("/api/dedup/file", files=self._upload(data))
+        assert resp.status_code == 200
+
+        warnings = [
+            r.getMessage() for r in caplog.records
+            if r.levelno == logging.WARNING and "matched no DedupRow field" in r.getMessage()
+        ]
+        assert len(warnings) == 1, "expected exactly one line listing all headers"
+        assert "'LEI Code'" in warnings[0]
+        assert "'Widget Count'" in warnings[0]
+        # Recognised columns must not be named.
+        assert "'Customer'" not in warnings[0]
+        assert "'Name 1'" not in warnings[0]
+
+    @pytest.mark.asyncio
     async def test_dedup_file_rejects_non_xlsx(self, client):
         resp = await client.post(
             "/api/dedup/file",
@@ -551,3 +664,46 @@ class TestDedupFile:
         data = self._xlsx_bytes(["Name 1", "City"], ["Acme", "Boston"])
         resp = await client.post("/api/dedup/file", files=self._upload(data))
         assert resp.status_code == 422
+
+
+class TestDedupRouteEquivalence:
+    """The two intake routes must build identical DedupRow objects.
+
+    This is the invariant the missing LEI alias violated. Asserting it
+    field-for-field guards every alias at once, so the next omission fails
+    here rather than silently weakening adjudication — which is how the LEI
+    column went unnoticed.
+    """
+
+    _XTYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    @pytest.mark.asyncio
+    async def test_json_and_file_routes_build_identical_rows(
+        self, client, monkeypatch,
+    ):
+        captured_json = _capture_cluster_rows(monkeypatch)
+        resp = await client.post(
+            "/api/dedup/cluster-block", json={"rows": _FULL_DEDUP_JSON},
+        )
+        assert resp.status_code == 200
+        json_rows = captured_json["rows"]
+
+        wb = Workbook()
+        ws = wb.active
+        ws.append(_FULL_DEDUP_HEADERS)
+        for row in _FULL_DEDUP_ROWS:
+            ws.append(row)
+        buf = io.BytesIO()
+        wb.save(buf)
+
+        captured_file = _capture_cluster_rows(monkeypatch)
+        resp = await client.post(
+            "/api/dedup/file",
+            files={"file": ("candidates.xlsx", buf.getvalue(), self._XTYPE)},
+        )
+        assert resp.status_code == 200
+        file_rows = captured_file["rows"]
+
+        assert len(file_rows) == len(json_rows) == len(_FULL_DEDUP_ROWS)
+        for json_row, file_row in zip(json_rows, file_rows):
+            assert file_row.model_dump() == json_row.model_dump()

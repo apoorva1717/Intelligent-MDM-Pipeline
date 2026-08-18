@@ -703,6 +703,12 @@ _DEDUP_HEADER_ALIASES: dict[str, str] = {
     "country": "country",
     "countryregionkey": "country",
     "rorid": "ror_id",
+    # "LEI ID" is what /enrich/file writes (api.output_columns.RESPONSE_COLUMNS),
+    # and it normalises to the same key as "lei id" / "lei_id" / "LEI_ID".
+    # Without this the column bound to nothing and the adjudicator ran without
+    # the company legal-entity signal the JSON route carries.
+    "leiid": "lei_id",
+    "lei": "lei_id",
     "enrichedname": "enriched_name",
 }
 
@@ -714,20 +720,38 @@ def _rows_to_dedup_rows(row_dicts: list[dict[str, str]]) -> list[DedupRow]:
     ``_DEDUP_HEADER_ALIASES``) so a column written as "Customer", "row_id",
     or "Name 1" is recognised. ``row_id`` is required by the model; a row
     missing it surfaces as a validation error rather than being dropped.
+
+    A header the alias table does not know binds to nothing. That is correct
+    for the CRM/scoring columns this stage only passes through, but it is also
+    how a missing alias hides: the column is simply discarded and adjudication
+    runs one signal short, with no error. Every unrecognised header is
+    therefore named once at WARNING level.
     """
     rows: list[DedupRow] = []
     errors: list[str] = []
+    unrecognised: dict[str, None] = {}  # insertion-ordered set of raw headers
     for index, row_dict in enumerate(row_dicts, start=1):
         normalised: dict[str, str] = {}
         for header, value in row_dict.items():
             field = _DEDUP_HEADER_ALIASES.get(_norm_header(header))
-            if field is None or field in normalised:
+            if field is None:
+                unrecognised.setdefault(header, None)
+                continue
+            if field in normalised:
                 continue
             normalised[field] = value
         try:
             rows.append(DedupRow.model_validate(normalised))
         except ValidationError as exc:
             errors.append(f"row {index}: {exc.errors()[0].get('msg', str(exc))}")
+
+    if unrecognised:
+        logger.warning(
+            "dedup file: %d column header(s) matched no DedupRow field and "
+            "were not used for adjudication (passed through to the output "
+            "unchanged): %s",
+            len(unrecognised), ", ".join(repr(h) for h in unrecognised),
+        )
 
     if errors:
         raise HTTPException(
