@@ -73,6 +73,10 @@ class WebsiteResolution:
     url: str | None = None
     confidence: str = "none"  # "high" | "low" | "none"
     source: str = "none"      # "serp" | "llm" | "none"
+    # Title of the SERP result the URL came from. Read-only evidence for the
+    # domain ownership guard's on-domain condition (utils/domain_resolver.py);
+    # it never influences selection here.
+    title: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -400,6 +404,7 @@ def select_website_from_serp(
         url=_root_url(best.url),
         confidence="high" if high else "low",
         source="serp",
+        title=best.title,
     )
 
 

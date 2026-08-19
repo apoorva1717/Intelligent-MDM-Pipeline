@@ -35,10 +35,13 @@ RESPONSE_COLUMNS: dict[str, str] = {
     "name2_enriched": "Name 2",
     "name3_enriched": "Name 3",
     "name4_enriched": "Name 4",
-    # "Domain" and "Website URL" merged into a single "Domain" column that
-    # carries the website URL value; the separate "Website URL" column and the
-    # bare-domain value are no longer emitted.
-    "website_url": "Domain",
+    # "Domain" and "Website URL" are merged into a single "Domain" column. It
+    # carries the registrable ``domain`` (mit.edu) — never a full URL: the
+    # homepage ``website_url`` is derived from it (https://mit.edu) and kept
+    # internal, so the column can no longer ship a deep ROR link
+    # (…/home/index.en.html) or a sub-site host (investors.lockheedmartin.com).
+    # See utils/domain_resolver.py.
+    "domain": "Domain",
     "department_domain": "Department Domain",
     # ── Contact block (enriched) ─────────────────────────────────────
     "care_of_enriched": "Care Of",

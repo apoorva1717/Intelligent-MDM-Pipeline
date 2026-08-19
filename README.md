@@ -696,18 +696,22 @@ Four related output columns are produced during finalisation. They are distinct 
 
 | Output column | Internal field | What it is | Owner |
 |---|---|---|---|
-| **Domain** | `website_url` | The org's homepage URL (`https://web.mit.edu`) | `website_resolver.py` (Paths A/B/C) + ROR |
-| *(internal, excluded from response)* | `domain` | The registrable domain (`mit.edu`, `example.co.uk`) — feeds search terms and the dept probe | `extract_domain()` |
-| **Department Domain** | `department_domain` | The department's subdomain/URL (`chem.ufl.edu`) | `orchestrator._probe_department_url` |
+| **Domain** | `domain` | The registrable domain (`mit.edu`, `example.co.uk`) — also feeds search terms and the dept probe | `domain_resolver.resolve_domain()` |
+| *(internal, excluded from response)* | `website_url` | The org homepage, always `https://<domain>` | `domain_resolver.resolve_domain()` |
+| **Department Domain** | `department_domain` | The department's subdomain (`chem.ufl.edu`) | `orchestrator._probe_department_url` |
 | **Search Term 1 / 2** | `search_term_1` / `search_term_2` | Compact search handles for the institution / department | `search_terms.derive_search_terms` |
 
-> ⚠️ The public **"Domain"** column carries `website_url` (the homepage). The bare registrable `domain` is internal-only (`api/models.py`). `department_domain` is a separate column, emitted as a full `https://…` URL.
+> ⚠️ The public **"Domain"** column carries the bare registrable `domain` — never a URL. `website_url` is derived from it (`https://mit.edu`) and is internal-only (`api/models.py`); the candidate URL a tier actually found is kept only for the duration of the record, as `_website_raw`, because the department probe needs the real host. `department_domain` is a separate column, emitted as a full `https://…` URL.
+>
+> Both fields are written in exactly one place — `utils/domain_resolver.resolve_domain()` (§2). No other module writes either one.
 
-### 1 · Institution website (`website_url`) — Path A / B / C
+### 1 · Institution website — Path A / B / C
 
-Resolution follows a strict precedence; the first source that fills `website_url` wins (it is only ever written while empty). All of Paths B/C live in `enrichment/website_resolver.py`, driven by `orchestrator._maybe_resolve_website_bc` (which returns early if `website_url` is already set — so ROR always wins — or if Name 1 is blank).
+Resolution follows a strict precedence; the first source that fills the domain wins (it is only ever written while empty). All of Paths B/C live in `enrichment/website_resolver.py`, driven by `orchestrator._maybe_resolve_website_bc` (which returns early if a website is already set — so ROR always wins — or if Name 1 is blank).
 
-**Path A — ROR (highest precedence).** When Tier 1 matches, ROR's first `links[]` entry of `type == "website"` becomes `website_url`, and `extract_domain()` of it becomes `domain`. The person-affiliation path (Stage 2b) does the same after a ROR-confirmed match. For companies matched via GLEIF/LEI, ROR's website/domain survive — LEI has no website field, and can overwrite `name1` but never the domain.
+Every path produces a **candidate URL**, never a field value: the candidate goes to `resolve_domain()` (§2), which canonicalises it and decides whether it may be attributed to this organisation at all. A path that finds a candidate the guard rejects writes nothing.
+
+**Path A — ROR (highest precedence).** When Tier 1 matches, ROR's first `links[]` entry of `type == "website"` is the candidate, carrying `registry="ROR"` provenance — the match already passed ROR's country guard. It is still canonicalised: ROR routinely stores a deep link (`http://www.uni-stuttgart.de/home/index.en.html` → `uni-stuttgart.de`). The person-affiliation path (Stage 2b) does the same after a ROR-confirmed match. For companies matched via GLEIF/LEI, ROR's domain survives — LEI has no website field, and can overwrite `name1` but never the domain.
 
 **Path B — SERP resolution** (`resolve_website_via_serp`, any record type):
 - **Query.** `"{name1}" official website` plus geo — research institutions append the country; companies/unknown append `city state` (else country, else nothing). `num_results = 10`.
@@ -723,13 +727,57 @@ Resolution follows a strict precedence; the first source that fills `website_url
 
 **Path C — LLM inference** (`infer_website_via_llm`, only when Path B found nothing). One LLM call with Name 1 + city/state/country; `""/null/none/unknown/n-a` are treated as no result; the URL shape is validated. Always returned `low` confidence.
 
-**Confidence → write/flag semantics.** `high` → write `website_url`, no flag. `low` → write + `flag_for_review` ("resolved by SERP with low confidence — verify" / "inferred by LLM — verify"). `none` → leave empty.
+**Confidence → write/flag semantics.** `high` → write, no flag. `low` → write + `flag_for_review` ("resolved by SERP with low confidence — verify" / "inferred by LLM — verify"). `none` → leave empty. The flag is paired with the write: when the ownership guard rejects the candidate nothing is written, so the "verify this website" flag does not fire either — the record carries `domain-unverified` instead (§2). Path B's chosen SERP title rides along on `WebsiteResolution.title` as read-only evidence for the guard's on-domain condition; it never influences selection.
 
 **`WEBSITE_TRACE` diagnostic** (`config.WEBSITE_TRACE`, default off). When on, `resolve_website_via_serp` / `infer_website_via_llm` emit one structured JSON line per attempt on the `enrichment.trace.website` logger — per-candidate `rejected_by` (`url_shape`/`blacklist`/`name_overlap`/`rank_0`), matched token, foreign label, rank, chosen, confidence, and the outcome. Read-only: it never changes resolution. Driver script: `scripts/trace_website.py` (six records, writes `logs/website_trace.json`).
 
-### 2 · Registrable `domain` (internal)
+### 2 · `domain` — the single write path (`utils/domain_resolver.py`)
 
-`domain` is filled, first-non-empty-wins: **ROR** (`extract_domain` of ROR's website, during Tier 1) → **website-derived** (`extract_domain(website_url)` right after Paths B/C) → **`source_url`-derived** (from a Tier 2A/2B faculty page, in `finalise`). A website- or source-derived domain never overwrites a ROR domain. Companies resolved via LEI carry `domain = null` unless a web tier supplies a website.
+**File:** `utils/domain_resolver.py` · **Entry point:** `resolve_domain(candidate_url, evidence)`
+
+Every value `domain` and `website_url` ever take is produced here. Callers pass the candidate URL they found plus the evidence the record carries; they never assign the fields themselves. `orchestrator._apply_domain` is the thin wrapper that hands a candidate over and writes the outcome.
+
+Candidate order is unchanged, first-non-empty-wins: **ROR** (Path A, during Tier 1) → **website-derived** (Paths B/C) → **`source_url`-derived** (a Tier 2A faculty page or the lab resolver, in `finalise`). A later candidate never overwrites an accepted domain. Companies resolved via LEI carry `domain = null` unless a web tier supplies a website.
+
+#### 2a · Canonical form
+
+`canonicalise_domain()` reduces any candidate to the registrable domain, reusing `extract_domain()`: scheme, `www.`, path, query, fragment and trailing slash dropped, subdomains collapsed. `website_url` is then rebuilt as `https://<domain>`.
+
+| Candidate | `domain` | `website_url` |
+|---|---|---|
+| `http://www.uni-stuttgart.de/home/index.en.html` | `uni-stuttgart.de` | `https://uni-stuttgart.de` |
+| `https://www.mayoclinic.org/patient-visitor-guide/florida` | `mayoclinic.org` | `https://mayoclinic.org` |
+| `https://investors.lockheedmartin.com` | `lockheedmartin.com` | `https://lockheedmartin.com` |
+| `https://admission.gatech.edu` | `gatech.edu` | `https://gatech.edu` |
+
+So a `domain` can never contain a scheme, path, query string, trailing slash or subdomain, and `website_url` can never be a deep link or a sub-site. An investor-relations or admissions sub-site is not the organisation's domain.
+
+The raw candidate is kept for the record's lifetime as the transient `_website_raw` key, because the department probe needs the real host — §5e's `site:gc.cuny.edu` must not become `site:cuny.edu`, and §5f follows the original link's redirect chain.
+
+#### 2b · Ownership guard (`DOMAIN_OWNERSHIP_GUARD_ENABLED`, default on)
+
+ROR has a country guard and GLEIF a name-verification guard because both upstream scorers return confident wrong answers. The domain path had neither, so an unrelated company's website could be attached to a customer record — `delta.com` for "Delta Analytical", `cardinalhealth.com` for "Cardinal Instruments" — and read as successful enrichment. That is worse than an empty field.
+
+A canonicalised candidate is accepted only when at least one holds:
+
+1. **Registry provenance.** The candidate came from a ROR record that passed the country guard, or a GLEIF record that passed name verification. Sufficient alone, no further check.
+2. **Name similarity.** RapidFuzz `token_sort_ratio` between Name 1 (normalised by `tier1_ror._normalise_for_tokens`) and the domain label (split on hyphens only) reaches **`DOMAIN_NAME_MATCH_THRESHOLD`**. Concatenated words are deliberately *not* segmented — guessing word boundaries inside `aumbiotech` produces false confidence.
+3. **Email domain match.** The record carries an email whose registrable domain is not a consumer provider (gmail, googlemail, outlook, hotmail, live, yahoo, aol, icloud, gmx, web.de, t-online.de, protonmail, …). When the candidate could not be verified on its own this **replaces** it: a record holding `ORDERS@MERIDIANLABS.COM` already knows the domain better than a search result does (`meridianlabs.ai`).
+4. **On-domain search evidence.** The candidate came from a SERP result *on that domain* whose page title or H1 contains the Name 1 tokens — **all** significant (≥4-char) tokens, not just one. The SERP layer already admits a result on a single overlap, which is exactly how a stranger's "… Biotech …" page slips through.
+
+Precedence is registry → name → email → on-domain evidence; the first hit wins and names the accepting condition. Name similarity is consulted *before* the email so a well-matched candidate is never clobbered by an unrelated address on the record (a distributor's mailbox).
+
+**None holds** → `domain = null`, no `website_url`, and the record is flagged `domain-unverified` ("website could not be verified as belonging to this organisation — verify"). The flag is raised at the end of `finalise`, *after* the research-institution review block that overwrites `flag_reason`, and it appends rather than replaces, so it can neither be masked nor mask anything else.
+
+Two records both reading "Cardinal Instruments" (Tampa and Boston) fail name similarity against `cardinalhealth.com` and `cardinalguitars.com` alike, and both end with no domain. That is the intended outcome.
+
+**Threshold tuning.** `DOMAIN_NAME_MATCH_THRESHOLD` defaults to **82**, tuned on the demo batch: the highest-scoring *wrong-owner* pair is `Acme Biotech → aumbiotech.com` at 81.8, and the lowest-scoring *right-owner* pair is `Lockheed Martin Corp → lockheedmartin.com` at 82.4. Every other wrong-owner pair scores ≤ 75. The margin between those two is thin by construction — a metric that cannot segment concatenated labels has no room there — so the other three conditions, not the threshold, are what carry most accepts.
+
+**Known cost.** Domains that are *contractions* of the name (`fishersci.com` for "Fisher Scientific", `massgeneralbrigham.org` for "Brigham and Women's") and bare acronym hosts (`ufl.edu`) are unreachable by name similarity. They still resolve through registry provenance, an on-domain SERP title, or the record's email — but a Path C (LLM) guess with none of those is now dropped rather than shipped.
+
+**Telemetry.** Batch summary: `domain_from_registry`, `domain_from_email`, `domain_from_serp` (every web-derived accept — name similarity or on-domain evidence), `domain_rejected_unverified`. Each rejection also logs one line naming the candidate and Name 1.
+
+Set `DOMAIN_OWNERSHIP_GUARD_ENABLED=false` to A/B disable the guard; canonicalisation (§2a) still applies.
 
 ### 3 · `department_domain` — the department probe
 
@@ -750,7 +798,11 @@ Resolved by `orchestrator._probe_department_url` (writes `result["department_dom
 
 **Verification — `_verify_candidate_url` (§5d).** Fetches the page; passes if the cleaned phrase appears verbatim, or ≥2 needles match (≥1 for a single needle). A needle matches a page word via `_seg_matches_needle` **or** a ≥5-char common prefix — so `physics.nist.gov` ("Physical Measurement Laboratory") verifies for a Physics query, while `science.mit.edu` still fails a Computer Science query. (`_seg_matches_needle` alone uses full-prefix and does not bridge `physics`↔`physical`; the common-prefix rule covers that.)
 
-**Output.** Bare-host winners are stored as `chem.ufl.edu`; stage-2b path winners as a full URL. In `finalise` — **after** search terms are derived (they need the bare host) — a bare host is prefixed to `https://chem.ufl.edu`.
+**Output.** Bare-host winners are stored as `chem.ufl.edu`; stage-2b path winners as a full URL. In `finalise` — **after** search terms are derived (they need the stored form) — the stored value is run through `domain_resolver.canonicalise_host()` and prefixed: `https://chem.ufl.edu`.
+
+`canonicalise_host()` is **not** `canonicalise_domain()`. It strips the path, query, fragment, trailing slash and a leading `www.`, but **keeps the subdomain** — a department domain legitimately *is* a subdomain (`chemistry.stanford.edu`, `be.mit.edu`, `physics.yale.edu`), and collapsing it would destroy the Tier 2B output. So `https://medschool.umich.edu/departments/radiation-oncology` is emitted as `https://medschool.umich.edu`.
+
+> ⚠️ This does mean a stage-2b **path** winner loses its path: `clas.ufl.edu/chemistry` is emitted as `clas.ufl.edu`, which names the college rather than the department. That is the documented trade-off for never shipping a deep link in this column; stage 2b's path ranking still decides *which* host wins.
 
 ### 4 · Search terms (`search_term_1`, `search_term_2`)
 
@@ -807,6 +859,9 @@ Computed by `search_terms.derive_search_terms(result)` once in `finalise`. `sear
 | Tier 3 any result | Yes | "LLM inference — requires verification" |
 | Medium confidence from any tier | Yes | "Medium confidence — recommend review" |
 | UC 0 overflow detected | Yes | "Name1 overflow — Name1+Name2 appear to be one name" |
+| Candidate website fails every ownership condition | Yes | "domain-unverified: website could not be verified as belonging to this organisation — verify" |
+
+> `domain-unverified` is raised at the end of `finalise`, after the research-institution block, and **appends** to any existing reason (`"…; domain-unverified: …"`) — it never replaces one, and no other flag can mask it. See [§2b](#2b--ownership-guard-domain_ownership_guard_enabled-default-on).
 
 ---
 
@@ -884,7 +939,7 @@ The two **registry identifiers are deliberately included** in the JSON so the Ph
       "name4_enriched": null,
       "search_term_1": "MIT",
       "search_term_2": "EECS",
-      "department_domain": "eecs.mit.edu",
+      "department_domain": "https://eecs.mit.edu",
       "care_of_enriched": null,
       "contact_enriched": "Dr. Jane Smith",
       "email_enriched": "jsmith@mit.edu",
@@ -907,7 +962,6 @@ The two **registry identifiers are deliberately included** in the JSON so the Ph
       "ror_id": "https://ror.org/042nb2s44",
       "lei_id": null,
       "domain": "mit.edu",
-      "website_url": "https://www.mit.edu",
       "flag_for_review": true,
       "flag_reason": "Partial match — confirm enriched Name 2",
       "error": null
@@ -928,6 +982,10 @@ The two **registry identifiers are deliberately included** in the JSON so the Ph
     "lei_hits_fuzzy": 0,
     "lei_misses": 0,
     "lei_errors": 0,
+    "domain_from_registry": 1,
+    "domain_from_email": 0,
+    "domain_from_serp": 0,
+    "domain_rejected_unverified": 0,
     "tier2a_population_count": 0,
     "tier2a_verification_count": 1,
     "tier2b_count": 0,
@@ -1389,6 +1447,7 @@ enrichment_api/
 │
 ├── utils/                        # Shared utilities
 │   ├── text_utils.py             # Cleaning, normalization, country codes, domain extraction
+│   ├── domain_resolver.py        # Single write path for `domain` / `website_url` + ownership guard
 │   ├── cache.py                  # Per-batch in-memory cache (ROR + SERP deduplication)
 │   └── __init__.py
 │
@@ -1483,7 +1542,7 @@ LLM-based check for Name1+Name2 being a single split organization name. Early-ex
 
 ### `enrichment/website_resolver.py` — Website Resolution (Paths B/C)
 
-`resolve_website_via_serp` (Path B — SERP, with the distinctive/acronym-in-host ranking, generic-token guard, TLD-needs-host-match confidence rule, and the unquoted retry) and `infer_website_via_llm` (Path C — LLM fallback). `select_website_from_serp` holds the pure ranking logic; `_assemble_path_b_trace` builds the read-only `WEBSITE_TRACE` diagnostic. Path A (ROR's `links[]` website) is handled inline in the orchestrator. See [Website, Domain, Department-Domain & Search-Term Resolution](#website-domain-department-domain--search-term-resolution).
+`resolve_website_via_serp` (Path B — SERP, with the distinctive/acronym-in-host ranking, generic-token guard, TLD-needs-host-match confidence rule, and the unquoted retry) and `infer_website_via_llm` (Path C — LLM fallback). `select_website_from_serp` holds the pure ranking logic; `_assemble_path_b_trace` builds the read-only `WEBSITE_TRACE` diagnostic. Path A (ROR's `links[]` website) is handled inline in the orchestrator. All three paths return a *candidate*: `orchestrator._apply_domain` hands it to `domain_resolver.resolve_domain()`, which owns the write. See [Website, Domain, Department-Domain & Search-Term Resolution](#website-domain-department-domain--search-term-resolution).
 
 ### `enrichment/search_terms.py` — Search-Term Derivation
 
@@ -1566,13 +1625,17 @@ HTTP page fetcher with BeautifulSoup parsing. Extracts structured elements: URL 
 - `canonicalise_unit_name()`: Normalizes to "Department/Division/School/Faculty of X" form
 - `is_granular_unit()`: Detects lab/group/centre/facility units for scope filtering
 - `looks_like_research_institution()`: Keyword-based fallback classification
-- `extract_domain()`: URL -> registrable domain (handles two-part TLDs)
+- `extract_domain()`: URL -> registrable domain (handles two-part TLDs). It already strips the scheme/path/query/fragment and collapses subdomains — `utils/domain_resolver.py` wraps it rather than reimplementing it, adding only bare-host tolerance and lowercasing
 - `score_search_result()`: Heuristic scoring for people/faculty page detection
 - `name_initials()` / `acronym_matches_name()`: initials of a name; whether an acronym matches them (ROR acronym currency check + subdomain-acronym search term)
 - `seg_matches_needle()`: host/subdomain-vs-token match (substring or shared ≥3-char leading prefix) — shared by the department probe and the search-term rules
 - `is_admin_unit()`: detects administrative / back-office desks (accounts payable, finance, billing, procurement, treasury, …) — drives `search_term_2 = "ADMIN"` and department-probe suppression
 - `clean_passthrough_org_name()`: title-cases ALL-CAPS + expands abbreviations for names that pass through un-canonicalised (and for a ROR name kept over a divergent official form)
 - `smart_title_case()`: ALL-CAPS → title case while preserving acronyms (`MRI`, `NIST`, `UCSF`), `Mc` surnames, and hyphen segments
+
+### `utils/domain_resolver.py` — Domain Write Path & Ownership Guard
+
+The single point where `domain` and `website_url` are decided; no other module writes either field. `canonicalise_domain()` reduces a candidate URL to the registrable domain (reusing `extract_domain()`), `canonicalise_host()` does the same for a department domain but keeps the subdomain, and `resolve_domain()` applies the four ownership conditions — registry provenance, name similarity, email domain, on-domain search evidence — returning a `DomainDecision` the caller writes or a rejection it flags `domain-unverified`. Also exposes `email_domain()` / `is_generic_email_domain()` (consumer-provider blocklist) and `name_similarity()`. See [Website, Domain, Department-Domain & Search-Term Resolution §2](#2--domain--the-single-write-path-utilsdomain_resolverpy).
 
 ### `utils/cache.py` — Batch Cache
 
@@ -1627,6 +1690,8 @@ Copy `.env.example` to `.env` and configure:
 | `NAME_CANDIDATE_THRESHOLD` | `0.85` | Residue nomination: suffix-stripped Jaro-Winkler name similarity to nominate a pair for LLM adjudication |
 | `TOKEN_CANDIDATE_THRESHOLD` | `0.6` | Residue nomination: token-set Jaccard overlap to nominate a pair |
 | `MAX_CANDIDATES_PER_BLOCK` | `50` | Residue nomination: over this many candidate pairs, the block routes to `manual_review` |
+| `DOMAIN_NAME_MATCH_THRESHOLD` | `82` | Domain ownership guard: rapidfuzz `token_sort_ratio` Name 1 must reach against the candidate's domain label before a web-derived domain is attributed to the organisation. Tuned on the demo batch — the highest wrong-owner pair scores 81.8, the lowest right-owner pair 82.4 |
+| `DOMAIN_OWNERSHIP_GUARD_ENABLED` | `true` | Domain ownership guard on/off (A/B switch). When off, candidates are still canonicalised to the registrable domain; only the ownership conditions are skipped |
 | `SERPAPI_KEY` | *(none)* | SerpAPI key; if absent, DuckDuckGo is used |
 | `DEPT_PROBE_CROSS_DOMAIN` | `false` | Department probe stage 3 (unrestricted cross-domain SERP). Off by default — one SERP call per unresolved department. Enable for split-domain academic medical centres (e.g. `hopkinsmedicine.org`) at the cost of a second SERP call and off-domain-result risk |
 | `WEBSITE_TRACE` | `false` | Diagnostic-only: emit a per-candidate JSON trace of Path B / Path C website resolution on the `enrichment.trace.website` logger. No behaviour change |
@@ -1980,7 +2045,19 @@ RETURN EnrichmentResponse (JSON)
 
 ## Changelog
 
-### Search terms, website / domain / department-domain resolution (newest)
+### Domain: one write path + an ownership guard (newest)
+
+Full detail in [§2 · `domain` — the single write path](#2--domain--the-single-write-path-utilsdomain_resolverpy).
+
+- **Single chokepoint** — `utils/domain_resolver.resolve_domain()` is now the only place `domain` / `website_url` are decided; every tier hands it a *candidate* URL and the evidence the record carries. `orchestrator._apply_domain` is the wrapper. Previously five call sites wrote the fields directly.
+- **The "Domain" column now carries `domain`, not `website_url`** — the exported column shipped the raw URL, which is why every value in the demo export had a scheme and some had a deep path (`http://www.uni-stuttgart.de/home/index.en.html`) or a sub-site host (`https://investors.lockheedmartin.com`). The bare `domain` was already canonical; the export mapping was the format bug. `website_url` is now derived (`https://<domain>`) and internal-only. **Same column names, same column order** — only the value changes, so the DATAshaper / ADF schema is untouched.
+- **Ownership guard (§2b)** — a candidate is attributed to the organisation only with registry provenance, name similarity at `DOMAIN_NAME_MATCH_THRESHOLD` (82), a non-generic email domain on the record, or an on-domain SERP title naming it. Otherwise `domain = null` + flag `domain-unverified`. This is the domain-path counterpart to ROR's country guard and GLEIF's name verification; without it `delta.com` was attached to "Delta Analytical" and `cardinalhealth.com` to "Cardinal Instruments", which reads as successful enrichment.
+- **Email evidence is used, not discarded** — a record holding `ORDERS@MERIDIANLABS.COM` now yields `meridianlabs.com`, outranking the search result's `meridianlabs.ai`.
+- **`department_domain` is host-canonicalised, never subdomain-collapsed** — path/query/fragment stripped (`medschool.umich.edu/departments/radiation-oncology` → `medschool.umich.edu`) while `chemistry.stanford.edu` / `be.mit.edu` keep their subdomains. Stage-2b path winners now emit the host rather than the full URL (§3).
+- **Telemetry** — `domain_from_registry` / `domain_from_email` / `domain_from_serp` / `domain_rejected_unverified` on the batch summary; `DOMAIN_OWNERSHIP_GUARD_ENABLED=false` A/B disables the guard.
+- **Cost** — a contraction domain (`fishersci.com` for "Fisher Scientific") proposed by Path C with no registry, email or search corroboration is now dropped instead of written. Tests `test_domain_resolver.py`.
+
+### Search terms, website / domain / department-domain resolution
 
 Full detail in [Website, Domain, Department-Domain & Search-Term Resolution](#website-domain-department-domain--search-term-resolution).
 

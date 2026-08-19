@@ -336,8 +336,11 @@ class EnrichmentResult(BaseModel):
     name2_enriched: Optional[str] = None
     name3_enriched: Optional[str] = None
     name4_enriched: Optional[str] = None
-    # Serialised as the "Domain" column (carries the website URL value).
-    website_url: Optional[str] = None
+    # Serialised as the "Domain" column: the registrable domain ('mit.edu'),
+    # written only through utils.domain_resolver.resolve_domain. Null when the
+    # candidate could not be verified as belonging to this organisation (the
+    # record is then flagged `domain-unverified`).
+    domain: Optional[str] = None
     # Unit-scoped host with TLD (e.g. 'cs.mit.edu') when the source URL
     # points to a real subdomain of the institution domain. Null when
     # name2 is absent or the source URL is the bare institution domain.
@@ -415,10 +418,17 @@ class EnrichmentResult(BaseModel):
         "web_search", "passthrough", "gleif", "none",
     ] = Field(default="none", exclude=True)
     source_url: Optional[str] = Field(default=None, exclude=True)
-    # Populated and used internally (search terms, tier logic) but excluded
-    # from the response body: only website_url is serialised (the "Domain"
-    # column), keeping the JSON response identical to the file output schema.
-    domain: Optional[str] = Field(default=None, exclude=True)
+    # The organisation homepage, always ``https://<domain>`` — never a deep
+    # path or a sub-site host. Derived from ``domain`` by
+    # utils.domain_resolver, and excluded from the response body: the "Domain"
+    # column carries the bare ``domain``, keeping the JSON response identical
+    # to the file output schema.
+    website_url: Optional[str] = Field(default=None, exclude=True)
+    # Which ownership condition accepted ``domain`` ("registry" | "email" |
+    # "name" | "serp" | "unguarded"), and whether a candidate was rejected
+    # outright. Batch-summary telemetry only.
+    domain_verified_by: Optional[str] = Field(default=None, exclude=True)
+    domain_rejected: bool = Field(default=False, exclude=True)
     contact_used: bool = Field(default=False, exclude=True)
     name2_match_result: Literal["exact", "partial", "no_match", "not_applicable", "unknown"] = Field(default="not_applicable", exclude=True)
     # Which use cases (0-9) fired for this record
@@ -444,6 +454,14 @@ class EnrichmentSummary(BaseModel):
     lei_hits_fuzzy: int = 0
     lei_misses: int = 0
     lei_errors: int = 0
+    # Domain ownership guard telemetry (utils/domain_resolver.py). The three
+    # `domain_from_*` counters partition the records that kept a domain by the
+    # evidence that carried it; `domain_from_serp` covers every web-derived
+    # domain (name similarity or on-domain search evidence).
+    domain_from_registry: int = 0
+    domain_from_email: int = 0
+    domain_from_serp: int = 0
+    domain_rejected_unverified: int = 0
     tier2a_population_count: int = 0
     tier2a_verification_count: int = 0
     tier2b_count: int = 0

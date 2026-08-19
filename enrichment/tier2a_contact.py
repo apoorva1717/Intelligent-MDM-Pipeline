@@ -52,6 +52,10 @@ class Tier2AResult:
     name2_match_score: float = 0.0
     confidence: str = "none"  # high|medium|low
     source_url: str | None = None
+    # Title of the SERP result ``source_url`` came from. Read-only evidence for
+    # the domain ownership guard (utils/domain_resolver.py) when the domain has
+    # to be derived from this page; it never influences the lookup itself.
+    source_title: str | None = None
     flag_for_review: bool = True
     flag_reason: str | None = None
     enrichment_status: str = "failed"
@@ -155,6 +159,7 @@ async def run_tier2a(
 
         # Person found with acceptable confidence — apply Mode A or B logic
         result.source_url = candidate.url
+        result.source_title = candidate.title
         result.confidence = llm_confidence
         official_dept = _clean_llm_string(extraction.get("official_dept"))
         official_group = _clean_llm_string(extraction.get("official_group"))

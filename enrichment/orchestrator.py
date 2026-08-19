@@ -67,6 +67,13 @@ from search.duckduckgo_client import DuckDuckGoClient
 from search.page_fetcher import PageFetcher
 from search.serpapi_client import SerpAPIClient
 from utils.cache import BatchCache, SerpCache
+from utils.domain_resolver import (
+    DOMAIN_UNVERIFIED_REASON,
+    DomainDecision,
+    DomainEvidence,
+    canonicalise_host,
+    resolve_domain,
+)
 from utils.text_utils import (
     canonical_is_spelling_variant,
     canonical_preserves_identity,
@@ -562,14 +569,19 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
         result[f"{f}_changed"] = _changed(f)
 
     # Domain fallback: if ROR didn't supply a domain but a successful
-    # tier produced an on-domain source_url, derive it from the host.
-    # Tier 2A's URLs are on-domain by construction (the contact's
-    # faculty page); Tier 2B's may be — we extract regardless and
-    # let the caller treat low-confidence sources cautiously.
+    # tier produced a source_url, offer its host as a candidate. Tier 2A's
+    # URLs are on-domain by construction (the contact's faculty page);
+    # Tier 2B's may not be — an investor-relations or admissions sub-site is
+    # not the organisation's domain — so the candidate goes through the same
+    # ownership guard as every other write path.
     if not result.get("domain") and result.get("source_url"):
-        derived = extract_domain(result["source_url"])
-        if derived:
-            result["domain"] = derived
+        _apply_domain(
+            result,
+            result["source_url"],
+            serp_title=result.get("_source_title"),
+            serp_h1=result.get("_source_h1"),
+            serp_url=result.get("source_url"),
+        )
 
     # Apply the research-institution manual-review flag last so any
     # earlier tier-specific flag_reason cannot mask it. A research
@@ -592,6 +604,13 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
                 "contact — manual review required"
             )
 
+    # A candidate website that no ownership condition could tie to this
+    # organisation. Raised after the research-institution block, which
+    # overwrites flag_reason, so the code is never masked. Appends — it
+    # never replaces an existing reason.
+    if result.pop("_domain_unverified", False):
+        _flag_website_review(result, DOMAIN_UNVERIFIED_REASON)
+
     # Compact search handles for downstream consumers. Runs after all
     # name / domain fields are settled so the derivation sees final
     # values. department_domain is written directly by the probe in
@@ -599,11 +618,21 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # source_url with the tiers.
     result["search_term_1"], result["search_term_2"] = derive_search_terms(result)
 
-    # Emit department_domain as a full URL (like website_url) rather than a
-    # bare host. Done AFTER derive_search_terms, which needs the host form.
+    # Emit department_domain as a full URL rather than a bare host. Done AFTER
+    # derive_search_terms, which needs the host form.
+    #
+    # The host is canonicalised first (path, query, fragment and trailing slash
+    # dropped): a stage-2b path winner would otherwise ship a deep link such as
+    # medschool.umich.edu/departments/radiation-oncology. Subdomains are NOT
+    # collapsed — a department domain legitimately IS a subdomain
+    # (chemistry.stanford.edu, be.mit.edu), and collapsing would destroy the
+    # Tier 2B output.
     dept_dom = (result.get("department_domain") or "").strip()
-    if dept_dom and not dept_dom.lower().startswith(("http://", "https://")):
-        result["department_domain"] = f"https://{dept_dom}"
+    if dept_dom:
+        dept_host = canonicalise_host(dept_dom)
+        result["department_domain"] = (
+            f"https://{dept_host}" if dept_host else None
+        )
 
     result["duration_ms"] = int((time.monotonic() - start) * 1000)
     # Strip transient non-schema keys before pydantic validation.
@@ -613,7 +642,85 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     result.pop("_ror_acronym", None)
     result.pop("_search_term_1_original", None)
     result.pop("_name1_was_person", None)
+    result.pop("_website_raw", None)
+    result.pop("_source_title", None)
+    result.pop("_source_h1", None)
     return result
+
+
+def _domain_evidence_name1(result: dict[str, Any]) -> str | None:
+    """The organisation name a candidate domain is claimed to belong to."""
+    for key in ("name1_enriched", "_pp_name1", "name1_original"):
+        val = (result.get(key) or "").strip()
+        if val:
+            return val
+    return None
+
+
+def _apply_domain(
+    result: dict[str, Any],
+    candidate_url: str | None,
+    *,
+    registry: str | None = None,
+    serp_title: str | None = None,
+    serp_h1: str | None = None,
+    serp_url: str | None = None,
+    settings: Settings | None = None,
+) -> DomainDecision:
+    """Route one candidate URL through the single ``domain`` write path.
+
+    The ONLY place ``result["domain"]`` / ``result["website_url"]`` are set.
+    ``registry`` is ``"ROR"``/``"GLEIF"`` when the candidate came out of a
+    registry record that already passed that registry's own guard.
+
+    First non-empty wins, as documented: once a domain is accepted a later
+    (lower-precedence) candidate never overwrites it. The raw candidate URL is
+    kept in the transient ``_website_raw`` key because the department probe
+    needs the real host — ``asrc.gc.cuny.edu`` must not become ``cuny.edu``
+    before ``site:`` restriction (§5e) — while the emitted ``website_url`` is
+    always the canonical ``https://<domain>``.
+    """
+    if result.get("domain"):
+        return DomainDecision(
+            domain=result["domain"],
+            website_url=result.get("website_url"),
+            verified_by=result.get("domain_verified_by"),
+        )
+
+    evidence = DomainEvidence(
+        name1=_domain_evidence_name1(result),
+        email=result.get("email_enriched") or result.get("email_original"),
+        registry=registry,
+        serp_title=serp_title,
+        serp_h1=serp_h1,
+        serp_url=serp_url or candidate_url,
+    )
+    decision = resolve_domain(
+        candidate_url,
+        evidence,
+        threshold=settings.domain_name_match_threshold if settings else None,
+        guard_enabled=(
+            settings.domain_ownership_guard_enabled if settings else None
+        ),
+    )
+
+    if decision.domain:
+        result["domain"] = decision.domain
+        result["website_url"] = decision.website_url
+        result["_website_raw"] = candidate_url
+        result["domain_verified_by"] = decision.verified_by
+        # A later, verified candidate clears an earlier rejection.
+        result["domain_rejected"] = False
+        result.pop("_domain_unverified", None)
+    elif decision.rejected:
+        result["domain_rejected"] = True
+        result["_domain_unverified"] = True
+        logger.info(
+            "[%s] domain rejected as unverified: candidate=%s name1=%r",
+            result.get("record_id"), decision.candidate,
+            (evidence.name1 or "")[:60],
+        )
+    return decision
 
 
 def _flag_website_review(result: dict[str, Any], reason: str) -> None:
@@ -671,6 +778,9 @@ def _apply_tier2a(result: dict, tier2a: Tier2AResult, mode: str) -> None:
     result["contact_used"] = True
     result["source"] = tier2a.source
     result["source_url"] = tier2a.source_url
+    # Transient evidence for the domain ownership guard, should the domain end
+    # up being derived from this page in finalise().
+    result["_source_title"] = tier2a.source_title
     result["confidence"] = tier2a.confidence
     result["flag_for_review"] = tier2a.flag_for_review
     result["flag_reason"] = tier2a.flag_reason
@@ -872,8 +982,18 @@ class Orchestrator:
         * Path B high   → ``website_url``, no website-specific flag.
         * Path B low    → ``website_url`` + flag for review.
         * Path C        → ``website_url`` + flag for review.
+
+        Both paths hand their candidate to ``_apply_domain`` rather than
+        writing the field: a SERP or LLM URL is a guess about which
+        organisation owns a site, and the ownership guard is what decides
+        whether it may be attributed. When the guard rejects it nothing is
+        written, so the "verify this website" flag — which is about a website
+        we wrote — does not fire either; the record carries
+        ``domain-unverified`` instead.
         """
-        if result.get("website_url"):
+        # Idempotence: a candidate already resolved — or already rejected by
+        # the guard — must not trigger a second round of lookups.
+        if result.get("website_url") or result.get("domain_rejected"):
             return
         pp_name1 = result.get("_pp_name1")
         if not pp_name1 or not pp_name1.strip():
@@ -894,8 +1014,14 @@ class Orchestrator:
             trace=self._settings.website_trace,
         )
         if serp_res.url:
-            result["website_url"] = serp_res.url
-            if serp_res.confidence != "high":
+            decision = _apply_domain(
+                result,
+                serp_res.url,
+                serp_title=serp_res.title,
+                serp_url=serp_res.url,
+                settings=self._settings,
+            )
+            if decision.accepted and serp_res.confidence != "high":
                 _flag_website_review(
                     result,
                     "Website resolved by SERP with low confidence — "
@@ -914,11 +1040,16 @@ class Orchestrator:
             trace=self._settings.website_trace,
         )
         if llm_res.url:
-            result["website_url"] = llm_res.url
-            _flag_website_review(
-                result,
-                "Website inferred by LLM — verify",
+            # Path C has no search evidence to offer — an LLM-inferred URL
+            # stands or falls on name similarity / the record's own email.
+            decision = _apply_domain(
+                result, llm_res.url, settings=self._settings,
             )
+            if decision.accepted:
+                _flag_website_review(
+                    result,
+                    "Website inferred by LLM — verify",
+                )
 
     async def _resolve_probe_base(
         self, result: dict[str, Any], registrable: str, cache: BatchCache,
@@ -931,7 +1062,14 @@ class Orchestrator:
         ``site:gc.cuny.edu`` does not leak other CUNY campuses. Cached per batch
         (one resolution per institution). Falls back to the registrable domain.
         """
-        website = (result.get("website_url") or "").strip() or f"https://{registrable}/"
+        # The RAW candidate URL, not the canonical https://<domain>: §5e needs
+        # the real host (asrc.gc.cuny.edu) so site: restriction doesn't leak
+        # other campuses, and §5f needs the original link to follow its
+        # redirect chain.
+        website = (
+            (result.get("_website_raw") or result.get("website_url") or "").strip()
+            or f"https://{registrable}/"
+        )
         cached = cache.get_resolved_host(website)
         if cached is not None:
             return cached
@@ -1123,7 +1261,13 @@ class Orchestrator:
                     return
 
         # ── 1) Homepage scrape ────────────────────────────────────────
-        homepage = result.get("website_url") or f"https://{base}/"
+        # Raw candidate first — the real institution host links to its
+        # departments; the canonical https://<domain> may not.
+        homepage = (
+            result.get("_website_raw")
+            or result.get("website_url")
+            or f"https://{base}/"
+        )
         try:
             links = await self._page_fetcher.fetch_outgoing_links(
                 homepage, base,
@@ -1473,11 +1617,14 @@ class Orchestrator:
                 if confirmed.get("is_research_institution")
                 else "company"
             )
-            domain = confirmed.get("domain")
-            if domain:
-                result["domain"] = domain
-            if confirmed.get("website"):
-                result["website_url"] = confirmed.get("website")
+            # ROR-confirmed in the record's country — registry provenance, so
+            # the ownership guard passes on condition 1.
+            domain = _apply_domain(
+                result,
+                confirmed.get("website"),
+                registry="ROR",
+                settings=self._settings,
+            ).domain
             if confirmed.get("acronym") and confirmed["acronym"].strip():
                 result["_ror_acronym"] = confirmed["acronym"].strip()
 
@@ -1595,16 +1742,14 @@ class Orchestrator:
         """Resolve website (B/C if needed), probe for unit URL, run
         address Stage 1, finalise, and return."""
         await self._maybe_resolve_website_bc(record, result, cache)
-        # Derive the institution domain from a resolved website when no tier
-        # (ROR) supplied one. Both the department-domain probe below and the
-        # output ``domain`` field depend on this: a record resolved via the
-        # website resolver (SERP/LLM Path B/C) carries a website_url but no
-        # ``domain``, so without this the probe bails at its base-domain gate
-        # for every such row and ``department_domain`` is always empty.
+        # Defensive: every path that writes a website now writes the matching
+        # domain through _apply_domain, so the two can no longer diverge. Kept
+        # so a website arriving by some other route still reaches the guard
+        # rather than leaving the department probe without a base domain.
         if not result.get("domain") and result.get("website_url"):
-            derived = extract_domain(result["website_url"])
-            if derived:
-                result["domain"] = derived
+            _apply_domain(
+                result, result["website_url"], settings=self._settings,
+            )
         await self._probe_department_url(record.record_id, result, cache)
         await self._run_address_stage(result, record)
         result = finalise(result, start)
@@ -2076,14 +2221,17 @@ class Orchestrator:
                         if ror_parent.get("is_research_institution")
                         else "company"
                     )
-                    institution_domain = ror_parent.get("domain")
-                    if institution_domain:
-                        result["domain"] = institution_domain
-
-                    # Path A: ROR's links[] website is authoritative.
-                    ror_website = ror_parent.get("website")
-                    if ror_website:
-                        result["website_url"] = ror_website
+                    # Path A: ROR's links[] website is authoritative — the
+                    # match already passed ROR's country guard, so the
+                    # ownership guard passes on registry provenance. It is
+                    # still canonicalised: ROR often stores a deep link
+                    # (http://www.uni-stuttgart.de/home/index.en.html).
+                    institution_domain = _apply_domain(
+                        result,
+                        ror_parent.get("website"),
+                        registry="ROR",
+                        settings=self._settings,
+                    ).domain
 
                     # ── Tier 1 LEI: company counterpart to ROR ───────
                     # ROR classified this record as a company. Resolve
@@ -2689,5 +2837,17 @@ class Orchestrator:
                 summary.contact_lookup_attempted += 1
                 if r.enrichment_status in ("enriched", "verified"):
                     summary.contact_lookup_success += 1
+
+            # Domain ownership guard telemetry. "serp" covers every
+            # web-derived domain — name similarity and on-domain evidence
+            # alike — so the three counters partition the kept domains.
+            if r.domain_verified_by == "registry":
+                summary.domain_from_registry += 1
+            elif r.domain_verified_by == "email":
+                summary.domain_from_email += 1
+            elif r.domain_verified_by is not None:
+                summary.domain_from_serp += 1
+            if r.domain_rejected:
+                summary.domain_rejected_unverified += 1
 
         return summary

@@ -89,6 +89,8 @@ OPTIONAL_VARS_WITH_DEFAULTS = {
     "GLEIF_TIMEOUT_SECONDS": "15",
     "LEI_NAME_MATCH_THRESHOLD": "88",
     "LEI_MAX_RETRIES": "2",
+    "DOMAIN_NAME_MATCH_THRESHOLD": "82",
+    "DOMAIN_OWNERSHIP_GUARD_ENABLED": "true",
     "FUZZY_MATCH_THRESHOLD": "80",
     "MAX_PAGE_CONTENT_CHARS": "3000",
     "DEFAULT_MAX_CONCURRENCY": "5",
@@ -197,6 +199,27 @@ class Settings:
     )
     lei_max_retries: int = field(
         default_factory=lambda: int(os.getenv("LEI_MAX_RETRIES", "2"))
+    )
+
+    # Domain ownership guard (utils/domain_resolver.py) — the domain-path
+    # counterpart to ROR's country guard and GLEIF's name verification.
+    # rapidfuzz token_sort_ratio (0-100) that Name 1 must reach against the
+    # candidate's domain label before a web-derived domain is attributed to the
+    # organisation. Tuned on the demo batch: the highest wrong-owner pair scores
+    # 81.8 ("Acme Biotech" → aumbiotech.com) and the lowest right-owner pair
+    # 82.4 ("Lockheed Martin Corp" → lockheedmartin.com), so 82 is the smallest
+    # value that separates them. Registry provenance, email evidence and
+    # on-domain search evidence each bypass this check.
+    domain_name_match_threshold: float = field(
+        default_factory=lambda: float(os.getenv("DOMAIN_NAME_MATCH_THRESHOLD", "82"))
+    )
+    # Feature flag so the guard can be A/B disabled. When off, candidates are
+    # still canonicalised to the registrable domain — only the ownership
+    # conditions are skipped.
+    domain_ownership_guard_enabled: bool = field(
+        default_factory=lambda: _bool(
+            os.getenv("DOMAIN_OWNERSHIP_GUARD_ENABLED"), default=True
+        )
     )
 
     # Fuzzy matching

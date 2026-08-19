@@ -39,9 +39,14 @@ def _orch():
 
 
 def _seed(**overrides):
+    # The record carries an address on the institution's own domain, so the
+    # ownership guard (utils/domain_resolver.py) can attribute ufl.edu to
+    # "University of Florida" — a bare acronym host is not reachable by name
+    # similarity alone.
     rec = EnrichmentRecord(
         record_id="X", name1="University of Florida",
         city="Gainesville", state="FL", zip="32611", country="US",
+        email="registrar@ufl.edu",
     )
     result = _init_result(rec)
     result.update({

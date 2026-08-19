@@ -348,7 +348,10 @@ class TestOrchestratorWebsiteFields:
         )
         response = await orchestrator.enrich_batch([record], default_options)
         result = response.results[0]
-        assert result.website_url == "https://www.stanford.edu"
+        # website_url is always https://<registrable domain> — the "www."
+        # host of the source link never survives (utils/domain_resolver.py).
+        assert result.domain == "stanford.edu"
+        assert result.website_url == "https://stanford.edu"
         # Path A (ROR) is authoritative — no website-driven review flag.
         assert (result.flag_reason or "").lower().find("website") == -1
 
@@ -360,7 +363,8 @@ class TestOrchestratorWebsiteFields:
         )
         response = await orchestrator.enrich_batch([record], default_options)
         result = response.results[0]
-        assert result.website_url == "https://www.ufl.edu"
+        assert result.domain == "ufl.edu"
+        assert result.website_url == "https://ufl.edu"
 
     @pytest.mark.asyncio
     async def test_path_b_company_via_serp_no_flag(
@@ -375,26 +379,50 @@ class TestOrchestratorWebsiteFields:
         )
         response = await orchestrator.enrich_batch([record], default_options)
         result = response.results[0]
-        assert result.website_url == "https://www.thermofisher.com"
+        assert result.domain == "thermofisher.com"
+        assert result.website_url == "https://thermofisher.com"
         assert "website" not in (result.flag_reason or "").lower()
 
     @pytest.mark.asyncio
-    async def test_path_c_company_falls_through_to_llm(
+    async def test_path_c_llm_guess_is_rejected_without_corroboration(
         self, orchestrator, default_options,
     ):
         # "Fisher Scientific Co. LLC" — not in ROR mock; the SERP mock
         # has no entry for it (generic results don't share name tokens),
-        # so Path B yields nothing and Path C (LLM) fires.
+        # so Path B yields nothing and Path C (LLM) fires with
+        # fishersci.com. Path C has no registry provenance and no search
+        # evidence, the record carries no email, and "fishersci" is a
+        # contraction the name-similarity rule cannot reach — so the guard
+        # rejects it. An unattributable website is left empty rather than
+        # shipped as successful enrichment.
         record = EnrichmentRecord(
             record_id="WEB_C1", name1="Fisher Scientific Co. LLC",
             city="Pittsburgh", state="PA", country="US",
         )
         response = await orchestrator.enrich_batch([record], default_options)
         result = response.results[0]
-        assert result.website_url == "https://www.fishersci.com"
-        # LLM-sourced URLs are always flagged for verification.
+        assert result.domain is None
+        assert result.website_url is None
         assert result.flag_for_review is True
-        assert "website" in (result.flag_reason or "").lower()
+        assert "domain-unverified" in (result.flag_reason or "")
+        assert response.summary.domain_rejected_unverified == 1
+
+    @pytest.mark.asyncio
+    async def test_path_c_llm_guess_survives_with_email_corroboration(
+        self, orchestrator, default_options,
+    ):
+        # Same record, but it carries a company email on the domain the LLM
+        # proposed — condition 3 — so the domain is written after all.
+        record = EnrichmentRecord(
+            record_id="WEB_C1E", name1="Fisher Scientific Co. LLC",
+            city="Pittsburgh", state="PA", country="US",
+            email="orders@fishersci.com",
+        )
+        response = await orchestrator.enrich_batch([record], default_options)
+        result = response.results[0]
+        assert result.domain == "fishersci.com"
+        assert result.website_url == "https://fishersci.com"
+        assert response.summary.domain_from_email == 1
 
     @pytest.mark.asyncio
     async def test_unknown_company_leaves_website_empty(
