@@ -1,0 +1,14 @@
+%% fig-07 — Golden-record election and steward approval sequence (workflow step 12)
+%% Source: docs/thesis/02_ARCHITECTURE.md §4.3 (lines 262-275)
+sequenceDiagram
+    participant DS as DS deduplication view (steward)
+    participant SCORE as /api/dedup/score
+    participant APPROVE as /api/dedup/approve
+    DS->>SCORE: POST scored Validation rows
+    SCORE->>SCORE: elect_golden_records — one proposal per cluster
+    SCORE-->>DS: rows with proposed_golden_id, election_status ∈ {proposed, manual_review, unique}
+    Note over DS: steward inspects; is_golden_record left EMPTY for manual_review
+    DS->>APPROVE: POST {cluster_id, decision, approver, rows} (Apply Leading Code)
+    APPROVE->>APPROVE: apply_approval — on "approved" promote proposed winner into golden fields
+    APPROVE-->>DS: echoed rows; approval_status set
+    Note over APPROVE: stateless — persistence out of scope (durable approval store is future)

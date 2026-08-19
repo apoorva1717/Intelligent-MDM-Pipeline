@@ -21,4 +21,6 @@ htmlcov/
 logs/
 .DS_Store
 local.settings.json
+# Thesis exemplar anonymisation mapping (placeholder -> original customer identifiers)
+docs/thesis/exemplar_id_map.local.md
 .python_packages/

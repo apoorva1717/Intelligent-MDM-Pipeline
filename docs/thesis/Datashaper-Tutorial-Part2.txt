@@ -1,0 +1,2054 @@
+Speaker 1  00:03
+I should share my screen?
+
+Speaker 2  00:04
+Yep.
+
+Speaker 1  00:07
+I was working on other tasks, so I did not make much progress on this. So maybe we pick off where we left.
+
+Speaker 2  00:14
+Yep. So we were doing the customer,right?
+
+Speaker 1  00:20
+Yes.
+
+Speaker 2  00:20
+And we were copying from the example customer target. So just to see where we got, I think we populated the legacy here.
+
+Speaker 1  00:30
+Yes, we did the legacy mapping, yes.
+
+Speaker 2  00:32
+Yes. And we also processed. Could you check in the batch process?
+
+Speaker 1  00:37
+Yes, it was a success, yes.
+
+Speaker 2  00:40
+Ah, okay. Yeah. So what I see now is that we should do the next step, which would be the migration rules. And that's where we define which ones we block from further processing and which one we will continue to take into our scope.
+
+Speaker 2  00:59
+And that's on the migration rules. Can I also check for tutorial? Yep.
+
+Speaker 2  01:15
+So there we are. Yeah.
+
+Speaker 2  01:22
+So the purpose here is that we define rules to say, "This we want to keep, this we don't want to keep." Yep. If you go in the data shaper.
+
+Speaker 2  01:38
+And then we go to the migration rules. Okay.
+
+Speaker 2  01:52
+Yes. So we can see that we already create some rules by default, which are always there. Yeah.
+
+Speaker 2  02:03
+And every rule, it's getting a value, checking against the condition, and then determining the results to say if it's yeah, basically, if it meets migration, that means it will continue.
+
+Speaker 2  02:24
+No migration, it's mean we block it.
+
+Speaker 1  02:28
+Yeah, block it.
+
+Speaker 2  02:29
+But we have multiple rules, but it's simple because there's the weights. If we have multiple rules that are valid, then it's the rule with the highest weight that is the one that is the decider.
+
+Speaker 1  02:44
+Okay, got it. Do you have a range for this weight, or it's just any number and we take the highest to be the highest weight?
+
+Speaker 2  02:54
+It is any number, but usually I would keep it between 1 and 998.
+
+Speaker 2  03:03
+Because it really depends, but that would be very exceptional. Because the rule with the weight 1, that's the default rule. And that one should be configured that it always applies. So that if there's no other rule, then we fall back on that one.
+
+Speaker 2  03:22
+And you can actually see that the value name, so the third column, so the value that it fetches is the unique key. So that's for a code column,right? Because that was our unique key for each object. And then the condition is that it's not null or blank.
+
+Speaker 1  03:43
+Right. Yeah.
+
+Speaker 2  03:44
+Yes. But by definition, everything that's in data shaper needs to have a key, so it should always be not null. So that means that's a rule that always applies.
+
+Speaker 1  03:57
+Yeah, got it.
+
+Speaker 2  03:58
+Yeah. And then what is important, it has a weight of 1, and the result is a migration status. So by default, if we don't specify anything else, we will migrate everything. You can also change that.
+
+Speaker 2  04:16
+If you click on the pencil
+
+Speaker 2  04:20
+on the first one, take the first row.
+
+Speaker 2  04:34
+I think the entity is not selected anymore. And we are in the we are in a different screen again. Some reason. Yeah.
+
+Speaker 2  04:50
+But we need to go to the migration rules again. I think clicking back, we yeah. And then I don't know why it doesn't remember, but okay. Yeah. So if you click on the pencil on the first one, yes. And then go scroll up.
+
+Speaker 2  05:14
+All the way up.
+
+Speaker 2  05:18
+You see, on theright, you have yeah.
+
+Speaker 2  05:25
+On theright, you have a scroll bar, yeah. Why is it like this?
+
+Speaker 1  05:31
+I am at the end of the page to make a note.
+
+Speaker 2  05:33
+No, we need to go up higher.
+
+Speaker 1  05:37
+Higher, it just starts with the description.
+
+Speaker 2  05:41
+Can you zoom out a bit?
+
+Speaker 1  05:46
+No, that's it.
+
+Speaker 2  05:53
+Let me check.
+
+Speaker 2  06:06
+And you can't zoom out.
+
+Speaker 1  06:10
+No, I think it's.
+
+Speaker 1  06:22
+No, I think that was big to the screen.
+
+Speaker 1  06:29
+Do you see this page differently?
+
+Speaker 2  06:31
+Yes.
+
+Speaker 2  06:35
+If you press Control and then you use your scroll wheel, if you have one, then you can zoom in and out.
+
+Speaker 1  06:45
+It's not seem to work for some reason.
+
+Speaker 2  06:51
+Or you do a Control and then you do minus?
+
+Speaker 1  06:55
+Yeah, I already tried that.
+
+Speaker 1  07:03
+Maybe you can share your screen and I can just take a look at it.
+
+Speaker 2  07:06
+Yeah. But can you do the Windows button and type display?
+
+Speaker 1  07:16
+Windows button and?
+
+Speaker 2  07:17
+Yeah, like your start menu, and then you type display. Maybe it's because your settings are zoomed in.
+
+Speaker 1  07:25
+Okay. I'll try that.
+
+Speaker 2  07:35
+I think, yeah, that one. Yeah. The duplicate or extend to connected display. Ah, there, the scale. Yeah. Can you put that on 100?
+
+Speaker 1  07:45
+Yes, I did. There too.
+
+Speaker 2  07:54
+That's better.
+
+Speaker 1  07:57
+Okay, got it. So now I see confused migration or no migration.
+
+Speaker 2  08:02
+Yeah. So you can change it if you need to. But for now, I think this one is fine. So I would just close it.
+
+Speaker 1  08:08
+Okay. Yeah. Change it and just update. Got it.
+
+Speaker 2  08:18
+Yeah.
+
+Speaker 2  08:24
+Don't know how to yeah, maybe we can add a new rule just so that it would be clear. The parts to fetch a value can be reused so they're a bit separate for the rule. And also the parts to set the condition. But we'll add a rule. But first, the second, third, and fourth rows, yeah, they are also there.
+
+Speaker 2  08:46
+We have an option to manually set migration status. So that's basically usually if you want to ignore the rules and just say this specific customer, it needs to go or it cannot progress. So that's why that's already there. And that's why it's at such a high weight.
+
+Speaker 2  09:06
+And I said take the normal rules as a lower value. So these rules always went over the other rules. Yeah.
+
+Speaker 1  09:14
+Okay. Got it.
+
+Speaker 2  09:16
+And the last rule, it's removed from source. This is if something would be in your import today, but then tomorrow it's not there anymore. We actually don't hard delete that in DataShaper. We do a soft delete, but we block it by default.
+
+Speaker 1  09:31
+Okay. Got it.
+
+Speaker 2  09:33
+Yeah. So can you check in the example customer targets?
+
+Speaker 2  09:41
+If you see on the example group codes, if there are any.
+
+Speaker 1  09:51
+Example customer target?
+
+Speaker 2  09:54
+Yeah. So we have one example we could say US customers only, for example.
+
+Speaker 1  10:01
+Yep, got it. It's like filtering out here.
+
+Speaker 2  10:05
+Yeah. So let's do the same on the customs. So maybe open in a new tab.
+
+Speaker 2  10:18
+The other one. Yep.
+
+Speaker 2  10:31
+Yeah. So that I didn't explain, but we can have a rule that applies to all the from tables or only to specific ones. So this one I would only apply to this import.
+
+Speaker 2  10:45
+Could be we have another import with customers not from US that we want to. So yeah. And I think the name of the rules should be US customers only. Yes.
+
+Speaker 2  11:08
+So now we need to make the logic to fetch a value, what we want to test. So instead, because now we wanted to check if customer is from US, so the value we need to get would be the country. So you click on the fetch value. And then you take the group code.
+
+Speaker 2  11:30
+It was BSP that we are using. Yeah. So here I would put customer country, for example, as that's the value. He's trying to add.
+
+Speaker 1  11:46
+So it should be the same name that's on the import file?
+
+Speaker 2  11:52
+No, no, not this one. This is just the name to.
+
+Speaker 1  11:56
+That we are doing it.
+
+Speaker 2  11:57
+Yeah. So that's for us to easily so that doesn't matter. So these two, it's not a default rule. We also don't need the predecessor entity.
+
+Speaker 2  12:09
+That would be if a rule depends on another entity. Let's say we could create a rule. We only want to migrate the customer that has done any sales in the last two years, for example. And then we would say as the predecessor entity would be our sales orders.
+
+Speaker 2  12:28
+Because we would need to load our sales orders first before we can check the rule. Because we need the sales order info to check if customer has sales. Description, we don't need. But the value to fetch, we need. So I think, yeah.
+
+Speaker 1  12:47
+Okay. So we must have country.
+
+Speaker 2  12:50
+Yeah.
+
+Speaker 1  12:52
+Yes.
+
+Speaker 1  12:55
+That one. Because we don't have a country for anything. Just the country.
+
+Speaker 2  13:04
+By if you search type country, do you not find it? Yeah. Yeah. Hold on. That's it. Yeah. You can click on the run button and you can test. We can see if we see?
+
+Speaker 2  13:23
+So now you see for each code, so it's working. See? Now it's a very simple one. If we need more complicated logic, we could do a SQL logic and join. Yeah. But we don't need it here. So here it's fine. So we can save this one.
+
+Speaker 2  13:45
+Well, so this rule is selected. So we can go to the next one. Yeah.
+
+Speaker 2  13:58
+So now we have the conditions. So the condition, it will always be the SQL code where the results dot value, that's the value we got in the previous step. Yeah. And you can see we can reuse the condition from before because that's not really tied to the entity, I think.
+
+Speaker 2  14:18
+So we don't need to create it. We can just select this one.
+
+Speaker 1  14:24
+Oh, that's got it.
+
+Speaker 2  14:25
+Yeah. If we would need another country or something other check, we can always add a new condition. But now we can click this one. That's fine. Yeah. And then we can continue. Yeah. So now we need to say we will fetch the country. We will check if it's US.
+
+Speaker 2  14:44
+So then if the customer would be US, do we want to migrate or not migrate? Yeah.
+
+Speaker 2  14:53
+So let's say migrate. And the weight, so I would put like five or something.
+
+Speaker 2  15:02
+Doesn't really matter. It just needs to be higher than one and lower than 9918. But if we put two, then if we add another rule in between, we need to change. So I usually skip a few numbers just so I can add something else later. Yeah.
+
+Speaker 2  15:20
+And then, yeah, let's mark it as active and that's final next.
+
+Speaker 2  15:30
+And maybe we can click on the run again. Yeah.
+
+Speaker 2  15:38
+So that's just the final review of how we assemble to rule.
+
+Speaker 2  15:45
+I think it looks final. Yep. Okay. So let's save it.
+
+Speaker 1  15:56
+Add matrix?
+
+Speaker 2  15:57
+Yeah. Yeah.
+
+Speaker 2  16:03
+There is one thing that's not really logical in orders. Don't know if you can spot.
+
+Speaker 1  16:14
+I think
+
+Speaker 1  16:17
+the weight that we want to do?
+
+Speaker 2  16:20
+No, I think the weight is fine.
+
+Speaker 2  16:23
+But yeah. If you look at the default rule and the US rule, what's the migration status that they end up?
+
+Speaker 1  16:36
+Okay. So everything that with the unique key has to be migrated, that's the default rule?
+
+Speaker 2  16:42
+Yeah.
+
+Speaker 1  16:42
+And only the US customers has to be migrated?
+
+Speaker 2  16:46
+Yeah. So I mean, if a customer is from US, the default will apply. And the customer US only will apply. So the customer US only rule will say, "Okay, migrate." That's fine. But let's say we have a customer from Canada.
+
+Speaker 1  17:04
+And because of the default rule, that will still happen?
+
+Speaker 2  17:07
+Yes. Exactly. So I would change the default rule to no migration. Then it's fine.
+
+Speaker 2  17:21
+I think we need to give it a name. You can just call it default. Yeah. That's because in the previous version, we didn't have this name. Yeah. It looks like this. It's fine. Yeah.
+
+Speaker 2  17:40
+So now then that's fine. So we defined a rule, which is okay. But now we still need to process it. And then in the processing DataShaper, it will check for every customer in so every object, but in this case, customer, if we want to migrate or not. So yeah.
+
+Speaker 1  18:09
+This would be adding a migration.
+
+Speaker 2  18:10
+Migration. Yeah. I would just call it migration or something.
+
+Speaker 1  18:14
+Okay.
+
+Speaker 2  18:18
+Yep. And then we do the process migration. Oh, yeah, migration. Yeah.
+
+Speaker 2  18:27
+So that's all fine. Yeah. Yeah.
+
+Speaker 2  18:33
+And then immediately is also fine.
+
+Speaker 1  18:36
+Okay. I'll save it.
+
+Speaker 2  18:37
+Yeah.
+
+Speaker 2  18:46
+Yeah, I don't think it will long run any longer.
+
+Speaker 1  18:56
+Yeah.
+
+Speaker 2  18:59
+Yeah, it's ready. So can we go to migration rules on the left?
+
+Speaker 2  19:07
+And then you have in the last, you have the tab values conditions, but now I'm interested in the last one. Yeah. So you see that's separated in parts. So if you want to change one of the parts, like the condition or the logic to get the value, you need to go there. But this one is more important. So here, you will see for every record, it will say it's migration or not migration.
+
+Speaker 2  19:31
+And you can double-click one.
+
+Speaker 2  19:39
+And then you get the details.
+
+Speaker 2  19:45
+So you can see that it got the value US and the condition applied.
+
+Speaker 2  19:51
+So then you see that that's rule one. Sorry. If you ever wonder why a certain record would migrate or not, you can find it here. Yeah. And if something is here, you know it's actually processed. Okay. So yeah,
+
+Speaker 2  20:10
+I think almost all the customers are US, so we will migrate almost all of them.
+
+Speaker 2  20:17
+Should we do clustering? It'll take a while. Yeah. Well, maybe let's skip clustering for a second. Yeah, let's just do the normal flow and then do the deduplication. So clustering, let's skip that one.
+
+Speaker 2  20:37
+And go straight ahead to the validation rules.
+
+Speaker 2  20:48
+So I don't know if you remember, but we had the import table, then we went to the legacy, and then we will go to the validation table, which is what we are configuring now, and then to the load file. So here we again, we need to map, but not from our import, but from the legacy.
+
+Speaker 2  21:08
+I think in our case, the column names will be the same in the legacy and in the validation. I think we define it like that. So we can use the auto map.
+
+Speaker 2  21:28
+Like on the topright, you have the auto map button.
+
+Speaker 1  21:31
+Yeah, I clicked on okay.
+
+Speaker 2  21:34
+Now, then wait, wait. Remove the group code.
+
+Speaker 1  21:41
+Remove the group code?
+
+Speaker 2  21:43
+Yeah. Too late.
+
+Speaker 1  21:47
+Oh, sorry. I think there's a delay with my screen share.
+
+Speaker 2  21:50
+Yeah. Yeah.
+
+Speaker 2  21:55
+I guess it doesn't matter. It's just if you put the group code, the mapping is only for that specific group code. If later on we add other group codes, then we need to add the mapping again for that group code. While if you leave the group code out, the mapping is universal.
+
+Speaker 2  22:15
+It comes for all the group codes.
+
+Speaker 1  22:19
+Okay. Okay. Yeah.
+
+Speaker 2  22:20
+Usually what we do, we take the general mapping, and then we only, yeah, make a group code specific mapping if the logic of that group code deviates from the general rule. But okay, now we only have one, so it doesn't matter. But you can still remove the group code and do it again.
+
+Speaker 2  22:41
+Then at least we have the general mapping rules as well.
+
+Speaker 2  22:46
+You can do it there.
+
+Speaker 2  22:47
+You have in the auto map, the first option is group code, so you just remove it. There is like an X when you hover over it on theright.
+
+Speaker 1  23:04
+Okay. Got it.
+
+Speaker 2  23:06
+Yeah. And then just okay.
+
+Speaker 1  23:09
+Okay. Okay. Perfect.
+
+Speaker 2  23:12
+Okay. Well, now we have the group code specific one and the general one. But that's fine, I think. Yeah. I don't really want anything else.
+
+Speaker 2  23:28
+So now we will just copy what's in the legacy table. We will need to make some transformations, but I'm wondering if we well, let's just turn it once first.
+
+Speaker 2  23:42
+So if you go in the process overview. Yeah.
+
+Speaker 2  23:53
+And there's a new task, which we can call validation, and it would be the process validation. Yeah.
+
+Speaker 2  24:18
+And here we need to specify an environment. Yeah.
+
+Speaker 2  24:26
+I think we can call it dev because we are still using development data. Yeah. Yeah. And then update dependency can be one reporting one. That's all fine. Yeah. You can process this.
+
+Speaker 2  24:44
+So this step is going to populate the legacy table based on the validation mapping, which we did, and then also run the validation rules, which we haven't really defined a lot, but it also checks if the definition of the data types fits the data. And then the result we can see in the Excel add-in.
+
+Speaker 2  25:05
+But I'm not sure, do you have access already?
+
+Speaker 1  25:11
+I think I do have the access for it, but I've never tried that in. Do you have the link handy to the Excel?
+
+Speaker 2  25:21
+It's just in Excel. There's no really link. It's just you open Excel.
+
+Speaker 1  25:26
+Okay. Just open Excel and?
+
+Speaker 2  25:33
+And then you go on theright, you have add-ins.
+
+Speaker 1  25:40
+Okay.
+
+Speaker 2  25:46
+And then usually you tip more add-ins on the bottom.
+
+Speaker 1  25:49
+Maybe I don't.
+
+Speaker 2  25:53
+Well, let's try the more first. No.
+
+Speaker 2  26:03
+Yeah, I'll share my screen. Yeah.
+
+Speaker 2  26:08
+But yeah, you need to resolve it on Brooker. According to the person that set it up, it should be very simple. It's just a security group that you need to be added to to give you the access.
+
+Speaker 1  26:24
+Okay. Got it.
+
+Speaker 2  26:27
+Maybe let's check my other screen. Here.
+
+Speaker 2  26:40
+Because for me, if I go data, if I went home, add in.
+
+Speaker 2  27:01
+Yeah, somewhere I can select it, and then it opens here on the data tab. You see, I have a lot, but that's because managing a lot of projects. You will have one.
+
+Speaker 1  27:13
+I can just see your DataShaper window, not your Excel add-in.
+
+Speaker 2  27:17
+Yeah. I changed the screen because it would be more visible, but then I didn't change them. So for me.
+
+Speaker 1  27:25
+So now I see it.
+
+Speaker 2  27:26
+Yeah. You see when I do home add-ins, I got it here. And I can actually use it. Yeah. Sometimes it's not here. I need to do advanced or more edit to find it. And then once it's here, it's in data, and then it's here. I have a lot, but you will only have one.
+
+Speaker 2  27:46
+And then when you click on it, it will open this one.
+
+Speaker 1  27:49
+Okay. Got it.
+
+Speaker 2  27:51
+And then I could say the group code again. It was in the dev environment that we created, your customer. And then I have which called the enrichment view.
+
+Speaker 2  28:10
+And the enrichment view, it will download the data and the validation table. And it will also show me the issues that I still need to resolve. So here we can check our data quality.
+
+Speaker 1  28:22
+Okay.
+
+Speaker 1  28:45
+Well, when you're doing clustering and deduplication, where you're trying to group together similar records, would it not be better to do it after I apply my validation rules to bring it to the standard naming conventions?
+
+Speaker 2  29:04
+Sorry. Can you repeat it? I didn't hear you very well.
+
+Speaker 1  29:09
+Okay. So what I was saying was, would it make more sense if I do validation rules first and then do clustering? Because clustering is where you apply your fuzzy match.
+
+Speaker 1  29:23
+And for it to be a match or not, we must first bring it to a standardized naming convention so the matching order of them can work better,right?
+
+Speaker 2  29:33
+Yes. Yes. That's a good point. Although it is a bit double because that's indeed true what you say. If we normalize our values, then it will have a better result when we deduplicate because, yeah, it will be more similar.
+
+Speaker 2  29:51
+On the other hand, we also don't want to spend time cleaning data issues on the duplicates that we are not going to move forward with anyway. So in that case, we don't want them here.
+
+Speaker 2  30:05
+But actually, we can more or less do both because we can always now we said, "Okay, let me allow everything in the validation because we didn't really set rules for deduplication." And then now we can already work on the normalization,
+
+Speaker 2  30:24
+for example, and leave the other issues out of the picture. And then we can normalize, process this again, and then all the duplicates will be gone. And then we can work on the other issues, for example.
+
+Speaker 1  30:39
+Okay. Got it.
+
+Speaker 2  30:41
+Because, yeah, in the process, we do legacy, the replication validation. But in the practice, we can do validation, the duplication, validation. We can switch back and forth until we are happy.
+
+Speaker 1  30:55
+Okay. Yeah. Got it.
+
+Speaker 2  30:58
+So now that's also why I said now let's skip the deduplication and just check what's here, and then we will improve the try to normalize the data as much as possible and then do the deduplication. Yeah. So you see that's what I have now. We didn't really do any transformation,right?
+
+Speaker 1  31:18
+Yeah. Right.
+
+Speaker 2  31:19
+The title, it's a missing value because we said it's mandatory. So you see when I click on it, it will say missing value. So that's already an issue. Street, house number is sometimes missing.
+
+Speaker 2  31:36
+DC here is missing. Yeah. Emails are also mandatory, but we are missing a lot. But that's all good, I think. Yeah. Oh, yeah. This other screen.
+
+Speaker 1  31:54
+And if I want to have a standard solution for all of this, how would I apply the solution?
+
+Speaker 2  32:08
+How do you mean all of this?
+
+Speaker 1  32:10
+For example, there's an issue that says missing title. So I want to come up with a solution that says if there's a missing title, it writes as ABC, whatever. So if I want to apply it to everything else, could you show me how we do that?
+
+Speaker 2  32:25
+Yeah, sure. You actually already did it because that's in the mapping. But of course, you need to find the logic,right? But if you say indeed the title, if there is nothing, we can put ABC, then. So we will go again to the validation mapping here, the one we already did.
+
+Speaker 2  32:47
+So now what we said for the title, just take the title from the legacy. Yeah.
+
+Speaker 2  32:54
+But here we could I will put the pencil, and I can change the rule. And again, I can use SQL to change it. And I even have a test screen. And if I go here and I say the group of BSP and the development. So here I get a preview of what the rule would return. You see the result is empty,
+
+Speaker 2  33:16
+which is the same here. It's empty. It's not actually see? Here there is something. Even though it's not really insightful, but there is at least something. I could actually check this one. This is just for my preview, but if I want to search something specific, I can add the filter here.
+
+Speaker 2  33:38
+Yeah. So I wanted to put the code equals to this, but it says my column code is ambiguous.
+
+Speaker 1  33:47
+Column name is not code, yeah.
+
+Speaker 2  33:49
+Yeah. Because actually, you see below, you see the SQL that it will execute. So it will fetch the code and then the title and then filter on the code. But the problem is I have as a source the legacy table here, and it's called STBL.
+
+Speaker 2  34:09
+And then I also joined the validation table, and it's called this because I can fetch data from both. But this one has a code column, and this one has a code column. So that's why the SQL engine says this is ambiguous. I don't know to which table this code belongs.
+
+Speaker 1  34:29
+Yeah. Got it.
+
+Speaker 2  34:30
+So to fix that, I just need to put alias, and then it's okay. Yeah. You see that one has now some result. Don't really know why. So the front field now, I just copied the field, but I can change it. And I could say, for example, case when STBL dot what was it? Title?
+
+Speaker 1  34:53
+Title. Title is null. Okay.
+
+Speaker 2  34:55
+Yeah. So again, I use the STBL. Yeah. Is null. Then ABC else.
+
+Speaker 2  35:08
+So else I will just show the title,right?
+
+Speaker 1  35:12
+Okay. So basically, any resolution validation rule that I want to add, I will do it here. And the Excel add-in is just to view what my issues are. That's not where I resolve it.
+
+Speaker 2  35:25
+Yes. Actually, in the Excel add-in, I could say if for this one, I know the title would be misted, for example, I could do like this.
+
+Speaker 1  35:37
+Okay. There you can manually edit it.
+
+Speaker 2  35:39
+Yes.
+
+Speaker 1  35:40
+If I want a rule that applies to more than one or so, then I will add it back in the data shaper. Okay. Got it.
+
+Speaker 2  35:46
+Yeah. So this is manual specific, and here it's more rule-based. Yeah.
+
+Speaker 1  35:53
+Allright. Allright. Got it.
+
+Speaker 2  35:55
+So usually, the more you can do based on the rules, the better.
+
+Speaker 1  36:00
+Yes. Right.
+
+Speaker 2  36:01
+Yeah. But yeah, sometimes there is very specific stuff that really the product owners, the people that are deep in the data need to know, then they need to just here. But as a start, always try to do rule-based until you are stuck with the rules, and then you move to me.
+
+Speaker 2  36:22
+So now I think the result is still empty even though I tested it. But I think that's because it's not actually null, but it's like this.
+
+Speaker 1  36:42
+Okay. Yeah.
+
+Speaker 2  36:43
+Because the title, it's blank, but it's not null. It could have been not blank. Yeah. And then if I would apply this one and save it, then this would apply everywhere, and we would get rid of the issue. But I'm not going to do it because it's not we don't really know.
+
+Speaker 1  37:05
+Yeah. I understand. It was just an example. Yeah.
+
+Speaker 2  37:07
+Yeah. But that's indeed the way you can do it. And we can also join other tables to get more complicated logic if you need to.
+
+Speaker 1  37:17
+Got it.
+
+Speaker 2  37:17
+Yeah.
+
+Speaker 2  37:19
+So now let's see.
+
+Speaker 2  37:26
+So I will check on the example. Example customer target.
+
+Speaker 2  37:33
+So you see I already did a little bit of changes. And we also have validation rules.
+
+Speaker 2  37:40
+You can see I have a lot more than
+
+Speaker 2  37:50
+before than on the customer.
+
+Speaker 1  37:55
+Yeah. Got it.
+
+Speaker 2  37:57
+Yeah.
+
+Speaker 2  37:58
+And this is I'm not sure if there is no issue where we have this, but it's a good rule anyway.
+
+Speaker 2  38:16
+Trying to find an issue where we actually have no,
+
+Speaker 2  38:22
+I'm not sure if you can still data in here. Okay.
+
+Speaker 2  38:31
+So this is, for example, a validation issue that we added. The name should only contain customer name.
+
+Speaker 2  38:41
+And then you can see the logic here.
+
+Speaker 2  38:48
+Basically, we just look for the word streets or the word building or the word room. Then you can see here. So in the validation rule, in the rule is basically what you put to find the issues. So here we said if there's street,
+
+Speaker 2  39:07
+building, or room, that should not belong in the name. Yeah. Here you have something like this. Yeah. And then that generates an issue, basically.
+
+Speaker 2  39:21
+So maybe let me copy this one and then add a rule here as well on the customer. You see I have some rules already, but these are all automatic ones.
+
+Speaker 2  39:41
+And these are added because
+
+Speaker 2  39:47
+for example, customer validation.
+
+Speaker 2  39:52
+Where's the email?
+
+Speaker 2  40:02
+Maybe we have email account.
+
+Speaker 2  40:12
+So we have email here. You see? And that's the type. We selected email.
+
+Speaker 1  40:19
+Yeah. Okay. So that's the problem with the issue. Okay.
+
+Speaker 2  40:21
+Yeah. Normally, when you assign a type here, for most of the cases, it will generate an automatic issue like this one. Yeah.
+
+Speaker 1  40:30
+Yeah. Got it.
+
+Speaker 2  40:32
+So that one we don't need to do anymore.
+
+Speaker 2  40:39
+We have something.
+
+Speaker 2  40:48
+Well, you see these are all badly formatted.
+
+Speaker 2  40:53
+Just something I noticed that I might want to change is because everywhere we don't have data, we apparently have it as blank.
+
+Speaker 2  41:04
+So I would need to change the rule to accommodate for that. But I will change the data. Don't know why that is, actually. Yeah.
+
+Speaker 2  41:17
+So these are all not really nicely formatted.
+
+Speaker 1  41:22
+In the email format. Yeah.
+
+Speaker 2  41:25
+Yeah. So voilà. So we have these rules. So now let's add the additional rule. I think it was on the name one. This one. Yeah. So when I add a rule, I need to say this is the group code, the entity.
+
+Speaker 2  41:44
+Every rule belongs to a field in our logic so that we can always say, "Okay, that field is not good." We also have categories. So I think here we could, for example, call it a formatting rule. It's an active rule. It's a mandatory rule. If it's not mandatory, it's more like a warning.
+
+Speaker 2  42:06
+But yeah.
+
+Speaker 2  42:08
+And then name should only contain name.
+
+Speaker 2  42:21
+So a sequence is when it's processed, but here not. Name cannot contain streets, apartments, buildings.
+
+Speaker 2  42:39
+So I'm going to solve. Yeah. So this one is actually to say who needs to solve that. But for now, I will leave it empty. But if you have a team that's working on it, you can actually assign a responsible person.
+
+Speaker 1  42:53
+Okay.
+
+Speaker 2  42:54
+Yeah. And then for the rule, I will go in the test screen again and paste what I put there. And then I think it should you see it immediately works. So here, the alias for the validation table is the W. You can see it here as well. So that's an important one that you know which one.
+
+Speaker 2  43:13
+Yeah. And then I just have my logic. So all these are issues.
+
+Speaker 2  43:20
+So let's apply it and then save it. And see, now it's not an automatic rule, and it's only tied to my group code. But actually, it can also be universal, so I will remove the group code so that it's valid for all the group codes.
+
+Speaker 2  43:41
+Because even if we have another import, this rule should stay, I think,right?
+
+Speaker 1  43:48
+Yeah. Right. That'sright.
+
+Speaker 2  43:51
+So let's check the other ones. Region.
+
+Speaker 2  44:02
+Seems okay.
+
+Speaker 2  44:09
+So actually, this one, we have DP reference, example reference, US state codes.
+
+Speaker 1  44:18
+Is it a reference table of all the US state codes that we are touching?
+
+Speaker 2  44:22
+Yes. Probably. Yes. So that's in the entity example reference import US states codes.
+
+Speaker 2  44:32
+And then if I would view so this one table, we imported, and it's just a list of all the state codes.
+
+Speaker 1  44:40
+Okay. Got it.
+
+Speaker 2  44:42
+Yeah. So then if we have the region, it should mention this. That's one way to do it, which I think it's okay.
+
+Speaker 2  44:54
+Just wondering.
+
+Speaker 2  45:00
+Oh yeah, we also have the normal reference.
+
+Speaker 2  45:09
+So maybe I will just take this one
+
+Speaker 2  45:14
+and export it.
+
+Speaker 2  45:27
+Hold on.
+
+Speaker 2  45:34
+So I'm going to import it, but in the reference.
+
+Speaker 2  45:39
+Not in the example reference, but in the actual reference.
+
+Speaker 2  45:46
+What was it called? US state codes,right? So I'm trying to skip the name.
+
+Speaker 2  45:57
+That should be fine. I think my key is my code, but it doesn't really matter too much. See, now I have it as well here.
+
+Speaker 2  46:11
+So it's just the same.
+
+Speaker 2  46:12
+So this is also an automatic rule. Yes.
+
+Speaker 2  46:20
+So now what I can do is if I go to my
+
+Speaker 2  46:28
+customer again, validation. Well, no, let's go to the example.
+
+Speaker 2  46:36
+So customer target validation. It was on the region,right?
+
+Speaker 1  46:42
+Yeah. Right.
+
+Speaker 2  46:43
+Yeah. So on the region, what I said here as type, we have a reference. So that means this region, it needs to be a list of values, but it's not really fixed. And then I could use a custom query or a validation type.
+
+Speaker 2  47:01
+That's either we have here built-in support to add references as well.
+
+Speaker 2  47:07
+So I could have said, "Okay, here are, for example, my allowed values and streets." And then I could say here, filter validation, and I could reference this key.
+
+Speaker 2  47:24
+But I can also just write a query and then say that should return the values that I check against. So that's what I will do.
+
+Speaker 2  47:35
+So validation. Yeah.
+
+Speaker 2  47:43
+So you see this query is select state code from this table that I imported. So then I know in the region, the value should correspond to one of the state codes in my reference table.
+
+Speaker 2  48:00
+So I'm just going to the here.
+
+Speaker 2  48:09
+Oh yeah. See, I even copied that. But now I can remove the example.
+
+Speaker 2  48:20
+Should we use it here?
+
+Speaker 2  48:22
+And then I think here in my validation rules, customer. Yeah.
+
+Speaker 2  48:34
+So I have it. I also have the country, the sales, org. Oh yeah. So you see I had already some references, but I will maybe do the same so that it's not the example anymore, but it's the real one.
+
+Speaker 2  48:55
+And this is the sales organization list.
+
+Speaker 2  49:01
+So let's go to
+
+Speaker 2  49:05
+example reference import sales organization.
+
+Speaker 2  49:13
+So you see this is a list with all the details from the sales organization.
+
+Speaker 2  49:20
+And let's export it again.
+
+Speaker 2  49:25
+And then start sales organization.
+
+Speaker 2  49:40
+So yeah. Sorry. I'm not going to put it on the customer, but on the reference. So basically, you see I created a separate entity just to store all my references. I'm not going to really process them further, but that way I can get them in Datashaper.
+
+Speaker 1  49:58
+Okay. Got it.
+
+Speaker 2  50:09
+So this one is running. And in the meantime, I was here. So I can also remove the example here. That's all.
+
+Speaker 2  50:22
+So yeah, I'm trying to get to a clean state,right?
+
+Speaker 2  50:24
+So that's why I'm removing every reference for the example. So for the country, you can see here it's also no, it's like a country type. So it's not really a reference. So that one is fine because we have the built-in country codes. The region, we tackled.
+
+Speaker 2  50:44
+The language.
+
+Speaker 2  50:51
+So for the language.
+
+Speaker 1  50:57
+Speaking people.
+
+Speaker 2  51:01
+Yeah. See that was defined in the other way, which I think it's okay. So here, there is a reference T002. And these are all the language codes that are possible. Because in SAP, the language should start with a single digit.
+
+Speaker 1  51:20
+Okay. Got it. Basically, to make sure that we are not using a different script, like maybe Chinese or something. And it's always in English. Okay.
+
+Speaker 2  51:28
+Yeah. And it is like one character, indeed. These are all the I'm not sure which letter corresponds to which language, but that's how it's defined in SAP.
+
+Speaker 2  51:42
+So we have the language fields here.
+
+Speaker 2  51:50
+So here, you see I also use a reference, but instead of a custom query, I set the filter validation type, and I could use this list. So I just did this. And actually, this one, I don't need to change because the list, it's universal because it's on the reference. Yeah. So there are two different ways to do the references.
+
+Speaker 2  52:12
+If it's something more static and easy, then I use this one. If it's a more complicated one, then I import it separately. This is suspiciously long. But okay.
+
+Speaker 2  52:29
+What happens that so
+
+Speaker 2  52:35
+I think the automatic rules are all fine.
+
+Speaker 2  52:40
+This rule. Yeah. Now I did something not really nice because I changed the rule here because I said I don't need the example anymore. But actually, I don't really like that because then my rule is not automatic anymore. It's better to go here,
+
+Speaker 2  53:03
+sales, org. Yeah.
+
+Speaker 2  53:12
+This one. Wait. I don't know what happened. Yeah.
+
+Speaker 2  53:24
+Now I click it. Yeah. And change it here. Because this is really where I define it. And now I should have the rule again.
+
+Speaker 2  53:35
+See now the rule is automatic again, which if possible, I prefer if it's automatic. Yeah. Then we have the postal codes, US format.
+
+Speaker 2  53:51
+Basically, I think it should be like four digits or five or four digits and five digits. So this rule, I can also create.
+
+Speaker 2  54:15
+I think it's formatting.
+
+Speaker 2  54:21
+Actually, yeah,
+
+Speaker 2  54:24
+I will put it. But in the new version, we have also the built-in validation of the postal code, which would automatically check the format. Yes.
+
+Speaker 2  54:35
+Format. But here we don't have it yet, so let's just add it.
+
+Speaker 2  54:57
+Everything is fine.
+
+Speaker 2  55:00
+Or yeah.
+
+Speaker 2  55:04
+So they are all fine. See, that's all good. So we don't have any issue. But okay. Let's make the rule anyway.
+
+Speaker 2  55:14
+But I think if we put a rule like this,
+
+Speaker 2  55:20
+then I would add so if it's another country, we don't really trigger an issue.
+
+Speaker 1  55:32
+Okay. Got it.
+
+Speaker 2  55:35
+Although, yeah, I don't prefer to write it. I would rather have a config that checks the country and then checks the format per country. But we have it built-in in the next version. So once we upgrade, we can change. For now, this is fine. Yeah. Okay.
+
+Speaker 2  55:58
+Then
+
+Speaker 2  56:01
+any other rule we need to take? The PO box, but that's basically the same.
+
+Speaker 2  56:12
+So I will just copy the rule. But then it's the PO box postal code. Yeah.
+
+Speaker 2  56:32
+That's the only thing that I'm going to change.
+
+Speaker 2  56:42
+And then
+
+Speaker 2  56:45
+name one. That rule, we add it,right, on the name one? Yes. The streets, invalid terms, and streets. Yeah. So that's also some terms that Baron gave me, so I'll just add it as well.
+
+Speaker 2  57:03
+So that's also formatting. Yeah.
+
+Speaker 2  57:11
+I think these rules will need to be improved later on. It's just a starting point. But at least, yeah, we know already if we have these things, that for sure it's not good. So let's add it. And then we have one more. No, that one.
+
+Speaker 2  57:31
+Yes.
+
+Speaker 2  57:35
+So we have a missing PO box postal code.
+
+Speaker 2  57:43
+So I think it was PO box.
+
+Speaker 2  57:51
+So I think this would be missing value. Sorry. Yeah.
+
+Speaker 2  58:08
+Yeah. Let's type it like this again. Yeah.
+
+Speaker 2  58:14
+We don't have it. So that means yeah.
+
+Speaker 2  58:38
+So okay. That's also an issue. Where would that thing put that? Yeah. So here, it means we have a PO box, but we don't have a postal code for the PO box.
+
+Speaker 2  58:54
+But that's also an issue,right?
+
+Speaker 1  59:00
+As far as I know, we only have PO box. What is PO box postal code field? I do not understand the field. What is that supposed to have? What is a PO box postal code?
+
+Speaker 2  59:16
+I think as in US, you have an address where you can send a letter to, and that's where the people live or the company is residing. And then it's just to their home. You have a normal address. But you also have the PO box. And that's a central place where you can send, yeah, your letter.
+
+Speaker 2  59:37
+But it has a number. So that's why you will know where it is. But the number itself always tied to a specific postal code. So if you would send a letter to a PO box, you need to know the postal code number and also the number of the PO box.
+
+Speaker 1  59:56
+Okay. So there could be a value for PO box, and there could be a general value in the postal code field that we already have. Why do we require another field that says PO box postal code? Because regardless of whether the entry has a PO box or does not have a PO box,
+
+Speaker 1  01:00:17
+we need to have a postal code for it, and that postal code would be in the postal code field. So why do we have an extra field that says PO box postal code?
+
+Speaker 2  01:00:27
+Well, I guess it's because it could be that the postal code of the normal address and the postal code of the PO box are not the same.
+
+Speaker 1  01:00:39
+Okay. Okay. Allright. Yeah.
+
+Speaker 1  01:00:43
+It should be just a lack of understanding of the domain knowledge from my side. Yeah.
+
+Speaker 2  01:00:46
+Yeah. But I'm also not sure. But I think.
+
+Speaker 1  01:00:49
+Yeah. Right. Right. Right. Yeah. I will try to understand.
+
+Speaker 2  01:00:52
+I just see that the field exists, so that's my reasoning that probably it's because it could be the field. Maybe I'm also guessing we could probably put a rule that if the PO box postal code is empty, we can copy it over from the normal address. But yeah. These are things we need to validate. Yeah.
+
+Speaker 2  01:01:14
+So I will also change this a bit. So by writing my logic like this, I avoid that it's either empty string or null. Then I just default if it's null, I make it an empty string.
+
+Speaker 2  01:01:30
+So I don't really have the case like before where either if you put it as null or you put empty string, that it gives a definite result because the value here is not really null but empty string. So this one is fine. Yeah. So I think we already have quite a lot of rules now,
+
+Speaker 2  01:01:52
+which are fine. Let's check the imports. Okay.
+
+Speaker 2  01:01:58
+I'm going to close it because that's not normal.
+
+Speaker 2  01:02:18
+See, it's not that long. So I don't really know why.
+
+Speaker 2  01:02:34
+Shouldn't have been an issue. I just want to get rid of those because I don't trust these characters. Okay.
+
+Speaker 2  01:02:46
+Try once more.
+
+Speaker 2  01:03:03
+What's it called?
+
+Speaker 2  01:03:03
+Sales or something like this.
+
+Speaker 2  01:03:13
+Sales organization. This one wasn't it? No.
+
+Speaker 2  01:03:44
+Yeah.
+
+Speaker 2  01:03:44
+I don't know why it's not not in. I think it's fine. I don't need that. Okay. Okay.
+
+Speaker 2  01:04:13
+Yeah. I know this import, we reworked it because it was not always working perfectly. But now I think we need to solve it differently because on the reference, we don't let's see. Okay. Anyway, it kept loading, but it's actually loaded.
+
+Speaker 1  01:04:36
+Oh, okay. And also I think the US screen stopped sharing.
+
+Speaker 2  01:04:42
+Okay. Yeah. There we go again.
+
+Speaker 1  01:04:46
+I see it now. Yes.
+
+Speaker 2  01:04:47
+Yeah. So okay. It did import it. It said import kept loading, but actually now when I check it, check it, actually imported.
+
+Speaker 2  01:04:57
+So what I did now so basically what I did, I went to the validation rule, and I copied all the rules from the target that we had. So you see this will need to be further defined and improved. But you'll also see when we upgrade,
+
+Speaker 2  01:05:16
+we have a lot more out-of-the-box rules so that will also be easier to validate the address, for example, etc., or the VAT number. But for now, let's say we have all these. We can check them, but we can also improve our mapping a little bit.
+
+Speaker 2  01:05:40
+And then let's see validation mapping.
+
+Speaker 2  01:05:45
+Example customer targets. Yeah.
+
+Speaker 2  01:05:50
+So now here I made something specific to normalize the data a bit.
+
+Speaker 2  01:06:03
+But this is not really built-in by Datashaper, but I built a function that we can use to normalize the data. It's like a SQL function.
+
+Speaker 2  01:06:19
+And the way that it works
+
+Speaker 2  01:06:22
+is
+
+Speaker 2  01:06:25
+these are all the same,right?
+
+Speaker 2  01:06:34
+So yeah.
+
+Speaker 2  01:06:41
+So here you could see that is the original one, the name one. I put that in the custom field. That doesn't do anything for the mapping, but it's just so we can see what happens. And then the from field, that's the result that's in the normalized one. So you see mainly here the column is removed. Here the dot is removed.
+
+Speaker 2  01:07:02
+Voilà. And that's basically the most important things, but it might be that other things change as well. And this function, it's like yeah,right. Easiest to show in the Excel add-in. I think I made a view.
+
+Speaker 2  01:07:27
+Don't want to take this one here now. Reference.
+
+Speaker 2  01:07:38
+Now I need to think for a second. Reference.
+
+Speaker 2  01:07:50
+And this one is import. No. And yeah. So it's on that example. Text normalization rules.
+
+Speaker 2  01:07:59
+And here we could say we could define rule sets
+
+Speaker 2  01:08:07
+applied to a domain. So that would be the country.
+
+Speaker 2  01:08:12
+At least that's the purpose. And then we could say we have target values, and we have the synonym, and then the position. I think that would be left, middle, or any. And then exclude like if we want to make exclusions. And then I think it says if we have,
+
+Speaker 2  01:08:31
+for example, boulevard, we need to translate that to BLVD.
+
+Speaker 1  01:08:38
+Yeah. Got it.
+
+Speaker 2  01:08:40
+So
+
+Speaker 2  01:08:44
+let's see if I can find an example here.
+
+Speaker 2  01:08:58
+So just to find an example.
+
+Speaker 2  01:09:05
+I'm not finding.
+
+Speaker 2  01:09:09
+Or is it the other way around? I don't think so. Yeah.
+
+Speaker 2  01:09:16
+Highway.
+
+Speaker 2  01:09:19
+And that one.
+
+Speaker 2  01:09:27
+What is it?
+
+Speaker 2  01:09:35
+Because that one is not changed,right?
+
+Speaker 1  01:09:40
+Yeah. It's not been applied.
+
+Speaker 2  01:09:45
+This is on the
+
+Speaker 2  01:09:49
+some customer example. Why is it not being applied? So the purpose would be that the highway changes this to HWY. Let's check and confirm it.
+
+Speaker 2  01:10:08
+The reason that it didn't change is because I'm an idiot. Because here I define which rule set to use. And this is the name. And this is the address. You see? Yeah.
+
+Speaker 1  01:10:24
+Yes. Makes sense.
+
+Speaker 2  01:10:25
+Yeah. Well, it's good that I found that. Yeah. So let's try this one, for example. Yeah. So here you can see that would be weather for laboratories and then labs that converted to labs. Yeah. So that's already one thing we can do to normalize,
+
+Speaker 2  01:10:49
+yeah, the naming and the addresses.
+
+Speaker 1  01:10:53
+Okay. So the Excel that you showed me is stored as a reference table on Datashaper?
+
+Speaker 2  01:10:58
+Yes. Yes. Indeed. I will also move that one to the reference. Yes. And I can actually edit it here. I don't want to update that, but. And I could also add more rules.
+
+Speaker 2  01:11:17
+So this someone can it's looking at the data can actually expand.
+
+Speaker 2  01:11:25
+And then, yeah, everything they find, they can add. And after a while, I think we get to a better dataset.
+
+Speaker 1  01:11:33
+Okay. Yeah. Got it.
+
+Speaker 2  01:11:35
+Yeah. For this part, yeah, maybe there are also options to use AI because this is kind of hard to catch everything rule-based. Yeah.
+
+Speaker 2  01:11:49
+So there, I think, might be some options to integrate AI. For some things, it's also possible when we send the addresses to Google, for example, yeah, we get a unified format. So maybe it's also possible to agree we just use the Google format.
+
+Speaker 2  01:12:13
+Yeah. But okay.
+
+Speaker 2  01:12:16
+I think the main things, it's already good to do this one as a first step to get the main issues out of the way.
+
+Speaker 1  01:12:24
+Yeah. Got it.
+
+Speaker 2  01:12:25
+Yeah. So this is a bit a special case because this function, it was not built-in by Datashaper, but I built it in the database.
+
+Speaker 1  01:12:37
+Okay.
+
+Speaker 2  01:12:40
+Yeah. Not sure if you ever worked with the SQL functions, but there is an option. Brooker.
+
+Speaker 2  01:13:00
+I just need to check if I want to connect to the database. Yeah.
+
+Speaker 2  01:14:07
+I forgot the connection string, so I need to check. I can find it. Okay.
+
+Speaker 2  01:14:15
+I know why I don't find it because I'm in the wrong one.
+
+Speaker 2  01:14:40
+This is better.
+
+Speaker 2  01:15:08
+What is this one? Okay.
+
+Speaker 2  01:15:33
+Now let's see. So let's go back. Yeah.
+
+Speaker 2  01:15:42
+So in DPADMEN, programmability functions, scalar value functions, you will see this function. And if Iright-click and modify, I can change it. And then you see this is the code for the function.
+
+Speaker 2  01:16:00
+So it takes an input and a rule set, and it will fetch the rule set. Yeah.
+
+Speaker 2  01:16:14
+So my source table is the mapping text normalization rules.
+
+Speaker 1  01:16:20
+Okay. Got it.
+
+Speaker 2  01:16:21
+Yeah.
+
+Speaker 2  01:16:22
+And then that's basically what you see here. This is actually this table. And then, yeah, you can see. But I don't want to go over all this, but that's just so you understand how it works.
+
+Speaker 1  01:16:42
+Yeah. Got it.
+
+Speaker 2  01:16:43
+So if you want, you can do more complicated things whenever needed. Okay.
+
+Speaker 1  01:16:51
+So should I also have access to the database?
+
+Speaker 2  01:16:54
+Yeah. Sure. I think that should be fine. Yeah. I will check. I will check.
+
+Speaker 1  01:17:03
+Thank you.
+
+Speaker 2  01:17:04
+Allright.
+
+Speaker 2  01:17:06
+Then the next step would be okay.
+
+Speaker 2  01:17:20
+I will actually need to check. I can give you access to the database. I'm not sure. To check with my boss. But if not, I can give you access to the custom part of the database. But then I need to set it up so that this part you could change if you need to. Okay. But for now,
+
+Speaker 2  01:17:42
+let's just do it like this. So we have it here. So basically, that's all fine. The only thing, I would like it not to be under the example reference, but under the reference table.
+
+Speaker 2  01:17:56
+So I'm not sure if I can change it here. So here you have the Excel settings and then the views. Here you can manage everything you can see in Excel. So that was under customer target. No, example reference.
+
+Speaker 2  01:18:16
+Sorry.
+
+Speaker 2  01:18:19
+So this text normalization rules. But you see the table here, it's not actually referencing the example. So it's just that this is in the example reference entity.
+
+Speaker 2  01:18:34
+So in the view definition, this is just when I select the entity here in the Excel add-in. Here you have the select entity. That's where it belongs then. So I'm going to change that to reference. Yeah.
+
+Speaker 2  01:18:51
+You can see you have more options here. It's like the name. That's the name that you will see. This is actually the path to the table underneath. This is like the permissions. So by default, users can edit. So that's why users can make changes. They can add rows if they want to. And here I can set permissions per column.
+
+Speaker 2  01:19:11
+But that's all fine by default. And here I need to assign who has access. So I think SAP team should be added here as well. They can make changes.
+
+Speaker 2  01:19:23
+And now you will see if I reload this one. At least I hope you will see. Now I took reference, and I have this. I have it here. Text normalization rules. And if I download this as well. Yeah.
+
+Speaker 1  01:19:42
+Okay. Perfect. Got it.
+
+Speaker 2  01:19:44
+So yeah, I tried to make it as dynamic, so I didn't make a table for every column, but I used this rule set where I made a mistake before. So we can have maybe it's good to sort it. Sorting.
+
+Speaker 2  01:19:58
+We need to sort here. Okay. Never mind. Yeah. So if we have other fields with the same kind of logic, we can just add new rule sets here.
+
+Speaker 1  01:20:10
+Okay.
+
+Speaker 2  01:20:12
+Yeah. So validation mapping.
+
+Speaker 2  01:20:17
+Let's take the example customer target. Check. These are the ones where I applied this. And then let's take your customer here, and then let's use this one to fix it here as well. Oh, sorry. So name one.
+
+Speaker 2  01:20:38
+So now I'm using a join, but I use a cross apply to actually add my rule set function.
+
+Speaker 2  01:20:52
+And I think I would test. Yeah.
+
+Speaker 2  01:20:59
+So if you look at the query, you will see my source table is the valid legacy table. I will filter out everything that's not on migration. So that's the step we did at the start. And then I'm going to join the validation table as well in case I need some value from there. And then here we have our cross apply.
+
+Speaker 2  01:21:21
+It doesn't really matter, but let's put the space here. Yeah. Where we have the function, and it will take as input the name. And then as a rule set, the name, then add the country.
+
+Speaker 2  01:21:41
+So why we add the country? That's to match the domain. Because BERN said we need to manage that per country. So that's why I added this one. Yeah. And then we call this hold this part F, and what's coming out of this is called the F.Normalize so that we put here. Yeah. You can see that here as well.
+
+Speaker 2  01:22:01
+And that's our result. Yeah.
+
+Speaker 2  01:22:08
+Now update. Well, the thing is, if we need another one, we can always copy from what we already have. I think this one name two, it will just be the same, but we will use the name two.
+
+Speaker 2  01:22:23
+So the join here, instead of name one, it's name two, and the front field will be on the last one. Yeah.
+
+Speaker 2  01:22:35
+Just check. Sequence is fine. Yeah. Then what do we do? Then we have also the search item.
+
+Speaker 2  01:22:58
+And then we have the search item. Yeah.
+
+Speaker 2  01:23:18
+Okay. These.
+
+Speaker 2  01:23:20
+And then we have the streets. I think there are only a few. So we can do this.
+
+Speaker 2  01:23:39
+See what else we have? You see on the PO box, we were talking about it. So here it says if there is a PO box, but the PO postal code is empty, then we take the postal code from the default address.
+
+Speaker 1  01:23:54
+Yeah. Right.
+
+Speaker 2  01:23:55
+So let's just copy that logic. Yeah.
+
+Speaker 2  01:24:01
+You see sometimes you can put the comments. If the logic is a bit more complicated, it's easier to read this than to read this.
+
+Speaker 1  01:24:09
+Yeah.
+
+Speaker 2  01:24:13
+And here it's important. You see there is a sequence. And I'll put it. Why is the sequence important? Because I'm using this postal code, and this doesn't refer to my legacy table, but to actually another field in my validation table,
+
+Speaker 2  01:24:36
+which is fine, but then I need to make sure that I do the other field first before I do this one because we will populate the field by field. So then we can get one value and build on it. But I need to check because this reference, this PO box, and this postal code.
+
+Speaker 2  01:24:57
+So I think when I look at
+
+Speaker 2  01:25:00
+postal code,
+
+Speaker 2  01:25:08
+we have some details here.
+
+Speaker 2  01:25:18
+I think it doesn't really matter because if I don't put a sequence, it will do at the start, but let's put one just to be clear. So I put zero. So for sure, it will always process before this one. Yeah.
+
+Speaker 2  01:25:38
+This one, I think it's okay so that the PO box is handled. So these are all normal, normal.
+
+Speaker 2  01:25:50
+This course, I will just leave it for now. Yeah. Not sure if we have disk fields. Yeah.
+
+Speaker 2  01:26:14
+So yeah. So these, I will maybe explain later. It's used for the duplication.
+
+Speaker 2  01:26:22
+But this one isn't we could need well, and then again, see, that's referring to the postal code again. So that's just the first part of the postal code.
+
+Speaker 2  01:26:41
+Because US postal code, I think it's five digits, and then a dash, and then four digits.
+
+Speaker 2  01:26:55
+And here, this one referring to the PO box postal code, which we put on sequence 10. So I need to put this one even further. Yeah. Postal code suffix.
+
+Speaker 2  01:27:23
+This one's number 10 again. So this is the final part. And then yeah.
+
+Speaker 2  01:27:41
+So I think, for example, this one, if I run test.
+
+Speaker 2  01:28:01
+Just to show the mapping. Yeah.
+
+Speaker 2  01:28:06
+You see here, the postal code, it's only the five digits. So we don't even have the second part.
+
+Speaker 2  01:28:14
+But let's see, for example. Let's check the parts where the length is bigger than four.
+
+Speaker 1  01:28:21
+Greater. Yeah.
+
+Speaker 2  01:28:24
+Sorry.
+
+Speaker 1  01:28:26
+Five. Yeah.
+
+Speaker 2  01:28:28
+Yeah. Here, you see? So here we extracted the second part with this one. Yeah.
+
+Speaker 2  01:28:37
+So that's fine. And save it. Update. So then we have it separate. It's also better for the deduplication that we can compare separate parts. Sales or cons? That wasn't what else I mentioned.
+
+Speaker 2  01:28:56
+Legacy sale groups. Yeah.
+
+Speaker 2  01:29:10
+Just another name. The name concat. Yeah.
+
+Speaker 2  01:29:18
+This one is just to
+
+Speaker 2  01:29:23
+adjust up to put all the names together.
+
+Speaker 2  01:29:31
+So it's also mainly used for deduplication. So we have four different fields, so we just put them all together.
+
+Speaker 2  01:29:40
+Then we have SIPL. I don't know that one. And then 32 and 3, they are just copied like that. So now I copied the mapping except for these.
+
+Speaker 2  01:29:52
+And I copied the rules. So let's check.
+
+Speaker 2  01:29:59
+Run the validation. Run it again.
+
+Speaker 2  01:30:04
+90% sure I made a mistake somewhere. Let's see. Let's see if it runs or fails. You will see now it will also run a little bit longer because it's applying the normalization rules. We have a lot more checks to do. That's fine.
+
+Speaker 2  01:30:31
+Yeah. Let it run.
+
+Speaker 2  01:30:34
+So then we will see what issues we have, but then we can also look at the clustering.
+
+Speaker 2  01:30:41
+So on the clustering, we have the rules to find the duplicates. Yeah.
+
+Speaker 2  01:30:51
+And we can have different rules on the same dataset. And this is like if either of those rules detects a duplicate, we consider that as a potential duplicate that users need to check if it's actually a duplicate or not. Within the rules,
+
+Speaker 2  01:31:11
+we have different fields definitions or definitions or whatever you call it, but that's always linked to a field. And to be considered a duplicate, these all need to be matching.
+
+Speaker 2  01:31:26
+So this is OR, and this is AND, basically. So here we have a rule to find the duplicate based on the name and the address. Then we're saying here from our validation table, our name concat needs to be fuzzy matching 85%.
+
+Speaker 1  01:31:48
+Fuzzy matched 85%. Okay.
+
+Speaker 2  01:31:51
+Yes. So you understand the fuzzy match?
+
+Speaker 1  01:31:56
+Yes. Yes, I do.
+
+Speaker 2  01:31:57
+Yeah. So voilà. And then our streets needs to have a fuzzy match of 80%. And then our US coastal code prefix needs to be an exact match.
+
+Speaker 1  01:32:11
+Exact match. Okay.
+
+Speaker 2  01:32:13
+So then you also see why I put the yeah,
+
+Speaker 2  01:32:18
+I put the postal code in a prefix and a suffix because sometimes we are missing the suffix, and then we wouldn't match. But now we only match on the prefix. Our country, it needs to match exactly 100%, and our region needs to match 100%. Yeah.
+
+Speaker 2  01:32:42
+And then we have this matching score, but this means the average of all the fuzzy matching needs to be at least 75.
+
+Speaker 2  01:32:53
+I put it low because yeah, I'm trying to think of that. But if this would be like 85, and this one matched 85, and this one matched 80, the average would be like 82 and a half, so it would still not be a duplicate.
+
+Speaker 1  01:33:09
+Okay. Got it.
+
+Speaker 2  01:33:11
+Yeah. Put 75, so it doesn't matter. Don't like this. Oh, yeah. I think it's confusing. So I always put it low enough. But these, yeah, are more relevant. Yeah.
+
+Speaker 2  01:33:25
+When you do a field definition, you can always say, "I want a field from the legacy or the validation to compare." And that should answer a little bit your question from before. It's better to normalize first.
+
+Speaker 1  01:33:39
+Yeah. Yeah. Right. So I can do the clustering on the validation.
+
+Speaker 2  01:33:43
+Yes. Yes. And then process again. Yeah. So that's why we have this. Yeah. And then the fuzzy, the exact. You also have the option to overrule, but we don't really need it. The target table could be interesting. We could have another table which,
+
+Speaker 2  01:34:04
+for example, is already in the SAP system and match against it. So we could have another list added to what we already have. Here, we could do some replaces.
+
+Speaker 2  01:34:17
+That's just if we want to replace, for example,
+
+Speaker 2  01:34:20
+our company with CEO, for example. But this is not changing the data. This is only comparing this for the deduplication check. So it's a little bit the same as the normalization we did, but this wouldn't be saved. It would just be here.
+
+Speaker 2  01:34:41
+So that's why I didn't choose it, but I actually normalized the data. So this would check. Yeah.
+
+Speaker 1  01:34:50
+Could you please repeat what you said about multiple target tables? I didn't quite get that part. Sorry.
+
+Speaker 2  01:34:56
+The target table. Yes. If I would have another list of customers somewhere, that's not part of DataShaper. But I want to include them.
+
+Speaker 2  01:35:08
+I don't want to run them through the whole DataShaper process, but I still want to check if they are duplicates with what I have in DataShaper. Then I could upload that table and select it as a target table.
+
+Speaker 2  01:35:26
+And then I would check duplicates against it, but I would not really process the data here. It's just to find the duplicates.
+
+Speaker 1  01:35:34
+Okay. Okay. I got the idea. Thank you.
+
+Speaker 2  01:35:39
+And then we have the replace. Oh, yeah. And then this one, it says if you have blank values, then it's considered that it's not the same. If two things are empty, yeah, depends. But for the postal code, if you have two customers and the postal code is not filled in,
+
+Speaker 2  01:35:59
+then for us, it's not the same,right?
+
+Speaker 1  01:36:02
+Yes. Yeah.
+
+Speaker 2  01:36:03
+Just we don't know. Yeah. Why it's important? The fuzzy matching, it's quite heavy to process because it needs to compare the strings. Exact matching is much faster.
+
+Speaker 1  01:36:20
+Okay. Got it. Yeah.
+
+Speaker 2  01:36:21
+Yeah. And in the background, this will always start with doing the exact matches. And then what is still left, it will apply the fuzzy matching to be as efficient as possible. So meaning in your rules, if you can find exact matches,
+
+Speaker 2  01:36:41
+if you can include them, that is very good to make it faster. That's why here we have the US postal code and the region. So then, of course, we are a bit limited because if it's a different postal code, it will never find it as duplicates.
+
+Speaker 2  01:36:58
+But we only need to compare the names and the fuzzy match within the same postal code and region. So that's a bit more efficient. If we would remove this rule and this one, it would take much longer. But sometimes you need the fuzzy matching it, and you need to do it. But just in general, if you know there is an exact match you apply,
+
+Speaker 2  01:37:20
+it's always smart to include it.
+
+Speaker 2  01:37:24
+So we have also a rule on the PO box. So here, it's only exact matches.
+
+Speaker 2  01:37:32
+And then we have a rule on the customer number. Don't really know if it's relevant, but that's also an exact match. Think that we used to check that the code. So I don't really know why the rule is here, to be honest. Yeah. But let's first check.
+
+Speaker 2  01:37:52
+Incredible.
+
+Speaker 2  01:37:59
+So let's see. Imaginement. It took a while again to download. So apparently, everything processed. So I wouldn't have expected, but still nice. Yeah.
+
+Speaker 2  01:38:16
+So we can put some rules and address. I'm just going to copy the rules now.
+
+Speaker 2  01:38:27
+You see? So I create a rule first, then I can select it, and now I can add the definitions.
+
+Speaker 2  01:38:41
+And it was a fuzzy match of 85%.
+
+Speaker 2  01:38:48
+This one, I don't think it matters,
+
+Speaker 2  01:38:50
+but streets was 80%.
+
+Speaker 2  01:39:09
+We had the US coastal code prefix.
+
+Speaker 2  01:39:18
+That was an exact one.
+
+Speaker 2  01:39:22
+Then we had country and region.
+
+Speaker 2  01:39:30
+It was also exact. And validation region.
+
+Speaker 2  01:39:43
+That was it,right? And then we had another rule on the PO box.
+
+Speaker 2  01:39:55
+This one doesn't really matter, but okay. So the PO box, and that one was country PO box. This makes sense to you?
+
+Speaker 1  01:40:24
+Yes. Yes. I understand. Got it. The flow is extremely clear now.
+
+Speaker 2  01:40:30
+Sorry. I didn't understand.
+
+Speaker 1  01:40:36
+Oh, I said the flow is extremely clear now. I had a lot of doubts before, so now everything makes more sense.
+
+Speaker 2  01:40:43
+Oh, that's good to hear. Good to hear. Because I'm also going a bit fast because I want to get this.
+
+Speaker 1  01:40:50
+Yeah. Yeah. No problem. I can understand. Yeah.
+
+Speaker 2  01:40:53
+Yeah. We are getting there. So this one, I'm going to leave for now because I don't think there should be any duplicates.
+
+Speaker 2  01:41:02
+Our customer number because basically, if we check our legacy mapping, see, our customer number was defined or coded. So that should not happen. And if it happens, it will be pushed in the legacy duplicates table anyway. Okay. So now we can see our data.
+
+Speaker 2  01:41:23
+We have a lot more issues.
+
+Speaker 2  01:41:28
+But these are actually good things to start resolving. Yeah.
+
+Speaker 2  01:41:36
+And voilà. So we have the PO box postal code. This one is surprising to me.
+
+Speaker 2  01:41:49
+So here is something that's wrong, I think. Yeah.
+
+Speaker 2  01:42:31
+I don't know why it put everything with an empty string because I think we exported it, and then it was not empty.
+
+Speaker 2  01:42:45
+Oh, yeah.
+
+Speaker 2  01:43:10
+So basically, we need to check in our source.
+
+Speaker 2  01:43:18
+If that's empty,
+
+Speaker 2  01:43:23
+then we can take this PO box. And if that's not empty, yeah, then you can just take what's in the source. And that's it. I don't know. Sorry.
+
+Speaker 1  01:43:51
+And if it's empty, we need to take the postal code.
+
+Speaker 2  01:43:55
+Yeah. Yeah. Yeah.
+
+Speaker 2  01:44:01
+Now, yeah.
+
+Speaker 2  01:44:07
+It should also be that this PO box
+
+Speaker 2  01:44:20
+is not empty
+
+Speaker 2  01:44:26
+because we don't need to add the PO box postal code. Yeah.
+
+Speaker 2  01:44:39
+Let's just check. Yeah.
+
+Speaker 2  01:44:57
+So now I only have a result when there is actually a PO box, which is what I want. So I need to apply it, update it, and then it processes. Let me check if there's any other issues.
+
+Speaker 2  01:45:15
+That's just because it's really empty, I think. So that's all okay. For the email, it's also a little bit tricky. But that's more for the validation rule. Yeah.
+
+Speaker 2  01:45:57
+Yeah. Okay. Then that's also better. Yeah.
+
+Speaker 2  01:46:04
+That should be it. Let's process again. Yeah.
+
+Speaker 2  01:46:12
+Yeah. So that's running. And then I think after that is running, we can run the deduplication.
+
+Speaker 2  01:46:22
+But we can activate,
+
+Speaker 2  01:46:24
+but it will take a while. Yeah.
+
+Speaker 2  01:46:31
+I can show you because maybe after the meeting, you can just enable it and see where you yeah.
+
+Speaker 1  01:46:41
+Yeah. Sure. I can do that.
+
+Speaker 2  01:46:43
+Yeah. But I can show you in the example.
+
+Speaker 1  01:46:47
+Yeah.
+
+Speaker 2  01:46:53
+Clustering. And then you download. After it's done, you should have a clustering table under the customers. And when you download it, it should look a bit like this one. Yeah.
+
+Speaker 2  01:47:13
+Something I need to do
+
+Speaker 2  01:47:18
+in the database. Yeah. Yeah. And then you can see here each cluster are potential duplicates.
+
+Speaker 2  01:47:30
+You see? And then you see the code, and then you see some details. Based on all the fields included, you will see their details. So you can see all these belong together. And indeed, they are quite similar,right, on the name. And then maybe as well on the street.
+
+Speaker 2  01:47:51
+So it's very similar. Yeah. And so on and so forth.
+
+Speaker 1  01:47:56
+And this cluster, when Burns says that we need to identify the golden record, so that is done with manual review?
+
+Speaker 2  01:48:04
+Yes. Yes. Yes. Actually, I also put some logic to automate, and that was the scores. But it's still a bit tricky because, I mean, we can always put logic, but even if all the logic says that it's a duplicate, it might not be a duplicate.
+
+Speaker 2  01:48:27
+But that was the purpose of the score fields. Yeah. Because I think in his original spec, Burn gave me some rules. And he said, for example, on the status, if it's an active customer, you need to score it, give it 10 points, or else 0 points. If it's a sleeping customer as well,
+
+Speaker 2  01:48:50
+and then depending on how many sales orders there are, you need to give it this many. And you could actually see that here. And these are the ones that I skipped for now.
+
+Speaker 1  01:49:05
+And there's the logic for this waiting system that you have?
+
+Speaker 2  01:49:11
+Yeah. Burn gave me the spec, but you can see the logic here, basically. Everything in the example customer in the score underscore. Yeah. Yeah.
+
+Speaker 2  01:49:29
+Says order last used.
+
+Speaker 2  01:49:37
+So in this case, there is a field in the legacy table, sales order last used, which means that's the date of the most recent sales order, which apparently we have available in that aspect. So that's easy. Otherwise, we would need to join the sales orders, but they are not here yet.
+
+Speaker 2  01:49:54
+And then it says when the sales order last used is empty, so that means the customer never did a sale, then it's zero.
+
+Speaker 2  01:50:04
+When m.months, we did a cross-supply, and we used a dates_difference function that counts the difference in months between the source date, the sales order last used, and get_date, the current date.
+
+Speaker 2  01:50:24
+So that means when it's between 0 and 9, then it's 25. When it's between 10 and 24, then it's 15. Else it's 5.
+
+Speaker 2  01:50:35
+And then you can see here, for example, this one had in 2019, had a sales order. So that's more than 24 months ago, but still not empty. So it would be 5. Yeah.
+
+Speaker 2  01:50:49
+And you can check the other ones as well because it's like so we have a score for the status. We have a score for when was a last sales order, how many sales orders there are, if there was a partner that did the sales order, how many equipments are linked to the customer, if it's a sleeping customer,
+
+Speaker 2  01:51:10
+and if it's a customer status. And then we count all these together to get the final score.
+
+Speaker 1  01:51:19
+Got it. Yeah. I will look in.
+
+Speaker 2  01:51:21
+And then I had also a script to say, "Okay,
+
+Speaker 2  01:51:26
+assign the golden record to the one with the highest score in the group." And then it's kind of automated. But yeah, as I said, it's still a bit tricky.
+
+Speaker 2  01:51:47
+Yeah. It's not because all the rules say it's a duplicate that it's always a duplicate.
+
+Speaker 1  01:51:52
+Yeah. I understand.
+
+Speaker 2  01:51:53
+Yeah. Because yeah, the data is not always following the rules.
+
+Speaker 2  01:52:03
+So the validation on the
+
+Speaker 2  01:52:08
+PSP customer. So it processed. So to enable the clustering, I need to go here and just click process, select my group codes, and process. And now you see the queue. It already failed.
+
+Speaker 2  01:52:33
+I need to check that one.
+
+Speaker 1  01:52:37
+So you have also added all the logic for similarity checking as functions?
+
+Speaker 2  01:52:46
+Yeah, kind of. But this is built into Datashaper. So that's not something I added custom. Okay.
+
+Speaker 2  01:52:55
+That's weird.
+
+Speaker 2  01:52:56
+Although I know version area.
+
+Speaker 2  01:53:20
+It's weird. Yeah.
+
+Speaker 2  01:53:31
+I'll need to check because before, this is the algorithm you had a Winkler to use for the fuzzy matching. Before, we had our custom Datashaper function, which would calculate the fuzzy match.
+
+Speaker 2  01:53:46
+But since SQL Server 2025, the newest version that's not really completely released, but it's in preview, they have a built-in function for that,
+
+Speaker 2  01:54:01
+which we tested. And it's the same result, but it's faster because, yeah, the function we built, we built it in SQL, but I guess the function they built, they built it on a lower level. So now I made a logic to use it wherever possible.
+
+Speaker 2  01:54:20
+And actually,
+
+Speaker 2  01:54:21
+I changed your instance to SQL Server 2025 so that you actually would get already that function. But now it says the function doesn't exist, which is weird to me because I used it before.
+
+Speaker 2  01:54:41
+That's why it's weird.
+
+Speaker 2  01:54:43
+But maybe something changed in an upgrade or I need to so you need to put an input string
+
+Speaker 2  01:54:56
+and another one. Why?
+
+Speaker 2  01:55:31
+So now it says 2022.
+
+Speaker 2  01:55:35
+And here, it says 2025.
+
+Speaker 2  01:55:53
+It's weird.
+
+Speaker 2  01:56:03
+Did I select that one? No.
+
+Speaker 2  01:56:10
+See?
+
+Speaker 2  01:56:13
+It feels like it downgraded. Okay.
+
+Speaker 2  01:56:21
+I will check. We can use that one, and then we are okay. Clustering function in Winkler.
+
+Speaker 2  01:57:17
+I think if I just remove this, then it should be fine. Yeah.
+
+Speaker 2  01:57:44
+Now it's running. Yeah.
+
+Speaker 2  01:57:47
+You can also go here, and you will see if it's running now. But you see this one took more than 1,000 seconds.
+
+Speaker 2  01:57:58
+So I think it will even be more now because, yeah, yeah,
+
+Speaker 2  01:58:09
+because I needed to change the function. Okay.
+
+Speaker 2  01:58:15
+I will check on it. It's weird because I changed it, but I know it was a preview feature. So maybe it was only temporarily available or something because it was nice. It was not fast.
+
+Speaker 1  01:58:27
+Sorry. I lost you.
+
+Speaker 2  01:58:28
+Yeah. Yeah. I don't understand why I got the error because it says the function for the Yarrow Winkler because I switched to the built-in function because that was much faster. But now it said I don't know this function. And I don't understand why before it knew it and not now.
+
+Speaker 2  01:58:49
+But it was a preview function. So maybe still something changed. So now I dropped back to the function we developed ourselves. So it works, but it's slower. Yeah. But okay. Can just let it run and then we'll see. Allright.
+
+Speaker 2  01:59:09
+Let's
+
+Speaker 2  01:59:11
+close this one. So now.
+
+Speaker 1  01:59:14
+Thank you so much for this meeting, Burns. It really helped me a lot.
+
+Speaker 2  01:59:18
+Okay. You're welcome. Happy it's becoming clearer. I think we should have one more.
+
+Speaker 1  01:59:28
+Yes. When would you be free?
+
+Speaker 2  01:59:36
+Let's check. Maybe Wednesday morning?
+
+Speaker 1  01:59:46
+Yeah. Yeah. That works for me.
+
+Speaker 2  01:59:59
+So I will put time to 11:00. Yeah. Finish. So still to see.
+
+Speaker 2  02:00:11
+Examine the results. Clustering. And then RDF setup. And then I will show you also the Azure Data Factory setup.
+
+Speaker 1  02:00:22
+Okay. Yeah. Great.
+
+Speaker 2  02:00:24
+Yeah.
+
+Speaker 2  02:00:24
+Because then you will see we can actually everything we do here, we can also trigger from Azure Data Factory. But then we can also add custom stuff.
+
+Speaker 1  02:00:39
+Okay. Perfect. Yeah.
+
+Speaker 2  02:00:42
+Allright. So I'll send you the recording again. And yeah, I will see you on Wednesday.
+
+Speaker 1  02:00:51
+Yeah. You have a great day then. Bye-bye.
+
+Speaker 2  02:00:53
+Yeah. Same for you. Bye.
+
+Speaker 1  02:00:55
+Bye.

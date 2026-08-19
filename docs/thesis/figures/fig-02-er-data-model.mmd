@@ -1,0 +1,149 @@
+%% fig-02 — Entity-relationship model across the DS table progression and the service payloads
+%% Source: docs/thesis/05_DATA_MODEL.md §3 (lines 730-878)
+erDiagram
+    IMPORT ||--|| LEGACY : "DS legacy mapping, code = groupcode underscore sourcekey"
+    LEGACY ||--|| VALIDATION : "DS ProcessValidation, same code"
+    VALIDATION ||--o| LOADFILE : "load-file mapping, records without mandatory issues"
+    LEGACY ||--o{ ENRICH_RESULT : "50-row page, Customer to record_id"
+    ENRICH_RESULT ||--|| LEGACY : "usp_merge_legacy_enriched, keyed on Customer"
+    VALIDATION ||--o{ DEDUP_ROW : "projection, Customer = row_id"
+    DEDUP_ROW ||--|| DEDUP_RESULT : "row_id"
+    DEDUP_RESULT }o--|| CLUSTER : "cluster_id"
+    DEDUP_RESULT }o--|| BLOCK : "block_id"
+    DEDUP_RESULT }o--|| SIGNATURE : "signature_id, unique within block"
+    DEDUP_RESULT ||--|| VALIDATION : "usp_merge_validation_clusters"
+    DEDUP_RESULT ||--o| SCORING_ROW : "row_id, Cluster ID, Routing, Confidence, Reasoning"
+    SCORING_ROW ||--|| SCORING_RESULT : "row_id"
+    SCORING_RESULT }o--|| SCORING_RESULT : "golden_record_id / proposed_golden_id self-reference"
+    SCORING_RESULT }o--|| WEIGHTS : "scored_with_weights_version"
+    SCORING_RESULT ||--o{ DEDUP_ISSUE : "row_id / cluster_id"
+    SCORING_RESULT ||--|| APPROVAL : "cluster_id"
+    ENRICH_RESULT ||--o{ ISSUE_CODE : "Issues column, per record"
+
+    IMPORT {
+        string source_columns "NOT EVIDENCED - typed at import"
+        string no_code_column "codes start at Legacy"
+    }
+    LEGACY {
+        nvarchar code PK "groupcode underscore sourcekey"
+        string group_code
+        datetime run_date "execution timestamp"
+        string delta_status
+        string mod_tt
+        string source_data "import table name"
+        string Customer "ordering key of the ADF Lookup"
+        string SAP_columns "consumed subset = EnrichmentRecord aliases"
+        string enriched_columns "50 RESPONSE_COLUMNS written back - NOT EVIDENCED"
+        string Issues "written at step 7 - no evidenced procedure"
+    }
+    VALIDATION {
+        nvarchar code PK
+        string Customer "to row_id"
+        string Block_ID "precomputed by the DS address gate"
+        string Name_1
+        string Name_2
+        string Street_1
+        string House_Number
+        string Postal_Code
+        string City
+        string Country_Region_Key
+        string ROR_ID
+        string LEI_ID
+        string cluster_columns "Cluster_ID Reason Signature - mapping NOT EVIDENCED"
+    }
+    LOADFILE {
+        nvarchar code PK
+        string same_layout_as_validation "default one-to-one mapping"
+    }
+    ENRICH_RESULT {
+        string record_id PK "Customer"
+        string name1_enriched
+        string name2_enriched
+        string website_url "Domain"
+        string department_domain
+        string search_term_1
+        string search_term_2
+        string ror_id
+        string lei_id
+        bool flag_for_review
+        string record_type
+    }
+    ISSUE_CODE {
+        string code PK "36-code catalogue, 34 emitted"
+        string name
+    }
+    DEDUP_ROW {
+        string row_id PK
+        string block_id FK
+        string name1
+        string name2
+        string street
+        string house_no
+        string postal_code
+        string city
+        string country
+        string ror_id
+        string lei_id
+        string enriched_name "not in the ADF projection"
+    }
+    BLOCK {
+        string block_id PK "given, else blk- + sha1 of address tuple"
+    }
+    SIGNATURE {
+        string signature_id PK "s1 s2 ... local to a block"
+        string norm_name1
+        string norm_name2
+        string row_ids
+    }
+    CLUSTER {
+        string cluster_id PK "c_ + sha256 of sorted member row_ids"
+    }
+    DEDUP_RESULT {
+        string row_id PK
+        string block_id FK
+        string cluster_id FK "null when not clustered"
+        string signature_id FK
+        string routing
+        bool llm_flag
+        float confidence
+        string reasoning
+        string model
+        string model_version
+        string prompt_version
+    }
+    SCORING_ROW {
+        string row_id PK "Customer"
+        string cluster_id FK
+        string routing
+        float confidence
+        string reasoning
+        string crm_metrics "Sales_Order_* Equipment SleepingCustomer CustomerStatus"
+        string sf1_to_sf8
+    }
+    SCORING_RESULT {
+        string row_id PK
+        string cluster_id FK
+        int score "score_final"
+        bool is_golden_record
+        string golden_record_id FK
+        string proposed_golden_id FK
+        string election_status
+        string approval_status
+        string scored_with_weights_version FK
+    }
+    WEIGHTS {
+        string version PK "12-hex sha256 of canonical JSON"
+        string criterion_bands "11 criteria"
+    }
+    DEDUP_ISSUE {
+        string row_id FK
+        string cluster_id FK
+        string issue_type "8 declared types"
+        string detail
+    }
+    APPROVAL {
+        string cluster_id PK
+        string decision "approved or rejected"
+        string approver
+        string updated_row_ids "not persisted"
+    }

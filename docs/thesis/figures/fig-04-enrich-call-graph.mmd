@@ -1,0 +1,39 @@
+%% fig-04 — Call graph of POST /enrich down to the external-call boundary
+%% Source: docs/thesis/00_INVENTORY.md §3.1 (lines 205-243)
+flowchart TD
+    A["POST /enrich · enrich_records (api/routes.py:88)"] --> B["Orchestrator.enrich_batch (orchestrator.py:783)"]
+    B --> C["_process_with_semaphore (orchestrator.py:799)"]
+    C --> D["_enrich_single (orchestrator.py:1698)"]
+    D --> E["run_overflow_check (orchestrator.py:1724)"]
+    E -->|LLM| LLM["LLM · openai_client"]
+    D --> F["preprocess_record (orchestrator.py:1767)"]
+    F --> G{"Name 1 is a person only?"}
+    G -->|yes| H["_resolve_person_affiliation (orchestrator.py:1413/1433)"]
+    H -->|SERP| SERP["SERP client"]
+    H -->|LLM| LLM
+    H -->|ROR confirm| ROR["ROR API"]
+    H --> FIN
+    G -->|no| I["_ror_client.call — Tier 1 ROR (orchestrator.py:1955)"]
+    I -->|ROR| ROR
+    I --> J["_run_lei_lookup — Tier 1 GLEIF (orchestrator.py:2058/2152/2198)"]
+    J -->|GLEIF| GLEIF["GLEIF API"]
+    J --> K["run_company_canonical (orchestrator.py:2164)"]
+    K -->|LLM| LLM
+    D --> L["run_lab_resolver — UC13 (orchestrator.py:2298)"]
+    L -->|SERP+page+LLM| SERP
+    D --> M["run_tier2_canonical (orchestrator.py:2384/2508)"]
+    M -->|LLM| LLM
+    D --> N["run_tier2a — contact lookup (orchestrator.py:2468)"]
+    N -->|SERP+page+LLM| SERP
+    D --> O["run_tier3 — LLM inference (orchestrator.py:2543)"]
+    O -->|LLM| LLM
+    D --> FIN["_finalise_and_return (orchestrator.py:1550)"]
+    FIN --> P["_maybe_resolve_website_bc (orchestrator.py:1559→858)"]
+    P -->|Path B SERP| SERP
+    P -->|Path C LLM| LLM
+    FIN --> Q["_probe_department_url (orchestrator.py:1570→963)"]
+    Q --> Q1["_resolve_probe_base → resolve_final_url (orchestrator.py:941)"]
+    Q1 -->|redirect HEAD| PAGE["page_fetcher"]
+    Q -->|SERP+page verify| SERP
+    FIN --> R["_run_address_stage → process_address (orchestrator.py:1571→address_processing.py)"]
+    FIN --> S["finalise → derive_search_terms (orchestrator.py:1572→600)"]

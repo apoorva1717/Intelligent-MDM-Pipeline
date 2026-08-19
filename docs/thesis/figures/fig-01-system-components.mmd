@@ -1,0 +1,47 @@
+%% fig-01 — System component diagram
+%% Source: docs/thesis/02_ARCHITECTURE.md §2 (lines 62-108)
+flowchart TD
+    SAP["SAP S/4HANA (source system)"]
+    PRE["Preprocess + ZFI exclusion\n(script ⚠ not located)"]
+    subgraph TILLIT["Tillit tenant"]
+        DSIMP["DS Import table (bronze)\ntest_77 schema, per group code"]
+        LEG["Legacy table (silver)\nAzure SQL MI"]
+        VAL["Validation table (gold)\nAzure SQL MI\n[Block ID] precomputed by DS address gate"]
+        LOAD["Load file\n(records without mandatory issues)"]
+        DSISSUE["DS issues view\n(steward review)"]
+        DSDEDUP["DS deduplication view\nApply Leading Code (steward)"]
+        ADFENR["ADF Enrichment Pipeline\nLookup2→ForEach(Lookup1→Web1→Merge Back)"]
+        ADFDEDUP["ADF Deduplication Pipeline\nLookup1→Web1→Merge Back"]
+        ADFADDR["ADF Address validation\n(⚠ not exported)"]
+        ADFISS["ADF /issues call\n(⚠ not exported)"]
+    end
+    subgraph BRUKER["Bruker Azure spoke"]
+        API["Function App mdm-pipeline-api\nFastAPI behind Azure Functions ASGI"]
+        FOUNDRY["AI Foundry (Azure OpenAI)"]
+    end
+    EXT["External APIs\nROR · GLEIF/LEI · SerpAPI/DuckDuckGo · page fetch"]
+    APPINS["Application Insights"]
+
+    SAP -->|"e1: manual extract (Excel/CSV)"| PRE
+    PRE -->|"e2: preprocessed file, ZFI removed"| DSIMP
+    DSIMP -->|"e3: DS legacy mapping (T-SQL stored proc)"| LEG
+    LEG -->|"e4: SqlMISource T-SQL, 50-row page"| ADFENR
+    ADFENR -->|"e5: POST /enrich HTTPS JSON {records:[…50]}"| API
+    API -->|"e6: HTTPS per-record"| EXT
+    API -->|"e7: HTTPS chat completions"| FOUNDRY
+    ADFENR -->|"e8: usp_merge_legacy_enriched(payload=string)"| LEG
+    LEG -->|"e9"| ADFADDR
+    ADFADDR -.->|"e10: auto write-back >80% conf"| LEG
+    LEG -->|"e11"| ADFISS
+    ADFISS -.->|"e12: /issues → Issues column"| LEG
+    LEG -->|"e13: DS ProcessValidation (T-SQL)"| VAL
+    VAL -->|"e14: Issues column + DS rules"| DSISSUE
+    VAL -->|"e15: SqlMISource projection T-SQL"| ADFDEDUP
+    ADFDEDUP -->|"e16: POST /api/dedup/cluster-block HTTPS JSON {rows:[…]}"| API
+    API -->|"e17: HTTPS dedup LLM adjudication"| FOUNDRY
+    ADFDEDUP -->|"e18: usp_merge_validation_clusters(payload=string)"| VAL
+    VAL -->|"e19"| DSDEDUP
+    DSDEDUP -->|"e20: POST /api/dedup/score (⚠ not wired in ADF)"| API
+    DSDEDUP -->|"e21: Apply Leading Code ≙ POST /api/dedup/approve"| API
+    VAL -->|"e22: DS load-file mapping"| LOAD
+    API -->|"e23: telemetry"| APPINS

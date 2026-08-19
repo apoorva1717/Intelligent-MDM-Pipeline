@@ -1,0 +1,2096 @@
+Speaker 1  00:05
+Okay, perfect.
+
+Speaker 1  00:09
+So you can see my screen,right?
+
+Speaker 2  00:12
+Yes, I can.
+
+Speaker 1  00:15
+Mm-hmm.
+
+Speaker 2  00:16
+Uh, I you also have the tutorial next to it.
+
+Speaker 1  00:20
+Yeah.
+
+Speaker 2  00:21
+Okay. Well, that's good. Um, yeah. So what I would do, can you check on Teams if you have access to, or maybe wait, I will send you, uh, to the Brooker team.
+
+Speaker 2  00:40
+Copy link, or I'll share you a link.
+
+Speaker 1  00:42
+So could you add me to a group if that's?
+
+Speaker 2  00:47
+Yes. I'll send you a link in the chat as well.
+
+Speaker 1  00:52
+Yes, please. Yeah.
+
+Speaker 2  00:58
+Oh, okay.
+
+Speaker 2  01:01
+Uh, got it. Hmm.
+
+Speaker 2  01:09
+Yeah, but that's not sorry. Um, thought that would also work. Um, copy it. Just can you try this one, the second one?
+
+Speaker 2  01:22
+'Cause this is just the messages, but I wanted to, um, give you access to the files. Yeah.
+
+Speaker 2  01:39
+Hmm. Hmm.
+
+Speaker 2  01:43
+Because we are another s okay, I will just send you the files you need. Uh.
+
+Speaker 1  01:48
+Allright.
+
+Speaker 2  01:48
+Yeah. Okay.
+
+Speaker 2  02:00
+So let's go, uh, ahead and just start the tutorial.
+
+Speaker 1  02:05
+Mm-hmm.
+
+Speaker 2  02:11
+Okay. So the process we are going to set up, it's okay. Did you already, uh, read a little bit through this?
+
+Speaker 1  02:20
+Yes, yes. I have read a little bit through it, but I had to revise yesterday to refresh my memory, but I got it out of my account.
+
+Speaker 2  02:29
+The HR also wiped your, uh, memory.
+
+Speaker 2  02:35
+Uh, okay. So I think this, uh, simple overview, uh, that's the most important. So we're our source database will be the Excel file. Um, since we don't have a connection to SAP yet, uh, and then we'll go through all the steps from import, legacy, migration, rules, validation, issues, cleansing, and then the load file.
+
+Speaker 2  02:57
+Uh, so voilà. Let's go, uh, down. Yeah.
+
+Speaker 2  03:04
+I think that one is fine. Hmm.
+
+Speaker 2  03:10
+That one is also fine. Yeah. I mean, you can still read that, uh, later on, but I would suggest we go to the bottom and go to the next step.
+
+Speaker 2  03:26
+Well, no. Excellent. And yeah, we can also go to the skip that one. Yeah. Let's start here.
+
+Speaker 1  03:37
+Mm-hmm.
+
+Speaker 2  03:39
+Voilà. So in the project setup, we'll need to set up a new entity.
+
+Speaker 1  03:46
+Mm-hmm.
+
+Speaker 2  03:56
+Mm-hmm.
+
+Speaker 2  03:59
+Um, yeah. So I think you can go, uh, there in Data Shaper.
+
+Speaker 2  04:07
+And then, yeah, the part in green.
+
+Speaker 1  04:12
+Hmm.
+
+Speaker 1  04:15
+Uh, where where is the green button, sorry?
+
+Speaker 2  04:19
+It's where the cursor is. There's a green, uh, border.
+
+Speaker 1  04:23
+Ah. Oh, okay. Allright.
+
+Speaker 2  04:25
+Yeah. Yeah.
+
+Speaker 1  04:26
+Mm-hmm.
+
+Speaker 2  04:27
+So data sources, we don't need to configure yet 'cause we can't connect to the SAP, and we'll just use a file from our computer. Databases, you can click on it.
+
+Speaker 1  04:38
+Mm-hmm.
+
+Speaker 2  04:40
+It's already fine. Um, but you can see in the background, every layer, like the import, legacy, load file, uh, we store in a separate database.
+
+Speaker 1  04:50
+Okay.
+
+Speaker 2  04:51
+We could also put it in the same, but this, um, keeps everything organized.
+
+Speaker 1  04:56
+Allright.
+
+Speaker 2  04:57
+Yeah. Next. But we don't need to do anything. That's already set up.
+
+Speaker 1  05:02
+Mm-hmm.
+
+Speaker 2  05:03
+Yeah. And then entities. So that's the first one we, uh, need to do.
+
+Speaker 1  05:09
+Mm-hmm.
+
+Speaker 2  05:10
+So, so you see we have a customer IT, customer V1, example customer, example customer, target. So that's what I mean.
+
+Speaker 1  05:18
+Mm-hmm.
+
+Speaker 2  05:18
+Like, we have a lot of things that we used for the training. Um.
+
+Speaker 1  05:22
+Mm-hmm.
+
+Speaker 2  05:24
+So I would like to, yeah, get now a customer that we will use, and then we can, uh, clean up the other ones.
+
+Speaker 1  05:33
+Allright.
+
+Speaker 2  05:34
+Yeah. But let's first set it up completely and then do the cleaning. Uh, so to add a new object, so you just click on the plus. Yeah.
+
+Speaker 1  05:43
+Mm-hmm.
+
+Speaker 2  05:44
+And name. I would just call it we're doing customer, so I just call it customer.
+
+Speaker 1  05:51
+Okay.
+
+Speaker 2  05:51
+Yeah. That's fine. Um, yeah. So this is where you want to store the data in which database, but, uh, by default, it's already fine. So I think, uh, I would keep that.
+
+Speaker 1  06:06
+Okay.
+
+Speaker 2  06:08
+Uh, so the source systems you could actually put, that would be S4HANA, I think, that you have.
+
+Speaker 1  06:16
+Yes.
+
+Speaker 2  06:17
+And there is also a Salesforce. Yeah.
+
+Speaker 1  06:25
+Mm-hmm.
+
+Speaker 2  06:26
+I think this one. Okay. And target system would also be the same. Oh yeah. Here, you can also put only put one, uh, but put the S4HANA then.
+
+Speaker 1  06:39
+For the target system?
+
+Speaker 2  06:40
+Yes.
+
+Speaker 1  06:41
+Okay.
+
+Speaker 2  06:42
+That will be the main system. Uh, and the legacy, I would also put the S4HANA. Yeah. 'Cause that's for our intermediate layer. Uh, allright. That looks fine to me. Yep. So we can, uh, create it. Voilà.
+
+Speaker 2  07:04
+So now we set up a new object.
+
+Speaker 1  07:06
+Mm-hmm.
+
+Speaker 2  07:08
+Uh, voilà. Then let's go to the next step here.
+
+Speaker 1  07:16
+Um.
+
+Speaker 2  07:18
+In the entities on the dropdown where we went on the yeah.
+
+Speaker 1  07:21
+Ah. Okay.
+
+Speaker 2  07:22
+Yeah. So and then the environments.
+
+Speaker 1  07:27
+Mm-hmm.
+
+Speaker 2  07:27
+Productions. So PSPY. Okay.
+
+Speaker 2  07:31
+So what I would do, I would set up, um, dev, test, and production.
+
+Speaker 1  07:42
+Okay.
+
+Speaker 1  07:51
+If you wanna name it dev test.
+
+Speaker 2  07:54
+Oh, like this is fine. Yeah.
+
+Speaker 1  07:56
+Yeah. Okay.
+
+Speaker 2  07:57
+I wouldn't put it as I would use the production as the default.
+
+Speaker 1  08:01
+Mm-hmm.
+
+Speaker 2  08:02
+So this one we can create. Yeah. And then make one more test.
+
+Speaker 1  08:17
+Mm-hmm.
+
+Speaker 2  08:18
+Yeah. And then I would check if production is the default. I would put, uh.
+
+Speaker 1  08:24
+Mm-hmm.
+
+Speaker 2  08:24
+Make it the default. Yeah.
+
+Speaker 1  08:32
+Allright.
+
+Speaker 2  08:33
+Voilà. Allright. Next.
+
+Speaker 2  08:39
+Group codes, PSP, SAP. Um, okay. Now what's SAP?
+
+Speaker 2  08:52
+Salesforce one, Salesfor so okay. I think we can use the BSP group code for, uh, Brooker's S4 productive. So let's, uh.
+
+Speaker 1  09:01
+Okay.
+
+Speaker 2  09:02
+Use that one so we don't need to add a new group code.
+
+Speaker 1  09:05
+Allright.
+
+Speaker 2  09:07
+Yeah. Then next.
+
+Speaker 2  09:12
+Reporting, we don't need to change.
+
+Speaker 1  09:14
+Mm-hmm.
+
+Speaker 2  09:16
+Uh, and the systems. Yeah. There's just, uh, if we want to add more, if we have other systems, then the prefilled lists. But we already had the S4.
+
+Speaker 1  09:26
+Yeah.
+
+Speaker 2  09:26
+And we had the Salesforce. So that's also fine.
+
+Speaker 1  09:29
+Yeah.
+
+Speaker 2  09:30
+Uh, allright. So that's the setup of the object that is done.
+
+Speaker 1  09:35
+Mm-hmm.
+
+Speaker 2  09:36
+So then we can start to configure in detail. Uh, let's start with the import step.
+
+Speaker 2  09:43
+Um, so the.
+
+Speaker 1  09:47
+The one on the left?
+
+Speaker 2  09:48
+Yeah. Yeah. Voilà.
+
+Speaker 1  09:53
+Mm-hmm.
+
+Speaker 2  09:53
+So now we will create, like, the import layer. So the first one. Uh.
+
+Speaker 1  09:57
+Mm-hmm.
+
+Speaker 2  09:58
+And that one, yeah, we imported from a source, of course, uh, which will here just be, uh, an Excel file. Yeah.
+
+Speaker 2  10:06
+Since I can't, uh, share it currently through the link, I will just, uh, download it. Um, ah, actually, you know what you can do? Maybe it's easier.
+
+Speaker 1  10:23
+Mm-hmm.
+
+Speaker 2  10:23
+We can just copy the file, download the file from the example setup, and then we can import that one. Um, so, so then you need to go to the table setup.
+
+Speaker 1  10:37
+Mm-hmm.
+
+Speaker 2  10:38
+And that's an overview. Yeah. And then entity, let's take the example customer target.
+
+Speaker 2  10:49
+I would take the example customer underscore target.
+
+Speaker 1  10:54
+Oh, okay. Sorry.
+
+Speaker 2  10:55
+I know it's, uh.
+
+Speaker 1  10:57
+Yeah.
+
+Speaker 2  10:57
+Uh, confusing, but I think this one is the most, uh, finished one. Yeah.
+
+Speaker 1  11:03
+Mm-hmm.
+
+Speaker 2  11:03
+And then we take the import operation.
+
+Speaker 1  11:07
+Okay.
+
+Speaker 2  11:12
+And then we have the import XLSX file. Yeah.
+
+Speaker 1  11:19
+Which one, sorry? Oh, import XLSX.
+
+Speaker 2  11:22
+Yeah.
+
+Speaker 1  11:22
+Oh, entity. Yeah.
+
+Speaker 2  11:23
+Yeah. 'Cause that's the one we used to, um, to import. Uh, on theright somewhere, you have, like, a view button.
+
+Speaker 1  11:35
+Mm-hmm.
+
+Speaker 2  11:36
+Uh, a little bit, no, uh, higher on the table options. Yeah.
+
+Speaker 1  11:42
+Okay.
+
+Speaker 2  11:43
+Yeah. Voilà. So there you can see, and there's an export button. Yeah. And then I would take a number of rows, all of them.
+
+Speaker 1  11:56
+Allright.
+
+Speaker 2  12:03
+What we just did now, it's we, we checked the, the import table that we used for the training table, and we will just, uh, download it. Um.
+
+Speaker 1  12:11
+Mm-hmm.
+
+Speaker 2  12:12
+On your computer, and then we will import it again on the new entity so that we have the same.
+
+Speaker 1  12:19
+Allright.
+
+Speaker 2  12:25
+Hmm. Yep.
+
+Speaker 2  12:29
+Uh, yeah. You can, uh, go to import and then select a file, and then you can select it. Yep.
+
+Speaker 2  12:51
+Yep. So table type is a new table. So the group code for the SAP import, you said we will use the BSP.
+
+Speaker 1  13:03
+Mm-hmm.
+
+Speaker 2  13:04
+Yeah. And then the entity is your, uh, new one that you created.
+
+Speaker 2  13:12
+Uh, system would be the first one. Yeah. And then I would call it as well import underscore XLSX. Doesn't really matter, but for me, it's clear then that it's the import from the Excel.
+
+Speaker 1  13:29
+Allright.
+
+Speaker 2  13:29
+Yeah. So wait before you click, uh, next. So you see the database schema and the name. That's how it's gonna be stored in the database. So you know it's in the DP import database. It's under the schema customer. Like a schema.
+
+Speaker 1  13:45
+Oh.
+
+Speaker 2  13:45
+I don't know. Do you know what it is?
+
+Speaker 1  13:46
+Yeah. Yeah. I know what a schema is.
+
+Speaker 2  13:48
+Yeah. And the table name will be import XLSX, so.
+
+Speaker 1  13:51
+Okay.
+
+Speaker 2  13:52
+Yep. Voilà. And, um, let's go. Yeah.
+
+Speaker 2  14:11
+This one might, uh, take a while. Maybe in the meantime, we can go to the tutorial and check the steps that we did. Yeah. Um, voilà. So we did that all that,right? Uh, we checked the entities. Yeah.
+
+Speaker 2  14:35
+So the data source connection we skipped 'cause we don't have the SAP connection.
+
+Speaker 1  14:42
+Right.
+
+Speaker 2  14:43
+And the table setup. Um, you see we have the import legacy validation and the load file.
+
+Speaker 1  14:51
+Mm-hmm.
+
+Speaker 2  14:52
+Uh, so now we're working on the import.
+
+Speaker 1  14:55
+Yeah.
+
+Speaker 2  14:56
+Yeah. But that one we need to import, then the table setup will automatically, uh, recognize it.
+
+Speaker 1  15:03
+Okay. Got it.
+
+Speaker 2  15:04
+Yep. So let's check if it's, um.
+
+Speaker 1  15:09
+Downloaded.
+
+Speaker 2  15:09
+It's there.
+
+Speaker 1  15:11
+Not yet.
+
+Speaker 2  15:12
+No. Still going. Um. Yeah.
+
+Speaker 2  15:29
+So this will be just more or less what we did now on the import. Yeah.
+
+Speaker 2  15:44
+So this will be
+
+Speaker 2  15:47
+what we did now. Okay.
+
+Speaker 2  16:07
+See if it's already done, uh. Yeah.
+
+Speaker 2  16:17
+Well, yeah. I would wait a bit with this one 'cause we still need to do in the table setup. Uh, we still need to define the legacy and the validation.
+
+Speaker 1  16:25
+Mm-hmm.
+
+Speaker 2  16:27
+'Cause we need to define, like, how these, uh, tables will look like.
+
+Speaker 1  16:32
+Yeah.
+
+Speaker 2  16:32
+Um, yeah.
+
+Speaker 2  16:39
+But instead of these that are the sample ones, we will use as well the ones from the customer, uh, example target.
+
+Speaker 1  16:47
+Mm-hmm.
+
+Speaker 2  16:59
+Yeah. You can see the video maybe in the meantime.
+
+Speaker 2  17:05
+It's a video,right? Yes.
+
+Speaker 2  17:11
+See, that's to define your, uh, legacy, which is, like, the intermediary layer.
+
+Speaker 1  17:16
+Mm-hmm.
+
+Speaker 2  17:20
+So you would, oh yeah. In this approach, they are going to copy the definition from another table.
+
+Speaker 1  17:28
+Mm-hmm.
+
+Speaker 2  17:29
+Which is one, uh, possible way to do it. You see, and then you get the definition, like, which columns do you want to have, uh, what's the data type for each column.
+
+Speaker 1  17:40
+Mm-hmm.
+
+Speaker 2  17:41
+And then you have a label and a description. And there's also if it's mandatory or not.
+
+Speaker 1  17:47
+Mm-hmm.
+
+Speaker 2  17:47
+Uh, you see here, put everything on, um, 500 'cause in our intermediary layer, we want to be able to store, uh, all the data.
+
+Speaker 1  18:00
+Okay.
+
+Speaker 2  18:01
+In the validation, in the next layer, we want to have the actual, um, length of that the field can have in the in the system. But here, if it's some va like, you have a description from your source that is much longer than allowed, you still want to accept it in the intermediary layer because we're not going to fix it yet here.
+
+Speaker 1  18:24
+Hmm. Okay.
+
+Speaker 2  18:26
+Yeah. Uh, voilà. Um, so that's it. Hopefully, import is finished in the meantime.
+
+Speaker 1  18:35
+Uh, ch no.
+
+Speaker 2  18:40
+I'm wondering if, uh, 2 and 12.
+
+Speaker 2  18:45
+Um, it's yeah. In our a newer version coming up, this will be much, uh, faster.
+
+Speaker 2  19:02
+But it's a large, uh, file, so.
+
+Speaker 1  19:04
+Mm-hmm.
+
+Speaker 2  19:05
+Sorry. Um, but what we can do, we can open a new, uh, tab, and we can already start working on the legacy.
+
+Speaker 1  19:13
+Oh, okay.
+
+Speaker 2  19:14
+So. Yeah. So here, we can go to the table setup.
+
+Speaker 1  19:22
+Mm-hmm.
+
+Speaker 2  19:24
+Overview.
+
+Speaker 2  19:28
+Um, and then we take the we can go to the customer. Yeah.
+
+Speaker 2  19:41
+But so you see we have this import, which is, like, our bronze layer. That will be defined by the source we import. So you will see that it automatically does that. But then the other layers, we need to define ourself how we want them to look like.
+
+Speaker 1  19:55
+Allright.
+
+Speaker 2  19:56
+Yeah. But I think in this approach, we said, "Okay. We will have the same structure for legacy and validation, and it will be the, the golden, like, the blueprint record for the customer," which will be, like, mostly based on SAP with a few exceptions, um,
+
+Speaker 2  20:15
+where we need, like, custom or specific fields that are needed for Salesforce that are not in SAP. So that one we will add as well. But these we don't know yet. Um, so.
+
+Speaker 1  20:27
+Allright.
+
+Speaker 2  20:28
+So what I now would do, I would take over the definition from the example customer target 'cause there it's already defined. So you can do that if you go, like, in the video to the added fields on theright.
+
+Speaker 1  20:41
+Mm-hmm.
+
+Speaker 2  20:42
+Yeah. Maybe can you close this one? Sorry. So you can see on the left, you have the overview of all the tables. But here, there's only one legacy. There's always only one. Then you have all the fields in that table. You see it's empty.
+
+Speaker 1  20:59
+Yeah.
+
+Speaker 2  20:59
+Yeah. These are there actually, but they are, like, uh, technical fields.
+
+Speaker 1  21:04
+Okay.
+
+Speaker 2  21:05
+And then you have the table options on theright so that you can see again the database, the schema, the name, and the system of the table. And below that, if you have fields, you can get the field options. But first, we need to define the fields so that we will do in the added fields.
+
+Speaker 1  21:23
+Okay.
+
+Speaker 2  21:24
+Yep. Voilà. So then we get you can see the technical fields. They are there, but they are grayed out.
+
+Speaker 1  21:30
+Yeah.
+
+Speaker 2  21:30
+Because you cannot change them. So we could add everything one by one manually. Um, but we are not going to do that. We're going to go to the actions on theright. Yeah.
+
+Speaker 2  21:45
+So either we could get an Excel template and upload from there, uh, or we could use another table as an example. But that one, I would use that one. Yes. Since we were going to copy the example customer target. Yeah. And then. Yep.
+
+Speaker 2  22:07
+And then, okay, one option. So let's do that. Uh, voilà.
+
+Speaker 1  22:16
+Mm-hmm.
+
+Speaker 2  22:18
+So you see so what is important here that the names are, are good.
+
+Speaker 2  22:23
+So let's go through that it's clear,right? These are not the actual column names from SAP.
+
+Speaker 1  22:34
+Yeah.
+
+Speaker 2  22:35
+Right? But they are, uh, like, translated.
+
+Speaker 1  22:39
+Okay.
+
+Speaker 2  22:40
+Which I think is okay, uh, 'cause it will be easier to work with. But then I think to generate the load file for SAP later on, we need to convert that again to the technical names, uh, depending on the way that you are loading in SAP. But that I don't know yet. So I think for now, this is fine.
+
+Speaker 2  22:59
+So let's just keep it. If the technical names, we also have a label to add. Uh, but I think here the names are clear enough. We don't need a label. Um, man cluster category. That one I don't remember, but okay. Let's do oh yeah.
+
+Speaker 1  23:18
+Okay. So.
+
+Speaker 2  23:18
+And can you do added fields? Yeah.
+
+Speaker 1  23:20
+Yeah.
+
+Speaker 2  23:21
+Um, can you go down? Well, yeah. I think not sure about the last one, the man cluster category field, if that's something we added or if it's already there. The very last field.
+
+Speaker 1  23:35
+Oh. Man cluster category.
+
+Speaker 2  23:39
+No. Hmm. Okay. I would leave it for now, but maybe we'll, uh, remove it later. What I wanted to also say, the delta collection is important for the legacy. Uh.
+
+Speaker 1  23:50
+Mm-hmm.
+
+Speaker 2  23:50
+'Cause that means if you put the all, it means we are tracking changes on those columns. And it's only when someone some of these columns where the delta collection is defined, uh, will change that we update the data. Here it's very simple.
+
+Speaker 1  24:07
+You mean with the data in the source changes, you track it?
+
+Speaker 2  24:11
+Yes. Yes.
+
+Speaker 1  24:13
+But you are using an extract. So how will you track it?
+
+Speaker 2  24:19
+Uh, well, now we don't tra well, you could, like, maybe next month, you could upload a new extract. And instead of doing the new table like you did, you could say, "Overwrite my existing table." And then you could have, like, uh, same structure but new data.
+
+Speaker 1  24:39
+Okay. Mm-hmm.
+
+Speaker 2  24:40
+Yeah. Uh, but now we said we just track everything. So that's, uh, simple, which is fine. Yep. Thing I can can be saved, but it's not if you didn't do it already. Yep.
+
+Speaker 2  24:56
+So we have legacy defined.
+
+Speaker 1  24:59
+Mm-hmm.
+
+Speaker 2  25:00
+Um, let's check if the import is, uh, done.
+
+Speaker 1  25:05
+Oh. Still not.
+
+Speaker 2  25:06
+Hmm. Okay. Then let's go to validation.
+
+Speaker 1  25:12
+Okay. Um.
+
+Speaker 2  25:15
+Yep. It's the other operation. Voilà. So here, I would do the same.
+
+Speaker 1  25:46
+Mm-hmm.
+
+Speaker 2  25:52
+Uh, looks good.
+
+Speaker 1  25:56
+So in validation, you don't wanna change okay. Here, the max length should be.
+
+Speaker 2  26:03
+Should be actually what, uh.
+
+Speaker 1  26:06
+The SAP needs.
+
+Speaker 2  26:07
+Yep. Exactly.
+
+Speaker 1  26:09
+Okay.
+
+Speaker 2  26:09
+'Cause we've gonna validate on this one. And if it's too long, we're gonna give an error.
+
+Speaker 1  26:15
+Mm-hmm.
+
+Speaker 2  26:16
+Um, yep. Uh, okay. Think that's okay.
+
+Speaker 1  26:23
+And then the name should be, like, 30, 32, 35 characters,right? Why is it 50?
+
+Speaker 2  26:30
+Hmm. 'Cause I didn't get the spec, basically.
+
+Speaker 1  26:35
+Oh, okay.
+
+Speaker 2  26:35
+So I don't know. Yeah.
+
+Speaker 1  26:36
+Okay.
+
+Speaker 2  26:36
+So that's what I'm waiting for, which the actual, uh, spec.
+
+Speaker 1  26:40
+Allright. Allright. Got it.
+
+Speaker 2  26:42
+Yep. Um, yep.
+
+Speaker 1  26:45
+So it's the same and closest?
+
+Speaker 2  26:46
+So yep. But it's fine. We can keep it as now. But once we I get, like, the, the final like, if I get the final thing, like, how we need to do it, then we can update that one.
+
+Speaker 1  26:58
+Mm-hmm.
+
+Speaker 2  26:59
+Yep. Uh, from what I see, can we go, uh, back to the added fields?
+
+Speaker 1  27:07
+Okay.
+
+Speaker 2  27:08
+Yep. 'Cause I think, uh, we should m-mark some as mandatory. Like, customer number.
+
+Speaker 1  27:17
+Allright.
+
+Speaker 2  27:17
+For sure.
+
+Speaker 1  27:18
+Customers mandatory.
+
+Speaker 2  27:19
+Yeah.
+
+Speaker 1  27:19
+And the number also maybe.
+
+Speaker 2  27:21
+Not I'm not sure.
+
+Speaker 1  27:22
+Created maybe. Okay. Not sure.
+
+Speaker 2  27:24
+I'm not sure 'cause every vendor is maybe not, uh every customer is maybe not linked to a vendor. Uh, but I think the creation date, created by, the title, name. At least name one, I would say. The street, I would say.
+
+Speaker 1  27:41
+Yeah. House number also.
+
+Speaker 2  27:46
+Yep. At least the first one, I think. Postal code, city, we would expect. District, I'm not sure. But country, for sure. The region. Hmm. Okay. Let maybe start with that. Oh, the status. That one as well.
+
+Speaker 1  28:09
+Sorry?
+
+Speaker 2  28:10
+Uh, the customer status.
+
+Speaker 1  28:14
+Customer status where is that?
+
+Speaker 2  28:17
+You can do, uh, Control F.
+
+Speaker 1  28:19
+Oh, okay. Allright.
+
+Speaker 2  28:26
+Yep. Probably will be more, but let's start with this, please.
+
+Speaker 1  28:31
+Mm-hmm.
+
+Speaker 2  28:39
+Oh yeah. Uh, okay. No. Think that's okay. Uh, let's check on the import. If it's now still not finished, then I think my something might have gone, uh, wrong. Summertime.
+
+Speaker 1  28:58
+Should we restart it? Retry?
+
+Speaker 2  29:00
+Yeah. I think so. Yes.
+
+Speaker 1  29:06
+Okay. Should I go should I just refresh the page, or? How do I abort this?
+
+Speaker 2  29:19
+Uh, I think, yeah, just refresh the page.
+
+Speaker 2  29:26
+Can you maybe try to download the one I sent you and try with that one?
+
+Speaker 1  29:34
+Yeah. Okay.
+
+Speaker 2  29:53
+Yep. Let's, uh, try it. Hmm.
+
+Speaker 2  30:06
+It's not yet there, I think. Hmm.
+
+Speaker 1  30:11
+Where did it download?
+
+Speaker 2  30:22
+Hmm.
+
+Speaker 1  30:24
+Download field. Where did it fail? Hmm.
+
+Speaker 1  30:34
+It's here.
+
+Speaker 1  30:45
+Uh, 'cause it wants me to log in.
+
+Speaker 2  30:49
+Yeah. Uh, okay. Let me take over the screen for this one. Uh.
+
+Speaker 1  30:55
+Mm-hmm.
+
+Speaker 2  30:56
+Uh, I will just try to do it on my yeah. It's annoying. I because we are in different organization, it's very hard to.
+
+Speaker 1  31:06
+Yeah. Yeah. Yeah.
+
+Speaker 2  31:06
+And I tried to change it in the settings, but even then, it's still like this. There is, like, a million settings for that. And then if you forget one, it doesn't work.
+
+Speaker 1  31:19
+Mm-hmm.
+
+Speaker 2  31:20
+Um, but okay. Uh, need to go and look at myself. Yeah.
+
+Speaker 2  31:34
+So I'm just going to do the same than, than you did,right? Uh.
+
+Speaker 1  31:38
+Mm-hmm.
+
+Speaker 2  32:00
+Uh-huh. Uh, so see, that's what I should get. Like, these are the, the columns in the file.
+
+Speaker 1  32:08
+Okay.
+
+Speaker 2  32:10
+Uh, and now it's important. I need to indicate what is my key.
+
+Speaker 1  32:14
+Mm-hmm.
+
+Speaker 2  32:15
+Because that will define the unique, uh, rows in each table.
+
+Speaker 1  32:20
+Okay.
+
+Speaker 2  32:21
+Which is really important, uh, for Datashipper to work 'cause we always need to know what is a unique customer. Otherwise, we can't really go from one layer to the other one because we will duplicate data.
+
+Speaker 1  32:34
+Okay.
+
+Speaker 2  32:34
+So it's, it's like your, uh, primary key, basically.
+
+Speaker 1  32:37
+Yep. Got it.
+
+Speaker 2  32:39
+So okay. Let's do. Um.
+
+Speaker 2  32:50
+Might also take, uh, a while. But you didn't get to the column selection,right?
+
+Speaker 1  32:55
+No. I did not.
+
+Speaker 2  32:56
+No. So okay. At least I got one step first. Um, we need to yeah. We need to have the import for the next, um, step.
+
+Speaker 2  33:10
+'Cause then we, we imported the data, and then we have the legacy and the validation defined.
+
+Speaker 1  33:16
+Mm-hmm.
+
+Speaker 2  33:16
+Uh, but then our next step is to configure the mapping between the import and the legacy, and then from the legacy to the validation.
+
+Speaker 1  33:27
+Allright.
+
+Speaker 2  33:27
+So that we define how to move along and transform the da the data.
+
+Speaker 1  33:32
+Mm-hmm.
+
+Speaker 2  33:33
+Hmm. Hmm.
+
+Speaker 2  33:48
+Okay.
+
+Speaker 2  33:48
+Let's switch back to your screen, and let's, um, check the tutorial first.
+
+Speaker 1  33:59
+Mm-hmm.
+
+Speaker 2  34:03
+I'll keep an eye on the import in the meantime. Ah. It's, it's completed.
+
+Speaker 1  34:13
+Okay.
+
+Speaker 2  34:15
+So we can go to the table setup.
+
+Speaker 1  34:25
+Mm-hmm.
+
+Speaker 2  34:26
+Yep. And then we have a customer, and you have the import.
+
+Speaker 2  34:32
+Yep. That's the one we had,right? You can see as well it's a bronze, silver, and, and gold. Now you see the table appeared here that we imported,right? You can, uh and then you see these are the columns.
+
+Speaker 1  34:46
+Mm-hmm.
+
+Speaker 2  34:47
+And you can see the, the first one that I indicated, the customer number.
+
+Speaker 1  34:53
+Mm-hmm.
+
+Speaker 2  34:53
+There is, like, a key.
+
+Speaker 1  34:55
+Yep. Right.
+
+Speaker 2  34:56
+Yep. So that's why, uh, I have the key. Uh, voilà. So that's correctly defined. So the import, we don't need to do anything else because in the rule, we want to keep our bronze as much as this.
+
+Speaker 2  35:11
+So we always have something to go back to in case there are doubts or questions about what manipulations are done or what was in the source or not. So this is really just as is. Uh, yep. Uh, I forgot, but in the table setup, you can see under the overview, you also have the translations and the references. Maybe you can click on it.
+
+Speaker 1  35:33
+Yes.
+
+Speaker 2  35:34
+Uh, can you select a group with BSP? Yep.
+
+Speaker 1  35:40
+Mm-hmm.
+
+Speaker 2  35:41
+Uh, or another one? Or maybe a example? There will be an example. Sure. Nope.
+
+Speaker 1  35:49
+Mm-hmm. No.
+
+Speaker 2  35:50
+Uh, uh, maybe I didn't use these. Uh, well, this is, like, to define, uh, if you need to transform the value from one to the other. If you would like to say, like, the country, it's, uh, Germany.
+
+Speaker 1  36:06
+Uh-huh.
+
+Speaker 2  36:07
+Uh, and written in full. But I need to translate that to DE in my target.
+
+Speaker 1  36:12
+Okay. Got it.
+
+Speaker 2  36:13
+But apparently, we used the custom translation tables.
+
+Speaker 1  36:18
+Okay. Mm-hmm.
+
+Speaker 2  36:19
+Uh, so yep. But we will set it up as we need them. But it's also good to see. And then can you go to references? Maybe we will have some there. Yep. And.
+
+Speaker 1  36:28
+Yeah.
+
+Speaker 2  36:28
+Yep. For example, this one. So this is not really a translation, but it's more a validation, uh, because to check some columns, they can only have specific values. It's like a enum.
+
+Speaker 1  36:43
+Mm-hmm.
+
+Speaker 2  36:44
+So here, we can define, uh, these, uh, lists. And then we will also validate if a column, like, uh, can only contain those values or not.
+
+Speaker 1  36:58
+Okay.
+
+Speaker 2  36:58
+Yep. So we don't need to set it up now, but I just wanted to show you because we will come back to it later.
+
+Speaker 1  37:05
+Mm-hmm.
+
+Speaker 2  37:06
+Um, voilà. So what we can do now is move I to configure how to move the data from the import to the legacy.
+
+Speaker 1  37:16
+Mm-hmm.
+
+Speaker 2  37:17
+And that would be in the legacy mapping.
+
+Speaker 2  37:25
+Uh, yep. On the top, this will always be the same. It's always first a group code and then entity.
+
+Speaker 1  37:32
+Mm-hmm.
+
+Speaker 2  37:32
+That one always needs to be validated. Um, yep.
+
+Speaker 2  37:40
+So now you can see, uh, we need to, um, map the import to the like, in the in the middle, the two fields, that's what we are moving towards. Uh, in the left.
+
+Speaker 1  37:56
+Okay.
+
+Speaker 2  37:57
+You have all the fields in your, uh, import table.
+
+Speaker 1  38:01
+Allright.
+
+Speaker 2  38:01
+And we, we need to tell Datashipper this one needs to be back to that one. Uh, you can actually just drag and drop.
+
+Speaker 1  38:10
+Okay. Got it.
+
+Speaker 2  38:12
+Yep. So if you take that one and drop there. Yep. Yep.
+
+Speaker 2  38:21
+Now okay. So I think it's clear. But since they are all the same name, actually, we have.
+
+Speaker 1  38:27
+Mm-hmm.
+
+Speaker 2  38:27
+Uh, we have, like, a auto map function we could use.
+
+Speaker 1  38:31
+Okay.
+
+Speaker 2  38:31
+And it's on the topright. Yep. In the new version, we will have it one that can use AI. So it will even be more powerful. But in the current one, you need to drop, uh, click on the dropdown.
+
+Speaker 1  38:46
+Ah.
+
+Speaker 2  38:47
+Yep.
+
+Speaker 1  38:47
+Okay.
+
+Speaker 2  38:48
+I will enable that in the new, uh, version. And then that will be, uh but here, you still have our classical auto map on the bottom. Yep.
+
+Speaker 1  38:58
+Mm-hmm.
+
+Speaker 2  38:58
+Yep. Voilà.
+
+Speaker 1  38:59
+Okay. Perfect.
+
+Speaker 2  39:01
+The difference is the classical one just checks if the field name is exactly the same then it maps. The AI can also map it to it if it's a little bit different.
+
+Speaker 1  39:11
+Allright. Yep.
+
+Speaker 2  39:12
+So that's nice, uh, 'cause, uh, yep. But, uh, okay. We are still, uh, old school for the moment.
+
+Speaker 1  39:20
+Mm-hmm.
+
+Speaker 2  39:22
+Um, yep. Can you scroll down so we can review everything? Yep.
+
+Speaker 1  39:28
+Hmm. This is not mapped.
+
+Speaker 2  39:31
+Yep. Can we check in the list?
+
+Speaker 1  39:33
+But I think that's just.
+
+Speaker 2  39:34
+Hmm. Maybe we just don't have it.
+
+Speaker 1  39:38
+Yeah.
+
+Speaker 2  39:42
+No.
+
+Speaker 1  39:43
+Mm-hmm.
+
+Speaker 2  39:45
+So let's just keep it. And then these, can we check if we have those? You can also see the ones with the exclamation mark. They are mapped. No.
+
+Speaker 1  40:00
+Okay.
+
+Speaker 2  40:00
+So we need to check the ones without maybe.
+
+Speaker 1  40:05
+Hmm. There's only one search.
+
+Speaker 2  40:06
+Yep. So I think it's fine. Can you, uh, remove the search? Yep.
+
+Speaker 2  40:15
+And can we just scroll down a bit and check the ones without the exclamation mark? Maybe they are if it's close to code 2.
+
+Speaker 1  40:22
+Yes. Close to code 2.
+
+Speaker 2  40:24
+That we don't really know what it is. Nope.
+
+Speaker 1  40:26
+But that's the only thing.
+
+Speaker 2  40:27
+Yep. So I think it's okay. I would, uh, save it.
+
+Speaker 1  40:31
+Mm-hmm.
+
+Speaker 2  40:35
+Yep. Uh, what I would maybe do is go in another tab and, uh, or the other yep. And then I'll also open the legacy map mapping. Yep. And now I would check the group code, uh, the, the example, the target, uh, customer example.
+
+Speaker 1  41:01
+Why do I not see that?
+
+Speaker 2  41:03
+Because it's on the group code example.
+
+Speaker 1  41:07
+Ah. Yep. Sorry.
+
+Speaker 2  41:09
+No. No. It's fine. It's how we learn. Yep. Uh, yep. And then, uh, you need to select the source table.
+
+Speaker 1  41:21
+Mm-hmm.
+
+Speaker 2  41:22
+Yep. And it's the first one.
+
+Speaker 2  41:26
+Uh, yep. Can you just review this o this one? What did they do for the PO box postal code?
+
+Speaker 1  41:36
+There is PO box postal code here. But these are empty. Yep.
+
+Speaker 2  41:43
+Hmm.
+
+Speaker 2  41:45
+It's weird. No? Hmm. Maybe it was the names.
+
+Speaker 1  41:56
+Mm-hmm.
+
+Speaker 2  42:08
+I think this postal code 2 will actually be the PO box postal code.
+
+Speaker 1  42:14
+Yeah. I believe so too.
+
+Speaker 2  42:16
+Yep. I'm looking at the data.
+
+Speaker 1  42:20
+Mm-hmm.
+
+Speaker 2  42:22
+Uh, uh, 'cause it's also next to each other. Hmm. Yeah.
+
+Speaker 2  42:40
+Let's I would map it like that. I think that's probably fine. Hmm.
+
+Speaker 2  43:11
+Yep. It's a I just checked. It's exactly the same.
+
+Speaker 1  43:15
+Mm-hmm.
+
+Speaker 2  43:16
+So yep. That's one more we can map. Yep.
+
+Speaker 2  43:27
+Voilà.
+
+Speaker 2  43:30
+And then we can see. Okay. Now we are ready. But just for your understanding, on theright, there is the show system fields.
+
+Speaker 2  43:39
+Can you, um, check that? Yep. So these are the technical fields. They are also explained in the tutorial. Um.
+
+Speaker 1  43:50
+Oh.
+
+Speaker 2  43:50
+The one on top. The one in the in the bolds.
+
+Speaker 1  43:52
+Oh. The technical ones. Yep.
+
+Speaker 2  43:53
+Yep. Yep. So you see they, they went automatic. You didn't need to.
+
+Speaker 1  43:57
+Yeah.
+
+Speaker 2  43:57
+Specify them. But they are actually very important. Uh.
+
+Speaker 1  44:01
+Okay.
+
+Speaker 2  44:02
+In the background. Uh.
+
+Speaker 1  44:04
+Mm-hmm.
+
+Speaker 2  44:04
+Especially the code 'cause that's your unique key in Datashipper.
+
+Speaker 1  44:09
+Mm-hmm.
+
+Speaker 2  44:10
+But now we moved from the import. We don't have the codes yet 'cause the data is unchanged. But starting from the legacy.
+
+Speaker 1  44:16
+Mm-hmm.
+
+Speaker 2  44:17
+Every other table that we are going to work with will always have a code field.
+
+Speaker 1  44:23
+Okay.
+
+Speaker 2  44:23
+And that's our primary key. But it also shows you if you go in the legacy and you search on a specific code.
+
+Speaker 1  44:31
+Mm-hmm.
+
+Speaker 2  44:31
+And then you go in the validation and you search on a specific code, that will always be the same object. So it will be the same, uh, customer in our case. And as well in the load file.
+
+Speaker 1  44:41
+Okay.
+
+Speaker 2  44:41
+So if we need to move from one to the other one, we're always using the code as our reference, uh, to know which one is which. So.
+
+Speaker 1  44:50
+Oh.
+
+Speaker 2  44:51
+That's why it's a really important one. Uh, and you can see the way that it's, um, mapped.
+
+Speaker 1  44:57
+Mm-hmm.
+
+Speaker 2  44:58
+So actually, that's also something you can do. What we did now, we just said this column is this one. But we can also use, uh, SQL inside the mapping.
+
+Speaker 1  45:07
+Okay.
+
+Speaker 2  45:07
+Yep.
+
+Speaker 1  45:08
+Mm-hmm.
+
+Speaker 2  45:08
+So you can see here there was actually a SQL, uh, done. And what it does, it says, like, the BSP as a string.
+
+Speaker 1  45:16
+Mm-hmm.
+
+Speaker 2  45:17
+Which is your group code. So we always do that. Um, and then we do a underscore.
+
+Speaker 1  45:23
+Mm-hmm.
+
+Speaker 2  45:24
+And then we put the column that we marked as a key.
+
+Speaker 1  45:28
+Okay. Got it.
+
+Speaker 2  45:29
+Could, could be a single column or a combination of columns 'cause sometimes in your source, there's no unique key, uh, column.
+
+Speaker 1  45:36
+Mm-hmm.
+
+Speaker 2  45:36
+But here, we, we have one. Uh, and it's just converted to the NVARCHAR, uh, because we are doing a concatenation. And if our key, for example, in the source would be a integer.
+
+Speaker 1  45:51
+Mm-hmm.
+
+Speaker 2  45:52
+Or a UID, then it would not, uh, allow us to concatenate.
+
+Speaker 1  45:58
+Yeah. Yeah. Got it.
+
+Speaker 2  45:59
+Yep. But the reason we concatenate is because we could onboard another source where you could have.
+
+Speaker 1  46:04
+Mm-hmm.
+
+Speaker 2  46:05
+The same customer number but from another system. And it wouldn't be the same. So by adding the group code, we are sure that, uh, even if the customer number is the same in different systems, we still have a unique one.
+
+Speaker 1  46:18
+Mm-hmm. Got it.
+
+Speaker 2  46:20
+Um, yep. So that's an important. The group code, I think it's quite self-explanatory. Uh, the run dates, so that's a SQL formula as well. Uh, and what it just it just returns the date at the moment of executing that.
+
+Speaker 1  46:39
+Okay.
+
+Speaker 2  46:39
+So that's useful because then we also always know the last date that something was updated in the in the row.
+
+Speaker 1  46:48
+Mm-hmm.
+
+Speaker 2  46:49
+Uh, and then the delta status and the mod tt all, these are also tracking the changes. But they will be populated, uh, while processing. So you can leave them as is for now. Uh, and the source data, you can see that corresponds to the name of our import table.
+
+Speaker 1  47:07
+Okay.
+
+Speaker 2  47:08
+Yep. That's it. Uh, okay. So we saved that. So now maybe you can go to the table setup first.
+
+Speaker 1  47:20
+Mm-hmm.
+
+Speaker 2  47:21
+And then check your legacy table. Yep.
+
+Speaker 2  47:29
+And you click on view. Yep.
+
+Speaker 2  47:36
+So we don't have any data,right? Yeah.
+
+Speaker 2  47:40
+It doesn't matter. Uh, you can check.
+
+Speaker 1  47:42
+I still don't have it. Okay.
+
+Speaker 2  47:43
+Yep. Yep. Because we only configured how to set it. But we didn't actually.
+
+Speaker 1  47:48
+Okay.
+
+Speaker 2  47:49
+Run this one. So now just to do a ad hoc run, we can use the batch processing. But leave this tab open. Uh, take the other one you have open. And.
+
+Speaker 1  47:59
+Mm-hmm.
+
+Speaker 2  48:00
+Go to, uh, batch processing on the left. It's near the bottom. Yes.
+
+Speaker 2  48:12
+It's a bit higher. It's above the administration part.
+
+Speaker 1  48:17
+Oh. Right. Right. Right. Okay.
+
+Speaker 2  48:18
+Yep. You see we have the headers. We have the configuration. Then we have all the operation steps. And then the processing. And then the admin. Uh, and.
+
+Speaker 1  48:27
+Okay.
+
+Speaker 2  48:27
+Yep. Uh, so now let's go to the your, uh, group code and entity again. Customer.
+
+Speaker 1  48:42
+Mm-hmm.
+
+Speaker 2  48:42
+Voilà. There you go. Uh, yep. So you see there is no tasks yet.
+
+Speaker 1  48:48
+Mm-hmm.
+
+Speaker 2  48:49
+But we will make a new task and then define it to run the legacy. So as a name, uh, I would call it legacy. Yep.
+
+Speaker 2  49:07
+Or maybe call it populate legacy. That will even be more clear.
+
+Speaker 1  49:19
+Mm-hmm.
+
+Speaker 2  49:20
+Okay. Nice. Then, uh, you can see we can add steps. So let's add a s so the group code and entity, they are defined already automatically, uh, based on your selection above. And now you see yeah.
+
+Speaker 2  49:36
+I think you will find theright one to use.
+
+Speaker 1  49:45
+Oh.
+
+Speaker 2  49:50
+Yep. Okay.
+
+Speaker 2  49:55
+Uh, so I will explain the operation. It's actually an obsolete one. But there is only one option. So, so these are the parameters you will give with the procedure. So we don't care. Um, the operation, we can leave. The import filter.
+
+Speaker 1  50:13
+Mm-hmm.
+
+Speaker 2  50:13
+That's only needed if we would not, like, uh, want to process your full import table but only a selection.
+
+Speaker 1  50:24
+Okay.
+
+Speaker 2  50:24
+So you could write, like, what you would write in a SQL WHERE statement. Like, you could write a filter statement. And then we would filter the import and only process those. Like, now we don't.
+
+Speaker 1  50:35
+Okay.
+
+Speaker 2  50:35
+We want to have the full data set. So, so we leave it empty.
+
+Speaker 1  50:39
+Okay.
+
+Speaker 2  50:40
+The update reporting is to keep our we have, like, a central reporting, uh, table.
+
+Speaker 1  50:45
+Mm-hmm.
+
+Speaker 2  50:45
+That will indicate the status of every record in every entity across every group code. Uh, so by default, we want to have that on one so that it will be updated.
+
+Speaker 1  50:57
+Mm-hmm. Okay.
+
+Speaker 2  50:59
+Uh, and post-processing, that's the purpose. Sometimes you want to have, like, a custom procedure or logic that you want to execute after completing the step. And then you can, uh, write the name of your procedure there. But we don't need it now. So we can just click on add.
+
+Speaker 2  51:20
+Uh, on the bottom uh, on the top. Sorry. Yep. So we added a step. We could add, like, multiple steps. And then they would, uh, execute in sequence.
+
+Speaker 1  51:29
+Mm-hmm.
+
+Speaker 2  51:30
+But for now, we will just add all the steps, uh, separately. We can still add a.
+
+Speaker 1  51:35
+Mm-hmm.
+
+Speaker 2  51:35
+Complete step later on. Yes. So then we need to say in the schedule execution, when do we want to execute the step?
+
+Speaker 1  51:44
+Mm-hmm.
+
+Speaker 2  51:45
+Uh, so now I would just say immediately.
+
+Speaker 1  51:47
+Mm-hmm.
+
+Speaker 2  51:48
+But we could also schedule this. Uh, and then the reporting, that one doesn't really work. So.
+
+Speaker 1  51:54
+Okay.
+
+Speaker 2  51:55
+Just leave it. Yeah. Um, yep. And then we click on save. Yep.
+
+Speaker 2  52:04
+Now you see our s process is, uh, running. And.
+
+Speaker 1  52:10
+Yeah.
+
+Speaker 2  52:10
+We're great. So that's not nice. But okay. You can, uh can you double-click on, uh, that?
+
+Speaker 2  52:21
+And then, uh,
+
+Speaker 2  52:23
+s conversion failed. So in converting date and/or time from character string. Okay. So what this error is telling me is that, uh, in, um, moving from import to legacy, some legacy fields,
+
+Speaker 2  52:42
+they are defined as a as a date or a date time. Um.
+
+Speaker 1  52:46
+Mm-hmm.
+
+Speaker 2  52:48
+But, uh, that didn't that failed to convert. Yep. If you open the logs, you have a full overview. But this error is enough for me.
+
+Speaker 1  52:58
+Yep.
+
+Speaker 2  52:58
+I think I already know, uh, why that is. Um.
+
+Speaker 1  53:02
+Mm-hmm.
+
+Speaker 2  53:03
+Can you go to the table setup?
+
+Speaker 2  53:10
+Customer and then import. Uh, and then view. Yep.
+
+Speaker 2  53:22
+So can you see the creation date?
+
+Speaker 1  53:25
+Yeah.
+
+Speaker 2  53:26
+What happened? That's because.
+
+Speaker 1  53:29
+It's not in theright format. Yeah.
+
+Speaker 2  53:31
+Yeah. That's, that's actually because that's, uh, Excel. Once it was in Excel, it was changed. And then.
+
+Speaker 1  53:37
+Mm-hmm.
+
+Speaker 2  53:38
+It was updated. Uh, but not to worry. Uh, can you go to theright to see if we have more like these?
+
+Speaker 1  53:59
+No.
+
+Speaker 2  54:01
+Okay.
+
+Speaker 2  54:02
+Um, so okay.
+
+Speaker 2  54:13
+Uh, can you check in the legacy table what, uh, the creation date? It's defined as a date time, I guess.
+
+Speaker 1  54:28
+In the legacy table?
+
+Speaker 2  54:30
+Yep.
+
+Speaker 1  54:36
+Creation date.
+
+Speaker 2  54:38
+Yep. So it's a date time.
+
+Speaker 1  54:39
+It's date time too.
+
+Speaker 2  54:40
+Yep. Yep.
+
+Speaker 2  54:47
+But it's okay. You can, uh, leave it.
+
+Speaker 2  54:50
+Uh, so how to convert? I will put, uh, ask, uh, AI date in Excel format. Like, what was the date example that we had?
+
+Speaker 1  55:07
+Date date it. One second. 4/5/87.
+
+Speaker 2  55:12
+5/6/87. Two dates. Fine.
+
+Speaker 1  55:22
+That's because I think the creation date in the import file is NVARCHAR.
+
+Speaker 2  55:28
+Mm-hmm.
+
+Speaker 1  55:28
+Maybe this should also be date time too,right?
+
+Speaker 2  55:32
+Uh, uh,
+
+Speaker 2  55:34
+no. Because if you change it here, it will try to change the table. And you will also get the error. Because the value.
+
+Speaker 1  55:40
+Oh.
+
+Speaker 2  55:40
+That is stored is the number. So we need to convert it.
+
+Speaker 1  55:43
+Okay.
+
+Speaker 2  55:44
+But what we can do, like, in the legacy mapping, now we just said, "Take the value and put it in the other column." But there it failed because it says, "This value, that's not a date time." So.
+
+Speaker 1  55:55
+Mm-hmm.
+
+Speaker 2  55:56
+Uh, what I'm going to ask the AI 'cause I don't know by heart the formula.
+
+Speaker 1  56:01
+Mm-hmm.
+
+Speaker 2  56:02
+To transform that back into a date in, uh, SQL. And then we're gonna put a formula.
+
+Speaker 1  56:08
+Okay.
+
+Speaker 2  56:09
+And then we will get, uh, the result.
+
+Speaker 1  56:12
+Mm-hmm.
+
+Speaker 2  56:13
+Um,
+
+Speaker 2  56:26
+so curious to see
+
+Speaker 2  56:30
+if that one will work. Um.
+
+Speaker 1  56:39
+Also, would you like to continue.
+
+Speaker 2  56:40
+Yeah.
+
+Speaker 1  56:41
+The other hour today? Or I'm used to.
+
+Speaker 2  56:44
+Oh. Okay. I have, like, five minutes left. But let's.
+
+Speaker 1  56:46
+Okay.
+
+Speaker 2  56:46
+Finish this one. Um.
+
+Speaker 1  56:48
+Mm-hmm.
+
+Speaker 2  56:52
+Let's I will give you the formula. And then you can put it. Uh, yep. But indeed, sorry. I need to watch my time. Uh, creation date. It's called creation date,right? Um, yep.
+
+Speaker 2  57:15
+Just give me a second. Hmm.
+
+Speaker 2  57:41
+I don't know.
+
+Speaker 2  57:42
+Uh, um, this one. Yep.
+
+Speaker 2  57:57
+Very nice formula to use. Yep.
+
+Speaker 2  58:22
+So, uh, I put in the chat.
+
+Speaker 1  58:28
+Mm-hmm.
+
+Speaker 2  58:32
+And I will also yep.
+
+Speaker 2  58:46
+So just for your reference, that's what I did. That's what I asked, um, to, uh, quote. But it doesn't matter.
+
+Speaker 1  58:54
+Oh. Right.
+
+Speaker 2  58:55
+Yep.
+
+Speaker 1  58:55
+Mm-hmm.
+
+Speaker 2  58:56
+And then so now we can go to the legacy mapping.
+
+Speaker 1  59:02
+Mm-hmm.
+
+Speaker 2  59:04
+And then we check the creation date. So we can, uh, remove that one. Just click on the cross. Yep. And then you click on it. And then you paste. Yep. And then.
+
+Speaker 1  59:22
+Oh.
+
+Speaker 2  59:23
+Press Enter or something. Yep.
+
+Speaker 2  59:28
+Oh, yeah. That's also fine. So just to explain shortly, so the isNull function, that is, like, to say we'll take a value. But if the value is null, then we move to the next value. So it's like a coalesce.
+
+Speaker 1  59:45
+Okay.
+
+Speaker 2  59:46
+And I made it a bit complicated. But that makes that it's, uh, very robust. Because the tryConvert, it will tryConvert the value. So it will.
+
+Speaker 1  59:56
+Yeah.
+
+Speaker 2  59:56
+Check if the value can be set in a date time format.
+
+Speaker 1  59:59
+Mm-hmm.
+
+Speaker 2  01:00:00
+And if, hmm, if not, then it will, um, result in a null. And because of the isNull, that means we will go to the next step.
+
+Speaker 1  01:00:15
+Mm-hmm.
+
+Speaker 2  01:00:15
+And the next step is then the date add formula.
+
+Speaker 1  01:00:18
+Mm-hmm.
+
+Speaker 2  01:00:19
+That will convert this, um, integer, this creation date, as an integer.
+
+Speaker 1  01:00:25
+Mm-hmm.
+
+Speaker 2  01:00:25
+Uh, to a date format.
+
+Speaker 1  01:00:29
+Allright. Yep.
+
+Speaker 2  01:00:30
+Yep. So I think we saved it.
+
+Speaker 1  01:00:33
+Yes, we did.
+
+Speaker 2  01:00:33
+So let's see if the quote did a good job. And go to the processing again. Yep.
+
+Speaker 2  01:00:45
+And now we don't need to check in do a new job. But on the actions, we can do the three dots. And we can do start. Aha.
+
+Speaker 1  01:01:06
+Hmm.
+
+Speaker 2  01:01:06
+Nice.
+
+Speaker 1  01:01:07
+It worked. Yep.
+
+Speaker 2  01:01:08
+Yes.
+
+Speaker 1  01:01:08
+Mm-hmm.
+
+Speaker 2  01:01:08
+So if we go in the table setup.
+
+Speaker 1  01:01:11
+Mm-hmm.
+
+Speaker 2  01:01:14
+And then we check the legacy again. I think you had it open in the first, uh, tab. Yep. Yep. And just press, uh, five, uh, or refresh this one. I don't know. Or, or, like, this is fine.
+
+Speaker 1  01:01:29
+Oh. It's okay.
+
+Speaker 2  01:01:30
+Oh, yeah.
+
+Speaker 1  01:01:30
+Sorry.
+
+Speaker 2  01:01:31
+That's okay.
+
+Speaker 1  01:01:33
+Yeah.
+
+Speaker 2  01:01:34
+That will work for sure. And then you click on view.
+
+Speaker 1  01:01:38
+Mm-hmm.
+
+Speaker 2  01:01:41
+Yep. Nice. So you see we have data in the next step.
+
+Speaker 1  01:01:46
+Yes.
+
+Speaker 2  01:01:47
+Yep. So we moved from, uh well, we actually defined, uh, legacy validation. And then we moved from import to legacy. So we had.
+
+Speaker 1  01:02:00
+Oh.
+
+Speaker 2  01:02:00
+One issue. But it's actually good. Because you could see.
+
+Speaker 1  01:02:03
+Mm-hmm.
+
+Speaker 2  01:02:04
+That we can use the log to detect the issue. And then.
+
+Speaker 1  01:02:09
+Yeah.
+
+Speaker 2  01:02:09
+It's usually something like this. And then we would solve it.
+
+Speaker 1  01:02:13
+Mm-hmm.
+
+Speaker 2  01:02:13
+By using the formula. Ah, can we check the, the date created column?
+
+Speaker 2  01:02:22
+Ah, hold on. So we actually have, um, correct value.
+
+Speaker 1  01:02:30
+Allright.
+
+Speaker 2  01:02:31
+So hold on. Uh, yep. So maybe I was thinking same time next week. We can continue.
+
+Speaker 1  01:02:43
+Okay. Um, next week. Okay. When do you have time?
+
+Speaker 2  01:02:48
+Well, same time as, uh, today.
+
+Speaker 1  01:02:51
+Tuesday next week.
+
+Speaker 2  01:02:53
+No, uh, Wednesday.
+
+Speaker 1  01:02:56
+Oh. Sorry. Yeah. Wednesday next week. Allright. Um, uh.
+
+Speaker 2  01:03:01
+Yep.
+
+Speaker 1  01:03:01
+We did how many hours do you want to keep the session?
+
+Speaker 2  01:03:05
+I think if we do two hours again, we will more or less be through everything.
+
+Speaker 1  01:03:12
+Okay. Yeah.
+
+Speaker 2  01:03:12
+Yep.
+
+Speaker 1  01:03:13
+Sure.
+
+Speaker 2  01:03:13
+Um, for me, it's also fine 'cause you have the tutorial. And you have the, like, the ay, what is it? Yeah. You have the example,right?
+
+Speaker 1  01:03:24
+Mm-hmm.
+
+Speaker 2  01:03:25
+That we are copying. So yeah. You can also try to see if you can make some progress on your own.
+
+Speaker 1  01:03:33
+Yep. I will do that also. I have a week.
+
+Speaker 2  01:03:36
+Yep. So I think, yep, indeed, uh, you can see. And then on Wednesday, we can see where you got and, and go further.
+
+Speaker 1  01:03:44
+Allright. Would it be possible an earlier slot?
+
+Speaker 2  01:03:50
+Uh.
+
+Speaker 1  01:03:50
+Maybe Monday? No?
+
+Speaker 2  01:03:54
+Hmm. Monday afternoon, maybe.
+
+Speaker 1  01:04:00
+Okay. Sure. That would be better. Thank you so much.
+
+Speaker 2  01:04:03
+Okay. Then let's take Monday afternoon.
+
+Speaker 1  01:04:06
+Allright. Thank you. Could you also share this recording with me both?
+
+Speaker 2  01:04:09
+Yep. I will download it again.
+
+Speaker 1  01:04:11
+Okay. Perfect. Thank you.
+
+Speaker 2  01:04:13
+Allright. Thank you. Have a nice day.
+
+Speaker 1  01:04:15
+Yep. Thank you. Bye-bye. You too.

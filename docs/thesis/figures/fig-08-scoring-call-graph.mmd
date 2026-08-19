@@ -1,0 +1,11 @@
+%% fig-08 — Call graph of POST /api/dedup/score (deterministic, no external calls)
+%% Source: docs/thesis/00_INVENTORY.md §3.3 (lines 271-281)
+flowchart TD
+    A["POST /api/dedup/score · dedup_score (api/routes.py:896)"] --> B["coerce_weights (dedup/scoring.py:626)"]
+    A --> C["elect_golden_records (dedup/scoring.py:1033)"]
+    C --> D["_cluster_year_maxima (dedup/scoring.py:982)"]
+    C --> E["score_row (dedup/scoring.py:813)"]
+    C --> F["_tiebreak_key (dedup/scoring.py:939)"]
+    C --> G["_cluster_merge_confidence (dedup/scoring.py:1020)"]
+    A --> H["build_summary (dedup/scoring.py:1208)"]
+    A --> I["detect_dedup_issues (dedup/scoring.py:454 detect_issues)"]

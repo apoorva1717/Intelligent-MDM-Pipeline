@@ -1,0 +1,15 @@
+%% fig-05 — Deduplication run: ADF ↔ SQL MI ↔ service sequence, as exported and as to be batched
+%% Source: docs/thesis/02_ARCHITECTURE.md §4.2 (lines 235-249)
+sequenceDiagram
+    participant ADF as ADF Deduplication Pipeline
+    participant MI as Azure SQL MI (Validation)
+    participant API as mdm-pipeline-api /api/dedup/cluster-block
+    participant LLM as dedup LLM
+    ADF->>MI: Lookup1 — projection of test_77.Validation (whole table, unbatched)
+    ADF->>API: Web1 POST /api/dedup/cluster-block {rows:[…all]}
+    API->>LLM: Mode A / Mode B / residue adjudication per block
+    LLM-->>API: cluster ids + reasons
+    API-->>ADF: 200 DedupResponse
+    ADF->>MI: Merge Back usp_merge_validation_clusters
+    Note over ADF,API: Near-term: iterate distinct block_id through a ForEach
+    Note over ADF,MI: sequential per-block ForEach: an earlier block's clusters are committed before a later block fails

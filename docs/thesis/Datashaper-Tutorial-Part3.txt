@@ -1,0 +1,1013 @@
+Speaker 1  00:02
+Yeah, that'sright.
+
+Speaker 2  00:04
+So yeah, nothing to watch yesterday evening.
+
+Speaker 1  00:07
+I was also off yesterday, so I did not read.
+
+Speaker 2  00:12
+Okay, then it's okay.
+
+Speaker 2  00:16
+Sorry, in my mind you are not watching Netflix, but Dataflix.
+
+Speaker 2  00:27
+Okay, so last time we set up the deduplication.
+
+Speaker 1  00:34
+Yes.
+
+Speaker 2  00:35
+You still don't have the Excel add-in access,right?
+
+Speaker 1  00:38
+No, no, I don't have it yet.
+
+Speaker 2  00:39
+Yeah. Okay. So we'll see who is first because this one is the version you can see 173. Pretty soon, I think next week, we are going to upgrade to 174.
+
+Speaker 1  00:55
+Allright.
+
+Speaker 2  00:56
+And a very nice new feature we will have is called Datashaper Studio. And when you go on it, basically the same that you can see in the Excel add-in, you can see from inside Datashaper.
+
+Speaker 1  01:13
+Okay.
+
+Speaker 2  01:15
+So I can show you an example. Is it visible enough or it's too small?
+
+Speaker 1  01:22
+It is visible, but it would be better if you increase it a little.
+
+Speaker 2  01:29
+Oh, this is because my screen is very high resolution.
+
+Speaker 1  01:34
+Yeah, this is better.
+
+Speaker 2  01:39
+Ah, is it better like this? Okay.
+
+Speaker 1  01:41
+Yeah.
+
+Speaker 2  01:41
+Yeah.
+
+Speaker 2  01:42
+So you see that I can have the data visible inside the Datashaper, and I have the overview of the issues, and I can click on the issues. I get the details. So it's kind of the same, but you don't need to have another approval.
+
+Speaker 1  02:03
+Okay. So.
+
+Speaker 2  02:04
+Yeah. So I think that's the main thing that's nice about the feature. And it's also a bit more responsive and a bit more fast, actually.
+
+Speaker 1  02:14
+That's cool.
+
+Speaker 2  02:15
+Yeah. So we'll see who is first. In the meantime, we work on the Excel add-in. Functionality, it's the same. So just to recap, we did the imports. We did the legacy mapping for the customer,right?
+
+Speaker 1  02:34
+Yes.
+
+Speaker 2  02:35
+So it's here. We didn't do too much transformation except this one because we got the Excel. We needed to convert it back to the date format. We did the migration rules, which we just said, "Okay, US customers only." And for the clustering, we put two rules: name, address, and then PO box.
+
+Speaker 2  02:58
+Yes. And then in the results, you can see in the Excel add-in, I do the BSP and DEF because we were working on DEF customer.
+
+Speaker 2  03:09
+And then there is the clustering view, which, by the way, when you see next week, it will not be called clustering anymore. It will be called deduplication.
+
+Speaker 1  03:20
+Okay.
+
+Speaker 2  03:22
+A simple reason is just because, yeah, clustering is technically what we are doing because we're trying to find matches and then group them together. And that's in clusters.
+
+Speaker 2  03:33
+So it's a technical description, but it's not really a business description because the functional purpose of this exercise is to deduplicate. That's why we decided to rename it, which actually found out it's not that easy to rename something in your code base.
+
+Speaker 2  03:56
+But we will do it regardless. Yeah. Yeah. There's a lot of places, and if you forget one, then you're stuck.
+
+Speaker 1  04:04
+Yeah.
+
+Speaker 2  04:05
+Yeah. But okay, we did. So it will be deduplication. But other than that, it will be the same. And very nice. Actually worked from the first time. So you can see the process. You can also see this took seconds, and this is maybe three minutes.
+
+Speaker 2  04:26
+And now we are at more than an hour.
+
+Speaker 1  04:30
+Yeah.
+
+Speaker 2  04:31
+Yeah. And that's simply because of the fuzzy matching because we need to compare all the rows, not all of them, but a lot with each other with the fuzzy matching algorithm. And that takes time. No way around it. But okay, it gave us a result.
+
+Speaker 2  04:52
+And then when you download, this is basically the result that you are seeing. So we have the cluster.
+
+Speaker 2  05:03
+So you see the cluster, that's everything with the same number.
+
+Speaker 1  05:09
+Cluster image, yeah.
+
+Speaker 2  05:10
+Yeah. And then we have all the codes to identify the rows. Then the leading code is what we need to put to say which one we want to retain and which one should be blocked.
+
+Speaker 2  05:29
+And then the broken cluster. Yeah. Yeah, broken cluster. You don't really need that at the moment, but it would be like if we assign a leading code, we say all those belong together. But then, for example, this one, the name changes because they made an update, and it's not really according to the calculations part of the cluster anymore.
+
+Speaker 2  05:52
+So it would indicate broken cluster, and maybe it would still need to be in the same group, but it's something we could revisit, recheck. Yeah. Then the country. So then here, you will see all the columns that we added in our deduplication rules.
+
+Speaker 2  06:14
+Because I don't know how much you remember, but we have the name, the concatenated name, the street, the postal code, prefect, the country, the region. Then for PO box, we have country PO box and the PO box postal code. So you can see these are the columns that we have here.
+
+Speaker 1  06:33
+Allright.
+
+Speaker 2  06:35
+Because then we can also see this one quite clearly, the same name, exactly the same address, same prefix.
+
+Speaker 2  06:46
+So this is probably the same. Then if you go, for example, for the next one. Yeah. Then there is one thing that I see that it's a bug, but it will be solved next week.
+
+Speaker 2  07:06
+You can see that normally it should be colored per cluster. So this would be gray. This would be white. This would be gray. This would be white. That would be easier, but yeah. I don't know. I think we made some improvements on the performance, and this one slipped. But it solved the next version. Yeah.
+
+Speaker 2  07:27
+So
+
+Speaker 2  07:33
+that's always the tricky part in the clustering. If we make the rules more strict, we will find more duplicates, but we will also have more false duplicates.
+
+Speaker 1  07:45
+Yeah. Got it.
+
+Speaker 2  07:47
+Yeah. So that is something to consider because when I look at this, I think it's really accurate.
+
+Speaker 1  07:57
+Yeah, that'sright. And also because I think there's not a lot of departments and name two, name three, and everything.
+
+Speaker 2  08:07
+Yeah.
+
+Speaker 1  08:07
+This does not have a lot of edge cases, so I think it worked pretty well.
+
+Speaker 2  08:12
+Yes. Yes, me too. Quite happy. At the end, I think I will give you access to the database for sure, the auxiliary tables, because you will also need it to include the custom things. Just need to check for that. But I can already show you. Not sure if I can zoom in here.
+
+Speaker 2  08:33
+So we are in the thing, the clustering table.
+
+Speaker 2  08:38
+We typically put it in the same table as the legacy.
+
+Speaker 2  08:51
+But okay, let's dive a bit deeper.
+
+Speaker 2  09:06
+So this one you don't see in the UI, but that's actually in the background,
+
+Speaker 2  09:15
+the one
+
+Speaker 2  09:17
+that gives the result of all the comparisons. I just need to check.
+
+Speaker 2  09:32
+Ah, maybe I can see it here. So I'll go to the process overview. So I will double-click, and I'm going to check the lock of the clustering.
+
+Speaker 2  09:46
+Ah, maybe not here yet. Yeah. So in the procedure output, I have the batch ID.
+
+Speaker 2  09:55
+And in Datashaper, everything we run, we give it an ID, a batch ID. Why I need this?
+
+Speaker 2  10:04
+Because here it should work like this. So now I only get the results of the last run.
+
+Speaker 1  10:17
+Got it.
+
+Speaker 2  10:18
+Yeah. Because this one, it's just a table for everything. It's not per entity or group because it's also more an internal table, which we can use, but we don't really show it. And this shows, for example, within this batch, based for rule 17.
+
+Speaker 2  10:37
+So that would be the address rule. We found a match between this code and this code.
+
+Speaker 2  10:45
+This was the data in the first one. This is all the data in the cluster. And then here, the reason it says, "Why do these two match?" Well, there is an exact match.
+
+Speaker 2  10:58
+And I think you would see you see these are two different codes, but they actually have exactly the same name and address. Yeah.
+
+Speaker 2  11:14
+So you see there are a lot of exact matches.
+
+Speaker 2  11:23
+Let's try. Yeah.
+
+Speaker 1  12:06
+There are no fuzzy matches.
+
+Speaker 2  12:10
+No. That's interesting.
+
+Speaker 2  12:14
+That's interesting. Possible.
+
+Speaker 2  12:35
+It's possible, but it's still surprising to me.
+
+Speaker 1  12:40
+Yeah, to me too. How can everything be such an exact match?
+
+Speaker 2  12:53
+Or new one thing that I think about.
+
+Speaker 2  13:02
+We must put data.
+
+Speaker 2  13:09
+Just the master validation.
+
+Speaker 2  13:19
+It's not master data. It's DP validation. Yeah.
+
+Speaker 2  13:44
+I don't know. I was thinking maybe the name concats is somewhere empty. Because sometimes if you don't define it well and you concatenate strings, if one of the strings is empty, then the result is also empty. But that seems not the case.
+
+Speaker 2  14:11
+So there are 4,000 where the street is not there. But okay.
+
+Speaker 2  14:20
+There's still a lot where the street is not now,right?
+
+Speaker 2  14:32
+So there's 50,000. Yeah.
+
+Speaker 2  14:42
+So yeah. Because we made a migration rule. Okay.
+
+Speaker 2  14:55
+This is 75. This is 85. 18. Let's see.
+
+Speaker 2  15:11
+Yeah, we just took the same.
+
+Speaker 2  15:49
+I don't know. I think we should put, for example, these are the same than that we uploaded. But maybe it's correct. I don't know. But this one?
+
+Speaker 1  16:04
+Yeah, that is not an exact match.
+
+Speaker 2  16:12
+Let's see if we also have that one.
+
+Speaker 2  16:28
+I think this was the same dataset, so it should be the same code except group code to change.
+
+Speaker 2  16:36
+They are both there.
+
+Speaker 2  16:49
+So these are the concatenated names. Check.
+
+Speaker 2  17:13
+So programmability functions.
+
+Speaker 2  17:25
+So this is our fuzzy matching function.
+
+Speaker 2  17:37
+Let me make sure that I have the spaces.
+
+Speaker 2  17:44
+Does it work like that? Aha.
+
+Speaker 2  18:03
+Why?
+
+Speaker 2  18:23
+So this would be my string one.
+
+Speaker 2  18:27
+This would be my string two.
+
+Speaker 2  18:33
+What color is it? Don't know what I did wrong. Okay.
+
+Speaker 2  18:40
+But what I see, this is 90%.
+
+Speaker 1  18:44
+Okay. The first two digits. Okay.
+
+Speaker 2  18:47
+Yeah. So you can see these two are 90%. And then we had the rule on the streets.
+
+Speaker 2  19:01
+Sorry about that.
+
+Speaker 2  19:04
+Let's check the streets. Yeah.
+
+Speaker 2  19:11
+Yeah. That I don't even need to do.
+
+Speaker 2  19:15
+But maybe do it anyway. Sometimes you have some weird special characters. Usually, we filter those out. 99. Okay. Why is it not exactly the same? Funny.
+
+Speaker 2  19:36
+So streets, US postal code prefix.
+
+Speaker 2  19:41
+Let me check that one. Aha. No. That's also the same.
+
+Speaker 2  19:52
+Country and then the region.
+
+Speaker 2  19:57
+Region, the same. Country, the same.
+
+Speaker 2  20:16
+Just go by this one.
+
+Speaker 2  20:27
+So the 26, that's this one here, but it didn't match with 58. Okay.
+
+Speaker 2  20:39
+Well, I will check. Maybe if I remember, it said the built-in function didn't work, and then I replaced it with this one.
+
+Speaker 2  20:49
+But might be I messed up something there. I think that's my suspicion. Yeah.
+
+Speaker 2  21:00
+Because when we checked these, they should have been in here with a fuzzy match, but they are not. Yeah. And our rules are correct. So I think that's what happened. I will check and get back to you.
+
+Speaker 1  21:13
+Yeah. Yeah. Sure.
+
+Speaker 2  21:15
+Yeah. You can actually see before that change, this one in the example here, that's the result I would expect.
+
+Speaker 2  21:26
+So you can see that it's, yeah, find a lot more. Yeah. Yeah.
+
+Speaker 2  21:36
+I'll get back to you on that one.
+
+Speaker 2  21:42
+You can see you have quite a lot, but it's also not because it's Stanford that then it's always the same client in your system. I think Bert knows that very well. But yeah. Because it could be different departments, I think. But these all look very much the same.
+
+Speaker 2  22:06
+So yeah.
+
+Speaker 2  22:08
+You can also see I added a lot more columns here on the example one.
+
+Speaker 2  22:19
+While by default, we only get the columns that we used in the cluster. Yeah.
+
+Speaker 2  22:25
+But actually, what we show here, so we have the result table where we compare all the rows.
+
+Speaker 2  22:37
+And then we have the clusters table where we group all the codes that are linked in a cluster. So this is like, yeah, let's take the batch again. Yeah.
+
+Speaker 2  23:10
+So you see that is number one,
+
+Speaker 2  23:12
+and these are four codes. And they all belong together. So what is important? It could, for example, be that this code and this code match. And then this one and this one and the second one again with the fourth one.
+
+Speaker 2  23:37
+But that means the first one and the fourth one, they are not directly linked to each other.
+
+Speaker 1  23:46
+Okay. Got it.
+
+Speaker 2  23:48
+Yeah.
+
+Speaker 2  23:51
+So that's also why because sometimes people ask, "Can you not put the reason why it's part of the cluster here?" But it's actually not so simple because it could be multiple reasons. Yeah. And it could be like the yeah. It could be like, yeah.
+
+Speaker 2  24:09
+I don't know. Because then you have to say why this one because it connects to this one or to this one or to this one. So that's kind of hard. So that we don't put it.
+
+Speaker 2  24:19
+But in the result table, you can actually find back always if you check on a specific code how it matched with the other codes in the cluster. Because if they match, they are always part of the same cluster by definition. So you see that one,
+
+Speaker 2  24:41
+the 91, matched with three other ones. And in total, we had how many? Sorry. I lost my screen. Yeah. In total, we have four. So it matched with all the other records in the cluster in this case. But it's not always like that. Especially if it gets bigger and bigger.
+
+Speaker 2  25:04
+Yeah. Okay. That's clear enough?
+
+Speaker 1  25:09
+Yes.
+
+Speaker 2  25:11
+So then in the end, always the latest run, we have a specific cluster table for each entity where we store the results of the latest run. So here it's the customer clustering. And that's basically the same as in the result, but it's only for that one.
+
+Speaker 2  25:30
+But now there's the view, no? Yeah.
+
+Speaker 2  25:35
+We made the view on top of it because now we can actually add other columns in the view, and then they will also show even though we don't use it in the cluster. Yeah.
+
+Speaker 2  25:52
+That's also still something would be nice to start adding in the
+
+Speaker 2  26:00
+UI to do this at some point.
+
+Speaker 2  26:05
+Let me just do the same here.
+
+Speaker 2  26:13
+Call this one.
+
+Speaker 2  26:17
+I don't know. Sorry.
+
+Speaker 2  26:23
+Just replace this one. So this is just customer. Yeah. Because we copied the configuration, so I think we have the same. We put it on dev,right?
+
+Speaker 1  26:46
+Yeah.
+
+Speaker 2  26:55
+Yeah. Still missing this one.
+
+Speaker 2  27:08
+Don't think we need this. Okay.
+
+Speaker 2  27:17
+That works. You see now we have all these other columns.
+
+Speaker 1  27:24
+Yes.
+
+Speaker 2  27:25
+Yeah. So I'll put them here. So I updated the view. Yeah. Typically, that's not really needed to do. But it's the wrong one. But I know Baron asked for that specifically, so that's why.
+
+Speaker 2  27:46
+Let me show you. Wait. No.
+
+Speaker 2  28:04
+Actually, no. Yeah.
+
+Speaker 2  28:24
+I think
+
+Speaker 2  28:27
+the problem is if the
+
+Speaker 2  28:39
+column already exists in the fields we have done, it takes us double, and that gives an error, I think.
+
+Speaker 2  28:46
+Let me check. Yeah.
+
+Speaker 2  29:02
+Looks better. It wouldn't run so long if it wouldn't work. Okay.
+
+Speaker 2  29:08
+Quite proud that I knew immediately. Yeah. Yeah. It's because we can't have the same column twice. And the PO box postal code was already here.
+
+Speaker 2  29:25
+But you see we have some more details which could help if we have questions
+
+Speaker 2  29:34
+on why things are linked.
+
+Speaker 2  29:38
+Then do you remember the scoring system?
+
+Speaker 1  29:43
+Yeah. Yes, I do.
+
+Speaker 2  29:45
+Yeah. So here you can see that these are the details that we use for the scores. So you see the details are already here, but the scores are not yet populated because we didn't map those yet.
+
+Speaker 1  30:03
+Okay.
+
+Speaker 2  30:04
+Yeah. But okay. I will not do itright now, not to go through everything. And I actually think it needs to change a bit as well. It doesn't really need to change, but the info here, once we now it's just part of the extract.
+
+Speaker 2  30:26
+But if you have everything set up, you should also have the equipment and sales order data in Datashaper, and then you fetch it from there instead of adding it to your extract. Yeah.
+
+Speaker 2  30:41
+So score, for example. I'll just show you how it was done.
+
+Speaker 2  30:54
+So yeah. I think I already showed last time now that I look at it. Yeah.
+
+Speaker 2  31:01
+So for example, this is a case statement where I made the cross-supply that calculates the difference in dates in terms of months between the last sales order used and the current date. So this cross-supply,
+
+Speaker 2  31:21
+so as M.months will be the difference in months. And you can see that here, okay, when there's never been a sales order and it's zero, when it's between 0 and 9 months, then it's 25. Between 20 and 24, it's 15. Else it's 5.
+
+Speaker 2  31:41
+So here I could apply some logic to calculate the score based on sales order last month. And then I had some scores for all the factors I got the spec from that from Bert. You can check yourself, but I don't want to go over everything.
+
+Speaker 2  32:01
+But then we have the final score, which is the sum of all the scores.
+
+Speaker 1  32:05
+Okay. Yeah. Got it.
+
+Speaker 2  32:07
+Easy. Yeah. Yeah. I guess there's a lot with score zero, but not all. And then yeah. What is important here again is the sequence. So you see the final score is sequence two, and all the individual one are sequence one. The order I process these, that doesn't matter.
+
+Speaker 2  32:29
+So if it doesn't matter, it's actually best to put them in the same sequence. Because then the execution can group it together, and it's more efficient. Yeah.
+
+Speaker 2  32:42
+Because if you give everything a unique sequence, it needs to go one by one, so it takes longer. While if you do like this, this can all be done in one time, and then this one after that. Okay.
+
+Speaker 2  33:02
+Yeah. So we have this validation mapping. We have the rules. We went over validation rules. We showed the enrichment view already,right? But you could see the issues. Yeah. And we have the load file.
+
+Speaker 2  33:20
+So that's the last step, basically, from the validation table. We can publish a load file. And that would be what we could load back into a system. Yeah.
+
+Speaker 2  33:37
+And that's another mapping we can do. You can see this mapping is very simple. Don't know why it doesn't pick up this one, but let's add it. So that's by default. We always create a default load file that has the same layout as the validation file, and we map it automatically one by one. Because typically,
+
+Speaker 2  33:56
+in most cases, you will get the same validation schema and load file schema. And then we have the load file process. Let's go back to our customer. Yeah. Let's first check our load file setup. Yeah. Let's just see.
+
+Speaker 2  34:15
+I didn't set this. This was just automatically. But then in our process, I could process the load file.
+
+Speaker 1  34:28
+So there should be only one load file as the result,right? Because Burnt was saying we can have multiple load files. Not really sure what he was referring to.
+
+Speaker 2  34:38
+Yeah. So yes. I will get to that. Yeah. So all the load files, they are in DP load file.
+
+Speaker 2  34:51
+You can see. So our customer, we actually make a copy of the load file per day that you process, of course. So there is a history per environment. So if I would run the prod now and have data, then I would have a different load file.
+
+Speaker 2  35:08
+And then just a general one that's just the latest load file for that entity that has been run. Yeah. So if I would now load for production and we have everything set up for production, I would get another one here with production, another one here, and this one would be overwritten with the production.
+
+Speaker 2  35:31
+So yeah. You can always see what was a load file before. What is in the load file, these are all the records without mandatory issues.
+
+Speaker 1  35:44
+Okay. The records without the issues. Okay.
+
+Speaker 2  35:47
+Yeah.
+
+Speaker 2  35:47
+So if we would check in the let's check the enrichment. So the one with something marked in red, you will not see. The other ones, you will see. Yes.
+
+Speaker 2  36:09
+So in that way, you have multiple load files. But there is also another way because we can create multiple load files. And you see we have another mapping in between. So we could actually say, "Okay. We have a load file." That's just in the table setup,
+
+Speaker 2  36:31
+load file. So this is by default that was created automatically. But I also can say, for example, load file for my Salesforce One system.
+
+Speaker 2  36:44
+Then system Salesforce, for example, I'll create it. So you see now it's empty. I actually need to define it.
+
+Speaker 2  36:55
+Salesforce name and VARCOR. See now, I made a new load file, but it only has one column.
+
+Speaker 2  37:09
+Now if I go to the load file setup, you can see I have my default, but I also have the one, my Salesforce One. And I can map it.
+
+Speaker 2  37:20
+And if I map it and just have it like this, and then I could process it.
+
+Speaker 2  37:39
+Create load file, dev. So see here, I can choose which one I want to run, actually. Yeah.
+
+Speaker 2  38:04
+Yeah. You see now it's also here.
+
+Speaker 2  38:09
+And I've just a very beautiful load file. You see where the codes and the things enter.
+
+Speaker 2  38:18
+But we will see, for example I'm actually surprised.
+
+Speaker 2  38:27
+So not everything has a missing title. So I think, for example, this one, don't see any issue,right?
+
+Speaker 1  38:36
+Yeah.
+
+Speaker 2  38:42
+So where could so you see I found it. But this one, there is an issue. And I didn't find it.
+
+Speaker 1  38:55
+Oh, yeah.
+
+Speaker 2  38:56
+Yeah. Because we usually, when we know there is a data quality issue that's marked as mandatory, we don't want to load. We want to fix that as soon as it fixes.
+
+Speaker 1  39:08
+So once you fix this, then it goes to the load file again in the next one?
+
+Speaker 2  39:12
+Yes. Yes.
+
+Speaker 1  39:13
+Okay. Allright.
+
+Speaker 2  39:19
+This one only has one.
+
+Speaker 2  39:28
+So maybe this 973 would be the house number. I'm not sure. Attend this.
+
+Speaker 1  39:38
+Yeah. Attend, yeah.
+
+Speaker 2  39:40
+Yeah. We can't change this because it's not.
+
+Speaker 2  39:45
+So now I fixed it.
+
+Speaker 2  39:51
+Then publishing.
+
+Speaker 2  40:00
+Remember which one it is. So it published. Now this load file. So run it again. Understood.
+
+Speaker 1  40:14
+Right. Yeah.
+
+Speaker 2  40:15
+Yeah. Because there's no issues anymore. Allright.
+
+Speaker 2  40:22
+So that's nice. So yeah. Why is that interesting and why is Bert mentioning that? What we actually want in the end, so we have the SAP, and then we have, for example, Salesforce One, Two, Salesforce Three. And I know you have a lot of Salesforce, so like that.
+
+Speaker 2  40:44
+Yeah. Then we have the blueprint.
+
+Speaker 2  40:52
+So that would equal our validation setup,right?
+
+Speaker 2  40:58
+And then we could make a load file stop. And then load file SF1.
+
+Speaker 2  41:14
+Load file SF2. Load file SF3. Yeah.
+
+Speaker 2  41:30
+Let's save the plot. Yeah. So you see, once we have this setup, we can check all these, bring the data together. So yeah.
+
+Speaker 2  41:47
+This is not the best way to do.
+
+Speaker 1  41:52
+It's allright.
+
+Speaker 2  41:54
+I wanted to have the deduplication here. There are better tools for this. Yeah. Okay. Now OCD is kicking in. No. Okay.
+
+Speaker 1  42:12
+Yeah. Perfect.
+
+Speaker 2  42:14
+Okay. Okay. It's just called deduplicate. So yeah. So we can find the unique records within either unique customers within all the systems, put them on the blueprint. So the blueprint would contain everything needed to load to any system,
+
+Speaker 2  42:35
+which I think a lot of the name, it exists in Salesforce and in SAP, so that's a lot of common columns. Then mostly it will be based on SAP, and where we need a specific column for a specific Salesforce instance or just for Salesforce in general, we also add it to the blueprint.
+
+Speaker 2  42:57
+So I think the blueprint or base would be the SAP columns.
+
+Speaker 2  43:07
+Plus SF specific. Something.
+
+Speaker 2  43:13
+That's what we said we would do. Yeah.
+
+Speaker 2  43:23
+Oh no. Yeah. Yeah. And then, okay, we can get all the systems, check which one is unique, flag an issue if we have duplicates in the systems. And then we can also say, "Okay. If we introduce new ones or if we have something in SAP,
+
+Speaker 2  43:42
+but it's missing in Salesforce Three or the other way around, we bring it to the blueprint.
+
+Speaker 2  43:48
+And from the blueprint, we can load anywhere." And everything we load is validated.
+
+Speaker 1  43:56
+Allright. Yeah. Got that.
+
+Speaker 2  43:57
+So
+
+Speaker 2  44:00
+if you have the whole picture set up, you can make sure we're not having duplicates both across and within the systems. And we can also make sure that everything we are loading is respecting data quality rules.
+
+Speaker 1  44:18
+Yes. Got it.
+
+Speaker 2  44:19
+Yes.
+
+Speaker 2  44:20
+So that is the real purpose and power of Datashape, I would say. Yeah. Okay.
+
+Speaker 2  44:33
+So that's already a lot.
+
+Speaker 2  44:39
+Hope it's a bit clear how you're doing.
+
+Speaker 1  44:42
+Yes. I think that's gave me the entire flow now until the load file.
+
+Speaker 2  44:47
+Import legacy, deduplication, validation, load file. Yeah.
+
+Speaker 2  44:58
+So then now I actually processed everything here, which if I do ad hoc processing, it's perfectly fine. But you can see every process that I do here, like if I want to do the load file, below, you can see this is the store procedure mapping USB that creates load file.
+
+Speaker 2  45:19
+So every process in Datashape is like a store procedure in SQL.
+
+Speaker 1  45:24
+Okay. Got it.
+
+Speaker 2  45:25
+Yeah. We also have some built-in API functions like the fees, but there's not really I know it's the tax number validation. Yeah. That's not yet here. It's in dev. You can actually see it, the tax number validation. Yeah. Yeah.
+
+Speaker 2  45:46
+For example, but you can also not see any data as it's kind of hard-coded, and it connects to our Datashape Hub. So if you want to set up your own APIs whenever needed, I think what I set up is ADF. So.
+
+Speaker 2  46:20
+Yeah. So you should also have access to this one.
+
+Speaker 1  46:25
+Yes.
+
+Speaker 2  46:25
+Yes. Not sure if you worked with it before, but it's, yeah, quite well documented because it's a very well-known application. So what's important for now, I set in the ADF, every database that you have is linked, so you can all use it.
+
+Speaker 2  46:46
+So that's here in the manage and the linked service. You can see that's already set up.
+
+Speaker 1  46:51
+Allright.
+
+Speaker 2  46:51
+Yeah. Then you see in the home or here in the author, you can see the pipelines. And I made one pipeline so far.
+
+Speaker 2  47:04
+And a pipeline, it's just you have a process, and then you can say when it succeeds, go to the next one. When it fails, go to there. Or just when it completes, whatever happens, go to there.
+
+Speaker 1  47:15
+Okay. Yeah. Got it.
+
+Speaker 2  47:17
+Yeah. So I just put it here, here, here. And actually, you could see in the settings, so this is a stored procedure. And I called it process legacy. It links to the DP admin because there is our stored procedures. This is the name of the stored procedure, and here are the parameters defined.
+
+Speaker 2  47:38
+Yeah. So you see the only thing I need to do is actually the same as if I would go here, new task, process legacy. Yeah. And the parameters I really need are actually for this one, operation is not even needed, group code and entity, which are here.
+
+Speaker 2  48:02
+And you can also find them back here.
+
+Speaker 2  48:07
+But here I didn't say it's this group code or this entity. I used a variable.
+
+Speaker 1  48:12
+Okay. Yeah. Got it.
+
+Speaker 2  48:14
+Because this called entity basic flow. And then when I run it, you see here, I can set the variables. But each time I would execute or copy it, I can change that, and then it's already configured for the full flow. Yeah. So this would process legacy.
+
+Speaker 2  48:35
+This would do the migration rules.
+
+Speaker 2  48:37
+This would do the stored procedure. But I deactivated that one because it takes so long. Then I have the validation, and then I have the load file.
+
+Speaker 2  48:50
+So it should be possible, I think, to change it like this.
+
+Speaker 2  49:03
+It's validated. No errors. And then if I click debug, it will launch a test run.
+
+Speaker 2  49:18
+So now you see this triggered in the output a run. It's the same as in Datashape, basically. You have a run ID. So it's a batch. And then you see it's in progress.
+
+Speaker 2  49:33
+Maybe if I click refresh, you can see it activated the legacy, but it's still queued for some reason. Yeah. So let it be queued. And actually, APIs here, it's just a web activity.
+
+Speaker 2  49:57
+And then here, you can do URL endpoint. You can set a get a post, put a delete, a patch, whatever. You can assign authentication. You can assign headers. Yeah. And I think it's called a lookup. Here,
+
+Speaker 2  50:18
+you could, for example, get some data. If you want to get data from Datashape, you need to define the dataset, which you could say here, we are on a SQL managed instance. So this one, Azure SQL database managed instance, continue.
+
+Speaker 2  50:41
+Yeah. For example, your Salesforce load file, the one we created.
+
+Speaker 2  50:57
+Why is it disabled? Yeah.
+
+Speaker 2  51:10
+I need to enable this. It takes a while. Yeah.
+
+Speaker 2  51:15
+Basically, here then, once it's enabled, it takes a while. I can select a table and use some filters or whatever. And then, yeah, I could say, "Okay. You can look up the data, and then once it's complete, send it to the web." And then this one, you can use the data inside your API request.
+
+Speaker 1  51:38
+Allright. Got it.
+
+Speaker 2  51:39
+And then this one, you can make another task to store it into a table, for example.
+
+Speaker 1  51:45
+Got it.
+
+Speaker 2  51:46
+Yeah. And then in the meantime, you can see that we succeeded in the legacy, in the migration rules. We skipped the deduplication. Yeah. Yeah.
+
+Speaker 2  52:01
+Because, okay, this is very short, but I hope you can see it's very flexible because we can set up multiple pipelines. We can then use one master pipeline, for example, that will trigger all the other pipelines. And then we can use all the built-in functions from Datashape.
+
+Speaker 2  52:24
+But whatever API we can think of,
+
+Speaker 2  52:27
+we can set up a process that interacts with it to do additional things as we require.
+
+Speaker 1  52:38
+Yes. Got the idea.
+
+Speaker 2  52:40
+Yeah. But I think these will be the ones to maybe the copy data. I think I would need to check. I think that would be then the flow that the results from the web you copy somewhere. Yeah.
+
+Speaker 2  52:57
+So these are the building blocks. And then up to you to build. Yeah. Yeah. So what I did so far, you have the I will remove these. You have the basic flow. So this is processing an entity. And then,
+
+Speaker 2  53:17
+yeah, you see stored procedure finished. And then the load file settings. Yeah. So this, you can see it will trigger the general load file. Yeah. Well, you could also set emails,
+
+Speaker 2  53:37
+I think, as well if things fail. I'm not sure. No. There's no mail.
+
+Speaker 2  53:45
+That's only in the build run. Okay. Or you could write it to a log or something. Yeah. Or I think maybe you can set alerts here as well. Hold on. So yeah, now it succeeded. So that one I set up because you can actually,
+
+Speaker 2  54:04
+yeah, just change the settings. Yeah. You can just change the variables and use it for any entity. And you could actually also start copying it. But you could also, I think, create a master onion.
+
+Speaker 2  54:23
+So that would be your main thing.
+
+Speaker 2  54:33
+It's called as main. And here, you could, for example, say execute pipeline or basic flow. No.
+
+Speaker 2  54:53
+So now, yeah,
+
+Speaker 2  54:57
+I need to check because what I would like to do is set the variables here. Pretty sure you can do it, but I'm not sure exactly how. This just opens it. No.
+
+Speaker 2  55:16
+Yeah. Somewhere, it should be able to define the variables.
+
+Speaker 1  55:21
+Yeah. I will play around with it and try to see. Yeah.
+
+Speaker 2  55:25
+Yeah.
+
+Speaker 2  55:26
+Because then I can do, for example, one customer flow, sales audit flow, etc.,
+
+Speaker 2  55:38
+etc. And I could run them in parallel, or I can say first this one, then this one, whatever.
+
+Speaker 2  55:46
+Yeah. So I'll just make this one empty.
+
+Speaker 2  55:52
+This one is fine. Yeah.
+
+Speaker 2  55:58
+I think this one is not happy.
+
+Speaker 2  56:02
+But okay. I didn't really change anything, so I just discarded. Yeah. Yeah.
+
+Speaker 2  56:12
+So that's the only thing. So I think now we set it up except for the scoring, but I would maybe wait until we have confirmation.
+
+Speaker 2  56:21
+I think all these I just need to check my calendar. Sorry.
+
+Speaker 2  56:55
+Okay.
+
+Speaker 2  56:59
+So yeah, what I was going to say. Yeah. All these customers, IT v1 can be gone.
+
+Speaker 2  57:11
+I think the example customer, we can keep, but maybe only the target then as a reference.
+
+Speaker 2  57:23
+So to delete an entity, this one can be gone. So yeah, you need to be careful because it completely deletes all your data if you do that. But I think this one is fine. Yeah. These, I don't really know what they are.
+
+Speaker 2  57:50
+I think it's also for training. Customer IT v1.
+
+Speaker 1  57:59
+So this training happened last year, is it?
+
+Speaker 2  58:02
+Yes. Yes.
+
+Speaker 1  58:03
+Okay.
+
+Speaker 2  58:09
+Okay. I think can also be deleted.
+
+Speaker 2  58:17
+Equipment, I will leave alone. Yeah.
+
+Speaker 2  58:22
+So we just have an example one, and we have the one you set up that I would use that one as the basis, and then this test one also deletes.
+
+Speaker 2  58:36
+Let's just see for group codes. Yeah. These are fine, I think. Yeah. And then environments, these are also fine. Yeah. That's okay. So now I think it's much cleaner. Yeah. Then I think we need to expand the customer one more. Yeah.
+
+Speaker 2  58:56
+But yeah,
+
+Speaker 2  58:59
+I'm a bit waiting because I explained on the blueprint,right? Yeah. But I need to know how the blueprint because for me, the most important first step is to define the validation.
+
+Speaker 1  59:15
+Yeah. Got it. Yeah.
+
+Speaker 2  59:16
+Because, okay, we can add new sources and map them to the validation. And we can add new targets and map them from the validation. That's fine. But the blueprint, that needs to be really clear, well-defined, and have good rules because that's your heart of your entity. Yeah.
+
+Speaker 2  59:39
+But okay, I would have preferred to have this is the layout, and we work with it. But we can always you can go in the table setup customer, your validation. You can add new fields. You can rename them. You can remove them, even in the added fields.
+
+Speaker 2  59:56
+So we can adjust it wherever needed until we get to a satisfactory state.
+
+Speaker 1  01:00:03
+I will also check with Burnt for the blueprint. Yeah.
+
+Speaker 2  01:00:06
+Yeah. That would be good. But okay. Even so, I think except for the scoring and everything, these things will definitely be in the blueprint. So it's not bad that they are there anyway.
+
+Speaker 2  01:00:19
+And then, okay, I think you need to see for the transformations where you get with the SQL and wherever you can see an opportunity to integrate in an API. Yeah. I would say for you to do so.
+
+Speaker 1  01:00:32
+Allright. Yes. Thank you so much for this flow. And I will try to see where I can improve and make it more optimized to our customer data. And this really helped me a lot. Otherwise, if I was doing this following the tutorial, it would take me a long, long time. So thank you very much for taking this time out.
+
+Speaker 2  01:00:51
+You're welcome. I always happy to present the tool because we built it, and we are proud.
+
+Speaker 2  01:00:59
+So it's nice to show. So yeah, I hope you liked it. And then, yeah, I would say now I leave it to you, but I'm there if you have any questions or some support.
+
+Speaker 1  01:01:09
+Yeah. I will reach out to you. Thank you.
+
+Speaker 2  01:01:11
+Yeah. Allright.
+
+Speaker 1  01:01:12
+Thank you very much. Goodbye.
+
+Speaker 2  01:01:14
+Bye-bye.

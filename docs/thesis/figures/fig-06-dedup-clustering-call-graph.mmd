@@ -1,0 +1,16 @@
+%% fig-06 — Call graph of POST /api/dedup/cluster-block down to the LLM boundary
+%% Source: docs/thesis/00_INVENTORY.md §3.2 (lines 250-265)
+flowchart TD
+    A["POST /api/dedup/cluster-block · dedup_cluster_block (api/routes.py:802)"] --> B["_get_dedup_llm"]
+    A --> C["cluster_blocks (dedup/adjudicator.py:933)"]
+    C --> D["build_signatures — STEP A (dedup/signatures.py)"]
+    C --> E["_process_block (dedup/adjudicator.py:831)"]
+    E --> F{"has_name2 bucket?"}
+    F -->|Mode A partition| G["_mode_a (dedup/adjudicator.py:270)"]
+    F -->|Mode B assign| H["_mode_b (dedup/adjudicator.py:400)"]
+    E --> I["_adjudicate_residue (dedup/adjudicator.py:556)"]
+    G -->|adjudicate| LLM["dedup LLM · dedup/llm.py:adjudicate"]
+    H -->|adjudicate| LLM
+    I -->|adjudicate| LLM
+    E --> J["_enforce_identity_split / _enforce_name2_split (dedup/adjudicator.py:185/136)"]
+    E --> K["_emit_rows (dedup/adjudicator.py:721)"]

@@ -1,0 +1,20 @@
+%% fig-03 — Enrichment run: ADF ↔ SQL MI ↔ service sequence, including the failure branch
+%% Source: docs/thesis/02_ARCHITECTURE.md §4.1 (lines 197-216)
+sequenceDiagram
+    participant ADF as ADF Enrichment Pipeline
+    participant MI as Azure SQL MI (Legacy)
+    participant API as mdm-pipeline-api /enrich
+    participant EXT as ROR/GLEIF/SERP/LLM
+    ADF->>MI: Lookup2 — generate 50-row offsets over Legacy
+    loop ForEach1 (isSequential:true), per offset
+        ADF->>MI: Lookup1 — FETCH NEXT 50 ROWS
+        ADF->>API: Web1 POST /enrich {records:[…50]}
+        API->>EXT: per-record external calls
+        EXT-->>API: results / failures (fail-open per tier)
+        API-->>ADF: 200 EnrichmentResponse
+        ADF->>MI: Merge Back usp_merge_legacy_enriched (committed)
+    end
+    Note over ADF,MI: Failure branch — Web1 or Merge Back fails on batch N
+    Note over ADF,MI: retry:0 → iteration N fails → sequential ForEach stops
+    Note over MI: batches 1…N-1 already committed to Legacy
+    Note over ADF,MI: rerun re-selects ALL Legacy rows → 1…N-1 re-enriched (repeat LLM+SERP spend)
