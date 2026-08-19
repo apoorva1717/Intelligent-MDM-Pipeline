@@ -168,6 +168,7 @@ async def run_tier2a(
             result = _apply_mode_b(
                 result, name2, official_dept, official_group,
                 extraction, settings.fuzzy_match_threshold,
+                llm_confidence,
             )
 
         if result.success:
@@ -423,12 +424,20 @@ def _apply_mode_b(
     official_group: str | None,
     extraction: dict,
     fuzzy_threshold: int,
+    llm_confidence: str,
 ) -> Tier2AResult:
     """Mode B: name2 exists — verify or correct via contact page.
 
     Uses rapidfuzz to compare existing name2 against official_dept from the page.
-    ≥ 80 exact/partial: normalise to official format
-    < 80: name2 is wrong, replace with page version
+    ≥ 95 exact: normalise to official format, no review needed
+    80–94 partial: normalise to official format, flag for review
+    < 80: the page disagrees substantially with the record. That has two
+        explanations — the record is wrong, or the wrong page was found —
+        and this is precisely where the evidence is weakest. Split on the
+        extraction confidence (guaranteed "high" or "medium" by the caller's
+        entry precondition): only a high-confidence extraction is trusted
+        enough to overwrite. A medium-confidence disagreement is reported
+        and left for a human, with the record's own value untouched.
     """
     if not official_dept or not official_dept.strip():
         return result
@@ -468,15 +477,30 @@ def _apply_mode_b(
             result.flag_reason = "Partial match — confirm enriched Name 2"
             result.source = "contact_lookup_found"
     else:
-        # No match — name2 is wrong, replace with page version
-        # FIX(Bug 5): guard against empty string
-        result.name2_enriched = official_dept.strip() if official_dept and official_dept.strip() else None
+        # No match. Who is wrong — the record, or the page we picked?
         result.name2_match = "no_match"
         result.name2_match_score = effective_score
-        result.enrichment_status = "enriched"
         result.flag_for_review = True
-        result.flag_reason = "Name 2 corrected — did not match contact page affiliation"
-        result.source = "contact_lookup_corrected"
+        if llm_confidence == "high":
+            # The extraction is solid, so treat the record as wrong and
+            # replace it with the page version.
+            # FIX(Bug 5): guard against empty string
+            result.name2_enriched = official_dept.strip() if official_dept and official_dept.strip() else None
+            result.enrichment_status = "enriched"
+            result.flag_reason = "Name 2 corrected — did not match contact page affiliation"
+            result.source = "contact_lookup_corrected"
+        else:
+            # Medium confidence on a substantial disagreement is not
+            # enough to overwrite a value the customer supplied. Leave
+            # name2_enriched unset — the merge layer's non-blank filter
+            # then keeps whatever the record already had — and surface
+            # the disagreement for manual review instead.
+            result.enrichment_status = "unresolved"
+            result.flag_reason = (
+                "Name 2 disagrees with contact page affiliation — "
+                "not corrected, verify manually"
+            )
+            result.source = "contact_lookup_found"
 
     # FIX(Bug 5): guard against empty string for name3
     result.name3_enriched = official_group.strip() if official_group and official_group.strip() else None

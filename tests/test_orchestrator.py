@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from api.models import EnrichmentOptions, EnrichmentRecord
 from config import Settings
 from enrichment.orchestrator import Orchestrator
+from tests.mocks.openai_mock import MockOpenAIClient
 
 
 @pytest.fixture
@@ -78,7 +79,14 @@ class TestOrchestrator:
 
     @pytest.mark.asyncio
     async def test_tier1_to_tier2a_verification(self, orchestrator, default_options):
-        """Institution with wrong name2 and contact → Tier 2A Mode B."""
+        """Institution with wrong name2 and contact → Tier 2A Mode B.
+
+        Regression guard for the two gates that between them made
+        verification mode unreachable: the contact-lookup gate used to
+        require a blank Name 2, and the Tier 2 canonical short-circuit
+        used to return before the gate was even evaluated. If either
+        closes again this assertion fails.
+        """
         record = EnrichmentRecord(
             record_id="ORCH_003",
             name1="Massachusetts Institute of Technology",
@@ -93,6 +101,39 @@ class TestOrchestrator:
 
         assert result.record_type == "research_institution"
         assert result.name1_enriched is not None
+        assert result.tier2_mode == "2A_verification"
+        assert result.name2_enriched == "Department of Chemistry"
+        assert result.name2_match_result == "no_match"
+        assert result.source == "contact_lookup_corrected"
+
+    @pytest.mark.asyncio
+    async def test_tier2a_verification_survives_canonical_short_circuit(
+        self, orchestrator, default_options,
+    ):
+        """Canonicalisation running on Name 2 must not pre-empt Tier 2A.
+
+        This record canonicalises successfully at Tier 2, which used to
+        return immediately. It has a single contact, a research-institution
+        classification and a resolved domain, so contact verification must
+        still get its turn.
+        """
+        record = EnrichmentRecord(
+            record_id="ORCH_005",
+            name1="Johns Hopkins University",
+            name2="Dept of Radiology",
+            contact="Dr. Robert Chen",
+            city="Baltimore",
+            state="MD",
+            country="US",
+        )
+        response = await orchestrator.enrich_batch([record], default_options)
+        result = response.results[0]
+
+        assert result.record_type == "research_institution"
+        assert result.tier2_mode == "2A_verification"
+        assert result.name2_enriched == "Department of Radiology"
+        assert result.name2_match_result == "partial"
+        assert result.source == "contact_lookup_found"
 
     @pytest.mark.asyncio
     async def test_company_skips_tier2a(self, orchestrator, default_options):
@@ -430,3 +471,77 @@ class TestOrchestrator:
         # Not moved to contact — kept as the organisation name.
         assert result.contact_enriched != "Robert Bosch"
         assert (result.name1_enriched or "") != ""
+
+
+class _Tier2AConfidenceStub(MockOpenAIClient):
+    """Forces the Tier 2A extraction confidence; delegates everything else."""
+
+    def __init__(self, confidence: str) -> None:
+        self._confidence = confidence
+
+    async def extract_json(
+        self, system_prompt, user_prompt, *, temperature=0.0, max_tokens=1024,
+    ):
+        if "extract affiliation for:" in user_prompt.lower():
+            return {
+                "person_found": True,
+                "official_dept": "Department of Chemistry",
+                "official_group": None,
+                "title": "Professor",
+                "confidence": self._confidence,
+            }
+        return await super().extract_json(
+            system_prompt, user_prompt,
+            temperature=temperature, max_tokens=max_tokens,
+        )
+
+
+class TestTier2AVerificationMergeLayer:
+    """The sub-80 confidence split, observed end-to-end.
+
+    Whether the record keeps its own Name 2 is decided by the merge
+    layer's non-blank filter, so it is only visible from the orchestrator.
+    "Department of Basket Weaving" is used because it does not fuzzy-match
+    any ROR child, which would otherwise rewrite Name 2 at Tier 1 and mask
+    what Tier 2A did.
+    """
+
+    def _record(self):
+        return EnrichmentRecord(
+            record_id="MERGE_001",
+            name1="Massachusetts Institute of Technology",
+            name2="Department of Basket Weaving",
+            contact="Dr. Jane Smith",
+            city="Cambridge",
+            state="MA",
+            country="US",
+        )
+
+    @pytest.mark.asyncio
+    async def test_low_score_medium_confidence_keeps_record_value(
+        self, settings, mock_clients, default_options,
+    ):
+        clients = {**mock_clients, "llm": _Tier2AConfidenceStub("medium")}
+        orchestrator = Orchestrator(settings, mock_clients=clients)
+        response = await orchestrator.enrich_batch([self._record()], default_options)
+        result = response.results[0]
+
+        assert result.tier2_mode == "2A_verification"
+        assert result.name2_enriched == "Department of Basket Weaving"
+        assert result.name2_match_result == "no_match"
+        assert result.enrichment_status == "unresolved"
+        assert result.flag_for_review is True
+
+    @pytest.mark.asyncio
+    async def test_low_score_high_confidence_overwrites_record_value(
+        self, settings, mock_clients, default_options,
+    ):
+        clients = {**mock_clients, "llm": _Tier2AConfidenceStub("high")}
+        orchestrator = Orchestrator(settings, mock_clients=clients)
+        response = await orchestrator.enrich_batch([self._record()], default_options)
+        result = response.results[0]
+
+        assert result.tier2_mode == "2A_verification"
+        assert result.name2_enriched == "Department of Chemistry"
+        assert result.name2_match_result == "no_match"
+        assert result.source == "contact_lookup_corrected"

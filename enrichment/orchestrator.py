@@ -1547,6 +1547,44 @@ class Orchestrator:
 
         return await self._finalise_and_return(result, start, record, cache)
 
+    async def _return_canonical_short_circuit(
+        self,
+        result: dict[str, Any],
+        start: float,
+        record: EnrichmentRecord,
+        cache: BatchCache,
+    ) -> EnrichmentResult:
+        """Close out a record at the Tier 2 canonical stage.
+
+        Reached when LLM canonicalisation ran on a record whose Name 2 was
+        already populated. Stopping here is what keeps Tier 3 from
+        overwriting a canonical unit name with a fabricated one. Called
+        from two places: directly, when Tier 2A contact verification is
+        not available for the record, and again after Tier 2A has run
+        without producing a usable result.
+        """
+        result["tier_used"] = 2
+        has_enriched = any(
+            result.get(f"{f}_enriched") and result.get(f"{f}_enriched") != getattr(record, f)
+            for f in ("name2", "name3", "name4")
+        )
+        if has_enriched:
+            result["source"] = "llm_canonical"
+            result["confidence"] = "high"
+            result["enrichment_status"] = "enriched"
+            result["flag_for_review"] = True
+            result["flag_reason"] = "LLM canonical form — verify"
+        else:
+            result["source"] = "passthrough"
+            result["confidence"] = "low"
+            result["enrichment_status"] = "unresolved"
+            result["flag_for_review"] = True
+            result["flag_reason"] = (
+                "name2/name3 could not be canonicalised with "
+                "high confidence — left unchanged"
+            )
+        return await self._finalise_and_return(result, start, record, cache)
+
     async def _finalise_and_return(
         self,
         result: dict[str, Any],
@@ -2354,6 +2392,20 @@ class Orchestrator:
                 if 13 not in result["use_cases_triggered"]:
                     result["use_cases_triggered"].append(13)
 
+            # ── Contact-lookup eligibility (computed early) ───────────
+            # This must be known BEFORE the canonical short-circuit
+            # below, because that short-circuit returns for every record
+            # with a populated Name 2 — which is exactly the population
+            # Tier 2A verification mode needs to see. Computed once here
+            # and consumed both by the short-circuit and by the Tier 2A
+            # gate further down.
+            can_do_contact_lookup = (
+                result["record_type"] == "research_institution"
+                and bool(pp_contact and pp_contact.strip())
+                and not multi_contact
+                and bool(institution_domain)
+            )
+
             # ── TIER 2 (canonical — UC 5): LLM canonicalization ──────
             # Runs the same logic for BOTH name2 and name3: child match
             # first (already done above), then Tier 2 canonical LLM,
@@ -2413,49 +2465,29 @@ class Orchestrator:
                     # LLM not confident — passthrough original
                     result[f"{field_key}_enriched"] = pp_val
 
-            # If canonical ran on any field, return now so Tier 3
-            # doesn't overwrite with fabricated values.
-            if any_canonical_ran and name2_already_filled:
-                result["tier_used"] = 2
-                has_enriched = any(
-                    result.get(f"{f}_enriched") and result.get(f"{f}_enriched") != getattr(record, f)
-                    for f in ("name2", "name3", "name4")
-                )
-                if has_enriched:
-                    result["source"] = "llm_canonical"
-                    result["confidence"] = "high"
-                    result["enrichment_status"] = "enriched"
-                    result["flag_for_review"] = True
-                    result["flag_reason"] = "LLM canonical form — verify"
-                else:
-                    result["source"] = "passthrough"
-                    result["confidence"] = "low"
-                    result["enrichment_status"] = "unresolved"
-                    result["flag_for_review"] = True
-                    result["flag_reason"] = (
-                        "name2/name3 could not be canonicalised with "
-                        "high confidence — left unchanged"
-                    )
-                return await self._finalise_and_return(
+            # If canonical ran on any field, the record is finished HERE
+            # unless Tier 2A can still verify Name 2 against the contact's
+            # own page. Deferring is safe: every path out of the Tier 2A
+            # block below either returns with a 2A result or falls back to
+            # this same short-circuit, so a record that would have stopped
+            # here never reaches Tier 3.
+            canonical_short_circuit = any_canonical_ran and name2_already_filled
+            if canonical_short_circuit and not can_do_contact_lookup:
+                return await self._return_canonical_short_circuit(
                     result, start, record, cache,
                 )
 
             # ── TIER 2A (contact lookup): 1 SerpAPI call, gated ────────
-            # Runs only when name2 is null and we have a contact plus
-            # an official domain. A single quoted-name on-domain query.
-            # SERP candidates are deterministically filtered so only
-            # results whose URL/title/snippet contain BOTH the first
-            # name and the surname of the contact reach the page fetch
-            # / LLM step. That blocks near-miss matches like
-            # 'Sarah Knox' for a 'Sarah Chen' query.
-            can_do_contact_lookup = (
-                not name2_already_filled
-                and result["record_type"] == "research_institution"
-                and bool(pp_contact and pp_contact.strip())
-                and not multi_contact
-                and bool(institution_domain)
-            )
-
+            # Runs for a research institution with a single contact and an
+            # official domain, in either mode: population when Name 2 is
+            # blank, verification when it is populated (the contact's page
+            # is the authority on which unit they actually sit in).
+            # A single quoted-name on-domain query. SERP candidates are
+            # deterministically filtered so only results whose
+            # URL/title/snippet contain BOTH the first name and the
+            # surname of the contact reach the page fetch / LLM step.
+            # That blocks near-miss matches like 'Sarah Knox' for a
+            # 'Sarah Chen' query.
             logger.info({
                 "record_id": record.record_id,
                 "step": "tier_contact_decision",
@@ -2464,7 +2496,6 @@ class Orchestrator:
             })
 
             if can_do_contact_lookup:
-                mode = "population"
                 tier2a_result = await run_tier2a(
                     record_id=record.record_id,
                     contact=pp_contact,  # type: ignore[arg-type]
@@ -2483,6 +2514,7 @@ class Orchestrator:
                     "record_id": record.record_id,
                     "step": "tier_contact_result",
                     "found": tier2a_result.success,
+                    "mode": tier2a_result.mode,
                     "confidence": tier2a_result.confidence,
                     "name2_enriched": tier2a_result.name2_enriched,
                 })
@@ -2526,12 +2558,23 @@ class Orchestrator:
                                         "after": canon.name2_enriched,
                                     })
                                     tier2a_result.name2_enriched = canon.name2_enriched
-                        _apply_tier2a(result, tier2a_result, mode)
+                        _apply_tier2a(result, tier2a_result, tier2a_result.mode)
                         if 4 not in result["use_cases_triggered"]:
                             result["use_cases_triggered"].append(4)
                         return await self._finalise_and_return(
                             result, start, record, cache,
                         )
+
+            # Tier 2A was eligible but produced nothing usable (no
+            # candidate page, person not found, or a granular answer
+            # rejected by the UC 4 scope filter). A record that would
+            # have stopped at the canonical short-circuit stops here
+            # instead — it must not fall through to Tier 3, which would
+            # overwrite the canonical Name 2 with a fabricated one.
+            if canonical_short_circuit:
+                return await self._return_canonical_short_circuit(
+                    result, start, record, cache,
+                )
 
             # ── TIER 3: LLM INFERENCE ────────────────────────────────────
 
