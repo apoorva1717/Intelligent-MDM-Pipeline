@@ -41,8 +41,55 @@ def _record(**fields) -> EnrichmentRecord:
 # Catalogue integrity
 # ---------------------------------------------------------------------------
 
-def test_catalogue_has_37_codes():
-    assert len(ISSUE_CATALOGUE) == 37
+def test_catalogue_has_36_codes():
+    assert len(ISSUE_CATALOGUE) == 36
+
+
+def test_retired_codes_are_not_reintroduced():
+    """G2-CONTACT-008 was removed: its gate was G2-NAME-012's, so it could
+    never fire. Re-adding it would reintroduce a permanently dead code."""
+    assert "G2-CONTACT-008" not in ISSUE_CATALOGUE
+
+
+def test_docstring_counts_match_the_catalogue():
+    """The module docstring quotes catalogue figures; keep them honest.
+
+    Counts are derived from the source here — the catalogue length, and the
+    codes with a real emission site (a ``found.add("...")`` literal, or the
+    ``_REQUIRED_FIELD_CODES`` table) — so a code added or removed without a
+    docstring update fails here rather than silently making the docs wrong.
+    """
+    import ast
+    from pathlib import Path
+
+    import enrichment.issue_detection as module
+    from enrichment.issue_detection import _REQUIRED_FIELD_CODES
+
+    source = Path(module.__file__).read_text()
+
+    sited = {code for _field, code in _REQUIRED_FIELD_CODES}
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("add", "update")
+        ):
+            for arg in node.args:
+                for const in ast.walk(arg):
+                    if (
+                        isinstance(const, ast.Constant)
+                        and isinstance(const.value, str)
+                        and const.value in ISSUE_CATALOGUE
+                    ):
+                        sited.add(const.value)
+
+    declared = len(ISSUE_CATALOGUE)
+    reserved = declared - len(sited)
+    doc = module.__doc__ or ""
+
+    assert f"{declared}-code Issue Catalogue" in doc
+    assert f"{len(sited)} of the {declared} catalogue codes are emitted" in doc
+    assert f"{reserved} are intentionally never" in doc
 
 
 def test_clean_record_has_no_issues():
@@ -151,15 +198,17 @@ def test_g2_name_009_lab_without_department():
     assert "G2-NAME-009" in detect_issues(rec)
 
 
-def test_g2_contact_008_suppressed_when_covered_by_name_012():
-    # A research institution with no department already raises G2-NAME-012, so
-    # G2-CONTACT-008 ("No Contact and No Department") must not double-count it.
+def test_missing_department_without_contact_raises_only_name_012():
+    # A research institution with no department raises G2-NAME-012. With no
+    # contact there is nothing to enrich from, so G2-CONTACT-009 stays silent
+    # and G2-NAME-012 is the whole story. (The retired G2-CONTACT-008 covered
+    # exactly this case and could never fire: its gate was G2-NAME-012's.)
     rec = _record(**{
         "Name 1": "Florida State University", "Name 2": "", "Contact": "",
     })
     issues = detect_issues(rec)
     assert "G2-NAME-012" in issues
-    assert "G2-CONTACT-008" not in issues
+    assert "G2-CONTACT-009" not in issues
 
 
 def test_g2_contact_009_department_enrichable_from_contact():
@@ -169,14 +218,13 @@ def test_g2_contact_009_department_enrichable_from_contact():
     })
     issues = detect_issues(rec)
     assert "G2-CONTACT-009" in issues
-    assert "G2-CONTACT-008" not in issues  # mutually exclusive
 
 
-def test_g2_contact_008_not_raised_for_non_research_company():
+def test_missing_department_codes_not_raised_for_non_research_company():
     # A company with no department is normal — these codes must not fire.
     rec = _record(**{"Name 1": "Acme Corporation", "Name 2": "", "Contact": ""})
     issues = detect_issues(rec)
-    assert "G2-CONTACT-008" not in issues
+    assert "G2-NAME-012" not in issues
     assert "G2-CONTACT-009" not in issues
 
 
@@ -192,7 +240,6 @@ def test_missing_department_codes_not_raised_for_clinical_orgs(name1):
     rec = _record(**{"Name 1": name1, "Name 2": "", "Contact": ""})
     issues = detect_issues(rec)
     assert "G2-NAME-012" not in issues
-    assert "G2-CONTACT-008" not in issues
     assert "G2-CONTACT-009" not in issues
 
 

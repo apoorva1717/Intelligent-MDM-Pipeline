@@ -15,13 +15,20 @@ Design constraints (per product owner):
   …) we import and reuse its compiled patterns so detection stays consistent with
   what the pipeline actually does.
 
-Coverage: 34 of the 36 catalogue codes are emitted. Two are intentionally never
+Coverage: 34 of the 36 catalogue codes are emitted, and every one of those 34 is
+reachable — no code has a rule that cannot fire. 2 are intentionally never
 emitted because they genuinely require the pipeline's LLM residual classifier and
-cannot be decided deterministically from raw input — they are listed in
-``ISSUE_CATALOGUE`` for completeness but documented as ``# LLM-only`` below:
+cannot be decided deterministically from raw input; they are reserved in
+``ISSUE_CATALOGUE`` for completeness and documented as ``# LLM-only`` below:
 
 * ``G1-ADDR-009`` Unclassified Residual in Address
 * ``G4-ADDR-025`` Sub-location Overflow Beyond Street 5
+
+These figures are asserted against the source by
+``tests/test_issue_detection.py::test_docstring_counts_match_the_catalogue``,
+so adding or retiring a code fails the suite until this docstring is updated.
+How many of the 34 actually fire on any given batch is a property of that data,
+not of the rule set.
 
 Several G1-NAME / G2-NAME / G5 rules are inherently semantic; here they are
 detected with conservative deterministic heuristics (documented inline). They err
@@ -96,7 +103,6 @@ ISSUE_CATALOGUE: dict[str, str] = {
     "G2-VAL-008": "Country Missing",
     "G2-NAME-009": "Lab Without Department",
     "G2-NAME-012": "Research Institution Missing Department",
-    "G2-CONTACT-008": "No Contact and No Department",
     "G2-CONTACT-009": "Department Missing And Enrichable from Contact",
     # G3 — Duplicate or Conflicting Data
     "G3-NAME-003": "DBA Pattern in Name Field",
@@ -350,23 +356,23 @@ def _detect_missing(
     ):
         found.add("G2-NAME-009")
 
-    # G2-CONTACT-008 / -009 — department missing; routed by whether a single
-    # contact is available to enrich from. Only meaningful for universities and
+    # G2-CONTACT-009 — department missing but enrichable: exactly one contact
+    # is available to look it up from. Only meaningful for universities and
     # research institutes, where a department is expected: a company with no
     # Name 2 is normal, not an issue, and clinical orgs routinely carry none.
-    # Gate on the same university-or-research signal as G2-NAME-012 so these
-    # codes are not raised across the board.
+    # Gated on the same university-or-research signal as G2-NAME-012 so the
+    # code is not raised across the board.
     #
-    # G2-CONTACT-008 ("No Contact and No Department") shares G2-NAME-012's gate
-    # exactly, so it would always double-count the missing department. Suppress
-    # it whenever G2-NAME-012 already covers the record; only G2-CONTACT-009
-    # adds new information (the department is enrichable from a single contact).
-    if name2_blank and looks_like_university_or_research_institute(record.name_1):
-        if is_blank(record.contact) and is_blank(record.care_of):
-            if "G2-NAME-012" not in found:
-                found.add("G2-CONTACT-008")
-        elif not is_blank(record.contact) and not has_multiple_contacts(record.contact):
-            found.add("G2-CONTACT-009")
+    # The bare "no contact at all" case adds nothing here: it shares
+    # G2-NAME-012's gate exactly, so G2-NAME-012 has already reported the
+    # missing department. Only the enrichable case carries new information.
+    if (
+        name2_blank
+        and looks_like_university_or_research_institute(record.name_1)
+        and not is_blank(record.contact)
+        and not has_multiple_contacts(record.contact)
+    ):
+        found.add("G2-CONTACT-009")
 
 
 # ---------------------------------------------------------------------------
