@@ -48,6 +48,7 @@ import httpx
 from rapidfuzz import fuzz
 
 from llm.openai_client import resolve_tls_verify
+from utils.cache import CacheKey, legacy_lookup_key, lookup_key
 
 logger = logging.getLogger(__name__)
 
@@ -76,14 +77,31 @@ def _normalise_legal_name(s: str) -> str:
         if t not in _LEGAL_FORM_TOKENS
     )
 
-# Module-level cache keyed by (name_lower, country_code) — mirrors the ROR
-# client's per-process cache. Cleared per batch via clear_lei_cache().
-_lei_cache: dict[tuple[str, str | None], dict[str, Any]] = {}
+# Module-level cache — mirrors the ROR client's per-process cache and, like it,
+# is keyed by ``utils.cache.lookup_key(name, country_code)``: the name
+# normalised (lowercase, trim, collapse whitespace, strip punctuation, fold
+# accents) plus the country filter. This namespace already carried country;
+# what it gained is the punctuation/accent collapse, so "Lockheed Martin Corp."
+# and "Lockheed Martin Corp" cost one GLEIF call, not two.
+#
+# Cache key only: `name` reaches GLEIF unnormalised, and _name_match_score()
+# — the name-verification guard — never sees the key.
+_lei_cache: "dict[CacheKey, dict[str, Any]]" = {}
+_lei_legacy_seen: "set[CacheKey]" = set()
+_lei_normalised_hits = 0
 
 
 def clear_lei_cache() -> None:
     """Reset the module-level LEI cache (called per batch / between tests)."""
+    global _lei_normalised_hits
     _lei_cache.clear()
+    _lei_legacy_seen.clear()
+    _lei_normalised_hits = 0
+
+
+def lei_normalised_hits() -> int:
+    """Lookups the normalised cache key saved that lowercasing would not."""
+    return _lei_normalised_hits
 
 
 def _name_match_score(query: str, legal_name: str) -> float:
@@ -229,9 +247,15 @@ async def call_lei(
     if not name or not name.strip():
         return {"matched": False, "strategy": None, "score": 0.0}
 
-    cache_key = (name.strip().lower(), country_code)
+    # Cache key only — the GLEIF request below uses `name` verbatim.
+    global _lei_normalised_hits
+    cache_key = lookup_key(name, country_code)
+    legacy_key = legacy_lookup_key(name, country_code)
     if cache_key in _lei_cache:
+        if legacy_key not in _lei_legacy_seen:
+            _lei_normalised_hits += 1
         return _lei_cache[cache_key]
+    _lei_legacy_seen.add(legacy_key)
 
     base = base_url.rstrip("/")
     records_url = f"{base}/lei-records"

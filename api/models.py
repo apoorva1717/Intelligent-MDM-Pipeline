@@ -429,6 +429,15 @@ class EnrichmentResult(BaseModel):
     # outright. Batch-summary telemetry only.
     domain_verified_by: Optional[str] = Field(default=None, exclude=True)
     domain_rejected: bool = Field(default=False, exclude=True)
+    # Tier 1 re-lookup after canonicalisation (orchestrator.
+    # _retry_tier1_after_canonicalisation). `tier1_retry_attempted` records
+    # that the one permitted retry has been spent; `tier1_retry_hit` names the
+    # registry that answered on the retry ("ROR" | "gleif"), which is what
+    # separates a retry hit from a first-pass Tier 1 hit in the evaluation.
+    # Both excluded from the response body: the exported column set is
+    # unchanged.
+    tier1_retry_attempted: bool = Field(default=False, exclude=True)
+    tier1_retry_hit: Optional[str] = Field(default=None, exclude=True)
     contact_used: bool = Field(default=False, exclude=True)
     name2_match_result: Literal["exact", "partial", "no_match", "not_applicable", "unknown"] = Field(default="not_applicable", exclude=True)
     # Which use cases (0-9) fired for this record
@@ -454,6 +463,15 @@ class EnrichmentSummary(BaseModel):
     lei_hits_fuzzy: int = 0
     lei_misses: int = 0
     lei_errors: int = 0
+    # Tier 1 re-lookup after canonicalisation: how often a later tier produced
+    # a name Tier 1 had never seen, and how often looking that name up
+    # recovered a registry identity the first pass missed.
+    tier1_retry_attempts: int = 0
+    tier1_retry_hits_ror: int = 0
+    tier1_retry_hits_lei: int = 0
+    # Lookups served under the normalised cache key that the previous
+    # lowercase-only key would have missed — ROR + LEI + SERP combined.
+    cache_hits_after_normalisation: int = 0
     # Domain ownership guard telemetry (utils/domain_resolver.py). The three
     # `domain_from_*` counters partition the records that kept a domain by the
     # evidence that carried it; `domain_from_serp` covers every web-derived

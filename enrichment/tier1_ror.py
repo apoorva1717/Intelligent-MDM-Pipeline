@@ -22,6 +22,7 @@ import httpx
 from rapidfuzz import fuzz
 
 from llm.openai_client import resolve_tls_verify
+from utils.cache import CacheKey, legacy_lookup_key, lookup_key
 from utils.text_utils import acronym_matches_name, expand_abbreviations, extract_domain
 
 logger = logging.getLogger(__name__)
@@ -32,13 +33,34 @@ ROR_RESEARCH_TYPES = {
     "facility", "nonprofit", "archive", "other",
 }
 
-# Module-level cache keyed by (name_lower, country_code).
-_ror_cache: dict[tuple[str, str | None], dict[str, Any]] = {}
+# Module-level cache — the ONE cache ROR lookups actually consult. (BatchCache
+# in utils/cache.py used to expose a get_ror/set_ror pair that nothing ever
+# called; it has been removed.) Keyed by
+# ``utils.cache.lookup_key(name, country_code)``: the name normalised via
+# dedup.signatures.normalize_key (lowercase, trim, collapse whitespace, strip
+# punctuation, fold accents) plus the country filter, so "Coastal Diagnostics,
+# Inc." and "Coastal Diagnostics Inc" resolve to one entry and one API call.
+#
+# The key is a dictionary key and nothing else: ``name`` — unnormalised — is
+# what is sent to ROR below and what every scoring path sees.
+_ror_cache: "dict[CacheKey, dict[str, Any]]" = {}
+# Legacy lowercase-only keys already queried, and the count of lookups the
+# normalised key served that the legacy key would have missed. Telemetry only.
+_ror_legacy_seen: "set[CacheKey]" = set()
+_ror_normalised_hits = 0
 
 
 def clear_ror_cache() -> None:
-    """Reset the module-level ROR cache (useful between test runs)."""
+    """Reset the module-level ROR cache (per batch / between test runs)."""
+    global _ror_normalised_hits
     _ror_cache.clear()
+    _ror_legacy_seen.clear()
+    _ror_normalised_hits = 0
+
+
+def ror_normalised_hits() -> int:
+    """Lookups the normalised cache key saved that lowercasing would not."""
+    return _ror_normalised_hits
 
 
 # Institution acronyms that ROR does NOT carry as an alias, so a bare-acronym
@@ -563,9 +585,15 @@ async def call_ror(
     state : str | None
         State/province from the record (included in the affiliation string).
     """
-    cache_key = (name.lower().strip(), country_code)
+    # Cache key only — the ROR request below is built from `name` verbatim.
+    global _ror_normalised_hits
+    cache_key = lookup_key(name, country_code)
+    legacy_key = legacy_lookup_key(name, country_code)
     if cache_key in _ror_cache:
+        if legacy_key not in _ror_legacy_seen:
+            _ror_normalised_hits += 1
         return _ror_cache[cache_key]
+    _ror_legacy_seen.add(legacy_key)
 
     if base_url is None:
         base_url = os.getenv("ROR_API_BASE", "https://api.ror.org/v2/organizations")

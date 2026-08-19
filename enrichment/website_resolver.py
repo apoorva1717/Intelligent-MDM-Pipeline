@@ -489,7 +489,12 @@ async def resolve_website_via_serp(
         return chosen
 
     async def _run(query: str, attempt: str) -> WebsiteResolution:
-        cached = cache.get_serp(query)
+        # Country is part of the SERP cache key so two same-named orgs in
+        # different countries cannot share an entry. The quoted and unquoted
+        # forms stay distinct keys (utils.cache.serp_key), so §8's retry still
+        # issues a real second search instead of being served the phrase
+        # results it exists to escape.
+        cached = cache.get_serp(query, country)
         if cached is not None:
             results = cached
         else:
@@ -505,7 +510,7 @@ async def resolve_website_via_serp(
                         attempt=attempt,
                     )))
                 return WebsiteResolution()
-            cache.set_serp(query, results)
+            cache.set_serp(query, results, country)
         chosen = select_website_from_serp(name1, results, record_type)
         logger.info(
             "[%s] website Path B (%s): query=%r url=%s confidence=%s",

@@ -52,8 +52,9 @@ from enrichment.preprocess import (
     llm_classify_plain_names_async,
     preprocess_record,
 )
-from enrichment.tier1_lei import LEIClient, clear_lei_cache
-from enrichment.tier1_ror import RORClient, clear_ror_cache
+from dedup.signatures import normalize_key
+from enrichment.tier1_lei import LEIClient, clear_lei_cache, lei_normalised_hits
+from enrichment.tier1_ror import RORClient, clear_ror_cache, ror_normalised_hits
 from enrichment.tier2_canonical import run_tier2_canonical
 from enrichment.tier2a_contact import Tier2AResult, run_tier2a
 from enrichment.tier3_llm import Tier3Result, run_tier3
@@ -645,6 +646,12 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     result.pop("_website_raw", None)
     result.pop("_source_title", None)
     result.pop("_source_h1", None)
+    result.pop("_tier1_query_name", None)
+    result.pop("_tier1_country_code", None)
+    # Registry-vs-record_type disagreement surfaced by a retry hit. Logged at
+    # the point of conflict and deliberately left unreconciled — record_type
+    # assignment is out of scope here.
+    result.pop("_tier1_retry_type_conflict", None)
     return result
 
 
@@ -863,6 +870,8 @@ class Orchestrator:
 
         # Per-batch GLEIF/LEI telemetry counters (reset in enrich_batch).
         self._lei_counts: dict[str, int] = self._new_lei_counts()
+        # Per-batch Tier 1 re-lookup telemetry (reset in enrich_batch).
+        self._tier1_retry_counts: dict[str, int] = self._new_tier1_retry_counts()
 
         # In-memory SERP cache shared by every batch this orchestrator
         # processes, so repeated/overlapping queries reuse a prior result
@@ -876,6 +885,11 @@ class Orchestrator:
             "attempts": 0, "hits_exact": 0, "hits_fuzzy": 0,
             "misses": 0, "errors": 0,
         }
+
+    @staticmethod
+    def _new_tier1_retry_counts() -> dict[str, int]:
+        """Fresh per-batch Tier 1 re-lookup counters."""
+        return {"attempts": 0, "hits_ror": 0, "hits_lei": 0}
 
     @staticmethod
     def _build_search_client(settings: Settings) -> SearchClient:
@@ -903,6 +917,7 @@ class Orchestrator:
         clear_ror_cache()  # fresh cache per batch to avoid stale failures
         clear_lei_cache()  # likewise for the GLEIF/LEI cache
         self._lei_counts = self._new_lei_counts()  # reset per-batch telemetry
+        self._tier1_retry_counts = self._new_tier1_retry_counts()
         cache = BatchCache(shared_serp=self._serp_cache)
         semaphore = asyncio.Semaphore(options.max_concurrency)
 
@@ -943,6 +958,17 @@ class Orchestrator:
             summary.lei_errors = self._lei_counts["errors"]
             summary.tier1_lei_count = (
                 self._lei_counts["hits_exact"] + self._lei_counts["hits_fuzzy"]
+            )
+            # Tier 1 re-lookup after canonicalisation.
+            summary.tier1_retry_attempts = self._tier1_retry_counts["attempts"]
+            summary.tier1_retry_hits_ror = self._tier1_retry_counts["hits_ror"]
+            summary.tier1_retry_hits_lei = self._tier1_retry_counts["hits_lei"]
+            # Lookups the normalised cache key served that the old lowercased
+            # key would have missed — i.e. API calls Step 1 saved outright.
+            summary.cache_hits_after_normalisation = (
+                ror_normalised_hits()
+                + lei_normalised_hits()
+                + cache.normalised_hits
             )
 
             logger.info(
@@ -1318,7 +1344,8 @@ class Orchestrator:
         # (e.g. ``eecs.mit.edu`` for CS via the ``cs`` acronym
         # substring in ``eecs``). Top scorer must verify before win.
         query = f"{cleaned} site:{base}"
-        cached = cache.get_serp(query)
+        probe_country = result.get("country_region_key") or result.get("country")
+        cached = cache.get_serp(query, probe_country)
         if cached is not None:
             serp_results = cached
         else:
@@ -1333,7 +1360,7 @@ class Orchestrator:
                 )
                 serp_results = []
             else:
-                cache.set_serp(query, serp_results)
+                cache.set_serp(query, serp_results, probe_country)
 
         scored = []
         seen_hosts = set()
@@ -1732,6 +1759,182 @@ class Orchestrator:
             )
         return await self._finalise_and_return(result, start, record, cache)
 
+    async def _retry_tier1_after_canonicalisation(
+        self,
+        record: EnrichmentRecord,
+        result: dict[str, Any],
+    ) -> None:
+        """Re-run Tier 1 once, with the canonical name a later tier produced.
+
+        The pipeline could already work out the right name and then throw the
+        chance away: ROR misses on "MASSACHUSETTS INSITUTE OF TECHNOLOGY",
+        company_canonical / Tier 3 / 2A / 2B produce "Massachusetts Institute
+        of Technology", and nothing ever looks *that* string up — so the record
+        ends with the correct official name and no registry ID, even though the
+        corrected string resolves in ROR on the first try.
+        (``person_affiliation`` already re-enters Tier 1 this way; the company
+        canonicalisation and Tier 3 paths were terminal.)
+
+        Runs at most once per record (``tier1_retry_attempted``), through the
+        full normal path — the ROR country guard, the distinctive-token guard
+        and the GLEIF name-verification guard all apply unchanged, and a retry
+        that fails one of them is simply a miss. On a miss nothing is written:
+        the record keeps whatever the earlier tier produced.
+
+        ``record_type`` is deliberately NOT reassigned. Where the registry's
+        view contradicts the value already on the record the contradiction is
+        left standing and logged (``tier1_retry_type_conflict``) — reconciling
+        it belongs to the record_type fix, not here.
+        """
+        if result.get("tier1_retry_attempted"):
+            return
+        # Already carries a registry identity — nothing to recover.
+        if result.get("ror_id") or result.get("lei_id"):
+            return
+        original = (result.get("_tier1_query_name") or "").strip()
+        if not original:
+            # Tier 1 never ran for this record (skipped tier / person path);
+            # there is no "originally queried with" to compare against.
+            return
+        canonical = (result.get("name1_enriched") or "").strip()
+        if not canonical:
+            return
+        # Same normalisation the cache uses: a pure punctuation/case/accent
+        # difference is not a corrected name and must not buy an API call.
+        if normalize_key(canonical) == normalize_key(original):
+            return
+
+        result["tier1_retry_attempted"] = True
+        self._tier1_retry_counts["attempts"] += 1
+        country_code = result.get("_tier1_country_code")
+
+        logger.info({
+            "record_id": record.record_id,
+            "step": "tier1_retry",
+            "original_query": original,
+            "canonical_query": canonical,
+            "country_filter": country_code,
+        })
+
+        def _note_type_conflict(registry: str, registry_type: str) -> None:
+            current = result.get("record_type")
+            if current and current != registry_type:
+                result["_tier1_retry_type_conflict"] = {
+                    "registry": registry,
+                    "registry_type": registry_type,
+                    "record_type": current,
+                }
+                logger.info({
+                    "record_id": record.record_id,
+                    "step": "tier1_retry_type_conflict",
+                    "registry": registry,
+                    "registry_says": registry_type,
+                    "record_type_kept": current,
+                })
+
+        # ── ROR first, exactly as the first pass does ────────────────────
+        try:
+            ror_res = await self._ror_client.call(
+                canonical,
+                country_code=country_code,
+                country=record.country,
+                city=record.city,
+                state=record.state,
+            )
+        except Exception as exc:  # noqa: BLE001 — a retry must never fail a record
+            logger.warning(
+                "[%s] Tier 1 retry ROR raised (non-fatal): %s",
+                record.record_id, exc,
+            )
+            ror_res = {"matched": False}
+
+        if ror_res.get("matched"):
+            self._tier1_retry_counts["hits_ror"] += 1
+            result["ror_id"] = ror_res["ror_id"]
+            result["tier_used"] = 1
+            result["source"] = "ROR"
+            result["confidence"] = "high"
+            result["enrichment_status"] = "enriched"
+            result["tier1_retry_hit"] = "ROR"
+            _note_type_conflict(
+                "ROR",
+                "research_institution"
+                if ror_res.get("is_research_institution")
+                else "company",
+            )
+            # Registry provenance: the match passed ROR's country guard, so
+            # the domain guard accepts on condition 1. This is what lets a
+            # record that lost its domain to the ownership guard regain a
+            # verified one — it runs before finalise raises the flag.
+            _apply_domain(
+                result,
+                ror_res.get("website"),
+                registry="ROR",
+                settings=self._settings,
+            )
+            for uc in (2, 3):
+                if uc not in result["use_cases_triggered"]:
+                    result["use_cases_triggered"].append(uc)
+            logger.info({
+                "record_id": record.record_id,
+                "step": "tier1_retry_hit",
+                "registry": "ROR",
+                "ror_id": result["ror_id"],
+                "query": canonical,
+            })
+            return
+
+        # ── LEI on the company branch, same rule as the first pass ───────
+        # A name that looks like a research institution never reaches GLEIF.
+        if looks_like_research_institution(canonical):
+            return
+
+        if not self._settings.lei_lookup_enabled:
+            return
+        self._lei_counts["attempts"] += 1
+        try:
+            lei_res = await self._lei_client.call(
+                canonical, country_code=country_code,
+            )
+        except Exception as exc:  # noqa: BLE001 — GLEIF must never fail a record
+            self._lei_counts["errors"] += 1
+            logger.warning(
+                "[%s] Tier 1 retry LEI raised (non-fatal): %s",
+                record.record_id, exc,
+            )
+            return
+
+        if lei_res.get("error"):
+            self._lei_counts["errors"] += 1
+            return
+        if not lei_res.get("matched"):
+            self._lei_counts["misses"] += 1
+            return
+
+        if lei_res.get("strategy") == "exact":
+            self._lei_counts["hits_exact"] += 1
+        else:
+            self._lei_counts["hits_fuzzy"] += 1
+
+        self._tier1_retry_counts["hits_lei"] += 1
+        result["lei_id"] = lei_res.get("lei_id")
+        result["tier_used"] = 1
+        result["source"] = "gleif"
+        result["confidence"] = lei_res.get("confidence", "high")
+        result["enrichment_status"] = "enriched"
+        result["tier1_retry_hit"] = "gleif"
+        _note_type_conflict("GLEIF", "company")
+        for uc in (2, 3):
+            if uc not in result["use_cases_triggered"]:
+                result["use_cases_triggered"].append(uc)
+        logger.info({
+            "record_id": record.record_id,
+            "step": "tier1_retry_hit",
+            "registry": "GLEIF",
+            "lei_id": result["lei_id"],
+            "query": canonical,
+        })
+
     async def _finalise_and_return(
         self,
         result: dict[str, Any],
@@ -1741,6 +1944,11 @@ class Orchestrator:
     ) -> EnrichmentResult:
         """Resolve website (B/C if needed), probe for unit URL, run
         address Stage 1, finalise, and return."""
+        # Tier 1 retry FIRST: a registry hit here supplies both the id and a
+        # domain with registry provenance, which must be in place before the
+        # website paths propose a candidate and before finalise decides whether
+        # to raise `domain-unverified`.
+        await self._retry_tier1_after_canonicalisation(record, result)
         await self._maybe_resolve_website_bc(record, result, cache)
         # Defensive: every path that writes a website now writes the matching
         # domain through _apply_domain, so the two can no longer diverge. Kept
@@ -2134,6 +2342,14 @@ class Orchestrator:
                         "original": pp_name1,
                         "cleaned": name1_cleaned,
                     })
+
+                # The name Tier 1 was actually queried with. A later tier may
+                # replace name1_enriched with the organisation's real name
+                # (company_canonical, Tier 3, 2A, 2B); the retry in
+                # _finalise_and_return compares against this to decide whether
+                # Tier 1 has ever seen the corrected name.
+                result["_tier1_query_name"] = name1_cleaned
+                result["_tier1_country_code"] = country_code
 
                 ror_parent = await self._ror_client.call(
                     name1_cleaned,

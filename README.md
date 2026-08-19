@@ -25,6 +25,7 @@ Both phases share the same FastAPI app, configuration system, Azure Functions de
    - [Stage 2b: Person Affiliation Lookup](#stage-2b-person-affiliation-lookup)
    - [Stage 3: Tier 2 — Multi-Mode Canonicalization](#stage-3-tier-2--multi-mode-canonicalization)
    - [Stage 4: Tier 3 — LLM Inference (Last Resort)](#stage-4-tier-3--llm-inference-last-resort)
+   - [Stage 5: Tier 1 re-lookup after canonicalisation](#stage-5-tier-1-re-lookup-after-canonicalisation)
    - [Finalization](#finalization)
    - [Website, Domain, Department-Domain & Search-Term Resolution](#website-domain-department-domain--search-term-resolution)
 6. [Use Case Reference Table](#use-case-reference-table)
@@ -337,6 +338,14 @@ ROR offers two endpoints with different strengths:
 
 The client tries the affiliation endpoint first. If the best score is below the confidence threshold (default 0.8), it falls back to the query endpoint.
 
+#### Caching
+
+Lookups are cached in the module-level `_ror_cache` (cleared per batch), keyed by `utils.cache.lookup_key(name, country_code)` — the name normalised (lowercase, trim, collapse whitespace, strip punctuation, fold accents) plus the country filter. So `Coastal Diagnostics, Inc.` and `Coastal Diagnostics Inc` are one entry and one API call, while `Bruker GmbH` / `Bruker AG` and `Uni Stuttgart` / `University of Stuttgart` stay apart. **The key is a dictionary key only** — the unnormalised `name` is what reaches ROR and what `_compute_name_score()` sees. See [`utils/cache.py`](#utilscachepy--cache-keys--batch-cache) for the full contract. `ror_normalised_hits()` reports how many lookups the normalised key saved.
+
+#### Re-lookup after canonicalisation
+
+ROR runs before the pipeline knows the organisation's real name. When ROR misses on the input spelling and a later tier works the name out — `company_canonical`, Tier 3, Tier 2A or Tier 2B writing a new `name1_enriched` — `orchestrator._retry_tier1_after_canonicalisation` looks **that** name up, once. Without it a record ended with the correct official name sitting in `name1_enriched` and no registry id attached, even though the corrected string resolves in ROR on the first try. (`person_affiliation` already re-entered Tier 1 this way; the company-canonicalisation and Tier 3 paths were terminal.) Full description in [Stage 5: Tier 1 re-lookup after canonicalisation](#stage-5-tier-1-re-lookup-after-canonicalisation).
+
 #### Country Guard
 
 When the record's ISO country is known, a candidate whose ROR location country (`locations[0].geonames_details.country_code`) doesn't match it is **rejected**, on **both** strategies. This is required because:
@@ -421,6 +430,8 @@ ROR is the registry for *research institutions* and has no good coverage of ordi
 2. **Fuzzy fallback:** `fuzzycompletions?field=entity.legalName&q=<name>`, then resolve each candidate to its full `lei-record`. Best-effort — GLEIF's typeahead frequently returns nothing, which is a normal miss.
 
 **Field mapping:** `data[].id` → LEI · `data[].attributes.entity.legalName.name` → official name · `…entity.status` (ACTIVE) · `…entity.legalAddress.country` (ISO alpha-2).
+
+**Caching:** the module-level `_lei_cache` (cleared per batch) mirrors the ROR client's and shares its key builder — `utils.cache.lookup_key(name, country_code)`. This namespace already carried the country; what it gained is the punctuation/accent collapse, so `Lockheed Martin Corp.` and `Lockheed Martin Corp` cost one GLEIF call rather than two. The key never reaches `_name_match_score()` — the verification guard below always scores the original string.
 
 **Verification guard (required):** every candidate's `legalName` is scored against the input with RapidFuzz `token_sort_ratio` (case-folded — GLEIF returns names UPPERCASE; legal-form suffixes like AG/Inc/Ltd/GmbH stripped so "Novartis" verifies against "NOVARTIS AG"). Candidates below `LEI_NAME_MATCH_THRESHOLD` (default 88) are rejected. GLEIF fuzzy is statistical — without this guard it fabricates matches (e.g. "Personalvorsorgestiftung der Pfizer AG in Liquidation" for "Pfizer AG"). `token_set_ratio` is deliberately **not** used: it scores any contained substring 100 and would accept that wrong entity.
 
@@ -648,6 +659,33 @@ After all tiers have run, the finalization step applies a set of deterministic r
    - **Rule 3:** If `name2_enriched == name1_enriched`, drop Name2 (no echo of the parent org name)
 
 ---
+
+### Stage 5: Tier 1 re-lookup after canonicalisation
+
+**File:** `enrichment/orchestrator.py` · **Entry point:** `Orchestrator._retry_tier1_after_canonicalisation`
+
+Tier 1 runs before the pipeline knows the organisation's real name, so it is queried with whatever the record happened to say. When it misses and a later tier then works the name out, the corrected name used to go nowhere: the record ended with the right official name in `name1_enriched` and no `ror_id` / `lei_id`, even though the corrected string resolves on the first try. `person_affiliation` already re-entered Tier 1 with its discovered institution; the `company_canonical`, Tier 3, Tier 2A and Tier 2B paths were terminal.
+
+**Where it runs.** At the top of `_finalise_and_return` — the single funnel every return path passes through — and *before* the website paths, so a registry hit supplies the domain (with registry provenance) rather than a SERP guess, and before `finalise` decides whether to raise `domain-unverified`.
+
+**Trigger.** `name1_enriched` differs from `_tier1_query_name` (the string Tier 1 was actually queried with) under `normalize_key` — a pure case/punctuation/accent difference is not a corrected name and must not buy an API call. Skipped entirely when the record already carries a `ror_id`/`lei_id`, or when Tier 1 never ran (person path, skipped tier).
+
+**Rules.**
+
+| | |
+|---|---|
+| **Once per record** | Guarded by `tier1_retry_attempted`, set *before* the call. A retry can never trigger another retry. |
+| **No guard is relaxed** | Runs the full normal path — ROR's country guard and distinctive-token guard, GLEIF's name verification. A retry that fails a guard is simply a miss. |
+| **Branch rules unchanged** | ROR first; GLEIF only on the company branch, i.e. only when `looks_like_research_institution(canonical)` is false — a research name is never sent to a company registry. |
+| **On a hit** | Writes `ror_id`/`lei_id`, `tier_used = 1`, `source` (`ROR`/`gleif`), and the marker `tier1_retry_hit` (`"ROR"`/`"gleif"`) that separates a retry hit from a first-pass Tier 1 hit. Registry provenance then satisfies [ownership condition 1](#2b--ownership-guard-domain_ownership_guard_enabled-default-on), so a record that lost its domain to the guard regains a verified one. |
+| **On a miss** | Nothing is written. The record keeps whatever the earlier tier produced. |
+| **Cost** | The retry consults the Tier 1 caches, so a canonical name already resolved for another row in the batch costs no API call. |
+| **`record_type`** | Deliberately **not** reassigned. Where the registry's view contradicts the value on the record the contradiction is left standing and logged as `tier1_retry_type_conflict`. |
+
+> ⚠️ **The retry can only fire if a tier actually *writes* a changed `name1_enriched`.** `company_canonical.canonical_preserves_identity` rejects a suggestion that changes a distinctive token — including a corrected typo (`MASSACHUSETTS INSITUTE OF TECHNOLOGY` → `Massachusetts Institute of Technology`) and an expanded abbreviation (`GA Tech` → `Georgia Institute of Technology`, `FL State Univ` → `Florida State University`). For those records the pipeline still discards the right answer, one gate earlier than this fix reaches. Variants the guard accepts (`Universität Stuttgart` → `University of Stuttgart`, `Lockheed Martin Corp` → `Lockheed Martin Corporation`) do reach the retry and converge.
+
+**Telemetry.** `tier1_retry_attempts`, `tier1_retry_hits_ror`, `tier1_retry_hits_lei` on the batch summary, alongside `cache_hits_after_normalisation`.
+
 
 ## Use Case Reference Table
 
@@ -1448,7 +1486,7 @@ enrichment_api/
 ├── utils/                        # Shared utilities
 │   ├── text_utils.py             # Cleaning, normalization, country codes, domain extraction
 │   ├── domain_resolver.py        # Single write path for `domain` / `website_url` + ownership guard
-│   ├── cache.py                  # Per-batch in-memory cache (ROR + SERP deduplication)
+│   ├── cache.py                  # Cache-key builders (normalised name + country) + per-batch SERP cache
 │   └── __init__.py
 │
 ├── tests/                        # Test suite
@@ -1560,6 +1598,8 @@ Pydantic v2 models for the Phase 2 endpoint: `DedupRow`, `DedupRequest`, `DedupR
 
 Conservative normalization (`normalize_key`: lowercase, trim, collapse whitespace, strip punctuation, fold accents), block-id derivation (`derive_block_id`, a SHA-1 of the normalized `country|postal_code|street|house_no`), row grouping, and `build_signatures` which collapses rows into distinct `(norm_name1, norm_name2)` signatures with stable `s1, s2, …` ids. The normalized key is internal only and never reaches the LLM.
 
+`normalize_key` has a second consumer outside Phase 2: [`utils/cache.py`](#utilscachepy--cache-keys--batch-cache) builds the ROR / LEI / SERP cache keys with it, for the same reason it exists here — it collapses spelling variants of one entity without stripping legal forms or expanding abbreviations, which is the right conservatism for a cache key too. It is reused rather than reimplemented so the two never drift apart. Note what that conservatism means in practice: `Universität Stuttgart`, `University of Stuttgart` and `Uni Stuttgart` remain **three** distinct keys — the accent folds, the synonym does not.
+
 ### `dedup/prompts.py` — Dedup Prompts
 
 The shared system prompt (entity-resolution adjudicator with the two-level identity model), the Mode A partition prompt builder, the Mode B assignment prompt builder, and `PROMPT_VERSION = "p2-dedup-v3"`.
@@ -1637,9 +1677,22 @@ HTTP page fetcher with BeautifulSoup parsing. Extracts structured elements: URL 
 
 The single point where `domain` and `website_url` are decided; no other module writes either field. `canonicalise_domain()` reduces a candidate URL to the registrable domain (reusing `extract_domain()`), `canonicalise_host()` does the same for a department domain but keeps the subdomain, and `resolve_domain()` applies the four ownership conditions — registry provenance, name similarity, email domain, on-domain search evidence — returning a `DomainDecision` the caller writes or a rejection it flags `domain-unverified`. Also exposes `email_domain()` / `is_generic_email_domain()` (consumer-provider blocklist) and `name_similarity()`. See [Website, Domain, Department-Domain & Search-Term Resolution §2](#2--domain--the-single-write-path-utilsdomain_resolverpy).
 
-### `utils/cache.py` — Batch Cache
+### `utils/cache.py` — Cache Keys & Batch Cache
 
-Per-batch in-memory cache with separate ROR, SERP, and resolved-host namespaces (`get/set_resolved_host` caches the department probe's redirect-resolved base so it costs one request per institution). Keyed on lowercased strings. Prevents duplicate API calls within a single batch. Created fresh for each `/enrich` request. An optional process-level `SerpCache` lets overlapping SERP queries reuse results across batches.
+Home of the **cache-key builders** (`lookup_key`, `serp_key`) and of `BatchCache` / `SerpCache`.
+
+`BatchCache` holds the SERP and resolved-host namespaces (`get/set_resolved_host` caches the department probe's redirect-resolved base so it costs one request per institution). It is created fresh for each `/enrich` request; an optional process-level `SerpCache` lets overlapping SERP queries reuse results across batches. There is **no ROR namespace here** — `get_ror`/`set_ror` existed but had no callers anywhere in the codebase, and were removed rather than left implying a layer that never ran. ROR and LEI lookups consult the module-level `_ror_cache` / `_lei_cache` in `enrichment/tier1_ror.py` and `enrichment/tier1_lei.py`.
+
+**Keys.** Every namespace keys on `normalize_key(query)` (reused from [`dedup/signatures.py`](#dedupsignaturespy--step-a-signature-collapsing): lowercase, trim, collapse whitespace, strip punctuation, fold accents) **plus the country**. Lowercasing alone collapses `MIT` / `mit` but not `Coastal Diagnostics, Inc.` against `Coastal Diagnostics Inc`, so one organisation was looked up under several keys inside a single batch, got several outcomes, and the batch emitted contradictory records for it. Country is in the key because a name-only key lets two genuinely distinct organisations that share a name in different countries share an entry. (It does **not** separate a same-country name collision — two US "Cardinal Instruments" still collide.)
+
+> ⚠️ Three conditions hold for every key, and the first is what makes the punctuation stripping safe:
+> 1. The normalised key is used **only** as a dictionary key for cache lookup.
+> 2. The value **sent** to ROR / GLEIF / SERP is always the original, unnormalised string. The key decides *whether* a call is made; it is never the payload. Pinned by `tests/test_cache_normalisation.py::TestUnnormalisedQueryReachesTheAPI`.
+> 3. The key never reaches output, never reaches an LLM prompt, and never enters `_compute_name_score()` or any other scoring path.
+
+`serp_key` carries one extra component: **whether the query was quoted**. `normalize_key` strips quote characters, which would make an exact-phrase query and its unquoted retry ([website resolution §8](#website-domain-department-domain--search-term-resolution)) collide — the retry would be served the very results it exists to get away from. Quoting changes what is searched, so it is part of the query's identity rather than noise to fold away.
+
+`legacy_lookup_key` / `legacy_serp_key` reproduce the old lowercase-only key. They are never used to store or retrieve a value — only to count `cache_hits_after_normalisation`, the lookups the normalised key served that the old key would have missed.
 
 ---
 
@@ -2044,6 +2097,18 @@ RETURN EnrichmentResponse (JSON)
 ---
 
 ## Changelog
+
+### Canonical cache keys + Tier 1 re-lookup (newest)
+
+Identical entities produced different output depending on how the input happened to be spelled — four "Lockheed Martin Corp" rows where only one carried the LEI, three Stuttgart rows where one had no ROR id, "Coastal Diagnostics" resolving to two domains and two record types. Two independent causes, both fixed here.
+
+- **Cache keys collapse spelling variants.** ROR, LEI and SERP lookups key on `normalize_key(query)` + country (reused from `dedup/signatures.py`, not reimplemented) instead of a lowercased string, so `Coastal Diagnostics, Inc.` and `Coastal Diagnostics Inc` are one entry and one API call. The key is a dictionary key and nothing else: the **unnormalised** string is what reaches the API and every scoring path, pinned by a test. Country is in the key so two same-named orgs in different countries cannot share an entry. See [`utils/cache.py`](#utilscachepy--cache-keys--batch-cache).
+- **`BatchCache.get_ror`/`set_ror` deleted** — the README described a ROR namespace there, but it had no callers in the whole codebase. ROR lookups have always consulted `tier1_ror._ror_cache`, which is where the normalisation had to go.
+- **The SERP key keeps the quoting distinction.** `normalize_key` strips quote characters, which would have made an exact-phrase query and its unquoted retry (website resolution §8) collide — the retry would have been served the very results it exists to escape. `serp_key` therefore carries a "was quoted" component alongside the normalised text.
+- **Tier 1 is re-run once after canonicalisation.** ROR runs before the pipeline knows the real name; when a later tier works it out, `orchestrator._retry_tier1_after_canonicalisation` looks that name up — ROR first, GLEIF on the company branch, one retry per record, every guard intact, nothing written on a miss. A retry hit also gives the record registry provenance, so a domain the [ownership guard](#2b--ownership-guard-domain_ownership_guard_enabled-default-on) had rejected comes back verified. See [Stage 5](#stage-5-tier-1-re-lookup-after-canonicalisation).
+- **Known limit** — the retry only fires when a tier actually *writes* a changed `name1_enriched`. `canonical_preserves_identity` rejects a corrected typo (`MASSACHUSETTS INSITUTE OF TECHNOLOGY`) or an expanded abbreviation (`GA Tech`, `FL State Univ`), so those records still discard the right answer one gate earlier than this fix reaches.
+- **`record_type` untouched** — a retry hit whose registry type contradicts the record logs `tier1_retry_type_conflict` and leaves the value alone.
+- **Telemetry** — `tier1_retry_attempts`, `tier1_retry_hits_ror`, `tier1_retry_hits_lei`, `cache_hits_after_normalisation`. Tests `test_cache_normalisation.py`.
 
 ### Domain: one write path + an ownership guard (newest)
 
