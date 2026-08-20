@@ -184,7 +184,15 @@ class TestFinaliseSafetyNet:
 
 
 class TestSearchTermAddressGuard:
-    def test_address_only_name2_original_not_used_as_unit_handle(self):
+    """search_term_2 is derived from the ENRICHED Name 2 only.
+
+    finalise() retains the input value in the enriched slot wherever no tier
+    changed it, so a blank enriched slot at derivation time means enrichment
+    deliberately emptied the field (an address, an email, a contact name) —
+    the pre-enrichment original is never mined for a handle.
+    """
+
+    def test_original_never_used_as_unit_handle(self):
         st1, st2 = derive_search_terms({
             "name1_enriched": "University of Florida",
             "name2_enriched": None,
@@ -192,10 +200,18 @@ class TestSearchTermAddressGuard:
         })
         assert st2 is None
 
-    def test_real_department_original_still_used(self):
+    def test_department_original_not_used_when_enrichment_cleared_it(self):
         st1, st2 = derive_search_terms({
             "name1_enriched": "University of Florida",
             "name2_enriched": None,
             "name2_original": "Department of Chemistry",
         })
-        assert st2 is not None
+        assert st2 is None
+
+    def test_real_department_used_from_the_enriched_slot(self):
+        st1, st2 = derive_search_terms({
+            "name1_enriched": "University of Florida",
+            "name2_enriched": "Department of Chemistry",
+            "name2_original": "Department of Chemistry",
+        })
+        assert st2 == "CHEMISTRY"

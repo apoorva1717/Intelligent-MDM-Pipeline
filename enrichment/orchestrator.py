@@ -348,11 +348,12 @@ def _init_result(record: EnrichmentRecord) -> EnrichedRecord:
         **{f"{slot}_original": getattr(record, slot, None) for slot in NAME_SLOTS},
         **{f"{slot}_enriched": None for slot in NAME_SLOTS},
         **{f"{slot}_changed": False for slot in NAME_SLOTS},
+        # Both derived in finalise(), from enriched values only. The input's
+        # own Search Term 1/2 are deliberately not carried here: they are
+        # pre-enrichment customer text and must not survive into the output
+        # of a record whose names we just corrected.
         "search_term_1": None,
         "search_term_2": None,
-        # Original SAP Search Term 1 — used only as a last-resort fallback
-        # so the derived search_term_1 is never empty. Stripped in finalise().
-        "_search_term_1_original": record.search_term_1,
         "department_domain": None,
         # Internal carrier — populated when ROR returns an acronym variant.
         # Stripped out in finalise() so it doesn't leak into the response.
@@ -913,11 +914,12 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # and so not an unverified inference.
     compute_flags(result)
 
-    # Compact search handles for downstream consumers. Runs after all
-    # name / domain fields are settled so the derivation sees final
-    # values. department_domain is written directly by the probe in
-    # the orchestrator (see _probe_department_url) — it doesn't share
-    # source_url with the tiers.
+    # Compact search handles for downstream consumers. Runs here, near the end
+    # of finalise, so the derivation sees ONLY settled post-enrichment values:
+    # every name slot has been canonicalised, deduped and passed through, the
+    # domain fallback above has run, and the department probe has written
+    # department_domain (see _probe_department_url — it doesn't share
+    # source_url with the tiers). Nothing pre-enrichment feeds either term.
     result["search_term_1"], result["search_term_2"] = derive_search_terms(result)
 
     # Emit department_domain as a full URL rather than a bare host. Done AFTER
@@ -977,8 +979,6 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     for _slot in DEPT_SLOTS:
         result.pop(f"_{_slot}_from_tier3", None)
     result.pop("_ror_acronym", None)
-    result.pop("_search_term_1_original", None)
-    result.pop("_name1_was_person", None)
     result.pop("_website_raw", None)
     result.pop("_source_title", None)
     result.pop("_source_h1", None)
@@ -2863,13 +2863,6 @@ class Orchestrator:
                 for f in pre.dba_fields
                 if getattr(pre, f)
             }
-            # UC 7 person signal (Name 1 held only a person). Read by
-            # derive_search_terms so an unresolved person row emits no ST1
-            # (its original SAP name is a person, not an institution).
-            result["_name1_was_person"] = bool(
-                getattr(pre, "name1_was_person", False)
-            )
-
             # If preprocessing populated any care_of/contact/email/
             # street/name field, record the enriched value now. (Final
             # passthrough in finalise() will retain originals for

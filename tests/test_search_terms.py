@@ -200,12 +200,23 @@ class TestDeriveSearchTerms:
 
     def test_search_term_1_never_empty_when_name_present(self):
         result = {
-            "name1_original": "x",
+            "name1_enriched": "x",
             "name2_enriched": None,
             "name2_original": None,
         }
         st1, _ = derive_search_terms(result)
         assert st1 and st1.strip()
+
+    def test_search_term_1_null_when_name_1_output_is_null(self):
+        # Nothing reached the Name 1 column, so nothing names it.
+        result = {
+            "name1_enriched": None,
+            "name1_original": "ATTN CHARLES FARBER / MIT",
+            "name2_enriched": None,
+            "name2_original": None,
+        }
+        st1, _ = derive_search_terms(result)
+        assert st1 is None
 
     def test_search_term_2_uses_department_domain_subdomain(self):
         result = {
@@ -329,15 +340,17 @@ class TestDeriveSearchTerms:
         _, st2 = derive_search_terms(result)
         assert st2 is None
 
-    def test_falls_back_to_name1_original_when_no_enriched(self):
+    def test_whole_name_kept_when_it_fits_the_field(self):
         result = {
             "_ror_acronym": None,
             "domain": None,
-            "name1_enriched": None,
+            "name1_enriched": "International Business Machines",
             "name1_original": "International Business Machines",
             "name2_enriched": None,
             "name2_original": None,
             "source_url": None,
         }
         st1, _ = derive_search_terms(result)
-        assert st1 == "INTERNATIONAL BUSINESS"
+        # The whole name fits the 32-char field, so it is kept whole — a
+        # truncated "INTERNATIONAL BUSINESS" is a worse search handle.
+        assert st1 == "INTERNATIONAL BUSINESS MACHINES"

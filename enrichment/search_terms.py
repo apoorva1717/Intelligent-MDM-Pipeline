@@ -4,18 +4,31 @@ Produces two short, search-friendly strings per record so downstream
 consumers can re-query (Google, internal search, dedup keys) without
 re-deriving abbreviations or domains themselves.
 
+Both terms are derived **after enrichment, from the enriched values
+only** — never from the pre-enrichment SAP input. The input Search Term
+columns are customer-maintained free text (stale abbreviations, typos,
+person initials); once enrichment has settled Name 1/2, the domain and
+the registry acronym, re-deriving from those is strictly better than
+echoing what the input happened to carry.
+
 ``search_term_1`` mirrors *name1* (an institution). Institutions
 typically have well-known acronyms (MIT, UCLA, NASA), so the rule is
-acronym-first, domain fallback, caps-derived acronym last.
+acronym-first, domain second, and — when neither exists — a handle
+derived from the enriched Name 1 itself: the whole name when it fits
+the 32-char field ("University of Florida"), otherwise its leading
+significant words.
 
 ``search_term_2`` mirrors *name2* (a department / unit / lab). Units
 rarely have well-known acronyms, so the rule is instead a
 ready-to-search **text phrase**: extract an explicit parenthetical
-acronym when given, otherwise strip the generic unit prefix/suffix
-("Department of …", "… Department") to reveal the meaningful core,
-otherwise return the cleaned input verbatim. A unit-scoped
-subdomain/path is kept as a last-resort fallback for the rare case
-where the textual form collapses to empty.
+acronym when given, otherwise reduce the enriched Name 2 to what
+actually names the unit. Structural words are not part of that —
+"Department", "Dept", "Division", "Div", "School", "Institute",
+"Centre", "Laboratory", "Lab", "Office", "Group" are dropped wherever
+they appear, so "Chemistry Dept" and "Department of Chemistry" both
+search as CHEMISTRY. A unit-scoped subdomain/path is kept as a
+last-resort fallback for the rare case where the textual form
+collapses to empty.
 """
 
 from __future__ import annotations
@@ -24,7 +37,6 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
-from enrichment.preprocess import _extract_addresses
 from utils.text_utils import (
     acronym_matches_name,
     is_admin_unit,
@@ -376,17 +388,36 @@ _ST1_LEGAL_SUFFIXES = {
 
 
 def _name1_text_handle(name1: str) -> str | None:
-    """First two significant words of Name 1 (stopwords + legal suffixes
-    dropped) — the required-handle fallback for search_term_1."""
+    """A searchable handle derived from the enriched Name 1 — the fallback
+    for search_term_1 when no acronym and no domain exist.
+
+    Legal-entity suffixes are dropped, then the **whole name is kept when
+    it fits** the 32-char field. Keeping the connecting words is what makes
+    the handle searchable: ``University of Florida`` is a query, ``University
+    Florida`` is not. Only a name that overflows the field drops its
+    stopwords and is filled greedily to the width.
+
+    ``'Verdox, Inc.'``                            → ``'Verdox'``
+    ``'Applied Thin Films, Inc.'``                → ``'Applied Thin Films'``
+    ``'University of Florida'``                   → ``'University of Florida'``
+    ``'Massachusetts Institute of Technology'``   → ``'Massachusetts Institute'``
+    """
     words: list[str] = []
-    for tok in re.findall(r"[A-Za-z0-9&]+", name1):
-        low = tok.lower()
-        if low in _TERM2_STOPWORDS or low in _ST1_LEGAL_SUFFIXES:
+    for raw in name1.split():
+        tok = raw.strip(" ,.;:()[]{}\"'")
+        # Punctuation-only tokens ("/", "-", "–") separate words, they are
+        # not words: "Bayer U.S. – Crop Science" must not carry the dash.
+        if not tok or not any(c.isalnum() for c in tok):
+            continue
+        if tok.lower() in _ST1_LEGAL_SUFFIXES:
             continue
         words.append(tok)
-        if len(words) >= 2:
-            break
-    return " ".join(words) if words else None
+    if not words:
+        return None
+    whole = " ".join(words)
+    if len(whole) <= 32:
+        return whole
+    return _fill_to_width(whole, 32) or _truncate_word_boundary(whole, 32)
 
 
 def _truncate_word_boundary(s: str, width: int = 32) -> str:
@@ -426,6 +457,48 @@ def _fill_to_width(text: str | None, width: int = 32) -> str | None:
         out.append(tok)
         length += add
     return " ".join(out) if out else None
+
+
+# Structural unit words that carry no search value inside a unit handle.
+# "Chemistry Dept" is searched as CHEMISTRY, "Div of Analytical Sciences" as
+# ANALYTICAL SCIENCES. These are stripped wherever they appear in the phrase,
+# not only at its edges (clean_name2_phrase only handles the edges), so a
+# mid-string "Dept"/"Div" cannot reach the output either.
+_UNIT_KEYWORDS = {
+    "department", "departments", "dept", "depts", "depart",
+    "division", "divisions", "div",
+    "section", "sections", "unit", "units", "branch", "branches",
+    "school", "schools", "college", "colleges", "faculty", "faculties",
+    "office", "offices", "institute", "institutes", "inst",
+    "center", "centre", "centers", "centres", "ctr",
+    "laboratory", "laboratories", "lab", "labs",
+    "group", "groups", "grp",
+}
+
+
+def _strip_unit_keywords(text: str | None) -> str | None:
+    """Drop every structural unit word from *text*.
+
+    ``'Chemistry Dept'``                  → ``'Chemistry'``
+    ``'Analytical Sciences Division'``    → ``'Analytical Sciences'``
+    ``'Office of Research'``              → ``'of Research'`` (stopword dropped later)
+    ``'Laboratory'``                      → ``None`` (nothing meaningful left)
+    """
+    if not text:
+        return None
+    kept = [
+        tok for tok in text.split()
+        if tok.strip(" .,-()").lower() not in _UNIT_KEYWORDS
+    ]
+    out = " ".join(kept).strip(" ,-.")
+    if not out:
+        return None
+    # A residue of nothing but stopwords ("of", "for the") is no handle either.
+    if not any(
+        t.strip(" .,-()").lower() not in _TERM2_STOPWORDS for t in out.split()
+    ):
+        return None
+    return out
 
 
 def _name2_is_unit_phrase(name2: str) -> bool:
@@ -478,27 +551,36 @@ def _subdomain_acronym(
 
 def _derive_search_term_1(result: dict[str, Any]) -> str | None:
     """search_term_1 chain: ROR acronym (currency-checked upstream) → TLD-
-    stripped domain → required handle (SAP term / Name 1 words) when Name 1 is
-    usable → None."""
+    stripped domain → a handle derived from the enriched Name 1 → None.
+
+    Every input is a post-enrichment value. The pre-enrichment SAP Search
+    Term 1 is deliberately NOT in this chain: it is customer-maintained free
+    text, and once enrichment has produced an official name, a domain or a
+    registry acronym, echoing the input would ship a stale handle for a
+    record whose name we just corrected.
+    """
     ror_acronym = (result.get("_ror_acronym") or "").strip() or None
     if ror_acronym:
         return ror_acronym
     domain = (result.get("domain") or "").strip() or None
     if domain:
         return strip_tld(domain)
-    # Rule 3 — required handle, only when Name 1 is USABLE: non-blank AND not an
-    # unresolved person. A person extracted by UC 7 leaves name1_enriched blank
-    # (name1_original still holds the person name); a Stage-2b-resolved
-    # affiliation puts an institution in name1_enriched → usable.
-    name1_enriched = (result.get("name1_enriched") or "").strip()
-    name1 = name1_enriched or (result.get("name1_original") or "").strip()
-    was_person = bool(result.get("_name1_was_person"))
-    usable = bool(name1) and not (was_person and not name1_enriched)
-    if not usable:
+    # Rule 3 — a handle derived from the ENRICHED Name 1, and only from it.
+    # `name1_enriched` IS the Name 1 column of the response: finalise has
+    # already backfilled it from the preprocessed input wherever no tier
+    # changed it, so a blank here means the output ships no institution at
+    # all. There is then nothing to hand a search handle for, and reaching
+    # back to `name1_original` would emit a term for a name the record does
+    # not carry — the "ATTN CHARLES FARBER / MIT" case, where preprocessing
+    # moved the person to Contact, no institution survived, and the raw input
+    # string was still shipped as Search Term 1.
+    #
+    # This also subsumes the UC 7 person guard: a person lifted out of Name 1
+    # leaves `name1_enriched` blank → None, while a Stage-2b-resolved
+    # affiliation puts a real institution there → a handle is derived from it.
+    name1 = (result.get("name1_enriched") or "").strip()
+    if not name1:
         return None
-    original = (result.get("_search_term_1_original") or "").strip()
-    if original:
-        return original
     return _name1_text_handle(name1) or name1
 
 
@@ -507,15 +589,12 @@ def _derive_search_term_2(result: dict[str, Any]) -> str | None:
     (filled to 32) → department-domain host → None, with DBA and field-swap
     guards on Name 2."""
     domain = (result.get("domain") or "").strip() or None
+    # Enriched Name 2 only. finalise() has already retained the input value in
+    # the enriched slot wherever no tier changed it, so a blank enriched slot
+    # here means enrichment deliberately emptied the field (an address, an
+    # email, a contact name lifted out by preprocessing) — the pre-enrichment
+    # original must not be mined for a handle.
     name2 = (result.get("name2_enriched") or "").strip()
-    if not name2:
-        # Original name2 — but not when it was actually a street address
-        # ("104 Rhines Hall") that enrichment moved into a street field.
-        orig = (result.get("name2_original") or "").strip()
-        if orig:
-            _addrs, _remainder = _extract_addresses(orig)
-            if not (_addrs and not _remainder.strip()):
-                name2 = orig
 
     # Field-content guards on Name 2.
     if name2:
@@ -539,19 +618,29 @@ def _derive_search_term_2(result: dict[str, Any]) -> str | None:
     if sub:
         return sub
 
-    # 2. Name 2 phrase (explicit parenthetical acronym, else cleaned + filled).
+    # 2. Name 2 phrase (explicit parenthetical acronym, else cleaned, stripped
+    #    of structural unit words, and filled to the field width).
     if name2:
         paren = _PAREN_ACRONYM_RE.search(name2)
         if paren:
             return paren.group(1)
         cleaned = clean_name2_phrase(name2) or name2
-        filled = _fill_to_width(cleaned, 32)
+        # A phrase that is nothing but unit words ("Laboratory", "Division")
+        # names no unit — fall through rather than ship the keyword.
+        core = _strip_unit_keywords(cleaned)
+        filled = _fill_to_width(core, 32) if core else None
         if filled:
             return filled
 
-    # 3. Department-domain fallback (host prefix / TLD-stripped host).
+    # 3. Department-domain fallback (host prefix / TLD-stripped host), unless
+    #    the host segment is itself a structural or generic word — "dept" out
+    #    of dept.example.edu is not a unit handle.
     if dept_domain:
-        return _dept_domain_to_search_term(dept_domain, domain)
+        handle = _dept_domain_to_search_term(dept_domain, domain)
+        if handle and handle.strip(" ./-").lower() not in (
+            _UNIT_KEYWORDS | _GENERIC_PATH_SEGMENTS
+        ):
+            return handle
     return None
 
 
@@ -560,18 +649,26 @@ def derive_search_terms(
 ) -> tuple[str | None, str | None]:
     """Compute ``(search_term_1, search_term_2)`` from a finalised result dict.
 
+    Every input to both chains is a POST-enrichment value — the enriched
+    names, the resolved domain, the registry acronym. The pre-enrichment SAP
+    Search Term columns are never consulted.
+
     search_term_1 (institution handle):
         1. result["_ror_acronym"]     (currency-checked in tier1_ror)
         2. strip_tld(result["domain"])
-        3. required handle (SAP Search Term 1, else Name 1 words) — only when
-           Name 1 is usable (non-blank AND not an unresolved person)
+        3. handle derived from the enriched Name 1 (whole name when it fits
+           32 chars, else its leading significant words) — never from
+           name1_original, so a record whose Name 1 output is null gets no
+           search term either
         4. None
 
     search_term_2 (unit handle):
         0. "ADMIN"                     (UC 6 admin desk)
         1. subdomain acronym of department_domain, when genuinely an acronym
-        2. Name 2 phrase, cleaned and filled to 32 chars
-        3. department_domain host prefix / TLD-stripped host
+        2. enriched Name 2 phrase, cleaned, stripped of structural unit words
+           (dept / div / school / centre / lab …) and filled to 32 chars
+        3. department_domain host prefix / TLD-stripped host, unless that
+           segment is itself a structural or generic word
         4. None
         (guards: UC 11 DBA and institution-in-Name-2 field swap block Name 2)
 
