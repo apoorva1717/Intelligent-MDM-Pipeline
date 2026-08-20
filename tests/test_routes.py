@@ -284,14 +284,17 @@ class TestRoutes:
         contact = self._col(h, "contact_enriched")
         email = self._col(h, "email_enriched")
 
-        assert rows["A"][s2] == "250 CENTRAL Ave"   # connector stripped
+        # Fix 5: the street value is cased on the way out, so the assertions
+        # here are the cased forms. What this test pins is the junk removal —
+        # "ALSO " stripped, orphan/person/URL/email dropped — not the casing.
+        assert rows["A"][s2] == "250 Central Ave"   # connector stripped
         assert rows["B"][s2] is None                # orphan marker dropped
         assert rows["C"][s2] is None                # person removed...
         assert rows["C"][contact] == "Dr Sarah Johnson"  # ...routed to contact
         assert rows["D"][s2] is None                # URL removed
         assert rows["E"][s2] is None                # email removed...
         assert rows["E"][email] == "harrisapinvoices@harris.com"  # ...to email
-        assert rows["F"][s2] == "440 NICKERSON Rd"  # real address kept
+        assert rows["F"][s2] == "440 Nickerson Rd"  # real address kept
 
     @pytest.mark.asyncio
     async def test_enrich_file_rejects_non_xlsx(self, client):

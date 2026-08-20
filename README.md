@@ -27,6 +27,9 @@ Both phases share the same FastAPI app, configuration system, Azure Functions de
    - [Stage 4: Tier 3 — LLM Inference (Last Resort)](#stage-4-tier-3--llm-inference-last-resort)
    - [Stage 5: Tier 1 re-lookup after canonicalisation](#stage-5-tier-1-re-lookup-after-canonicalisation)
    - [Finalization](#finalization)
+     - [Rule 7 — Output casing normalisation](#rule-7--output-casing-normalisation)
+     - [Why casing does not set a changed flag](#why-casing-does-not-set-a-changed-flag)
+     - [Registry names are authoritative](#registry-names-are-authoritative)
    - [Website, Domain, Department-Domain & Search-Term Resolution](#website-domain-department-domain--search-term-resolution)
 6. [Use Case Reference Table](#use-case-reference-table)
 7. [Record Classification Logic](#record-classification-logic)
@@ -195,6 +198,10 @@ The Orchestrator processes each record through a sequential pipeline (Stage 0 ->
 **Outcome:**
 - If overflow detected with medium or high confidence: the record is **immediately flagged** and returned. No further tiers run. The flag reason explains the overflow so a human can correct the SAP field split.
 - If not overflow: pipeline continues normally.
+
+**The early return still finalises.** "No further tiers run" means no *enrichment* runs — it never meant the record skips finalisation. The return goes through `_finalise_and_return`, the single funnel, so an overflow record gets the same address stage and the same [finalisation rules](#finalization) as every other row: the empty-string guard, abbreviation expansion, unit canonicalisation and — since Fix 5 — [output casing](#rule-7--output-casing-normalisation). Its Name 1 and Name 2 are still the input values, split exactly as SAP had them; they are just cased. Row 33 of the demo batch ("Adams Air" + "HYDRAULICS INC") ships as "Adams Air" + "Hydraulics Inc", flagged, with no `ror_id` and no tier attempted.
+
+Normalisation is applied here for the same reason it is applied everywhere else: a reviewer comparing an overflow row against the rest of the workbook should not have to discount a casing difference that says nothing about the record. Casing adds and removes nothing, so it cannot obscure the split the reviewer is being asked to fix.
 
 **Why stop early?** If Name1 + Name2 is one org name, running Tier 1 on just Name1 would match the wrong entity (e.g., searching ROR for "Adams Air" instead of "Adams Air Hydraulics Inc").
 
@@ -685,10 +692,75 @@ After all tiers have run, the finalization step applies a set of deterministic r
 
 5. **Changed flags:** `name1_changed`, `name2_changed`, etc. are set to `True` only when `enriched != original AND enriched is not None`. This allows consumers to know exactly which fields were modified. A registry name write goes through this same rule — it is recorded by the flag, never gated by it.
 
+   **A casing-only difference is not a modification.** Rule 7 cases every free-text output field on every record, so counting casing here would set the flag on most rows and reduce it to "this field is non-empty". The comparison therefore ignores letter case: `Mayo Clinic FLA` → `Mayo Clinic in Florida` is `True`; `GAINESVILLE MEDICAL` → `Gainesville Medical` is `False`. The flag keeps its documented meaning — *this field was enriched*. See [Why casing does not set a changed flag](#why-casing-does-not-set-a-changed-flag).
+
+   Twelve fields carry a changed flag: Name 1–4, Care Of, Contact, Email and Street 1–5. They are **internal** — `EnrichmentResult` does not declare them, so they are dropped at the model boundary and appear in neither the JSON response nor the file export. Their consumers are the test fixtures and `scripts/test_local.py`. City and PO Box have no changed flag at all.
+
 6. **Deduplication rules:**
    - **Rule 1:** If Name2 was blank in input AND no tier populated it AND no contact was available, set `name2_enriched = None` (don't fabricate)
    - **Rule 2:** If preprocessing stripped Name2 (e.g., it was an email address), don't let Tier 3 fabricate a replacement
    - **Rule 3:** If `name2_enriched == name1_enriched`, drop Name2 (no echo of the parent org name)
+
+7. **Output casing normalisation:** every free-text output field is cased token by token. See [Rule 7](#rule-7--output-casing-normalisation) below — it is the longest of these rules and has its own section.
+
+#### Rule 7 — Output casing normalisation
+
+**Function:** `normalise_output_fields()` in `enrichment/orchestrator.py`, over `normalise_case()` in `utils/text_utils.py`.
+
+Before this rule, casing was applied by whatever happened to touch a field. `smart_title_case()` ran on Name 1 and nowhere else, and it is a **whole-string** rule — it refuses any value that is not entirely upper-case. Everything else was cased by accident or not at all. On a 500-record run, **342 output values shipped fully upper-case**: 230 cities ("GAINESVILLE"), 107 streets ("MAIN ST"), a PO box. Values the street-suffix map had *partly* corrected shipped half-cased — `STREET_TYPE_ABBREVIATIONS` rewrote "DR" to "Dr" and left the rest, giving "500 TECH Dr MS-4". The same run after the rule leaves **4**, and two of those are deliberate acronyms (`ABX-CRO`, `UCSF`).
+
+**One function, every exit path.** A record can leave the orchestrator four ways: the normal return, the [UC 0 overflow early return](#stage-0-name1-overflow-check-uc-0), the `_enrich_single` error path, and the batch-level fail-safe in `enrich_batch` that builds a result for a record whose task raised outright. The first three funnel through `_finalise_and_return` → `finalise`, which calls the normaliser last. The fourth never reaches `finalise` — it is the one path that was genuinely skipping finalisation — and calls the normaliser directly.
+
+**Where it runs in `finalise`.** Last, after the changed flags, after `derive_search_terms`, after `_classify_record`, and before the transient `_`-prefixed keys are stripped. Those three consumers therefore see exactly the values they saw before this rule existed: casing decides nothing, flags nothing, and changes no tier's behaviour. It runs before the strip because `_registry_name_fields` is what tells it which names not to touch.
+
+**Token level, not string level.** Each whitespace-delimited token is judged on its own, which is what finishes "500 TECH Dr MS-4" instead of skipping it:
+
+| Token | Rule |
+|---|---|
+| contains a digit | untouched — `MS-4`, `3M`, `450`, `24TH` |
+| already mixed case | untouched — `Dr`, `GmbH`, `McDonald`; mixed case is intentional |
+| all-upper or all-lower | title-cased, subject to the tables below |
+
+**Tables, in the order they are consulted.**
+
+| Table | Contents |
+|---|---|
+| `_CANONICAL_TOKEN_FORMS` | Emitted exactly as written. Legal forms (`Inc`, `LLC`, `Ltd`, `GmbH`, `AG`, `SE`, `BV`, `NV`, `KG`, `SA`, `SpA`, `AB`, `AS`, `Oy`), acronyms (`MIT`, `UCLA`, `NMR`, `IT`, `AI`, `US`, `USA`, `UK`, `PO`, `R&D`), directional street prefixes (`N`, `S`, `E`, `W`, `NE`, `NW`, `SE`, `SW`), and the vowel-less street types and personal titles (`St`, `Ave`, `Blvd`, `Dr`, `Rd`, `Mr`, `Prof`, …) that the acronym guard would otherwise leave upper-case. |
+| `_ROMAN_NUMERALS` | `II` through `XX`, enumerated. A general Roman-numeral regex accepts ordinary words — `MIX` parses as 1009 — so the numerals are listed rather than matched. |
+| `_LOWERCASE_PARTICLES` | Kept lower-case *mid-value* only; leading the value, a connector is a word. The English connectors (`of`, `and`, `for`, `the`, `in`, `at`) plus the European particles that keep an institution or a surname readable (`von`, `van`, `der`, `de`, `du`, `la`, `für`, `und`, …). |
+| `_KEEP_UPPER_ACRONYMS` | The existing set — `NASA`, `NIST`, `UCSF`, `SUNY`, `TUHH`, … — reused, not duplicated. |
+
+**Structural handling.** `Mc` prefixes restore the internal capital (`MCDONALD` → `McDonald`); `Mac` is deliberately left alone, since capitalising after it mangles ordinary words (`MACRON` → `Macron`, not `MacRon`). Hyphen- and ampersand-joined tokens are cased on each side under the full rule set, so an acronym on either side survives (`TECHNOLOGY-NIST`, `ICB&DD`). Apostrophes are handled explicitly, never by `str.title()` — that produces `Women'S`. A single letter after an apostrophe is a possessive or elision and stays lower-case (`WOMEN'S` → `Women's`); a longer run is a name segment and is cased (`O'BRIEN` → `O'Brien`).
+
+**Casing changes letter case and nothing else.** No apostrophe, comma, period, ampersand or hyphen is ever added, removed or rewritten, and whitespace runs are preserved exactly. `normalise_case` checks the invariant itself — casing cannot change a string's length, so a length change means a bug, and the input is returned untouched.
+
+**Field coverage.**
+
+| Fields | Treatment |
+|---|---|
+| Name 1–4 | Cased in **name mode**: a ≤3-letter upper-case token defaults to an acronym (`HCA`, `UCI`, `MRI`), which is `smart_title_case`'s long-standing behaviour. |
+| Care Of, Contact, Street 1–5, City, PO Box | Cased in **text mode**: a ≤3-letter upper-case token defaults to a *word* (`WAY`, `OAK`, `DR`), because in a street, a city or a person's name that is what it almost always is. |
+| Email | Lower-cased entirely. `ORDERS@MERIDIANLABS.COM` is never the right output form. |
+| Country/Region Key, Region, Language Key, Postal Code, Account group, Customer | Untouched. These are codes; their case is meaningful. |
+| A name written from a registry | **Skipped**, exactly as [abbreviation expansion skips it](#registry-names-are-authoritative). Title-casing "Massachusetts Institute of Technology" would give "Massachusetts Institute Of Technology". |
+
+Diacritics are **not** restored. "Hochschule fuer Technik Stuttgart" gets its correct form from the ROR record ([registry names are authoritative](#registry-names-are-authoritative)), never from a transliteration rule here — casing has no basis for deciding that `ue` was once `ü`.
+
+The street changed-flags (`street1_changed` …) compare `street1_enriched`, the internal passthrough value, not the exported `street_cleaned` column that this rule cases. They are unaffected either way.
+
+#### Why casing does not set a changed flag
+
+Rule 5 was a real fork, because a changed flag is read as evidence of enrichment. Three options, measured on the 500-record set:
+
+| Option | Changed flags set | Effect |
+|---|---|---|
+| **(a)** casing counts as a modification | **490** | Honest, but `name1_changed` goes 65 → 193 and `contact_changed` 3 → 94. A consumer that writes back only changed fields would triple its writeback volume for zero content change. |
+| **(b) chosen** — only substantive changes count | **270** | The flag keeps its meaning. The output differs from the input in a way no flag records — see below. |
+| **(c)** a separate normalised-fields signal | 270 + a new field | Would require a new response field, which is a contract change this fix is not permitted to make. Invisible otherwise: the changed flags themselves are dropped at the model boundary. |
+
+On a 50-record slice the same comparison is 41 against 23.
+
+**(b) is chosen.** The cost is real and worth stating plainly: after this rule the output differs from the input in a way no flag records. That cost is acceptable because the alternative is worse — under (a) the flag stops distinguishing "we enriched this" from "we cased this", and the enrichment signal is the one downstream actually needs. The normalisation is also deterministic and lossless: any consumer can reproduce it from the input, and no consumer needs to be told a field was cased in order to trust it.
 
 #### Registry names are authoritative
 
@@ -1791,7 +1863,8 @@ HTTP page fetcher with BeautifulSoup parsing. Extracts structured elements: URL 
 - `seg_matches_needle()`: host/subdomain-vs-token match (substring or shared ≥3-char leading prefix) — shared by the department probe and the search-term rules
 - `is_admin_unit()`: detects administrative / back-office desks (accounts payable, finance, billing, procurement, treasury, …) — drives `search_term_2 = "ADMIN"` and department-probe suppression
 - `clean_passthrough_org_name()`: title-cases ALL-CAPS + expands abbreviations for names that pass through un-canonicalised. It is no longer the only route by which `expand_abbreviations` reaches an output name — [Finalization](#finalization) expands Name 1–4 on every non-registry path
-- `smart_title_case()`: ALL-CAPS → title case while preserving acronyms (`MRI`, `NIST`, `UCSF`), `Mc` surnames, and hyphen segments
+- `smart_title_case()`: ALL-CAPS → title case while preserving acronyms (`MRI`, `NIST`, `UCSF`), `Mc` surnames, and hyphen segments. A **whole-string** rule — it refuses any value that is not entirely upper-case, which is why a half-corrected value like "500 TECH Dr MS-4" kept its uppercase "TECH". Still used for Name 1 inside `clean_passthrough_org_name`; `normalise_case()` is what finishes the job
+- `normalise_case()`: the token-level caser behind [Finalization Rule 7](#rule-7--output-casing-normalisation). Each token is judged on its own — digit-bearing and already-mixed-case tokens untouched, everything else title-cased against the legal-form / acronym / directional / Roman-numeral tables — with explicit `Mc`, hyphen, ampersand and apostrophe handling (`WOMEN'S` → `Women's`, never `str.title()`'s `Women'S`). `mode="name"` defaults a short upper-case token to an acronym; `mode="text"` defaults it to a word. Changes letter case and nothing else, and checks that invariant before returning
 
 ### `utils/domain_resolver.py` — Domain Write Path & Ownership Guard
 
@@ -2205,6 +2278,10 @@ For each record (async, concurrency-limited via Semaphore):
        ├─ Rule 1: No Name2 signal → name2_enriched = None
        ├─ Rule 2: Preprocessing stripped Name2 → don't let Tier 3 fabricate
        ├─ Rule 3: name2_enriched == name1_enriched → drop Name2 (no echo)
+       ├─ Derive search terms · classify record_type
+       ├─ Rule 7: output casing — Name 1-4, Care Of, Contact, Street 1-5,
+       │          City, PO Box (token level); Email lower-cased;
+       │          registry names and code fields skipped
        └─ RETURN EnrichmentResult
   │
   ▼

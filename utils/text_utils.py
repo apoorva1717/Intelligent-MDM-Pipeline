@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from urllib.parse import urlparse
 
 from rapidfuzz import fuzz
+
+logger = logging.getLogger(__name__)
 
 
 def clean_whitespace(text: str | None) -> str | None:
@@ -330,6 +333,213 @@ def clean_passthrough_org_name(name: str | None) -> str | None:
     cleaned = smart_title_case(name) or name
     cleaned = expand_abbreviations(cleaned) or cleaned
     return cleaned
+
+
+# ---------------------------------------------------------------------------
+# Output casing normalisation (Finalization Rule 7)
+# ---------------------------------------------------------------------------
+#
+# `smart_title_case` above is a WHOLE-STRING rule: it refuses any value that is
+# not entirely upper-case, so a partly-corrected value like "500 TECH Dr MS-4"
+# (the street-suffix map already cased "Dr") kept its uppercase "TECH". The
+# normaliser below works TOKEN BY TOKEN, so each token is judged on its own.
+#
+# Per token:
+#   * contains a digit          -> untouched      ("MS-4", "3M", "450")
+#   * already mixed case        -> untouched      ("Dr", "GmbH", "McDonald")
+#   * all-upper or all-lower    -> title-cased, subject to the tables below
+#
+# Casing changes letter case and NOTHING else. No character is ever added or
+# removed — every apostrophe, comma, period, ampersand and hyphen survives
+# exactly as written. `normalise_case` asserts that itself and returns the
+# input unchanged if the invariant is ever broken.
+
+# Tokens with a fixed canonical spelling, emitted exactly as written here when
+# a token matches case-insensitively. Legal forms, acronyms, directional street
+# prefixes and the vowel-less street/title abbreviations that the acronym guard
+# below would otherwise leave upper-case ("DR" -> "Dr", not "DR").
+_CANONICAL_TOKEN_FORMS: dict[str, str] = {
+    # Legal forms.
+    "inc": "Inc", "llc": "LLC", "ltd": "Ltd", "gmbh": "GmbH", "ag": "AG",
+    "se": "SE", "bv": "BV", "nv": "NV", "kg": "KG", "sa": "SA", "spa": "SpA",
+    "ab": "AB", "as": "AS", "oy": "Oy",
+    # Acronyms.
+    "mit": "MIT", "ucla": "UCLA", "nmr": "NMR", "it": "IT", "ai": "AI",
+    "us": "US", "usa": "USA", "uk": "UK", "po": "PO", "r&d": "R&D",
+    # Directional street prefixes.
+    "n": "N", "s": "S", "e": "E", "w": "W",
+    "ne": "NE", "nw": "NW", "sw": "SW",
+    # Street types and personal titles. These are vowel-less, so without an
+    # entry here the acronym guard would keep them upper-case. The street
+    # stage's own map (address_processing.STREET_TYPE_ABBREVIATIONS) already
+    # emits these forms — this table is what makes a slot that stage never
+    # touched agree with one it did.
+    "st": "St", "ave": "Ave", "blvd": "Blvd", "dr": "Dr", "rd": "Rd",
+    "ln": "Ln", "ct": "Ct", "hwy": "Hwy", "pkwy": "Pkwy", "rte": "Rte",
+    "pl": "Pl", "sq": "Sq", "ter": "Ter", "cir": "Cir",
+    "mr": "Mr", "mrs": "Mrs", "prof": "Prof",
+}
+
+# Bounded, explicit list. A general Roman-numeral regex accepts ordinary words
+# ("MIX" parses as 1009), so the numerals are enumerated instead.
+_ROMAN_NUMERALS = {
+    "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X",
+    "XI", "XII", "XIII", "XIV", "XV", "XVI", "XVII", "XVIII", "XIX", "XX",
+}
+
+# Lower-case particles that must stay lower-case mid-value. The English
+# connectors are shared with `smart_title_case`; the rest keep a European
+# institution or a surname readable ("Institut für Physik", "van der Waals").
+_LOWERCASE_PARTICLES = _TITLE_CASE_CONNECTORS | {
+    "von", "van", "der", "den", "des", "dem", "du", "de", "del", "della",
+    "di", "da", "das", "dos", "le", "la", "les", "und", "für", "fuer", "y",
+}
+
+_APOSTROPHES = ("'", "’")
+
+
+def _plain_title(word: str) -> str:
+    """Title-case one plain run of letters. Never `str.title()` or
+    `str.capitalize()` on anything with an apostrophe — `str.title()` produces
+    "Women'S". This helper only ever sees apostrophe-free, hyphen-free runs."""
+    if not word:
+        return word
+    return _mc_name(word[0].upper() + word[1:].lower())
+
+
+def _title_structural(core: str) -> str:
+    """Title-case a token core, respecting Mc/Mac, hyphens and apostrophes.
+
+    "MCDONALD"  -> "McDonald"     (internal capital restored)
+    "JEAN-YVES"  -> "Jean-Yves"   (each side cased)
+    "WOMEN'S"    -> "Women's"     (possessive s stays lower)
+    "O'BRIEN"    -> "O'Brien"     (a real name segment is cased)
+    """
+    if not any(ch in core for ch in _APOSTROPHES):
+        return _plain_title(core)
+    parts = re.split(r"(['’])", core)
+    out: list[str] = []
+    after_sep = False
+    for part in parts:
+        if part in _APOSTROPHES:
+            out.append(part)
+            after_sep = True
+            continue
+        if not part:
+            continue
+        # A single letter after an apostrophe is a possessive/elision, not a
+        # name segment: "WOMEN'S" -> "Women's", never "Women'S".
+        out.append(part.lower() if after_sep and len(part) == 1
+                   else _plain_title(part))
+    return "".join(out)
+
+
+def _case_core(core: str, *, mode: str, first: bool) -> str:
+    """Case one token core (leading/trailing punctuation already split off)."""
+    letters = [ch for ch in core if ch.isalpha()]
+    if not letters:
+        return core
+    lowered = core.lower()
+    upper = core.upper()
+    is_upper = core == upper
+    is_lower = core == lowered
+
+    # Already mixed case — intentional casing, leave it ("Dr", "GmbH", "3M"
+    # is caught by the digit rule in the caller, "McDonald").
+    if not (is_upper or is_lower):
+        return core
+
+    if lowered in _CANONICAL_TOKEN_FORMS:
+        return _CANONICAL_TOKEN_FORMS[lowered]
+    if upper in _ROMAN_NUMERALS:
+        return upper
+    # A connector is only lower-cased mid-value; leading it, it is a word.
+    if lowered in _LOWERCASE_PARTICLES and not first:
+        return lowered
+    if upper in _KEEP_UPPER_ACRONYMS:
+        return upper
+    if is_upper:
+        letter_count = len(letters)
+        # Vowel-less short token: an acronym, not a word (IBM, MRI, PLLC).
+        if letter_count <= 5 and not (set(upper) & _VOWELS):
+            return core
+        # Name fields keep the existing short-token default — a <=3-letter
+        # token in an organisation name is an acronym (HCA, UCI, IBM) unless
+        # allow-listed as a word. Address, city and person fields do not: there
+        # a short token is a word far more often than an acronym ("WAY", "OAK",
+        # "LAB"), and `_FORCE_TITLE_SHORT` cannot enumerate them all.
+        if mode == "name" and letter_count <= 3 and upper not in _FORCE_TITLE_SHORT:
+            return core
+
+    # Hyphen- or ampersand-joined: case each side under the full rule set, so
+    # an acronym on either side survives ("TECHNOLOGY-NIST" ->
+    # "Technology-NIST", "ICB&DD" -> "ICB&DD" — each segment is short enough to
+    # read as an acronym on its own).
+    if "-" in core or "&" in core:
+        segs = re.split(r"([-&])", core)
+        out: list[str] = []
+        seg_index = 0
+        for seg in segs:
+            if seg in ("-", "&") or not seg:
+                out.append(seg)
+                continue
+            out.append(_case_core(seg, mode=mode, first=first and seg_index == 0))
+            seg_index += 1
+        return "".join(out)
+    return _title_structural(core)
+
+
+def _case_token(token: str, *, mode: str, first: bool) -> str:
+    """Case one whitespace-delimited token, preserving its punctuation.
+
+    Leading and trailing punctuation is split off and re-attached verbatim, so
+    "Inc." keeps its period and "Diagnostics," keeps its comma.
+    """
+    if any(ch.isdigit() for ch in token):
+        return token  # "MS-4", "450", "3M" — never re-cased
+    m = re.match(r"^(?P<pre>[^0-9A-Za-z]*)(?P<core>.*?)(?P<post>[^0-9A-Za-z]*)$", token)
+    if not m or not m.group("core"):
+        return token
+    if token.lower() in _CASE_EXCEPTIONS:  # whole-token known forms: "AT&T"
+        return _CASE_EXCEPTIONS[token.lower()]
+    return (
+        m.group("pre")
+        + _case_core(m.group("core"), mode=mode, first=first)
+        + m.group("post")
+    )
+
+
+def normalise_case(value: str | None, *, mode: str = "text") -> str | None:
+    """Token-level casing for an output field.
+
+    ``mode`` is ``"name"`` for Name 1-4 (a short upper-case token defaults to
+    an acronym) and ``"text"`` for street, city, PO box, c/o and contact (a
+    short upper-case token defaults to a word).
+
+    Whitespace is preserved exactly — the value is split on whitespace runs and
+    rejoined with the same runs, so nothing is collapsed. The length invariant
+    is checked before returning: casing can only ever change letter case, so a
+    length change means a bug, and the input is returned untouched.
+    """
+    if not value or not value.strip():
+        return value
+    parts = re.split(r"(\s+)", value)
+    out: list[str] = []
+    first = True
+    for part in parts:
+        if not part or part.isspace():
+            out.append(part)
+            continue
+        out.append(_case_token(part, mode=mode, first=first))
+        first = False
+    cased = "".join(out)
+    if len(cased) != len(value):  # pragma: no cover — invariant guard
+        logger.warning(
+            "normalise_case changed the length of %r -> %r; returning input",
+            value, cased,
+        )
+        return value
+    return cased
 
 
 # Unit-type canonicalisation — maps every variant wording to the

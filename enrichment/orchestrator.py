@@ -89,6 +89,7 @@ from utils.text_utils import (
     is_blank,
     is_granular_unit,
     looks_like_research_institution,
+    normalise_case,
     smart_title_case,
     strip_address_fragments,
 )
@@ -419,6 +420,63 @@ def _write_registry_name(
     })
 
 
+# ── Output normalisation — one function, every exit path ──────────────────────
+
+# Name fields. A short upper-case token defaults to an acronym here ("HCA",
+# "UCI"), which is the long-standing behaviour of `smart_title_case`.
+_CASE_NAME_FIELDS = (
+    "name1_enriched", "name2_enriched", "name3_enriched", "name4_enriched",
+)
+# Address / person fields. A short upper-case token defaults to a WORD here
+# ("WAY", "OAK", "DR"), because that is what it almost always is in a street,
+# a city or a person's name.
+_CASE_TEXT_FIELDS = (
+    "care_of_enriched", "contact_enriched",
+    "street_cleaned", "street_2_cleaned", "street_3_cleaned",
+    "street_4_cleaned", "street_5_cleaned",
+    "city", "po_box_extracted",
+)
+
+
+def normalise_output_fields(result: dict[str, Any]) -> dict[str, Any]:
+    """Apply output casing to every field that carries free text.
+
+    THE single normalisation entry point. Called at the end of :func:`finalise`
+    — which every orchestrator return path funnels through, the UC 0 overflow
+    early return included — and directly on the batch-level fail-safe path in
+    :meth:`Orchestrator.enrich_batch`, which builds a result without running
+    the pipeline and so never reaches ``finalise``.
+
+    Casing only. No flag, reason, tier decision or field routing is touched,
+    and no character is added or removed — see
+    :func:`utils.text_utils.normalise_case`.
+
+    A registry-owned name is skipped, exactly as the abbreviation-expansion
+    pass above skips it: ROR and GLEIF are the authority on their own spelling,
+    and title-casing "Massachusetts Institute of Technology" would yield
+    "Massachusetts Institute Of Technology". Code fields (Country/Region Key,
+    Region, Language Key, Postal Code, Account group, Customer) are never
+    touched — they are codes, and their case is meaningful.
+    """
+    registry_named = result.get("_registry_name_fields") or set()
+    for field in _CASE_NAME_FIELDS:
+        if field[: -len("_enriched")] in registry_named:
+            continue
+        val = result.get(field)
+        if val:
+            result[field] = normalise_case(str(val), mode="name")
+    for field in _CASE_TEXT_FIELDS:
+        val = result.get(field)
+        if val:
+            result[field] = normalise_case(str(val), mode="text")
+    # An email address is case-insensitive by RFC and lower case by convention;
+    # "ORDERS@MERIDIANLABS.COM" is never the right output form.
+    email = result.get("email_enriched")
+    if email:
+        result["email_enriched"] = str(email).lower()
+    return result
+
+
 def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     """Apply empty-string guards and compute changed flags.
 
@@ -623,10 +681,21 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
         result[f] = kept_vals[i] if i < len(kept_vals) else None
 
     # Compute all changed flags.
+    #
+    # Rule 5 + Fix 5 option (b): a difference that is ONLY letter case is not a
+    # modification. The flag answers "did enrichment change this field's
+    # content", and output casing (Rule 7) is applied to every free-text field
+    # on every record — counting it here would set the flag on nearly every row
+    # and destroy the flag's meaning. `Mayo Clinic FLA` -> `Mayo Clinic in
+    # Florida` is still True; `GAINESVILLE MEDICAL` -> `Gainesville Medical`
+    # is not. Nothing else about the rule changes: the value must still be
+    # non-None and still differ from the original.
     def _changed(field: str) -> bool:
         enr = result.get(f"{field}_enriched")
         orig = result.get(f"{field}_original")
-        return bool(enr and enr != orig)
+        if not enr or enr == orig:
+            return False
+        return str(enr).casefold() != str(orig or "").casefold()
 
     for f in ("name1", "name2", "name3", "name4", "care_of", "contact",
               "email", "street1", "street2", "street3", "street4", "street5"):
@@ -701,6 +770,13 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # Single classification authority — every tier before this point wrote
     # `routing_type`, never `record_type`.
     _classify_record(result)
+
+    # Output casing, last. It runs AFTER the changed flags, the classifier and
+    # the search-term derivation, so those three see exactly the values they
+    # saw before this rule existed: casing decides nothing and flags nothing.
+    # It runs BEFORE `_registry_name_fields` is stripped below, because that is
+    # what tells it which names came from a registry and must not be re-cased.
+    normalise_output_fields(result)
 
     result["duration_ms"] = int((time.monotonic() - start) * 1000)
     # Strip transient non-schema keys before pydantic validation.
@@ -1068,6 +1144,10 @@ class Orchestrator:
                     failed = _init_result(records[i])
                     failed["enrichment_status"] = "failed"
                     failed["error"] = str(res)
+                    # This path never reaches finalise() — the record died
+                    # before its return. Normalise it here so a fail-safe row
+                    # is cased like every other row in the workbook.
+                    normalise_output_fields(failed)
                     final_results.append(EnrichmentResult(**failed))
                 else:
                     final_results.append(res)
