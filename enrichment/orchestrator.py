@@ -154,6 +154,13 @@ _GENERIC_HOST_PREFIXES = {
     "directory", "library", "libraries", "career", "careers", "jobs",
     "search", "secure", "my", "mail", "email", "wiki", "intranet",
     "media", "press",
+    # Newsroom / magazine / marketing hosts an institution publishes its
+    # stories on. A story about a department is not that department's home.
+    "newsroom", "blog", "blogs", "stories", "story", "magazine", "today",
+    "video", "videos", "podcast", "photos", "gallery",
+    "giving", "apply", "admissions", "visit", "map", "maps", "about",
+    "portal", "login", "auth", "sso", "help", "status", "sitemap",
+    "archive", "archives",
 }
 
 # Registrable domains that are third-party platforms — never represent
@@ -178,6 +185,37 @@ def _is_third_party_host(host: str) -> bool:
         if last_two in _THIRD_PARTY_DOMAINS:
             return True
     return False
+
+def _host_prefix_is_generic(host: str, base: str | None = None) -> bool:
+    """True when *host* is an administrative / newsroom subdomain rather
+    than a department home (``news.mit.edu``, ``events.stanford.edu``).
+
+    :func:`_score_dept_candidate` already caps such hosts at 0, but the
+    stage-0 GET probe, the stage-2b path-page scan and the cross-domain
+    SERP fallback accept candidates without scoring them — a story URL
+    like ``news.mit.edu/2026/chemistry-…`` would otherwise verify (the
+    page does discuss the department) and, once the path is dropped by
+    ``canonicalise_host``, ship as ``https://news.mit.edu``. This is the
+    one guard all four acceptance paths share.
+
+    Only a *subdomain* label is judged: with *base* known the base is
+    stripped first, otherwise a host is treated as a subdomain only when
+    it carries more than two labels, so a registrable domain that happens
+    to be named ``press.org`` is left alone.
+    """
+    host = (host or "").strip().lower().rstrip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    base = (base or "").strip().lower().rstrip(".")
+    if base and host.endswith("." + base):
+        prefix = host[: -len("." + base)]
+    elif host.count(".") >= 2:
+        prefix = host.split(".", 1)[0]
+    else:
+        return False                    # bare registrable domain — no prefix
+    first_seg = prefix.split(".", 1)[0]
+    return first_seg in _GENERIC_HOST_PREFIXES
+
 
 # §5b: path segments that are non-department content (news, events, archived
 # stories, calendars). A candidate whose path contains one of these is not a
@@ -1807,7 +1845,10 @@ class Orchestrator:
                     if pref not in candidates:
                         candidates.append(pref)
 
-        hosts_to_probe = [f"{c}.{base}" for c in candidates]
+        hosts_to_probe = [
+            f"{c}.{base}" for c in candidates
+            if not _host_prefix_is_generic(f"{c}.{base}", base)
+        ]
         if hosts_to_probe:
             verified = await asyncio.gather(
                 *(self._verify_candidate_host(h, cleaned, tokens, acronym)
@@ -1953,6 +1994,8 @@ class Orchestrator:
                 host = host[4:]
             if not (host == base or host.endswith("." + base)):
                 continue
+            if _host_prefix_is_generic(host, base):
+                continue  # newsroom/admin host — the path can't redeem it
             path = (parsed.path or "").strip("/")
             if not path:
                 continue  # bare domain handled by the host scan above
@@ -2018,6 +2061,8 @@ class Orchestrator:
             if not host:
                 continue
             if _is_third_party_host(host):
+                continue
+            if _host_prefix_is_generic(host):
                 continue
             # Verify the page actually describes this dept before
             # accepting a cross-domain host.
