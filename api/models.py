@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import (
     AliasChoices,
@@ -416,6 +416,12 @@ class EnrichmentResult(BaseModel):
         "contact_lookup_corrected", "dept_search", "LLM",
         "llm_canonical", "SERP+LLM", "pattern_match",
         "web_search", "passthrough", "gleif", "none",
+        # Written by the batch consensus pass (enrichment/batch_consensus.py)
+        # on a record that inherited an organisation-level field from another
+        # record in the same batch. `tier_used` is deliberately NOT changed to
+        # 1 — inflating the Tier 1 count would corrupt the tier-distribution
+        # figures used in evaluation.
+        "batch_consensus",
     ] = Field(default="none", exclude=True)
     source_url: Optional[str] = Field(default=None, exclude=True)
     # The organisation homepage, always ``https://<domain>`` — never a deep
@@ -505,6 +511,14 @@ class EnrichmentSummary(BaseModel):
     tier3_count: int = 0
     contact_lookup_attempted: int = 0
     contact_lookup_success: int = 0
+    # Batch consensus pass (enrichment/batch_consensus.py): groups are
+    # (address block, canonical name, legal form) sets holding 2+ records;
+    # `consensus_conflicts` counts the groups that held two or more
+    # conflicting registry identities and therefore propagated nothing.
+    consensus_groups: int = 0
+    consensus_records_updated: int = 0
+    consensus_conflicts: int = 0
+    consensus_fields_propagated: Dict[str, int] = Field(default_factory=dict)
     processing_time_ms: int = 0
 
 

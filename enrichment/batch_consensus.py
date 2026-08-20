@@ -1,0 +1,426 @@
+"""Batch consensus pass — one identity per organisation per address (Fix 6).
+
+Every record is enriched in isolation, so two rows naming the same organisation
+at the same address can leave the batch carrying different identities: one
+resolved against a registry and the other did not. Fix 2's `Tier 1 re-lookup
+after canonicalisation` recovers most of these at source; this pass is the
+safety net for whatever the retry does not catch, and it is cheaper to prevent
+the divergence here than to have Phase 2 adjudicate it later.
+
+**Two tiers of consensus.** A group whose members carry exactly one registry
+identity propagates all six organisation-level fields from a registry-resolved
+donor — the registry is the authority. A group carrying *no* registry identity
+falls back to a strictly weaker rule: it never chooses between competing values,
+it only fills gaps where the group is already unanimous. `name1_enriched` is
+the single exception, because its competing values are surface variants of a
+name every member already holds.
+
+**What this is not.** It never merges, drops or deduplicates records — Phase 2
+remains the only place entities are merged. It is field propagation within one
+batch: the record count in equals the record count out. It touches no flag, no
+reason and no `flag_for_review`; a record that inherits keeps the flags it
+earned on its own. It never changes `tier_used`.
+
+**Ordering.** It runs after every record has been finalised and before
+serialisation (`Orchestrator.enrich_batch`). Propagated values therefore come
+from an already-finalised record and are copied verbatim — never re-run through
+Fix 4's abbreviation expansion or Fix 5's casing, which would corrupt a
+registry-owned name.
+
+**The grouping key is internal.** Both halves of it — the address block id and
+the canonicalised name — are dictionary keys and nothing else, under the same
+contract as Fix 2's cache key: never written to output, never sent to any API,
+never placed in an LLM prompt, and never fed to `_compute_name_score()` or any
+other scoring path.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections import OrderedDict, defaultdict
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Optional
+
+from dedup.candidates import strip_legal_suffix
+from dedup.models import DedupRow
+from dedup.signatures import derive_block_id, normalize_key
+from enrichment.tier1_ror import _normalise_for_tokens
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from api.models import EnrichmentResult
+
+logger = logging.getLogger(__name__)
+
+
+# Organisation-level fields: true of the legal entity, so they are the same for
+# every row that names that entity at that address.
+PROPAGATED_FIELDS: tuple[str, ...] = (
+    "ror_id",
+    "lei_id",
+    "name1_enriched",
+    "domain",
+    "website_url",
+    "record_type",
+)
+
+# Department-level or record-level, and therefore NEVER propagated. Listed as
+# data so the exclusion is readable and testable rather than implied by the
+# absence of a field from PROPAGATED_FIELDS. Rows 12-14 of the demo batch are
+# Stanford at one address with three different departments: they must share
+# Stanford's ROR id and domain and keep their own department name and
+# department domain.
+NEVER_PROPAGATED: tuple[str, ...] = (
+    "name2_enriched",
+    "name3_enriched",
+    "name4_enriched",
+    "department_domain",
+    "contact_enriched",
+    "care_of_enriched",
+    "email_enriched",
+    "search_term_2",
+    "street_cleaned",
+    "house_number",
+    "street_2_cleaned",
+    "street_3_cleaned",
+    "street_4_cleaned",
+    "street_5_cleaned",
+    "postal_code",
+    "city",
+    "country_region_key",
+    "region",
+)
+
+# The `source` value written on a record that inherited at least one field.
+# `tier_used` is deliberately left alone — see the module docstring.
+CONSENSUS_SOURCE = "batch_consensus"
+
+# A record_type of "unknown" asserts nothing (Fix 3), so it is treated as
+# absent here rather than as a value that could conflict.
+_UNKNOWN_TYPE = "unknown"
+
+
+@dataclass
+class ConsensusTelemetry:
+    """Batch-level counters for the pass. Telemetry only — no flags."""
+
+    groups: int = 0
+    records_updated: int = 0
+    conflicts: int = 0
+    fields_propagated: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class _Group:
+    """Members of one (address block, canonical name, legal form) group."""
+
+    block_id: str
+    base_name: str
+    legal_form: str
+    members: list[int] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Grouping key — internal only
+# ---------------------------------------------------------------------------
+
+def _address_block_id(result: "EnrichmentResult") -> Optional[str]:
+    """The record's address block, derived by the SAME function Phase 2 uses.
+
+    `dedup.signatures.derive_block_id` is reused rather than reimplemented, so
+    a batch and its later dedup pass can never disagree about what "the same
+    address" means. Returns None when the record carries no address signal at
+    all — a blank address would otherwise hash every such record into one block
+    and let a bare name match propagate an identity across unrelated rows.
+    """
+    street = result.street_cleaned
+    postal = result.postal_code
+    if not (street and str(street).strip()) and not (postal and str(postal).strip()):
+        return None
+    row = DedupRow(
+        row_id=str(result.record_id or ""),
+        street=street,
+        house_no=result.house_number,
+        postal_code=postal,
+        city=result.city,
+        country=result.country_region_key,
+    )
+    return derive_block_id(row)
+
+
+def _name_parts(name: Optional[str]) -> tuple[str, str]:
+    """Split a Name 1 into ``(base, legal_form)`` for grouping.
+
+    Three existing normalisers are composed, each for the one thing it does,
+    rather than a fourth being written:
+
+    1. `dedup.signatures.normalize_key` — lowercase, trim, collapse whitespace,
+       strip punctuation, fold accents. It deliberately does not touch legal
+       forms, which is why steps 2 and 3 exist.
+    2. `tier1_ror._normalise_for_tokens` — canonicalises US legal-entity
+       suffixes to their abbreviated form (Incorporated→inc, Corporation→corp,
+       Company→co, Limited→ltd), so "Acme Co" and "Acme Company" carry the
+       *same* legal form rather than two spellings of it.
+    3. `dedup.candidates.strip_legal_suffix` — removes the trailing legal-form
+       token run, using the `LEGAL_SUFFIXES` table that already exists there.
+
+    The legal form is returned SEPARATELY, never folded into the base. Folding
+    it in would group "Delta Analytical Inc" with "Delta Analytical LLC" at a
+    shared address — potentially distinct legal entities, and exactly the
+    judgement Phase 2 exists to make.
+    """
+    if not name:
+        return ("", "")
+    canon = _normalise_for_tokens(normalize_key(str(name)))
+    if not canon:
+        return ("", "")
+    base = strip_legal_suffix(canon)
+    if not base or base == canon:
+        # Nothing stripped, or the name IS a legal form (strip_legal_suffix
+        # keeps the full name in that case rather than returning nothing).
+        return (canon, "")
+    return (base, canon[len(base):].strip())
+
+
+def _legal_forms_compatible(a: str, b: str) -> bool:
+    """Two legal forms are compatible when identical, or absent on one side."""
+    return not a or not b or a == b
+
+
+def _build_groups(results: list["EnrichmentResult"]) -> list[_Group]:
+    """Group by address block first, then by canonical name + legal form.
+
+    Within one address block two rows group together when their names are equal
+    after legal-form canonicalisation AND their legal forms are compatible.
+    Compatibility is not transitive — an absent form is compatible with every
+    form — so when a block holds two or more DIFFERENT legal forms under one
+    base name, each form gets its own group and every absent-form row is left
+    on its own. Assigning it to one of the competing forms would be a guess,
+    and guessing which legal entity a row belongs to is Phase 2's call.
+    """
+    buckets: "OrderedDict[tuple[str, str], list[tuple[int, str]]]" = OrderedDict()
+    for index, result in enumerate(results):
+        block_id = _address_block_id(result)
+        if not block_id:
+            continue
+        base, legal_form = _name_parts(result.name1_enriched)
+        if not base:
+            continue
+        buckets.setdefault((block_id, base), []).append((index, legal_form))
+
+    groups: list[_Group] = []
+    for (block_id, base), items in buckets.items():
+        forms = {form for _, form in items if form}
+        if len(forms) <= 1:
+            # One legal form (or none) in play: every form present is
+            # compatible with every other, so the whole bucket is one group.
+            groups.append(_Group(block_id, base, next(iter(forms), ""),
+                                 [index for index, _ in items]))
+            continue
+        by_form: dict[str, list[int]] = defaultdict(list)
+        for index, form in items:
+            # An absent form is keyed by its own row index, which no canonical
+            # form can collide with, so it lands in a singleton group and
+            # inherits nothing.
+            by_form[form or f"\x00{index}"].append(index)
+        for form, members in by_form.items():
+            groups.append(_Group(block_id, base,
+                                 "" if form.startswith("\x00") else form,
+                                 members))
+    return groups
+
+
+# ---------------------------------------------------------------------------
+# Propagation
+# ---------------------------------------------------------------------------
+
+def _sole(values: list[Any]) -> Optional[Any]:
+    """The single distinct non-null value in *values*, else None."""
+    distinct = {v for v in values if v is not None and str(v).strip()}
+    return next(iter(distinct)) if len(distinct) == 1 else None
+
+
+def _donor_rank(index: int, result: "EnrichmentResult") -> tuple[int, int, int]:
+    """Order registry-carrying members: most ids, then earliest tier, then
+    batch order. Deterministic, so the same batch always elects the same donor."""
+    id_count = (1 if result.ror_id else 0) + (1 if result.lei_id else 0)
+    return (-id_count, int(result.tier_used or 3), index)
+
+
+def _consensus_name_form(
+    members: list["EnrichmentResult"],
+    indices: list[int],
+) -> Optional[str]:
+    """The group's modal Name 1 surface form, for NAME-FORM consensus.
+
+    Used only when a group holds no registry identity at all. Every member
+    already carries the same organisation name — that is what put them in the
+    group — and they differ only in how the legal form is spelled, punctuated
+    or cased. Electing one of those surface forms asserts no new fact about the
+    organisation; it picks a representation among spellings the batch already
+    contains.
+
+    The modal form wins, because the batch's own majority spelling is evidence
+    and "which legal form is more correct" is not a judgement this pass is
+    entitled to make. Ties break on the earliest tier, then batch order, so the
+    election is deterministic. Returns None when the group already agrees.
+    """
+    forms: dict[str, tuple[int, int, int]] = {}
+    for index, member in zip(indices, members):
+        name = member.name1_enriched
+        if not name:
+            continue
+        count, tier, first = forms.get(name, (0, 99, index))
+        forms[name] = (count + 1, min(tier, int(member.tier_used or 3)),
+                       min(first, index))
+    if len(forms) < 2:
+        return None
+    return min(forms.items(),
+               key=lambda kv: (-kv[1][0], kv[1][1], kv[1][2]))[0]
+
+
+def _consensus_values(
+    members: list["EnrichmentResult"],
+    indices: list[int],
+) -> Optional[tuple[dict[str, Any], str]]:
+    """The values this group agrees on plus the mode that produced them, or
+    None when the group holds conflicting registry identities.
+
+    Two modes, and the weaker one is deliberately much weaker:
+
+    ``"registry"``
+        The group holds exactly one registry identity. That identity is the
+        authority, so all six organisation-level fields propagate.
+
+    ``"name_form"``
+        The group holds no registry identity. `ror_id` and `lei_id` are absent
+        by definition, and the remaining fields propagate under a strictly
+        weaker rule: **this mode never chooses between competing values, it
+        only fills gaps where the group is unanimous.** `name1_enriched` is the
+        one exception, and only because its competing values are surface
+        variants of a name every member already holds — picking one asserts
+        nothing new. `domain`, `website_url` and `record_type` move only when
+        the group holds exactly ONE distinct non-null value, so a member that
+        resolved nothing inherits it and a group that disagrees keeps its
+        disagreement. Note what that does and does not bypass: the surviving
+        domain already satisfied the [ownership guard](#2b) on a record whose
+        Name 1 is equal to the receiving record's after canonicalisation, so
+        the guard's name-similarity condition would reach the same verdict here
+        — the value is not attributed on weaker evidence than the guard needs,
+        it is attributed on the same evidence.
+    """
+    rors = {m.ror_id for m in members if m.ror_id}
+    leis = {m.lei_id for m in members if m.lei_id}
+    if len(rors) > 1 or len(leis) > 1:
+        return None
+
+    registry_backed = bool(rors or leis)
+    donor: Optional["EnrichmentResult"] = None
+    if registry_backed:
+        donors = [(i, m) for i, m in zip(indices, members) if m.ror_id or m.lei_id]
+        donor = min(donors, key=lambda pair: _donor_rank(*pair))[1]
+
+    values: dict[str, Any] = {
+        "ror_id": next(iter(rors), None),
+        "lei_id": next(iter(leis), None),
+    }
+
+    # Name 1. With a registry behind the group the donor's name wins outright:
+    # after Fix 4 a verified Tier 1 match writes the registry's official name,
+    # which is authoritative for the whole group. Without one, the group's modal
+    # surface form wins — see _consensus_name_form.
+    if donor is not None:
+        values["name1_enriched"] = (
+            donor.name1_enriched or _sole([m.name1_enriched for m in members])
+        )
+    else:
+        values["name1_enriched"] = _consensus_name_form(members, indices)
+
+    # `domain` and `website_url` are two views of one decision, so they are
+    # taken from ONE record and never mixed. The donor holds them when its
+    # registry hit carried a domain; otherwise the group's single distinct
+    # domain, if it has exactly one, is used. A null donor value never erases a
+    # domain another member resolved, and a group holding two domains
+    # propagates neither.
+    domain_source: Optional["EnrichmentResult"] = None
+    if donor is not None and donor.domain:
+        domain_source = donor
+    else:
+        sole_domain = _sole([m.domain for m in members])
+        if sole_domain:
+            domain_source = next(m for m in members if m.domain == sole_domain)
+    values["domain"] = domain_source.domain if domain_source else None
+    values["website_url"] = domain_source.website_url if domain_source else None
+
+    # "unknown" asserts nothing, so it is treated as absent on both sides.
+    donor_type = (
+        donor.record_type
+        if donor is not None and donor.record_type != _UNKNOWN_TYPE
+        else None
+    )
+    values["record_type"] = donor_type or _sole(
+        [m.record_type for m in members if m.record_type != _UNKNOWN_TYPE]
+    )
+    return values, ("registry" if registry_backed else "name_form")
+
+
+def apply_batch_consensus(
+    results: list["EnrichmentResult"],
+) -> ConsensusTelemetry:
+    """Converge organisation-level fields across a finalised batch, in place.
+
+    Returns the batch telemetry. The list is never reordered and never changes
+    length — this is field propagation, not deduplication.
+    """
+    telemetry = ConsensusTelemetry()
+    groups = [g for g in _build_groups(results) if len(g.members) >= 2]
+    telemetry.groups = len(groups)
+
+    for group in groups:
+        members = [results[i] for i in group.members]
+        outcome = _consensus_values(members, group.members)
+        if outcome is None:
+            telemetry.conflicts += 1
+            logger.info(
+                "%s",
+                {
+                    "step": "batch_consensus_conflict",
+                    "block_id": group.block_id,
+                    "members": [m.record_id for m in members],
+                    "ror_ids": sorted({m.ror_id for m in members if m.ror_id}),
+                    "lei_ids": sorted({m.lei_id for m in members if m.lei_id}),
+                },
+            )
+            continue
+        values, mode = outcome
+
+        for member in members:
+            changed: list[str] = []
+            for name in PROPAGATED_FIELDS:
+                new = values.get(name)
+                if new is None or getattr(member, name) == new:
+                    continue
+                # Copied verbatim from an already-finalised record: no casing,
+                # no abbreviation expansion, no re-normalisation of any kind.
+                setattr(member, name, new)
+                changed.append(name)
+            if not changed:
+                continue
+            member.source = CONSENSUS_SOURCE
+            telemetry.records_updated += 1
+            for name in changed:
+                telemetry.fields_propagated[name] = (
+                    telemetry.fields_propagated.get(name, 0) + 1
+                )
+            logger.info(
+                "%s",
+                {
+                    "step": "batch_consensus_inherit",
+                    "record_id": member.record_id,
+                    "block_id": group.block_id,
+                    "mode": mode,
+                    "fields": changed,
+                    "tier_used": member.tier_used,
+                },
+            )
+
+    return telemetry

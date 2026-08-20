@@ -34,6 +34,7 @@ from enrichment.address_processing import (
     merge_into_result as merge_address_into_result,
     process_address,
 )
+from enrichment.batch_consensus import apply_batch_consensus
 from enrichment.company_canonical import run_company_canonical
 from enrichment.lab_resolver import run_lab_resolver
 from enrichment.overflow_check import run_overflow_check
@@ -1152,8 +1153,19 @@ class Orchestrator:
                 else:
                     final_results.append(res)
 
+            # Fix 6 — batch consensus. Runs AFTER every record has been
+            # finalised and BEFORE serialisation (and before the summary, so
+            # the counts describe what actually ships). Field propagation
+            # only: no record is merged, dropped or deduplicated here, and no
+            # flag or `tier_used` is touched. See enrichment/batch_consensus.py.
+            consensus = apply_batch_consensus(final_results)
+
             batch_ms = int((time.perf_counter() - batch_start) * 1000)
             summary = self._build_summary(final_results, batch_ms)
+            summary.consensus_groups = consensus.groups
+            summary.consensus_records_updated = consensus.records_updated
+            summary.consensus_conflicts = consensus.conflicts
+            summary.consensus_fields_propagated = dict(consensus.fields_propagated)
             # Fold in the GLEIF/LEI per-batch telemetry. tier1_lei_count is
             # the number of records resolved by the LEI step (exact + fuzzy).
             summary.lei_attempts = self._lei_counts["attempts"]

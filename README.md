@@ -26,6 +26,7 @@ Both phases share the same FastAPI app, configuration system, Azure Functions de
    - [Stage 3: Tier 2 — Multi-Mode Canonicalization](#stage-3-tier-2--multi-mode-canonicalization)
    - [Stage 4: Tier 3 — LLM Inference (Last Resort)](#stage-4-tier-3--llm-inference-last-resort)
    - [Stage 5: Tier 1 re-lookup after canonicalisation](#stage-5-tier-1-re-lookup-after-canonicalisation)
+   - [Stage 6: Batch consensus](#stage-6-batch-consensus)
    - [Finalization](#finalization)
      - [Rule 7 — Output casing normalisation](#rule-7--output-casing-normalisation)
      - [Why casing does not set a changed flag](#why-casing-does-not-set-a-changed-flag)
@@ -819,6 +820,93 @@ Tier 1 runs before the pipeline knows the organisation's real name, so it is que
 > `GA Tech` and `FL State Univ` used to sit in that trap. They no longer reach the retry at all: the [bounded two-letter pattern](#us-state-abbreviation-expansion-ror-local) and the [acronym map](#institution-acronym-expansion) resolve them on the **first** Tier 1 call, which is the cheaper fix and the reason `tier1_retry_attempts` should fall.
 
 **Telemetry.** `tier1_retry_attempts`, `tier1_retry_hits_ror`, `tier1_retry_hits_lei` on the batch summary, alongside `cache_hits_after_normalisation`.
+
+### Stage 6: Batch consensus
+
+**File:** `enrichment/batch_consensus.py` · **Entry point:** `apply_batch_consensus` · **Called from:** `Orchestrator.enrich_batch`
+
+Every record is enriched in isolation, so two rows naming the same organisation at the same address can leave the batch carrying different identities — one resolved against a registry, the other not. [Stage 5](#stage-5-tier-1-re-lookup-after-canonicalisation) recovers most of these at source. This stage is the safety net for whatever the retry does not catch, and it is cheaper to prevent the divergence here than to have [Phase 2](#phase-2--deduplication-adjudicator) adjudicate it later.
+
+> **This is field propagation, not deduplication.** No record is merged, dropped or deduplicated: the batch that comes out is the same length, in the same order, as the batch that went in. Phase 2 remains the only place entities are merged.
+
+**Where it runs.** After every record has been finalised — so every value it moves has already been through the [empty-string guards, abbreviation expansion, unit canonicalisation and casing](#finalization) — and before serialisation and the batch summary, so the counts describe what actually ships. It is the last thing `enrich_batch` does to a result.
+
+#### The grouping key
+
+Address first, then name. Both halves are **internal grouping keys** under the same contract as [Fix 2's cache key](#utilscachepy--cache-keys--batch-cache): used only as a dictionary key, never written to output, never sent to any API, never placed in an LLM prompt, and never fed to `_compute_name_score()` or any other scoring path.
+
+| Half | Derivation |
+|---|---|
+| **Address** | `dedup.signatures.derive_block_id` — the SHA-1 of the normalised `country\|postal_code\|street\|house_no`, [reused rather than reimplemented](#dedupsignaturespy--step-a-signature-collapsing). Fed the *finalised* address (`street_cleaned`, `house_number`, `postal_code`, `country_region_key`). A record with neither a street nor a postal code has no address signal and never groups — a blank address would otherwise hash every such record into one block and let a bare name match carry an identity across unrelated rows. |
+| **Name** | `dedup.signatures.normalize_key` (lowercase, trim, collapse whitespace, strip punctuation, fold accents) → `tier1_ror._normalise_for_tokens` (canonicalise US legal-entity suffixes: Incorporated→inc, Corporation→corp, Company→co, Limited→ltd) → `dedup.candidates.strip_legal_suffix` (remove the trailing legal-form token run, against the `LEGAL_SUFFIXES` table already there). Three existing normalisers composed, each for the one thing it does; a fourth is not written. |
+
+#### The legal-form compatibility rule
+
+`normalize_key` deliberately does not strip legal forms, so the demo batch's Coastal trio produces `coastal diagnostics inc`, `coastal diagnostics` and `coastal diagnostics inc` — the middle row falls into its own group and gains nothing. **Stripping legal forms from the key is the wrong fix:** it would group `Delta Analytical Inc` with `Delta Analytical LLC` at a shared address, which are potentially distinct legal entities and exactly the judgement Phase 2 exists to make.
+
+The base name and the legal form are therefore kept **separate**. Within one address block, two rows group together when their base names are equal **and** their legal forms are compatible — identical after canonicalisation, or absent on one side.
+
+| Pair | Verdict |
+|---|---|
+| `Coastal Diagnostics Inc` + `Coastal Diagnostics` | compatible — absent on one side |
+| `Coastal Diagnostics Inc` + `Coastal Diagnostics, Inc.` | compatible — identical after canonicalisation |
+| `Lockheed Martin Corp` + `Lockheed Martin Corporation` | compatible — `_normalise_for_tokens` maps both to `corp` |
+| `Delta Analytical Inc` + `Delta Analytical LLC` | **not** compatible — separate groups |
+
+Compatibility is **not transitive**: an absent form is compatible with every form. So when one base name in a block carries two or more *different* legal forms, each form gets its own group and every absent-form row is left alone in its own. Assigning the bare row to one of the competing forms would be a guess, and guessing which legal entity a row belongs to is Phase 2's call.
+
+#### What propagates
+
+Six fields are eligible. Which of them actually move depends on whether the group has a registry behind it — and the two rules are deliberately not equally strong.
+
+**Registry consensus.** The group holds **exactly one** distinct non-null registry identity — at most one `ror_id` and at most one `lei_id`, with at least one present. The registry-carrying member with the most ids (then the earliest `tier_used`, then the earliest batch position) is the **donor**, elected deterministically, and the donor's values win outright. The registry is the authority; a majority of unresolved rows does not outvote it.
+
+**Name-form consensus.** The group holds **no** registry identity. Here the pass **never chooses between competing values — it only fills gaps where the group is already unanimous.** A field moves only when the members hold exactly one distinct non-null value for it; two rows holding two different domains keep both, and the third keeps its null.
+
+`name1_enriched` is the single exception to that, and only because its competing values are not competing facts: every member already carries the same organisation name — that is what grouped them — and they differ only in how the legal form is spelled, punctuated or cased. The **modal** surface form wins, ties breaking on the earliest tier then batch order. The batch's own majority spelling is evidence; "which legal form is more correct" is not a judgement this pass is entitled to make.
+
+> **Does the weaker rule smuggle a domain past the [ownership guard](#2b--ownership-guard-domain_ownership_guard_enabled-default-on)?** No. The domain being filled in already satisfied that guard on a record whose Name 1 is *equal to the receiving record's after canonicalisation* — that equality is the grouping criterion. The guard's name-similarity condition would therefore reach the same verdict on the receiving record. The value is not attributed on weaker evidence than the guard requires; it is attributed on the same evidence, and only where nothing in the group contradicts it.
+
+| Propagated (organisation-level) | Never propagated (department- or record-level) |
+|---|---|
+| `ror_id`, `lei_id` | `name2_enriched`, `name3_enriched`, `name4_enriched` |
+| `name1_enriched` | `department_domain` |
+| `domain`, `website_url` | `contact_enriched`, `care_of_enriched`, `email_enriched` |
+| `record_type` | `search_term_2` |
+| | `street`, `house_number`, and every other address field |
+
+**The department distinction is the point of that second column.** Rows 12–14 of the demo batch are Stanford at one address with three different departments (chemistry, chemistry, physics). They must share Stanford's `ror_id` and `domain` and keep their own `name2_enriched` and `department_domain`. Grouping is on Name 1 only: Name 2 is not in the key, and differing Name 2 values never prevent propagation.
+
+Three details of the copy itself:
+
+- **Copied verbatim.** A propagated value comes from an already-finalised record, so it is never re-run through [abbreviation expansion](#finalization) or [output casing](#rule-7--output-casing-normalisation) — doing so would corrupt a registry-owned name.
+- **A null donor value never erases a resolved one.** Where the donor holds no `domain`, the group's single distinct domain (if it has exactly one) is used instead, and `domain` / `website_url` are always taken from the *same* record so the two cannot diverge.
+- **`record_type = "unknown"` is treated as absent,** not as a value that could conflict — consistent with [`unknown` being "no source produced an answer"](#unknown-is-a-real-fourth-state).
+
+#### Conflicts, provenance and what is left alone
+
+A group holding two or more conflicting registry identities propagates **nothing** and every member is left exactly as it was. **No flag is written** — the flagging model is being redesigned separately — and the group is recorded in telemetry only.
+
+On a record that inherited at least one field:
+
+| | |
+|---|---|
+| **`source`** | set to `"batch_consensus"` |
+| **`tier_used`** | **kept**, never set to 1. Inflating the Tier 1 count would corrupt the tier-distribution figures used in evaluation. |
+| **`flag_for_review` / `flag_reason`** | untouched. A record that inherits keeps the flags it earned on its own. |
+| **`record_type_source`** | untouched, and therefore still names the evidence *that record's own* classification came from. The classification authority is [`classifier`](#record-classification-logic); this stage moves a decided value, it does not decide one. |
+
+A record whose fields already agree with the consensus is not counted as updated and keeps its own `source`. The donor inherits nothing from itself.
+
+**Known limits.** Three, all measured on the demo batch:
+
+- **A group with no registry identity cannot break a tie.** Name-form consensus fills unanimous gaps only, so a group whose members resolved two *different* domains keeps both — there is no authority in the group to prefer one, and inventing one would be guessing. Such a group is not a conflict either (nothing conflicts about the identity itself), so it is not counted in `consensus_conflicts`; it simply converges less. A registry hit upstream is what turns it into the stronger rule.
+- **A synonym is not a spelling variant.** The name key folds accents but translates nothing, so a `Universität Stuttgart` still spelled that way at the end of the pipeline would not group with `University of Stuttgart` — the same conservatism, and the same consequence, that [`normalize_key` carries in Phase 2](#dedupsignaturespy--step-a-signature-collapsing). In practice these rows converge before they reach this stage, because [Stage 5](#stage-5-tier-1-re-lookup-after-canonicalisation) rewrites Name 1 to the registry's official form; that is where a synonym belongs, not in a grouping key.
+- **The address key splits `street` and `house_no`,** so two rows whose house number was pulled out of the street on one and left in it on the other land in different blocks. Both rows go through the same address stage, so identical inputs split identically; a batch that spells one address two ways can still miss.
+
+**Measured on the 50-record demo batch** (live run, after Fixes 1-5): 7 groups, 7 records updated, 0 conflicts, `{ror_id: 4, lei_id: 1, domain: 2, website_url: 2, name1_enriched: 2}`. Registry consensus carries rows 18/20/21, which inherit Lockheed's `ror_id` from row 19, and rows 5 and 24, which exchange the ROR id and the LEI each was missing (row 24 also gains `mit.edu`). Name-form consensus carries rows 15 and 16, which take the trio's modal `Coastal Diagnostics, Inc.` and fill the one domain the group agreed on. Stanford, Yale and both Stuttgart groups were already converged by Fixes 2 and 4 and are left untouched. The tier distribution is identical either side of the pass, no flag moves, and no excluded field moves.
+
+**Telemetry.** `consensus_groups` (groups with 2+ members), `consensus_records_updated` (records that inherited at least one field), `consensus_conflicts` (groups holding conflicting registry identities), and `consensus_fields_propagated` (counts per field) on the batch summary. Per-record `batch_consensus_inherit` and per-group `batch_consensus_conflict` structured log lines carry the detail.
 
 
 ## Use Case Reference Table
@@ -1654,6 +1742,7 @@ enrichment_api/
 │   ├── lab_resolver.py           # UC 13: granular unit → parent department resolver
 │   ├── tier3_llm.py              # Tier 3: Pure LLM inference (last resort)
 │   ├── company_canonical.py      # Company name canonicalization via LLM
+│   ├── batch_consensus.py        # Stage 6: propagate one identity across a batch's same-org/same-address rows
 │   └── confidence.py             # Scoring rules, flag logic, status assignment
 │
 ├── llm/                          # LLM integration layer
@@ -1778,6 +1867,10 @@ LLM-based check for Name1+Name2 being a single split organization name. Early-ex
 
 `derive_search_terms(result)` computes `search_term_1` (institution) and `search_term_2` (department) and applies terminal normalisation (uppercase, trimmed, ≤32 chars on a word boundary). Also exposes the shared helpers `strip_tld`, `clean_name2_phrase`, `extract_dept_core`, `derive_acronym`, and `_dept_domain_to_search_term`. See [Website, Domain, Department-Domain & Search-Term Resolution](#website-domain-department-domain--search-term-resolution).
 
+### `enrichment/batch_consensus.py` — Batch Consensus (Stage 6)
+
+`apply_batch_consensus` converges organisation-level fields across a finalised batch, in place. Groups by address block (`derive_block_id`, reused from `dedup/signatures.py`) then by canonicalised Name 1 plus a compatible legal form. A group with exactly one registry identity propagates `ror_id`, `lei_id`, `name1_enriched`, `domain`, `website_url` and `record_type` from a deterministically elected donor; a group with none falls back to `_consensus_name_form` (modal Name 1 spelling) plus unanimous-gap-fill on the remaining fields, never choosing between competing values. Inheriting records are marked `source = "batch_consensus"`. `PROPAGATED_FIELDS` and `NEVER_PROPAGATED` are module-level data so the exclusion of department-level fields is readable and testable. Never merges, drops or reorders a record; never touches `tier_used` or any flag. Full description in [Stage 6: Batch consensus](#stage-6-batch-consensus).
+
 ### `enrichment/confidence.py` — Scoring and Flags
 
 Centralizes all flag-for-review logic and enrichment status assignment. Ensures consistent flagging rules across all tiers.
@@ -1789,6 +1882,8 @@ Pydantic v2 models for the Phase 2 endpoint: `DedupRow`, `DedupRequest`, `DedupR
 ### `dedup/signatures.py` — STEP A (Signature Collapsing)
 
 Conservative normalization (`normalize_key`: lowercase, trim, collapse whitespace, strip punctuation, fold accents), block-id derivation (`derive_block_id`, a SHA-1 of the normalized `country|postal_code|street|house_no`), row grouping, and `build_signatures` which collapses rows into distinct `(norm_name1, norm_name2)` signatures with stable `s1, s2, …` ids. The normalized key is internal only and never reaches the LLM.
+
+`derive_block_id` has a consumer outside Phase 2 too: [Stage 6 — batch consensus](#stage-6-batch-consensus) groups a finalised batch by it. **Using the same block derivation in both phases is deliberate.** Phase 1's consensus pass and Phase 2's adjudicator must not be able to disagree about what "the same address" means — if they did, a group Phase 1 converged could land in two Phase 2 blocks, or vice versa. There is one address key in this codebase and this is it.
 
 `normalize_key` has a second consumer outside Phase 2: [`utils/cache.py`](#utilscachepy--cache-keys--batch-cache) builds the ROR / LEI / SERP cache keys with it, for the same reason it exists here — it collapses spelling variants of one entity without stripping legal forms or expanding abbreviations, which is the right conservatism for a cache key too. It is reused rather than reimplemented so the two never drift apart. Note what that conservatism means in practice: `Universität Stuttgart`, `University of Stuttgart` and `Uni Stuttgart` remain **three** distinct keys — the accent folds, the synonym does not.
 
@@ -2084,6 +2179,9 @@ pytest tests/test_dedup.py -v
 
 # Phase 2 scoring / election, residue nomination, and eval harness
 pytest tests/test_scoring.py tests/test_candidates.py tests/test_dedup_eval.py -v
+
+# Stage 6 batch consensus (grouping boundaries, propagation, invariants)
+pytest tests/test_batch_consensus.py -v
 ```
 
 ### Phase 2 Dedup Test Coverage
@@ -2285,6 +2383,13 @@ For each record (async, concurrency-limited via Semaphore):
        └─ RETURN EnrichmentResult
   │
   ▼
+Stage 6: batch consensus — group by address block + canonical name + legal form;
+         one registry identity → propagate ror_id / lei_id / name1_enriched /
+         domain / website_url / record_type from the registry donor;
+         no registry identity → modal name form + unanimous-gap-fill only
+         (source = "batch_consensus"; tier_used, flags and record count untouched)
+  │
+  ▼
 Aggregate batch → EnrichmentSummary (counts by tier, status, type)
   │
   ▼
@@ -2294,6 +2399,20 @@ RETURN EnrichmentResponse (JSON)
 ---
 
 ## Changelog
+
+### Batch consensus — one identity per organisation per address (newest)
+
+Rows that share an organisation *and* an address could still leave the batch with different identities: each record is enriched in isolation, so one resolved against a registry and another did not. Four groups in the demo batch — the Coastal Diagnostics trio, four Lockheed Martin rows, two MIT rows, three Stuttgart rows. [Canonical cache keys + the Tier 1 re-lookup](#stage-5-tier-1-re-lookup-after-canonicalisation) fix most of this at source; this is the safety net for the rest, and it is cheaper than having Phase 2 adjudicate the divergence later. Full detail in [Stage 6: Batch consensus](#stage-6-batch-consensus).
+
+- **Field propagation, never a merge.** The batch out is the same length and the same order as the batch in. Phase 2 remains the only place entities are merged.
+- **One address key in the codebase.** Grouping reuses `dedup.signatures.derive_block_id`, so Phase 1's consensus pass and Phase 2's adjudicator cannot disagree about what "the same address" means. Both halves of the grouping key are dictionary keys and nothing else — never output, never sent to an API, never in an LLM prompt, never in a scoring path.
+- **Legal-form compatibility instead of legal-form stripping.** `normalize_key` leaves legal forms alone by design, so `Coastal Diagnostics` and `Coastal Diagnostics Inc` do not collapse. The base name and the legal form are kept separate and two rows group when the bases match and the forms are compatible (identical after canonicalisation, or absent on one side). Stripping the form would have grouped `Delta Analytical Inc` with `Delta Analytical LLC`, which is exactly Phase 2's judgement to make. Compatibility is not transitive, so a bare name between two competing forms is left on its own.
+- **Organisation-level fields only.** `ror_id`, `lei_id`, `name1_enriched`, `domain`, `website_url`, `record_type` propagate. `name2_enriched`, `department_domain`, contact/email/care-of, `search_term_2` and every address field never do — rows 12–14 share Stanford's ROR id and domain and keep `chemistry.stanford.edu` / `chemistry.stanford.edu` / `physics.stanford.edu`.
+- **Two tiers, deliberately unequal.** With one registry identity in the group, the registry-resolved donor's values win outright. With none, the pass never picks between competing values — it fills gaps only where the group is already unanimous, and the sole exception is the name form, whose variants are spellings of a name every member already holds (the modal one wins). That is what converges the Coastal trio, which no registry resolved. It smuggles nothing past the [ownership guard](#2b--ownership-guard-domain_ownership_guard_enabled-default-on): a filled-in domain already satisfied that guard on a record whose Name 1 equals the receiving record's after canonicalisation, so the guard would reach the same verdict.
+- **Conflicts propagate nothing and are not flagged.** A group holding two or more conflicting registry identities is left entirely alone and recorded in telemetry; the flagging model is being redesigned separately.
+- **New `source` value `"batch_consensus"`,** and `tier_used` is deliberately **kept** on an inheriting record — setting it to 1 would inflate the Tier 1 count and corrupt the tier-distribution figures used in evaluation. Flags are untouched. Propagated values are copied verbatim: they come from an already-finalised record and must not meet Fix 4's expansion or Fix 5's casing a second time.
+- **Measured on the demo batch** (live run) — 7 groups, 7 records updated, 0 conflicts, `{ror_id: 4, lei_id: 1, domain: 2, website_url: 2, name1_enriched: 2}`. Rows 18/20/21 inherit Lockheed's `ror_id` from row 19; rows 5 and 24 exchange the ROR id and the LEI each was missing; rows 15/16 take the Coastal trio's modal name form and its one agreed domain. Stanford, Yale and both Stuttgart groups were already converged by Fixes 2 and 4. The tier distribution is identical either side of the pass. The legal-form rule created exactly one group `normalize_key` alone would not — the Coastal trio.
+- **Telemetry** — `consensus_groups`, `consensus_records_updated`, `consensus_conflicts`, `consensus_fields_propagated` on the batch summary. Tests `test_batch_consensus.py`.
 
 ### One classification authority for `record_type` (newest)
 
