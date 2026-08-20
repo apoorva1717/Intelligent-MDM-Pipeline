@@ -234,6 +234,52 @@ def _extract_identifier_tokens(text: str) -> set[str]:
     return tokens
 
 
+def _has_case_contrast(text: str) -> bool:
+    """True when capitalisation in *text* carries information.
+
+    An upper-case token only *stands out* as an acronym if something around
+    it is not upper case. "HFT Stuttgart" has that contrast; "BRIGHAM &
+    WOMENS HOSP" does not — there, upper case is the storage convention of
+    the whole field, not a statement about any one token.
+    """
+    return any(c.islower() for c in text)
+
+
+def _guard_identifier_tokens(text: str) -> set[str]:
+    """Query acronyms that may *block* a match (the identifier-token guard).
+
+    Same extraction as `_extract_identifier_tokens`, but gated on case
+    CONTRAST rather than on upper case alone.
+
+    SAP master data is frequently stored entirely in upper case. In a query
+    like "BRIGHAM & WOMENS HOSP" *every* short token is an all-caps token, so
+    an upper-case-only test reads ordinary words as acronyms and demands each
+    appear literally in the candidate. "HOSP" does not appear in "Brigham and
+    Women's Hospital", so the exact/subset/substring shortcuts were blocked
+    and the fuzzy branch — raw ratio 0.82, comfortably over the 0.8
+    threshold — was capped to 0.7 and rejected. The organisation is in ROR
+    (`ror.org/04b6nzv94`) and ROR's own affiliation scorer returned it at
+    1.0; only the local guard stood in the way. That is systemic across every
+    all-caps input, not a property of this one record.
+
+    When the query has no case contrast the casing carries no signal, so the
+    guard does not fire and scoring falls through to the other branches. The
+    distinctive-token guard and the country guard are untouched and still
+    apply, on all-caps queries as much as any other.
+
+    The guard stays fully active for mixed-case queries, which is the signal
+    it was designed for: "HFT Stuttgart" must still be kept from
+    subset-matching Marienhospital Stuttgart on the shared city token.
+
+    `_initialism_score` deliberately keeps using `_extract_identifier_tokens`
+    instead: it can only *raise* a score, never cap one, so an all-caps
+    "JAH VA HOSPITAL" should still be able to reach James A. Haley.
+    """
+    if not _has_case_contrast(text):
+        return set()
+    return _extract_identifier_tokens(text)
+
+
 def _extract_location_tokens(*parts: str | None) -> set[str]:
     """Significant (>=4 char) tokens drawn from the address context
     (city / state / country).
@@ -359,7 +405,13 @@ def _compute_name_score(
     # Stuttgart Observatory …) on the shared "stuttgart" token alone and
     # return a false 1.0. Require every query acronym to appear in the
     # candidate before the shortcut can fire.
-    q_identifiers = _extract_identifier_tokens(query)
+    #
+    # Gated on case CONTRAST, not upper case alone — see
+    # _guard_identifier_tokens. An entirely upper-case query (SAP's usual
+    # storage form, e.g. "BRIGHAM & WOMENS HOSP") has no contrast to read, so
+    # the guard would treat every short word as an acronym and block a true
+    # match; there it does not fire at all.
+    q_identifiers = _guard_identifier_tokens(query)
 
     # Step 2 + 3: subset and substring only against CANONICAL names.
     # The substring rule is tight (≥90% length similarity) to prevent

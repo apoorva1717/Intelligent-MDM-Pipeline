@@ -1,0 +1,912 @@
+{
+  "params": {
+    "affiliation": "HFT Stuttgart, STUTTGART, DE"
+  },
+  "response": {
+    "number_of_results": 10,
+    "items": [
+      {
+        "substring": "HFT Stuttgart, STUTTGART, DE",
+        "score": 0.81,
+        "matching_type": "SINGLE SEARCH",
+        "chosen": false,
+        "organization": {
+          "admin": {
+            "created": {
+              "date": "2018-11-14",
+              "schema_version": "1.0"
+            },
+            "last_modified": {
+              "date": "2024-12-11",
+              "schema_version": "2.1"
+            }
+          },
+          "domains": [],
+          "established": 1857,
+          "external_ids": [
+            {
+              "all": [
+                "grid.466250.3"
+              ],
+              "preferred": "grid.466250.3",
+              "type": "grid"
+            },
+            {
+              "all": [
+                "0000 0001 0789 9627"
+              ],
+              "preferred": null,
+              "type": "isni"
+            },
+            {
+              "all": [
+                "Q568692"
+              ],
+              "preferred": null,
+              "type": "wikidata"
+            }
+          ],
+          "id": "https://ror.org/057qv9h29",
+          "links": [
+            {
+              "type": "website",
+              "value": "https://www.hmdk-stuttgart.de"
+            },
+            {
+              "type": "wikipedia",
+              "value": "https://en.wikipedia.org/wiki/State_University_of_Music_and_Performing_Arts_Stuttgart"
+            }
+          ],
+          "locations": [
+            {
+              "geonames_details": {
+                "continent_code": "EU",
+                "continent_name": "Europe",
+                "country_code": "DE",
+                "country_name": "Germany",
+                "country_subdivision_code": "BW",
+                "country_subdivision_name": "Baden-Wurttemberg",
+                "lat": 48.78232,
+                "lng": 9.17702,
+                "name": "Stuttgart"
+              },
+              "geonames_id": 2825297
+            }
+          ],
+          "names": [
+            {
+              "lang": "de",
+              "types": [
+                "alias"
+              ],
+              "value": "HMDK Stuttgart"
+            },
+            {
+              "lang": "de",
+              "types": [
+                "alias"
+              ],
+              "value": "Musikhochschule Stuttgart"
+            },
+            {
+              "lang": "de",
+              "types": [
+                "ror_display",
+                "label"
+              ],
+              "value": "Staatliche Hochschule f\u00fcr Musik und Darstellende Kunst Stuttgart"
+            },
+            {
+              "lang": "en",
+              "types": [
+                "label"
+              ],
+              "value": "State University of Music and Performing Arts Stuttgart"
+            }
+          ],
+          "relationships": [],
+          "status": "active",
+          "types": [
+            "education"
+          ]
+        }
+      },
+      {
+        "substring": "HFT Stuttgart, STUTTGART, DE",
+        "score": 0.79,
+        "matching_type": "SINGLE SEARCH",
+        "chosen": false,
+        "organization": {
+          "admin": {
+            "created": {
+              "date": "2020-12-21",
+              "schema_version": "1.0"
+            },
+            "last_modified": {
+              "date": "2024-12-11",
+              "schema_version": "2.1"
+            }
+          },
+          "domains": [],
+          "established": null,
+          "external_ids": [
+            {
+              "all": [
+                "grid.509850.1"
+              ],
+              "preferred": "grid.509850.1",
+              "type": "grid"
+            },
+            {
+              "all": [
+                "0000 0004 0426 7837"
+              ],
+              "preferred": null,
+              "type": "isni"
+            },
+            {
+              "all": [
+                "Q104481400"
+              ],
+              "preferred": "Q104481400",
+              "type": "wikidata"
+            }
+          ],
+          "id": "https://ror.org/049waqj15",
+          "links": [
+            {
+              "type": "website",
+              "value": "https://www.cvua-stuttgart.de/"
+            }
+          ],
+          "locations": [
+            {
+              "geonames_details": {
+                "continent_code": "EU",
+                "continent_name": "Europe",
+                "country_code": "DE",
+                "country_name": "Germany",
+                "country_subdivision_code": "BW",
+                "country_subdivision_name": "Baden-Wurttemberg",
+                "lat": 48.80912,
+                "lng": 9.27697,
+                "name": "Fellbach"
+              },
+              "geonames_id": 2927268
+            }
+          ],
+          "names": [
+            {
+              "lang": "de",
+              "types": [
+                "alias"
+              ],
+              "value": "CVUA Stuttgart"
+            },
+            {
+              "lang": "en",
+              "types": [
+                "alias"
+              ],
+              "value": "Chemical and Veterinary Investigations Office Stuttgart"
+            },
+            {
+              "lang": "de",
+              "types": [
+                "label",
+                "ror_display"
+              ],
+              "value": "Chemisches und Veterin\u00e4runtersuchungsamt Stuttgart"
+            }
+          ],
+          "relationships": [],
+          "status": "active",
+          "types": [
+            "facility"
+          ]
+        }
+      },
+      {
+        "substring": "HFT Stuttgart, STUTTGART, DE",
+        "score": 0.75,
+        "matching_type": "SINGLE SEARCH",
+        "chosen": false,
+        "organization": {
+          "admin": {
+            "created": {
+              "date": "2018-11-14",
+              "schema_version": "1.0"
+            },
+            "last_modified": {
+              "date": "2024-12-11",
+              "schema_version": "2.1"
+            }
+          },
+          "domains": [],
+          "established": 1919,
+          "external_ids": [
+            {
+              "all": [
+                "grid.248501.a"
+              ],
+              "preferred": "grid.248501.a",
+              "type": "grid"
+            },
+            {
+              "all": [
+                "Q316089"
+              ],
+              "preferred": null,
+              "type": "wikidata"
+            }
+          ],
+          "id": "https://ror.org/00vxe3x87",
+          "links": [
+            {
+              "type": "website",
+              "value": "https://www.sternwarte.de/english.html"
+            },
+            {
+              "type": "wikipedia",
+              "value": "https://en.wikipedia.org/wiki/Stuttgart_Observatory"
+            }
+          ],
+          "locations": [
+            {
+              "geonames_details": {
+                "continent_code": "EU",
+                "continent_name": "Europe",
+                "country_code": "DE",
+                "country_name": "Germany",
+                "country_subdivision_code": "BW",
+                "country_subdivision_name": "Baden-Wurttemberg",
+                "lat": 48.78232,
+                "lng": 9.17702,
+                "name": "Stuttgart"
+              },
+              "geonames_id": 2825297
+            }
+          ],
+          "names": [
+            {
+              "lang": "de",
+              "types": [
+                "label"
+              ],
+              "value": "Sternwarte Stuttgart"
+            },
+            {
+              "lang": "de",
+              "types": [
+                "ror_display",
+                "label"
+              ],
+              "value": "Stuttgart Observatory"
+            }
+          ],
+          "relationships": [],
+          "status": "active",
+          "types": [
+            "facility"
+          ]
+        }
+      },
+      {
+        "substring": "HFT Stuttgart, STUTTGART, DE",
+        "score": 0.7,
+        "matching_type": "SINGLE SEARCH",
+        "chosen": false,
+        "organization": {
+          "admin": {
+            "created": {
+              "date": "2018-11-14",
+              "schema_version": "1.0"
+            },
+            "last_modified": {
+              "date": "2024-12-11",
+              "schema_version": "2.1"
+            }
+          },
+          "domains": [],
+          "established": 1843,
+          "external_ids": [
+            {
+              "all": [
+                "grid.462860.e"
+              ],
+              "preferred": "grid.462860.e",
+              "type": "grid"
+            },
+            {
+              "all": [
+                "0000 0001 2284 6128"
+              ],
+              "preferred": null,
+              "type": "isni"
+            }
+          ],
+          "id": "https://ror.org/00f9c7v42",
+          "links": [
+            {
+              "type": "website",
+              "value": "http://www.staatsgalerie.de/"
+            },
+            {
+              "type": "wikipedia",
+              "value": "https://en.wikipedia.org/wiki/Staatsgalerie_Stuttgart"
+            }
+          ],
+          "locations": [
+            {
+              "geonames_details": {
+                "continent_code": "EU",
+                "continent_name": "Europe",
+                "country_code": "DE",
+                "country_name": "Germany",
+                "country_subdivision_code": "BW",
+                "country_subdivision_name": "Baden-Wurttemberg",
+                "lat": 48.78232,
+                "lng": 9.17702,
+                "name": "Stuttgart"
+              },
+              "geonames_id": 2825297
+            }
+          ],
+          "names": [
+            {
+              "lang": "de",
+              "types": [
+                "ror_display",
+                "label"
+              ],
+              "value": "Staatsgalerie Stuttgart"
+            }
+          ],
+          "relationships": [],
+          "status": "active",
+          "types": [
+            "archive"
+          ]
+        }
+      },
+      {
+        "substring": "HFT Stuttgart, STUTTGART, DE",
+        "score": 0.67,
+        "matching_type": "SINGLE SEARCH",
+        "chosen": false,
+        "organization": {
+          "admin": {
+            "created": {
+              "date": "2018-11-14",
+              "schema_version": "1.0"
+            },
+            "last_modified": {
+              "date": "2024-12-11",
+              "schema_version": "2.1"
+            }
+          },
+          "domains": [],
+          "established": 1829,
+          "external_ids": [
+            {
+              "all": [
+                "501100009534"
+              ],
+              "preferred": "501100009534",
+              "type": "fundref"
+            },
+            {
+              "all": [
+                "grid.5719.a"
+              ],
+              "preferred": "grid.5719.a",
+              "type": "grid"
+            },
+            {
+              "all": [
+                "0000 0004 1936 9713"
+              ],
+              "preferred": null,
+              "type": "isni"
+            },
+            {
+              "all": [
+                "Q122453"
+              ],
+              "preferred": null,
+              "type": "wikidata"
+            }
+          ],
+          "id": "https://ror.org/04vnq7t77",
+          "links": [
+            {
+              "type": "website",
+              "value": "http://www.uni-stuttgart.de/home/index.en.html"
+            },
+            {
+              "type": "wikipedia",
+              "value": "http://en.wikipedia.org/wiki/University_of_Stuttgart"
+            }
+          ],
+          "locations": [
+            {
+              "geonames_details": {
+                "continent_code": "EU",
+                "continent_name": "Europe",
+                "country_code": "DE",
+                "country_name": "Germany",
+                "country_subdivision_code": "BW",
+                "country_subdivision_name": "Baden-Wurttemberg",
+                "lat": 48.78232,
+                "lng": 9.17702,
+                "name": "Stuttgart"
+              },
+              "geonames_id": 2825297
+            }
+          ],
+          "names": [
+            {
+              "lang": "en",
+              "types": [
+                "ror_display",
+                "label"
+              ],
+              "value": "University of Stuttgart"
+            },
+            {
+              "lang": "de",
+              "types": [
+                "label"
+              ],
+              "value": "Universit\u00e4t Stuttgart"
+            }
+          ],
+          "relationships": [
+            {
+              "label": "Center for Integrated Quantum Science and Technology",
+              "type": "child",
+              "id": "https://ror.org/01z25am55"
+            },
+            {
+              "label": "TU9",
+              "type": "related",
+              "id": "https://ror.org/02nx8n605"
+            }
+          ],
+          "status": "active",
+          "types": [
+            "education",
+            "funder"
+          ]
+        }
+      },
+      {
+        "substring": "HFT Stuttgart, STUTTGART, DE",
+        "score": 0.67,
+        "matching_type": "SINGLE SEARCH",
+        "chosen": false,
+        "organization": {
+          "admin": {
+            "created": {
+              "date": "2018-11-14",
+              "schema_version": "1.0"
+            },
+            "last_modified": {
+              "date": "2024-12-11",
+              "schema_version": "2.1"
+            }
+          },
+          "domains": [],
+          "established": 1960,
+          "external_ids": [
+            {
+              "all": [
+                "grid.500299.7"
+              ],
+              "preferred": "grid.500299.7",
+              "type": "grid"
+            },
+            {
+              "all": [
+                "0000 0004 0623 633X"
+              ],
+              "preferred": null,
+              "type": "isni"
+            }
+          ],
+          "id": "https://ror.org/02c10cc21",
+          "links": [
+            {
+              "type": "website",
+              "value": "https://www.hft.org.uk/"
+            }
+          ],
+          "locations": [
+            {
+              "geonames_details": {
+                "continent_code": "EU",
+                "continent_name": "Europe",
+                "country_code": "GB",
+                "country_name": "United Kingdom",
+                "country_subdivision_code": "ENG",
+                "country_subdivision_name": "England",
+                "lat": 51.45523,
+                "lng": -2.59665,
+                "name": "Bristol"
+              },
+              "geonames_id": 2654675
+            }
+          ],
+          "names": [
+            {
+              "lang": "en",
+              "types": [
+                "alias"
+              ],
+              "value": "HF Trust Ltd"
+            },
+            {
+              "lang": "en",
+              "types": [
+                "ror_display",
+                "label"
+              ],
+              "value": "Hft"
+            },
+            {
+              "lang": "en",
+              "types": [
+                "alias"
+              ],
+              "value": "Home Farm Trust"
+            }
+          ],
+          "relationships": [],
+          "status": "active",
+          "types": [
+            "other"
+          ]
+        }
+      },
+      {
+        "substring": "HFT Stuttgart, STUTTGART, DE",
+        "score": 0.65,
+        "matching_type": "SINGLE SEARCH",
+        "chosen": false,
+        "organization": {
+          "admin": {
+            "created": {
+              "date": "2018-11-14",
+              "schema_version": "1.0"
+            },
+            "last_modified": {
+              "date": "2024-12-11",
+              "schema_version": "2.1"
+            }
+          },
+          "domains": [],
+          "established": 1890,
+          "external_ids": [
+            {
+              "all": [
+                "grid.459736.a"
+              ],
+              "preferred": "grid.459736.a",
+              "type": "grid"
+            },
+            {
+              "all": [
+                "0000 0000 8976 658X"
+              ],
+              "preferred": null,
+              "type": "isni"
+            }
+          ],
+          "id": "https://ror.org/00g01gj95",
+          "links": [
+            {
+              "type": "website",
+              "value": "http://www.marienhospital-stuttgart.de/"
+            }
+          ],
+          "locations": [
+            {
+              "geonames_details": {
+                "continent_code": "EU",
+                "continent_name": "Europe",
+                "country_code": "DE",
+                "country_name": "Germany",
+                "country_subdivision_code": "BW",
+                "country_subdivision_name": "Baden-Wurttemberg",
+                "lat": 48.78232,
+                "lng": 9.17702,
+                "name": "Stuttgart"
+              },
+              "geonames_id": 2825297
+            }
+          ],
+          "names": [
+            {
+              "lang": "de",
+              "types": [
+                "ror_display",
+                "label"
+              ],
+              "value": "Marienhospital Stuttgart"
+            }
+          ],
+          "relationships": [],
+          "status": "active",
+          "types": [
+            "healthcare"
+          ]
+        }
+      },
+      {
+        "substring": "HFT Stuttgart, STUTTGART, DE",
+        "score": 0.65,
+        "matching_type": "SINGLE SEARCH",
+        "chosen": false,
+        "organization": {
+          "admin": {
+            "created": {
+              "date": "2023-08-30",
+              "schema_version": "1.0"
+            },
+            "last_modified": {
+              "date": "2024-12-11",
+              "schema_version": "2.1"
+            }
+          },
+          "domains": [],
+          "established": null,
+          "external_ids": [
+            {
+              "all": [
+                "0000 0001 0197 5676"
+              ],
+              "preferred": "0000 0001 0197 5676",
+              "type": "isni"
+            },
+            {
+              "all": [
+                "Q1036628"
+              ],
+              "preferred": "Q1036628",
+              "type": "wikidata"
+            }
+          ],
+          "id": "https://ror.org/00nhngx75",
+          "links": [
+            {
+              "type": "website",
+              "value": "https://www.planetarium-stuttgart.de"
+            }
+          ],
+          "locations": [
+            {
+              "geonames_details": {
+                "continent_code": "EU",
+                "continent_name": "Europe",
+                "country_code": "DE",
+                "country_name": "Germany",
+                "country_subdivision_code": "BW",
+                "country_subdivision_name": "Baden-Wurttemberg",
+                "lat": 48.78232,
+                "lng": 9.17702,
+                "name": "Stuttgart"
+              },
+              "geonames_id": 2825297
+            }
+          ],
+          "names": [
+            {
+              "lang": "de",
+              "types": [
+                "alias"
+              ],
+              "value": "Carl-Zeiss-Planetarium Stuttgart"
+            },
+            {
+              "lang": "de",
+              "types": [
+                "ror_display",
+                "label"
+              ],
+              "value": "Planetarium Stuttgart"
+            }
+          ],
+          "relationships": [],
+          "status": "active",
+          "types": [
+            "facility"
+          ]
+        }
+      },
+      {
+        "substring": "HFT Stuttgart, STUTTGART, DE",
+        "score": 0.65,
+        "matching_type": "SINGLE SEARCH",
+        "chosen": false,
+        "organization": {
+          "admin": {
+            "created": {
+              "date": "2018-11-14",
+              "schema_version": "1.0"
+            },
+            "last_modified": {
+              "date": "2024-12-11",
+              "schema_version": "2.1"
+            }
+          },
+          "domains": [],
+          "established": 1999,
+          "external_ids": [
+            {
+              "all": [
+                "grid.419842.2"
+              ],
+              "preferred": "grid.419842.2",
+              "type": "grid"
+            },
+            {
+              "all": [
+                "0000 0001 0341 9964"
+              ],
+              "preferred": null,
+              "type": "isni"
+            }
+          ],
+          "id": "https://ror.org/059jfth35",
+          "links": [
+            {
+              "type": "website",
+              "value": "http://www.klinikum-stuttgart.de/"
+            }
+          ],
+          "locations": [
+            {
+              "geonames_details": {
+                "continent_code": "EU",
+                "continent_name": "Europe",
+                "country_code": "DE",
+                "country_name": "Germany",
+                "country_subdivision_code": "BW",
+                "country_subdivision_name": "Baden-Wurttemberg",
+                "lat": 48.78232,
+                "lng": 9.17702,
+                "name": "Stuttgart"
+              },
+              "geonames_id": 2825297
+            }
+          ],
+          "names": [
+            {
+              "lang": "de",
+              "types": [
+                "ror_display",
+                "label"
+              ],
+              "value": "Klinikum Stuttgart"
+            }
+          ],
+          "relationships": [
+            {
+              "label": "Katharinenhospital",
+              "type": "child",
+              "id": "https://ror.org/002n0by50"
+            },
+            {
+              "label": "Olgahospital",
+              "type": "child",
+              "id": "https://ror.org/01xet8208"
+            }
+          ],
+          "status": "active",
+          "types": [
+            "healthcare"
+          ]
+        }
+      },
+      {
+        "substring": "HFT Stuttgart, STUTTGART, DE",
+        "score": 0.62,
+        "matching_type": "SINGLE SEARCH",
+        "chosen": false,
+        "organization": {
+          "admin": {
+            "created": {
+              "date": "2018-11-14",
+              "schema_version": "1.0"
+            },
+            "last_modified": {
+              "date": "2024-12-11",
+              "schema_version": "2.1"
+            }
+          },
+          "domains": [],
+          "established": 2001,
+          "external_ids": [
+            {
+              "all": [
+                "grid.434945.b"
+              ],
+              "preferred": "grid.434945.b",
+              "type": "grid"
+            },
+            {
+              "all": [
+                "0000 0001 2155 8642"
+              ],
+              "preferred": null,
+              "type": "isni"
+            },
+            {
+              "all": [
+                "Q1233544"
+              ],
+              "preferred": null,
+              "type": "wikidata"
+            }
+          ],
+          "id": "https://ror.org/022r03w28",
+          "links": [
+            {
+              "type": "website",
+              "value": "https://www.hdm-stuttgart.de/english"
+            },
+            {
+              "type": "wikipedia",
+              "value": "https://en.wikipedia.org/wiki/Stuttgart_Media_University"
+            }
+          ],
+          "locations": [
+            {
+              "geonames_details": {
+                "continent_code": "EU",
+                "continent_name": "Europe",
+                "country_code": "DE",
+                "country_name": "Germany",
+                "country_subdivision_code": "BW",
+                "country_subdivision_name": "Baden-Wurttemberg",
+                "lat": 48.78232,
+                "lng": 9.17702,
+                "name": "Stuttgart"
+              },
+              "geonames_id": 2825297
+            }
+          ],
+          "names": [
+            {
+              "lang": "de",
+              "types": [
+                "label"
+              ],
+              "value": "Hochschule der Medien"
+            },
+            {
+              "lang": "de",
+              "types": [
+                "alias"
+              ],
+              "value": "Hochschule der Medien Stuttgart"
+            },
+            {
+              "lang": "en",
+              "types": [
+                "ror_display",
+                "label"
+              ],
+              "value": "Stuttgart Media University"
+            }
+          ],
+          "relationships": [],
+          "status": "active",
+          "types": [
+            "education"
+          ]
+        }
+      }
+    ]
+  }
+}
