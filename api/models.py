@@ -438,6 +438,21 @@ class EnrichmentResult(BaseModel):
     # unchanged.
     tier1_retry_attempted: bool = Field(default=False, exclude=True)
     tier1_retry_hit: Optional[str] = Field(default=None, exclude=True)
+    # Which evidence source decided `record_type` (enrichment/classifier.py):
+    # "ror" | "gleif" | "keyword" | "unresolved". A record_type of "unknown"
+    # always reports "unresolved". Excluded from the response body — the
+    # exported column set is unchanged.
+    record_type_source: Literal["ror", "gleif", "keyword", "unresolved"] = Field(
+        default="unresolved", exclude=True,
+    )
+    # Provisional type used for branch selection and tier gating during the run.
+    # Internal only; `record_type` is the decided value. `routing_type_mismatch`
+    # marks a record whose tiers were gated on a type the evidence later
+    # contradicted — it was routed down the wrong branch and is NOT re-run.
+    routing_type: Literal["research_institution", "company", "unknown"] = Field(
+        default="unknown", exclude=True,
+    )
+    routing_type_mismatch: bool = Field(default=False, exclude=True)
     contact_used: bool = Field(default=False, exclude=True)
     name2_match_result: Literal["exact", "partial", "no_match", "not_applicable", "unknown"] = Field(default="not_applicable", exclude=True)
     # Which use cases (0-9) fired for this record
@@ -469,6 +484,10 @@ class EnrichmentSummary(BaseModel):
     tier1_retry_attempts: int = 0
     tier1_retry_hits_ror: int = 0
     tier1_retry_hits_lei: int = 0
+    # Records whose provisional routing_type disagreed with the record_type the
+    # evidence finally supported — i.e. tiers were gated on the wrong type.
+    # Surfaced, not corrected: re-running those records is a separate decision.
+    routing_type_mismatch_count: int = 0
     # Lookups served under the normalised cache key that the previous
     # lowercase-only key would have missed — ROR + LEI + SERP combined.
     cache_hits_after_normalisation: int = 0

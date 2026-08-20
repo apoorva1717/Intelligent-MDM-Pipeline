@@ -18,6 +18,13 @@ logger = logging.getLogger(__name__)
 # Curated mock data keyed by a lowercased name substring. Both "Pfizer AG"
 # and "Pfizer" resolve to the SAME LEI (the whole point of the registry
 # step for dedup convergence).
+#
+# `category` / `legal_form_id` mirror what the live GLEIF API actually returns
+# and are what enrichment.classifier reads — an LEI on its own is not evidence
+# of commercial status. Verified against api.gleif.org: every entity sampled,
+# research and commercial alike, carries category "GENERAL", so the ISO 20275
+# legal-form code is what discriminates. MVII = "Company limited by shares"
+# (CH), 6QQB = "Aktiengesellschaft" (DE).
 _MOCK_LEI: dict[str, dict[str, Any]] = {
     "pfizer": {
         "lei_id": "549300ZZDOU0WGVYS169",
@@ -27,6 +34,10 @@ _MOCK_LEI: dict[str, dict[str, Any]] = {
         "strategy": "exact",
         "confidence": "high",
         "score": 100.0,
+        "category": "GENERAL",
+        "sub_category": None,
+        "legal_form_id": "MVII",
+        "legal_form_other": None,
     },
     "novartis": {
         "lei_id": "549300I83CO4VENK1N73",
@@ -36,6 +47,10 @@ _MOCK_LEI: dict[str, dict[str, Any]] = {
         "strategy": "exact",
         "confidence": "high",
         "score": 100.0,
+        "category": "GENERAL",
+        "sub_category": None,
+        "legal_form_id": "MVII",
+        "legal_form_other": None,
     },
     # Keyed by "bayer" (not "bayr"): the typo'd raw name "Bayr AG" misses
     # here, mirroring real GLEIF, and only the LLM-corrected "Bayer AG"
@@ -48,6 +63,10 @@ _MOCK_LEI: dict[str, dict[str, Any]] = {
         "strategy": "exact",
         "confidence": "high",
         "score": 100.0,
+        "category": "GENERAL",
+        "sub_category": None,
+        "legal_form_id": "6QQB",
+        "legal_form_other": None,
     },
     # A name that GLEIF returns a statistically-close but WRONG entity for —
     # the verification guard rejects it, so the client reports a miss.
@@ -106,6 +125,11 @@ class MockLEIClient(LEIClient):
             "legal_name": mock["legal_name"],
             "country": mock["country"],
             "status": mock["status"],
+            # Classification evidence, exactly as call_lei surfaces it.
+            "category": mock.get("category"),
+            "sub_category": mock.get("sub_category"),
+            "legal_form_id": mock.get("legal_form_id"),
+            "legal_form_other": mock.get("legal_form_other"),
         }
         logger.info(
             "[MOCK] LEI: '%s' → matched, LEI=%s, name='%s'",

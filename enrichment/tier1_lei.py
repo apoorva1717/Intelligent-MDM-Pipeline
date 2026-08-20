@@ -135,11 +135,22 @@ def _record_fields(record: dict[str, Any]) -> dict[str, Any]:
     entity = attrs.get("entity", {}) or {}
     legal_name = (entity.get("legalName", {}) or {}).get("name")
     legal_address = entity.get("legalAddress", {}) or {}
+    legal_form = entity.get("legalForm", {}) or {}
     return {
         "lei_id": record.get("id"),
         "legal_name": legal_name,
         "status": entity.get("status"),
         "country": legal_address.get("country"),
+        # Classification evidence, carried through untouched for
+        # enrichment.classifier. An LEI alone says nothing about commercial
+        # status; these fields are the part of the response that does.
+        # `category` is GENERAL for the overwhelming majority (MIT and Pfizer
+        # both), so `legalForm.id` — an ISO 20275 ELF code — does most of the
+        # work, with `legalForm.other` covering the 8888/9999 catch-alls.
+        "category": entity.get("category"),
+        "sub_category": entity.get("subCategory"),
+        "legal_form_id": legal_form.get("id"),
+        "legal_form_other": legal_form.get("other"),
     }
 
 

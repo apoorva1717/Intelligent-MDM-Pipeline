@@ -51,7 +51,10 @@ def _seed(**overrides):
     result = _init_result(rec)
     result.update({
         "name1_enriched": "University of Florida",
-        "record_type": "research_institution",
+        # Tier gating (including the department probe) reads `routing_type`,
+        # the provisional value the tiers write. `record_type` is decided in
+        # finalise by enrichment.classifier and is an output, not an input.
+        "routing_type": "research_institution",
         "website_url": "https://www.ufl.edu",
         "domain": None,
     })

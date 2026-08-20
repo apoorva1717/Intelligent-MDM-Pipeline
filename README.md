@@ -389,17 +389,17 @@ Once Tier 1 matches a parent organization, it attempts to match Name2 and Name3 
 
 #### Classification from ROR Types
 
-Rather than using keyword heuristics ("University" -> research institution), the pipeline derives `record_type` from the ROR organization's declared types:
+Rather than using keyword heuristics ("University" -> research institution), classification starts from the ROR organization's declared types:
 
 ```
 ROR types: education, healthcare, government, facility, nonprofit, archive, other
-  -> record_type = "research_institution"
+  -> research_institution
 
 ROR type: company
-  -> record_type = "company"
+  -> company
 ```
 
-If Tier 1 misses (no ROR match), classification falls back to keyword detection via `looks_like_research_institution()`.
+ROR sets `routing_type` immediately, so the rest of the run is gated correctly, and records the same verdict as the top-ranked evidence for the final decision. If Tier 1 misses, classification falls through to GLEIF entity metadata and then the keyword heuristic — see [Record Classification Logic](#record-classification-logic). The ROR mapping itself is unchanged.
 
 #### Caching
 
@@ -439,7 +439,8 @@ ROR is the registry for *research institutions* and has no good coverage of ordi
 
 **On a verified match:**
 - `name1_enriched` ← official GLEIF `legalName`
-- `lei_id` ← the LEI · `record_type = "company"` · `source = "gleif"` · `tier_used = 1`
+- `lei_id` ← the LEI · `source = "gleif"` · `tier_used = 1` · `routing_type = "company"`
+  - **A LEI hit does NOT set `record_type = "company"`.** It records `entity.category` / `entity.legalForm` as classification evidence and lets `finalise` decide; an LEI proves legal registration, not commercial status. See [the LEI guard](#the-lei-guard).
 - `confidence = high` (precise filter) / `medium` (fuzzy)
 - `domain` stays `null` — GLEIF has no website field. Downstream web-search tiers that need a domain simply won't have one for these; that's acceptable.
 
@@ -680,7 +681,7 @@ Tier 1 runs before the pipeline knows the organisation's real name, so it is que
 | **On a hit** | Writes `ror_id`/`lei_id`, `tier_used = 1`, `source` (`ROR`/`gleif`), and the marker `tier1_retry_hit` (`"ROR"`/`"gleif"`) that separates a retry hit from a first-pass Tier 1 hit. Registry provenance then satisfies [ownership condition 1](#2b--ownership-guard-domain_ownership_guard_enabled-default-on), so a record that lost its domain to the guard regains a verified one. |
 | **On a miss** | Nothing is written. The record keeps whatever the earlier tier produced. |
 | **Cost** | The retry consults the Tier 1 caches, so a canonical name already resolved for another row in the batch costs no API call. |
-| **`record_type`** | Deliberately **not** reassigned. Where the registry's view contradicts the value on the record the contradiction is left standing and logged as `tier1_retry_type_conflict`. |
+| **`record_type`** | Not written here. The retry records ROR's verdict as evidence and [`classifier`](#record-classification-logic) ranks it first in `finalise`. Where the verdict contradicts the branch the record was routed down, that is logged as `tier1_retry_type_conflict` and counted as `routing_type_mismatch`. |
 
 > ⚠️ **The retry can only fire if a tier actually *writes* a changed `name1_enriched`.** `company_canonical.canonical_preserves_identity` rejects a suggestion that changes a distinctive token — including a corrected typo (`MASSACHUSETTS INSITUTE OF TECHNOLOGY` → `Massachusetts Institute of Technology`) and an expanded abbreviation (`GA Tech` → `Georgia Institute of Technology`, `FL State Univ` → `Florida State University`). For those records the pipeline still discards the right answer, one gate earlier than this fix reaches. Variants the guard accepts (`Universität Stuttgart` → `University of Stuttgart`, `Lockheed Martin Corp` → `Lockheed Martin Corporation`) do reach the retry and converge.
 
@@ -711,20 +712,69 @@ The pipeline tracks which "use cases" fired for each record. These are reported 
 
 ## Record Classification Logic
 
-**File:** `enrichment/classifier.py`
+**File:** `enrichment/classifier.py` (+ `enrichment/elf_codes.py`)
 
-Records are classified as either `research_institution` or `company`. Classification determines which tiers and modes are available:
+### Two fields, not one
 
-| Classification Source | Method | Example |
-|----------------------|--------|---------|
-| **ROR org types** (primary) | If ROR type is `education`, `healthcare`, `government`, `facility`, `nonprofit`, `archive`, or `other` -> `research_institution`. If `company` -> `company`. | ROR says "MIT" is type `education` -> `research_institution` |
-| **Keyword heuristics** (fallback, when ROR misses) | `looks_like_research_institution()` checks for keywords: University, College, Hospital, Medical, Institute, Research, School, Academy, etc. | "Newman Regional Health" contains "Health" -> `research_institution` |
-| **Default** | If neither method can classify -> `company` | "Acme Widget Co" -> `company` |
+`record_type` used to be written by whichever tier ran last — ROR org types, then an LEI hit, then company canonicalisation — and the last writer won. It is also not purely an output: it gates behaviour *during* the run, and the pipeline needs a type before the evidence that decides the final one exists. So the concept is split:
 
-**Impact on pipeline routing:**
+| Field | Lifetime | Role |
+|---|---|---|
+| **`routing_type`** | Provisional, updated as tiers report | Selects the Tier 1 branch (ROR vs GLEIF) and gates Tier 2A / Tier 2B / lab resolution. **Internal only** — never serialised, never in the response or the export. |
+| **`record_type`** | Final, decided **once** in `finalise()` | The only value that reaches the output, the Excel export and Phase 2 dedup. |
+
+Tier gating reads `routing_type` everywhere. No tier decides `record_type`.
+
+### Evidence ranking
+
+`classifier.classify()` takes the first source that yields an answer. An ambiguous or absent field yields *nothing* and falls through, rather than guessing.
+
+| # | Source | Yields | `record_type_source` |
+|---|---|---|---|
+| 1 | **ROR org types** | `education`, `healthcare`, `government`, `facility`, `nonprofit`, `archive`, `other` → `research_institution`; `company` → `company` | `ror` |
+| 2 | **GLEIF entity metadata** | `entity.category` and `entity.legalForm.id` (ISO 20275) from the `lei-records` response already fetched — see below | `gleif` |
+| 3 | **Keyword heuristic** | `looks_like_research_institution()` → `research_institution`. It can *only* yield that: a name not looking institutional is not evidence of a company. | `keyword` |
+| 4 | **Nothing** | `unknown` | `unresolved` |
+
+**Tier 3 contributes no evidence and never had any** — it is a last-resort name guesser with no classification signal. A record that reached Tier 3 is classified from whatever other evidence exists, never from having been there.
+
+### `unknown` is a real fourth state
+
+`unknown` means **"no tier resolved the type with confidence"**. It does not mean "not yet computed", "error", or "empty". It is a legitimate terminal outcome, and deliberately preferred over the old `company` default, which asserted something the pipeline does not know.
+
+> ⚠️ **Phase 2 scoring consumes `record_type` and needs a weight assigned for `unknown`.** `dedup/weights.json` is untouched here — that decision belongs to the scoring model owner.
+
+### The LEI guard
+
+**An LEI hit on its own never sets `company`.** An LEI proves legal registration, not commercial status: universities, hospitals, foundations and government bodies hold LEIs, typically for bond issuance or derivatives reporting. So a commercial verdict from GLEIF is *withheld* — not overridden — whenever the name reads as a research institution, and the keyword source answers instead. The two facts are not in conflict: a university with an LEI is a university that issues bonds, and it keeps its `lei_id` either way.
+
+### What GLEIF metadata actually looks like
+
+Checked against live `api.gleif.org` responses rather than assumed:
+
+| Entity | `category` | `legalForm.id` | `legalForm.other` | `subCategory` |
+|---|---|---|---|---|
+| MIT (`DLZO3A31IADZ27B62557`) | `GENERAL` | `8888` | `INSTITUTE` | `null` |
+| Pfizer Inc. | `GENERAL` | `XTIQ` (Corporation) | `null` | `null` |
+| Yale University | `GENERAL` | `7W53` (Nonstock Corporation) | `null` | `null` |
+| Brigham and Women's Hospital | `GENERAL` | `8888` | `Hospital` | `null` |
+| Siemens AG | `GENERAL` | `6QQB` (Aktiengesellschaft) | `null` | `null` |
+
+Two consequences the design had to absorb:
+
+- **`category` is nearly useless.** It is `GENERAL` for MIT *and* Pfizer — for the overwhelming majority of entities. Only `SOLE_PROPRIETOR` / `FUND` / `BRANCH` (commercial) and `RESIDENT_GOVERNMENT_ENTITY` / `INTERNATIONAL_ORGANIZATION` (not) carry a signal. **`subCategory` was `null` on every record sampled.**
+- **`legalForm.id` does the work**, via the code table in `enrichment/elf_codes.py`. The response carries only the code, never its name, so the name→character decision is made once at development time from the GLEIF ELF registry — a lookup table over fields already fetched, not a new service. Codes `8888` ("other") and `9999` ("not on the list") carry no meaning; the free text in `legalForm.other` is matched separately for those.
+
+The table is deliberately narrow: 95 non-commercial and 978 commercial forms out of 3,599, with everything else absent so it falls through. "Nonstock Corporation" and "Corporation (Nonprofit)" must not read as commercial merely for containing "Corporation"; "For-Profit Public Benefit Corporation", "Savings and Loan Association", "Business Trust" and credit unions must not read as non-commercial for containing charitable-sounding words.
+
+> Note the taxonomy only has two values, so GLEIF's non-commercial signal means *"not a commercial entity"* and is recorded as `research_institution`. A non-profit that is not a research body (a church, a community association) would land there too. In this customer master the non-commercial population is overwhelmingly universities, hospitals and institutes, and ROR — which ranks above GLEIF — already resolves most of them.
+
+**Impact on pipeline routing** (all driven by `routing_type`):
 - `research_institution`: Eligible for Tier 2A (contact lookup) and Tier 2 Canonical
 - `company`: Routes to **Tier 1 GLEIF/LEI registry lookup** first, then company canonicalization (LLM) if LEI misses, then Tier 2B if Name2 exists
 - Both types: Eligible for Tier 1, Tier 2B, and Tier 3
+
+**Routing mismatch telemetry.** Where `routing_type` disagrees with the final `record_type`, the record ran down the wrong branch — routed as a company, so Tier 2B never ran, then finally classified `research_institution`. Those records are **not** re-run; the batch summary counts them (`routing_type_mismatch_count`) so the size of the problem is visible and a later fix can decide whether re-routing is worth it.
 
 ---
 
@@ -821,7 +871,7 @@ Set `DOMAIN_OWNERSHIP_GUARD_ENABLED=false` to A/B disable the guard; canonicalis
 
 Resolved by `orchestrator._probe_department_url` (writes `result["department_domain"]` directly; never touches `website_url`). Runs on every return path.
 
-**Preconditions (all must hold, else `None`):** `record_type == "research_institution"`; `department_domain` not already set; the institution **`domain`** (base) is present; a usable Name 2 that is **not** an admin desk (`is_admin_unit` — §5a, skipped before any fetch/SERP), **not** an address/location fragment, and **not** a granular unit (lab/group/core/facility); and at least one significant token or acronym derives from the cleaned Name 2.
+**Preconditions (all must hold, else `None`):** `routing_type == "research_institution"` (the provisional type — the probe runs during the pipeline, before `record_type` is decided); `department_domain` not already set; the institution **`domain`** (base) is present; a usable Name 2 that is **not** an admin desk (`is_admin_unit` — §5a, skipped before any fetch/SERP), **not** an address/location fragment, and **not** a granular unit (lab/group/core/facility); and at least one significant token or acronym derives from the cleaned Name 2.
 
 **Base resolution (§5e/§5f).** Before the stages run, the base host is resolved once (cached per batch): the institution website's redirect chain is followed once (`PageFetcher.resolve_final_url`) so a stale ROR site is corrected (`dur.ac.uk` → `durham.ac.uk`, §5f); and when the institution host is itself a subdomain the **full host** is used (`gc.cuny.edu`, so `site:gc.cuny.edu` doesn't leak other CUNY campuses, §5e). `www.`/`web.` prefixes are stripped (`web.mit.edu` → base `mit.edu`).
 
@@ -1035,7 +1085,7 @@ The two **registry identifiers are deliberately included** in the JSON so the Ph
 }
 ```
 
-> A company resolved by Tier 1 LEI would instead show `"record_type": "company"`, a populated `"lei_id"`, `"domain": null`, and `lei_hits_exact`/`lei_hits_fuzzy` incremented in the summary.
+> A company resolved by Tier 1 LEI would instead show a populated `"lei_id"`, `"domain": null`, and `lei_hits_exact`/`lei_hits_fuzzy` incremented in the summary. Its `"record_type"` is `"company"` only if the *evidence* supports it — GLEIF's legal form, or ROR — not because an LEI was found: a research institution that holds an LEI keeps `"record_type": "research_institution"` alongside its `"lei_id"`.
 
 ---
 
@@ -1460,7 +1510,8 @@ enrichment_api/
 ├── enrichment/                   # Core enrichment pipeline
 │   ├── orchestrator.py           # Main pipeline controller (tier escalation, finalization)
 │   ├── preprocess.py             # Deterministic cleanup: UC 6-12 (regex-based)
-│   ├── classifier.py             # Record type classification (research_institution vs company)
+│   ├── classifier.py             # THE record_type authority — ranked evidence, decided once in finalise
+│   ├── elf_codes.py              # ISO 20275 legal-form codes split by commercial character (generated)
 │   ├── overflow_check.py         # UC 0: Name1+Name2 overflow detection
 │   ├── tier1_ror.py              # Tier 1: ROR API client, scoring, child matching, acronym expansion
 │   ├── tier1_lei.py              # Tier 1 (company): GLEIF/LEI registry client + verification guard
@@ -1545,6 +1596,14 @@ Pattern-matching engine for UC 6-12. Runs before any network call. Returns `Prep
 ### `enrichment/tier1_ror.py` — ROR Client
 
 Async ROR API client with hybrid lookup (affiliation + query), sophisticated name scoring with distinctive-token guards, legal-form suffix normalization, an identifier-acronym guard, local child matching, and organization type extraction for classification. Includes `_INSTITUTION_ACRONYMS` + an additive acronym-expanded affiliation retry (e.g. "HFT Stuttgart" → "Hochschule für Technik Stuttgart"), and `_US_STATE_ABBREVS` state-abbreviation expansion applied ROR-locally to the query ("Fla State Univ" → "Florida State Univ", so it resolves to Florida State rather than Kent State). Uses `resolve_tls_verify()` for corporate-VPN TLS.
+
+### `enrichment/classifier.py` — Record Type Authority
+
+The single place `record_type` is decided. `classify(TypeEvidence)` returns `(record_type, record_type_source)` from ranked evidence — ROR org types, then GLEIF entity metadata, then the keyword heuristic, then `unknown` — with the LEI guard that stops an LEI alone from asserting `company`. Called once, at the end of `finalise`. Every tier before that writes `routing_type` instead, which gates which tiers run and never leaves the pipeline. Full detail in [Record Classification Logic](#record-classification-logic).
+
+### `enrichment/elf_codes.py` — ISO 20275 Legal Forms (generated)
+
+`NON_COMMERCIAL_ELF` (95 codes) and `COMMERCIAL_ELF` (978) — the subset of GLEIF's 3,599 active Entity Legal Forms whose *names* state a commercial character outright. Generated from the GLEIF ELF registry at development time, because a `lei-records` response carries only `legalForm.id` and never its name; nothing is looked up at runtime. An unlisted code means "no evidence", not "company".
 
 ### `enrichment/tier1_lei.py` — GLEIF / LEI Client (company Tier 1)
 
@@ -2098,6 +2157,18 @@ RETURN EnrichmentResponse (JSON)
 
 ## Changelog
 
+### One classification authority for `record_type` (newest)
+
+`record_type` was written by whichever tier ran last, so MIT came out `company` because it holds an LEI, a hospital came out `company` because it took the company branch, and `unknown` — undocumented, and the modal value — sat on 21 of 50 demo records without anything having decided so.
+
+- **`routing_type` / `record_type` split.** The field was never purely an output: it gates which tiers run, and the pipeline needs a type before the evidence that decides the final one exists, so "compute it once in `finalise`" is not implementable as stated. Tiers now write and read `routing_type` (provisional, internal, never serialised); `record_type` is decided once in `finalise`. **Which tiers run for a given record is unchanged** — every gating site moved to the field the tiers still write at exactly the same points.
+- **Ranked evidence** — ROR org types → GLEIF entity metadata → keyword heuristic → `unknown`, first answer wins, ambiguity falls through instead of guessing. `enrichment/classifier.py`, revived from the tombstone left when keyword classification was removed.
+- **The LEI guard** — an LEI hit on its own never sets `company`. MIT keeps its LEI *and* its `research_institution`.
+- **GLEIF metadata, checked live rather than assumed** — `entity.category` is `GENERAL` for MIT and Pfizer alike and decides almost nothing; `subCategory` was `null` on every record sampled. `entity.legalForm.id` (ISO 20275) is the field that discriminates, via the generated table in `enrichment/elf_codes.py`, with `legalForm.other` covering the `8888`/`9999` catch-alls that MIT and Pfizer Canada both use.
+- **Tier 3 contributes no classification evidence** — and never did in this codebase: it writes no `record_type` at all. The `company` values attributed to it came from the company-canonicalisation branch.
+- **`unknown` documented as a real fourth state** — "no tier resolved the type with confidence", preferred over a `company` default that asserts what the pipeline does not know.
+- **Telemetry** — `record_type_source` (`ror` | `gleif` | `keyword` | `unresolved`) per record, and `routing_type_mismatch_count` per batch for records that ran down the wrong branch. Those records are surfaced, not re-run. Tests `test_record_type_authority.py`.
+
 ### Canonical cache keys + Tier 1 re-lookup (newest)
 
 Identical entities produced different output depending on how the input happened to be spelled — four "Lockheed Martin Corp" rows where only one carried the LEI, three Stuttgart rows where one had no ROR id, "Coastal Diagnostics" resolving to two domains and two record types. Two independent causes, both fixed here.
@@ -2107,7 +2178,7 @@ Identical entities produced different output depending on how the input happened
 - **The SERP key keeps the quoting distinction.** `normalize_key` strips quote characters, which would have made an exact-phrase query and its unquoted retry (website resolution §8) collide — the retry would have been served the very results it exists to escape. `serp_key` therefore carries a "was quoted" component alongside the normalised text.
 - **Tier 1 is re-run once after canonicalisation.** ROR runs before the pipeline knows the real name; when a later tier works it out, `orchestrator._retry_tier1_after_canonicalisation` looks that name up — ROR first, GLEIF on the company branch, one retry per record, every guard intact, nothing written on a miss. A retry hit also gives the record registry provenance, so a domain the [ownership guard](#2b--ownership-guard-domain_ownership_guard_enabled-default-on) had rejected comes back verified. See [Stage 5](#stage-5-tier-1-re-lookup-after-canonicalisation).
 - **Known limit** — the retry only fires when a tier actually *writes* a changed `name1_enriched`. `canonical_preserves_identity` rejects a corrected typo (`MASSACHUSETTS INSITUTE OF TECHNOLOGY`) or an expanded abbreviation (`GA Tech`, `FL State Univ`), so those records still discard the right answer one gate earlier than this fix reaches.
-- **`record_type` untouched** — a retry hit whose registry type contradicts the record logs `tier1_retry_type_conflict` and leaves the value alone.
+- **`record_type` untouched** — a retry hit whose registry type contradicted the record logged `tier1_retry_type_conflict` and left the value alone. *(Superseded: `record_type` is now decided once in `finalise` from ranked evidence, with the retry's registry verdict ranked first. The log line remains, reporting the branch the record actually ran down.)*
 - **Telemetry** — `tier1_retry_attempts`, `tier1_retry_hits_ror`, `tier1_retry_hits_lei`, `cache_hits_after_normalisation`. Tests `test_cache_normalisation.py`.
 
 ### Domain: one write path + an ownership guard (newest)

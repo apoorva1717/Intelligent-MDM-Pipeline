@@ -53,6 +53,7 @@ from enrichment.preprocess import (
     preprocess_record,
 )
 from dedup.signatures import normalize_key
+from enrichment.classifier import TypeEvidence, classify
 from enrichment.tier1_lei import LEIClient, clear_lei_cache, lei_normalised_hits
 from enrichment.tier1_ror import RORClient, clear_ror_cache, ror_normalised_hits
 from enrichment.tier2_canonical import run_tier2_canonical
@@ -358,6 +359,11 @@ def _init_result(record: EnrichmentRecord) -> dict[str, Any]:
         "unclear_address_info": None,
         "address_issues": [],
         "record_type": "unknown",
+        # Provisional type. Drives branch selection and tier gating during the
+        # run; internal only, never serialised. The final `record_type` is
+        # decided once in finalise() by enrichment.classifier — see the module
+        # docstring there for why the two cannot be the same value.
+        "routing_type": "unknown",
         "tier_used": 1,
         "tier2_mode": None,
         "confidence": "none",
@@ -591,7 +597,7 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # flagged for manual review.
     has_dept_signal = result.pop("_has_dept_signal", True)
     multi_contact = result.pop("_multi_contact", False)
-    if result.get("record_type") == "research_institution":
+    if result.get("routing_type") == "research_institution":
         if multi_contact:
             result["flag_for_review"] = True
             result["flag_reason"] = (
@@ -635,6 +641,10 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
             f"https://{dept_host}" if dept_host else None
         )
 
+    # Single classification authority — every tier before this point wrote
+    # `routing_type`, never `record_type`.
+    _classify_record(result)
+
     result["duration_ms"] = int((time.monotonic() - start) * 1000)
     # Strip transient non-schema keys before pydantic validation.
     result.pop("_preprocess_cleared", None)
@@ -652,7 +662,64 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # the point of conflict and deliberately left unreconciled — record_type
     # assignment is out of scope here.
     result.pop("_tier1_retry_type_conflict", None)
+    result.pop("_ror_is_research", None)
+    result.pop("_gleif_category", None)
+    result.pop("_gleif_sub_category", None)
+    result.pop("_gleif_legal_form_id", None)
+    result.pop("_gleif_legal_form_other", None)
     return result
+
+
+def _record_gleif_evidence(result: dict[str, Any], lei_res: dict[str, Any]) -> None:
+    """Carry GLEIF's entity metadata onto the record for classification.
+
+    Transient (`_`-prefixed, dropped in finalise): the fields exist to let
+    :func:`enrichment.classifier.classify` judge commercial status, and are not
+    part of the response.
+    """
+    result["_gleif_category"] = lei_res.get("category")
+    result["_gleif_sub_category"] = lei_res.get("sub_category")
+    result["_gleif_legal_form_id"] = lei_res.get("legal_form_id")
+    result["_gleif_legal_form_other"] = lei_res.get("legal_form_other")
+
+
+def _classify_record(result: dict[str, Any]) -> None:
+    """Decide ``record_type`` once, from ranked evidence. The ONLY place the
+    field is written.
+
+    Runs at the end of ``finalise`` so it sees every tier's evidence, including
+    a name a later tier corrected and a registry id the Tier 1 re-lookup
+    recovered. Everything before this point steers on ``routing_type``.
+    """
+    evidence = TypeEvidence(
+        name1=_domain_evidence_name1(result),
+        ror_is_research=result.get("_ror_is_research"),
+        lei_id=result.get("lei_id"),
+        gleif_category=result.get("_gleif_category"),
+        gleif_legal_form_id=result.get("_gleif_legal_form_id"),
+        gleif_legal_form_other=result.get("_gleif_legal_form_other"),
+    )
+    record_type, source = classify(evidence)
+    result["record_type"] = record_type
+    result["record_type_source"] = source
+    routing = result.get("routing_type")
+    # The record ran down a branch chosen from `routing`; where that disagrees
+    # with the answer, tiers were gated on the wrong type (routed as a company,
+    # so Tier 2B never ran, then finally classified research_institution). The
+    # record is NOT re-run — the count just makes the size of it visible.
+    result["routing_type_mismatch"] = bool(
+        routing and routing != "unknown"
+        and record_type != "unknown"
+        and routing != record_type
+    )
+    if result["routing_type_mismatch"]:
+        logger.info({
+            "record_id": result.get("record_id"),
+            "step": "routing_type_mismatch",
+            "routed_as": routing,
+            "classified_as": record_type,
+            "source": source,
+        })
 
 
 def _domain_evidence_name1(result: dict[str, Any]) -> str | None:
@@ -965,6 +1032,9 @@ class Orchestrator:
             summary.tier1_retry_hits_lei = self._tier1_retry_counts["hits_lei"]
             # Lookups the normalised cache key served that the old lowercased
             # key would have missed — i.e. API calls Step 1 saved outright.
+            summary.routing_type_mismatch_count = sum(
+                1 for r in final_results if r.routing_type_mismatch
+            )
             summary.cache_hits_after_normalisation = (
                 ror_normalised_hits()
                 + lei_normalised_hits()
@@ -1025,7 +1095,7 @@ class Orchestrator:
         if not pp_name1 or not pp_name1.strip():
             return
 
-        rec_type = result.get("record_type")
+        rec_type = result.get("routing_type")
         # Path B runs for any record type; the resolver builds the
         # appropriate query shape and applies TLD-based confidence.
         serp_res = await resolve_website_via_serp(
@@ -1165,7 +1235,7 @@ class Orchestrator:
         domain probe; a lab's web home requires lab_resolver, not a
         SERP guess.
         """
-        if result.get("record_type") != "research_institution":
+        if result.get("routing_type") != "research_institution":
             return
         if result.get("department_domain"):
             return
@@ -1639,7 +1709,8 @@ class Orchestrator:
             # because the person→org link came from the web, not the registry.
             result["source"] = "ROR"
             result["confidence"] = "medium"
-            result["record_type"] = (
+            result["_ror_is_research"] = bool(confirmed.get("is_research_institution"))
+            result["routing_type"] = (
                 "research_institution"
                 if confirmed.get("is_research_institution")
                 else "company"
@@ -1817,19 +1888,26 @@ class Orchestrator:
         })
 
         def _note_type_conflict(registry: str, registry_type: str) -> None:
-            current = result.get("record_type")
+            """Log where the registry disagrees with the branch the record was
+            actually routed down. Since Fix 3 the disagreement is no longer
+            left standing in the output — ``enrichment.classifier`` ranks this
+            registry evidence above everything else in ``finalise`` — but the
+            record still *ran* down the wrong branch, so the mismatch is worth
+            surfacing. The batch summary counts it as
+            ``routing_type_mismatch``."""
+            current = result.get("routing_type")
             if current and current != registry_type:
                 result["_tier1_retry_type_conflict"] = {
                     "registry": registry,
                     "registry_type": registry_type,
-                    "record_type": current,
+                    "routing_type": current,
                 }
                 logger.info({
                     "record_id": record.record_id,
                     "step": "tier1_retry_type_conflict",
                     "registry": registry,
                     "registry_says": registry_type,
-                    "record_type_kept": current,
+                    "routed_as": current,
                 })
 
         # ── ROR first, exactly as the first pass does ────────────────────
@@ -1856,6 +1934,9 @@ class Orchestrator:
             result["confidence"] = "high"
             result["enrichment_status"] = "enriched"
             result["tier1_retry_hit"] = "ROR"
+            result["_ror_is_research"] = bool(
+                ror_res.get("is_research_institution")
+            )
             _note_type_conflict(
                 "ROR",
                 "research_institution"
@@ -1918,6 +1999,7 @@ class Orchestrator:
 
         self._tier1_retry_counts["hits_lei"] += 1
         result["lei_id"] = lei_res.get("lei_id")
+        _record_gleif_evidence(result, lei_res)
         result["tier_used"] = 1
         result["source"] = "gleif"
         result["confidence"] = lei_res.get("confidence", "high")
@@ -2075,7 +2157,10 @@ class Orchestrator:
         if legal_name:
             result["name1_enriched"] = legal_name
         result["lei_id"] = lei_res.get("lei_id")
-        result["record_type"] = "company"
+        # An LEI proves legal registration, not commercial status — universities,
+        # hospitals and foundations hold LEIs too. The classification evidence is
+        # recorded; enrichment.classifier decides, in finalise().
+        _record_gleif_evidence(result, lei_res)
         result["tier_used"] = 1
         result["source"] = "gleif"
         result["confidence"] = lei_res.get("confidence", "high")
@@ -2128,7 +2213,7 @@ class Orchestrator:
                     # Pass through originals untouched. Flag only.
                     result["name1_enriched"] = record.name1.strip()
                     result["name2_enriched"] = record.name2.strip()
-                    result["record_type"] = "unknown"
+                    result["routing_type"] = "unknown"
                     result["tier_used"] = 1
                     result["source"] = "pattern_match"
                     result["confidence"] = overflow.confidence
@@ -2432,7 +2517,10 @@ class Orchestrator:
                     result["source"] = "ROR"
                     result["confidence"] = "high"
 
-                    result["record_type"] = (
+                    result["_ror_is_research"] = bool(
+                        ror_parent.get("is_research_institution")
+                    )
+                    result["routing_type"] = (
                         "research_institution"
                         if ror_parent.get("is_research_institution")
                         else "company"
@@ -2456,7 +2544,7 @@ class Orchestrator:
                     # match). ROR's domain/website are preserved. A
                     # research institution never reaches this branch, so
                     # ROR's institution result is never touched.
-                    if result["record_type"] == "company":
+                    if result["routing_type"] == "company":
                         await self._run_lei_lookup(
                             record, result, name1_cleaned, country_code,
                         )
@@ -2527,7 +2615,7 @@ class Orchestrator:
                         result["source"] = "passthrough"
                         result["confidence"] = "low"
                         result["tier_used"] = 1
-                        result["record_type"] = "research_institution"
+                        result["routing_type"] = "research_institution"
                         result["enrichment_status"] = "unresolved"
                         result["flag_for_review"] = True
                         result["flag_reason"] = (
@@ -2620,7 +2708,9 @@ class Orchestrator:
                         result["name1_enriched"] = company_res.name1_enriched
                         result["source"] = "llm_canonical"
                         result["confidence"] = "high"
-                        result["record_type"] = "company"
+                        # Routing only — company canonicalisation no longer
+                        # decides the output type.
+                        result["routing_type"] = "company"
                         result["tier_used"] = 2
                         if 2 not in result["use_cases_triggered"]:
                             result["use_cases_triggered"].append(2)
@@ -2642,7 +2732,7 @@ class Orchestrator:
                         result["source"] = "passthrough"
                         result["confidence"] = "low"
                         result["tier_used"] = 1
-                        result["record_type"] = "unknown"
+                        result["routing_type"] = "unknown"
                     # else: research-institution passthrough already set above
 
                     institution_domain = None
@@ -2691,7 +2781,7 @@ class Orchestrator:
                 and not is_granular_unit(ror_child_enriched_name2)
             )
             can_lab_resolve = (
-                result["record_type"] == "research_institution"
+                result["routing_type"] == "research_institution"
                 and bool(pp_name2 and pp_name2.strip())
                 and is_granular_unit(pp_name2)
                 and not ror_child_resolved
@@ -2764,7 +2854,7 @@ class Orchestrator:
             # and consumed both by the short-circuit and by the Tier 2A
             # gate further down.
             can_do_contact_lookup = (
-                result["record_type"] == "research_institution"
+                result["routing_type"] == "research_institution"
                 and bool(pp_contact and pp_contact.strip())
                 and not multi_contact
                 and bool(institution_domain)
@@ -2776,7 +2866,7 @@ class Orchestrator:
             # then UC 5 scope filter. Zero SerpAPI calls.
             # Uses a shared helper to avoid duplication.
             can_canonical = (
-                result["record_type"] in ("research_institution", "company")
+                result["routing_type"] in ("research_institution", "company")
                 and result.get("name1_enriched")
             )
             any_canonical_ran = False

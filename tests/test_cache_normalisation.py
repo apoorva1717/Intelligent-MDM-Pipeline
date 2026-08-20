@@ -365,7 +365,7 @@ class TestTier1Retry:
             "_tier1_country_code": "US",
             "name1_enriched": canonical,
             "use_cases_triggered": [],
-            "record_type": "company",
+            "routing_type": "company",
         }
 
     async def test_canonical_name_recovers_the_ror_id(self):
@@ -516,9 +516,15 @@ class TestTier1Retry:
         assert ror.calls == ["University of Stuttgart"]
         assert lei.calls == []
 
-    async def test_record_type_is_left_alone_on_a_contradiction(self):
-        """record_type reassignment is out of scope: the registry's view is
-        logged, the existing value stands."""
+    async def test_registry_evidence_is_recorded_and_routing_mismatch_noted(self):
+        """The retry records ROR's verdict as evidence and notes that the
+        record was routed down the other branch.
+
+        It does not assign `record_type` itself — since Fix 3 that is decided
+        once in finalise by enrichment.classifier, which ranks this registry
+        evidence first. What the retry leaves behind is the evidence plus the
+        routing mismatch, so the wrong-branch run stays visible.
+        """
         ror = _StubROR({
             "Bayfront Research Institute": {
                 "matched": True,
@@ -530,14 +536,16 @@ class TestTier1Retry:
         orch = _orchestrator({"ror": ror, "lei": _StubLEI({})})
         result = self._base_result("Bayfront Research",
                                    "Bayfront Research Institute")
-        result["record_type"] = "company"
+        result["routing_type"] = "company"
         await self._run_retry(orch, result)
 
         assert result["ror_id"] == "https://ror.org/fakebayfront"
-        assert result["record_type"] == "company", "left uncorrected for Fix 3"
+        # ROR's verdict is available to the classifier…
+        assert result["_ror_is_research"] is True
+        # …and the record having *run* as a company is still surfaced.
         conflict = result["_tier1_retry_type_conflict"]
         assert conflict["registry_type"] == "research_institution"
-        assert conflict["record_type"] == "company"
+        assert conflict["routing_type"] == "company"
 
     async def test_variant_spellings_converge_on_one_ror_id(self):
         """Rows 6/7/8: three spellings of one university, one identity.
@@ -560,7 +568,7 @@ class TestTier1Retry:
         for original in ("Universität Stuttgart", "Uni Stuttgart",
                          "Univ Stuttgart"):
             result = self._base_result(original, "University of Stuttgart")
-            result["record_type"] = "research_institution"
+            result["routing_type"] = "research_institution"
             await self._run_retry(orch, result)
             ids.append(result.get("ror_id"))
             # Fix 1: registry provenance restores the domain, canonicalised.
