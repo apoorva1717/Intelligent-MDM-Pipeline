@@ -1,0 +1,811 @@
+{
+  "params": {
+    "affiliation": "Acme Biotech, TAMPA, FL, US"
+  },
+  "response": {
+    "number_of_results": 10,
+    "items": [
+      {
+        "substring": "Acme Biotech, TAMPA, FL, US",
+        "score": 0.82,
+        "matching_type": "SINGLE SEARCH",
+        "chosen": false,
+        "organization": {
+          "admin": {
+            "created": {
+              "date": "2024-08-19",
+              "schema_version": "2.0"
+            },
+            "last_modified": {
+              "date": "2024-12-11",
+              "schema_version": "2.1"
+            }
+          },
+          "domains": [
+            "epibiotech.com"
+          ],
+          "established": 2015,
+          "external_ids": [],
+          "id": "https://ror.org/02gqdm821",
+          "links": [
+            {
+              "type": "website",
+              "value": "http://epibiotech.com"
+            }
+          ],
+          "locations": [
+            {
+              "geonames_details": {
+                "continent_code": "AS",
+                "continent_name": "Asia",
+                "country_code": "KR",
+                "country_name": "South Korea",
+                "country_subdivision_code": "28",
+                "country_subdivision_name": "Incheon",
+                "lat": 37.45646,
+                "lng": 126.70515,
+                "name": "Incheon"
+              },
+              "geonames_id": 1843564
+            }
+          ],
+          "names": [
+            {
+              "lang": null,
+              "types": [
+                "alias"
+              ],
+              "value": "Epi Biotech"
+            },
+            {
+              "lang": null,
+              "types": [
+                "alias"
+              ],
+              "value": "Epi Biotech Co."
+            },
+            {
+              "lang": null,
+              "types": [
+                "label"
+              ],
+              "value": "Epi Biotech Co., Ltd."
+            },
+            {
+              "lang": null,
+              "types": [
+                "label",
+                "ror_display"
+              ],
+              "value": "Epi Biotech Co., Ltd. (South Korea)"
+            },
+            {
+              "lang": null,
+              "types": [
+                "alias"
+              ],
+              "value": "Epibiotech"
+            },
+            {
+              "lang": null,
+              "types": [
+                "alias"
+              ],
+              "value": "Stemore"
+            },
+            {
+              "lang": "ko",
+              "types": [
+                "label"
+              ],
+              "value": "\uc5d0\ud53c\ubc14\uc774\uc624\ud14d"
+            }
+          ],
+          "relationships": [],
+          "status": "active",
+          "types": [
+            "company"
+          ]
+        }
+      },
+      {
+        "substring": "Acme Biotech, TAMPA, FL, US",
+        "score": 0.82,
+        "matching_type": "SINGLE SEARCH",
+        "chosen": false,
+        "organization": {
+          "admin": {
+            "created": {
+              "date": "2026-03-11",
+              "schema_version": "2.1"
+            },
+            "last_modified": {
+              "date": "2026-03-12",
+              "schema_version": "2.1"
+            }
+          },
+          "domains": [
+            "aumbiotech.com"
+          ],
+          "established": 2015,
+          "external_ids": [],
+          "id": "https://ror.org/0106fnq84",
+          "links": [
+            {
+              "type": "website",
+              "value": "http://www.aumbiotech.com"
+            }
+          ],
+          "locations": [
+            {
+              "geonames_details": {
+                "continent_code": "NA",
+                "continent_name": "North America",
+                "country_code": "US",
+                "country_name": "United States",
+                "country_subdivision_code": "PA",
+                "country_subdivision_name": "Pennsylvania",
+                "lat": 39.95238,
+                "lng": -75.16362,
+                "name": "Philadelphia"
+              },
+              "geonames_id": 4560349
+            }
+          ],
+          "names": [
+            {
+              "lang": "en",
+              "types": [
+                "label",
+                "ror_display"
+              ],
+              "value": "AUM BioTech"
+            },
+            {
+              "lang": "en",
+              "types": [
+                "label"
+              ],
+              "value": "AUM BioTech, LLC."
+            }
+          ],
+          "relationships": [],
+          "status": "active",
+          "types": [
+            "company"
+          ]
+        }
+      },
+      {
+        "substring": "Acme Biotech, TAMPA, FL, US",
+        "score": 0.8,
+        "matching_type": "SINGLE SEARCH",
+        "chosen": false,
+        "organization": {
+          "admin": {
+            "created": {
+              "date": "2018-11-14",
+              "schema_version": "1.0"
+            },
+            "last_modified": {
+              "date": "2024-12-11",
+              "schema_version": "2.1"
+            }
+          },
+          "domains": [],
+          "established": 1980,
+          "external_ids": [
+            {
+              "all": [
+                "grid.497776.c"
+              ],
+              "preferred": "grid.497776.c",
+              "type": "grid"
+            }
+          ],
+          "id": "https://ror.org/048gxh623",
+          "links": [
+            {
+              "type": "website",
+              "value": "http://www.dalimmedical.co.kr/en_index.html"
+            }
+          ],
+          "locations": [
+            {
+              "geonames_details": {
+                "continent_code": "AS",
+                "continent_name": "Asia",
+                "country_code": "KR",
+                "country_name": "South Korea",
+                "country_subdivision_code": "11",
+                "country_subdivision_name": "Seoul",
+                "lat": 37.566,
+                "lng": 126.9784,
+                "name": "Seoul"
+              },
+              "geonames_id": 1835848
+            }
+          ],
+          "names": [
+            {
+              "lang": null,
+              "types": [
+                "ror_display",
+                "label"
+              ],
+              "value": "Dalim (South Korea)"
+            },
+            {
+              "lang": null,
+              "types": [
+                "alias"
+              ],
+              "value": "Dalim Biotech"
+            }
+          ],
+          "relationships": [],
+          "status": "active",
+          "types": [
+            "company"
+          ]
+        }
+      },
+      {
+        "substring": "Acme Biotech, TAMPA, FL, US",
+        "score": 0.8,
+        "matching_type": "SINGLE SEARCH",
+        "chosen": false,
+        "organization": {
+          "admin": {
+            "created": {
+              "date": "2026-02-24",
+              "schema_version": "2.1"
+            },
+            "last_modified": {
+              "date": "2026-02-24",
+              "schema_version": "2.1"
+            }
+          },
+          "domains": [
+            "info.pbt"
+          ],
+          "established": 2022,
+          "external_ids": [],
+          "id": "https://ror.org/01thtwt75",
+          "links": [
+            {
+              "type": "website",
+              "value": "https://www.pbt.lk"
+            }
+          ],
+          "locations": [
+            {
+              "geonames_details": {
+                "continent_code": "AS",
+                "continent_name": "Asia",
+                "country_code": "LK",
+                "country_name": "Sri Lanka",
+                "country_subdivision_code": "1",
+                "country_subdivision_name": "Western Province",
+                "lat": 6.844,
+                "lng": 80.0024,
+                "name": "Homagama"
+              },
+              "geonames_id": 1243936
+            }
+          ],
+          "names": [
+            {
+              "lang": "en",
+              "types": [
+                "acronym"
+              ],
+              "value": "PBT"
+            },
+            {
+              "lang": "en",
+              "types": [
+                "label"
+              ],
+              "value": "Panam Biotech"
+            },
+            {
+              "lang": "en",
+              "types": [
+                "label",
+                "ror_display"
+              ],
+              "value": "Panam Biotech (Sri Lanka)"
+            }
+          ],
+          "relationships": [],
+          "status": "active",
+          "types": [
+            "company"
+          ]
+        }
+      },
+      {
+        "substring": "Acme Biotech, TAMPA, FL, US",
+        "score": 0.77,
+        "matching_type": "SINGLE SEARCH",
+        "chosen": false,
+        "organization": {
+          "admin": {
+            "created": {
+              "date": "2024-10-13",
+              "schema_version": "2.0"
+            },
+            "last_modified": {
+              "date": "2024-12-11",
+              "schema_version": "2.1"
+            }
+          },
+          "domains": [
+            "kimerabiotech.com"
+          ],
+          "established": 2014,
+          "external_ids": [],
+          "id": "https://ror.org/03sczbr81",
+          "links": [
+            {
+              "type": "website",
+              "value": "https://www.kimerabiotech.com"
+            }
+          ],
+          "locations": [
+            {
+              "geonames_details": {
+                "continent_code": "SA",
+                "continent_name": "South America",
+                "country_code": "BR",
+                "country_name": "Brazil",
+                "country_subdivision_code": "SP",
+                "country_subdivision_name": "S\u00e3o Paulo",
+                "lat": -21.1775,
+                "lng": -47.81028,
+                "name": "Ribeir\u00e3o Preto"
+              },
+              "geonames_id": 3451328
+            }
+          ],
+          "names": [
+            {
+              "lang": null,
+              "types": [
+                "alias"
+              ],
+              "value": "Kimera"
+            },
+            {
+              "lang": null,
+              "types": [
+                "alias"
+              ],
+              "value": "Kimera Biotech"
+            },
+            {
+              "lang": "pt",
+              "types": [
+                "label"
+              ],
+              "value": "Kimera Biotecnologia"
+            },
+            {
+              "lang": "pt",
+              "types": [
+                "label",
+                "ror_display"
+              ],
+              "value": "Kimera Biotecnologia (Brazil)"
+            }
+          ],
+          "relationships": [],
+          "status": "active",
+          "types": [
+            "company"
+          ]
+        }
+      },
+      {
+        "substring": "Acme Biotech, TAMPA, FL, US",
+        "score": 0.77,
+        "matching_type": "SINGLE SEARCH",
+        "chosen": false,
+        "organization": {
+          "admin": {
+            "created": {
+              "date": "2026-05-30",
+              "schema_version": "2.1"
+            },
+            "last_modified": {
+              "date": "2026-06-02",
+              "schema_version": "2.1"
+            }
+          },
+          "domains": [
+            "impactbiotech.com"
+          ],
+          "established": null,
+          "external_ids": [],
+          "id": "https://ror.org/01bndmv37",
+          "links": [
+            {
+              "type": "website",
+              "value": "https://impactbiotech.com/"
+            }
+          ],
+          "locations": [
+            {
+              "geonames_details": {
+                "continent_code": "EU",
+                "continent_name": "Europe",
+                "country_code": "LU",
+                "country_name": "Luxembourg",
+                "country_subdivision_code": "LU",
+                "country_subdivision_name": "Luxembourg",
+                "lat": 49.60982,
+                "lng": 6.13268,
+                "name": "Luxembourg"
+              },
+              "geonames_id": 2960316
+            }
+          ],
+          "names": [
+            {
+              "lang": null,
+              "types": [
+                "alias"
+              ],
+              "value": "ImPact Biotech"
+            },
+            {
+              "lang": null,
+              "types": [
+                "alias"
+              ],
+              "value": "Steba Biotech"
+            },
+            {
+              "lang": null,
+              "types": [
+                "label"
+              ],
+              "value": "Steba Biotech SA"
+            },
+            {
+              "lang": null,
+              "types": [
+                "label",
+                "ror_display"
+              ],
+              "value": "Steba Biotech SA (Luxembourg)"
+            }
+          ],
+          "relationships": [],
+          "status": "active",
+          "types": [
+            "company"
+          ]
+        }
+      },
+      {
+        "substring": "Acme Biotech, TAMPA, FL, US",
+        "score": 0.75,
+        "matching_type": "SINGLE SEARCH",
+        "chosen": false,
+        "organization": {
+          "admin": {
+            "created": {
+              "date": "2018-11-14",
+              "schema_version": "1.0"
+            },
+            "last_modified": {
+              "date": "2024-12-11",
+              "schema_version": "2.1"
+            }
+          },
+          "domains": [],
+          "established": 2003,
+          "external_ids": [
+            {
+              "all": [
+                "grid.420526.7"
+              ],
+              "preferred": "grid.420526.7",
+              "type": "grid"
+            }
+          ],
+          "id": "https://ror.org/03p5x8053",
+          "links": [
+            {
+              "type": "website",
+              "value": "http://www.cpsibiotech.com/"
+            }
+          ],
+          "locations": [
+            {
+              "geonames_details": {
+                "continent_code": "NA",
+                "continent_name": "North America",
+                "country_code": "US",
+                "country_name": "United States",
+                "country_subdivision_code": "NY",
+                "country_subdivision_name": "New York",
+                "lat": 42.10341,
+                "lng": -76.26215,
+                "name": "Owego"
+              },
+              "geonames_id": 5130273
+            }
+          ],
+          "names": [
+            {
+              "lang": null,
+              "types": [
+                "alias"
+              ],
+              "value": "CPSI Biotech"
+            },
+            {
+              "lang": null,
+              "types": [
+                "ror_display",
+                "label"
+              ],
+              "value": "Cell Preservation Services (United States)"
+            }
+          ],
+          "relationships": [],
+          "status": "active",
+          "types": [
+            "company"
+          ]
+        }
+      },
+      {
+        "substring": "Acme Biotech, TAMPA, FL, US",
+        "score": 0.75,
+        "matching_type": "SINGLE SEARCH",
+        "chosen": false,
+        "organization": {
+          "admin": {
+            "created": {
+              "date": "2018-11-14",
+              "schema_version": "1.0"
+            },
+            "last_modified": {
+              "date": "2024-12-11",
+              "schema_version": "2.1"
+            }
+          },
+          "domains": [],
+          "established": null,
+          "external_ids": [
+            {
+              "all": [
+                "grid.427958.5"
+              ],
+              "preferred": "grid.427958.5",
+              "type": "grid"
+            },
+            {
+              "all": [
+                "Q30286683"
+              ],
+              "preferred": null,
+              "type": "wikidata"
+            }
+          ],
+          "id": "https://ror.org/01tzp8w95",
+          "links": [],
+          "locations": [
+            {
+              "geonames_details": {
+                "continent_code": "NA",
+                "continent_name": "North America",
+                "country_code": "US",
+                "country_name": "United States",
+                "country_subdivision_code": "CA",
+                "country_subdivision_name": "California",
+                "lat": 37.33939,
+                "lng": -121.89496,
+                "name": "San Jose"
+              },
+              "geonames_id": 5392171
+            }
+          ],
+          "names": [
+            {
+              "lang": null,
+              "types": [
+                "ror_display",
+                "label"
+              ],
+              "value": "Best Biotech"
+            }
+          ],
+          "relationships": [],
+          "status": "active",
+          "types": [
+            "company"
+          ]
+        }
+      },
+      {
+        "substring": "Acme Biotech, TAMPA, FL, US",
+        "score": 0.75,
+        "matching_type": "SINGLE SEARCH",
+        "chosen": false,
+        "organization": {
+          "admin": {
+            "created": {
+              "date": "2019-05-06",
+              "schema_version": "1.0"
+            },
+            "last_modified": {
+              "date": "2024-12-11",
+              "schema_version": "2.1"
+            }
+          },
+          "domains": [],
+          "established": 2002,
+          "external_ids": [
+            {
+              "all": [
+                "grid.505933.9"
+              ],
+              "preferred": "grid.505933.9",
+              "type": "grid"
+            },
+            {
+              "all": [
+                "Q53648692"
+              ],
+              "preferred": null,
+              "type": "wikidata"
+            }
+          ],
+          "id": "https://ror.org/00mv0vt78",
+          "links": [
+            {
+              "type": "website",
+              "value": "https://www.biotechpark.org.in/"
+            }
+          ],
+          "locations": [
+            {
+              "geonames_details": {
+                "continent_code": "AS",
+                "continent_name": "Asia",
+                "country_code": "IN",
+                "country_name": "India",
+                "country_subdivision_code": "UP",
+                "country_subdivision_name": "Uttar Pradesh",
+                "lat": 26.83928,
+                "lng": 80.92313,
+                "name": "Lucknow"
+              },
+              "geonames_id": 1264733
+            }
+          ],
+          "names": [
+            {
+              "lang": null,
+              "types": [
+                "ror_display",
+                "label"
+              ],
+              "value": "Biotech Park"
+            },
+            {
+              "lang": "hi",
+              "types": [
+                "label"
+              ],
+              "value": "\u092c\u093e\u092f\u094b\u091f\u0947\u0915 \u092a\u093e\u0930\u094d\u0915"
+            }
+          ],
+          "relationships": [],
+          "status": "active",
+          "types": [
+            "government"
+          ]
+        }
+      },
+      {
+        "substring": "Acme Biotech, TAMPA, FL, US",
+        "score": 0.74,
+        "matching_type": "SINGLE SEARCH",
+        "chosen": false,
+        "organization": {
+          "admin": {
+            "created": {
+              "date": "2020-12-21",
+              "schema_version": "1.0"
+            },
+            "last_modified": {
+              "date": "2024-12-11",
+              "schema_version": "2.1"
+            }
+          },
+          "domains": [],
+          "established": 2011,
+          "external_ids": [
+            {
+              "all": [
+                "100017699"
+              ],
+              "preferred": "100017699",
+              "type": "fundref"
+            },
+            {
+              "all": [
+                "grid.509299.e"
+              ],
+              "preferred": "grid.509299.e",
+              "type": "grid"
+            },
+            {
+              "all": [
+                "Q17083953"
+              ],
+              "preferred": null,
+              "type": "wikidata"
+            }
+          ],
+          "id": "https://ror.org/01cjch873",
+          "links": [
+            {
+              "type": "website",
+              "value": "https://galecto.com/"
+            },
+            {
+              "type": "wikipedia",
+              "value": "https://en.wikipedia.org/wiki/Galecto_Biotech"
+            }
+          ],
+          "locations": [
+            {
+              "geonames_details": {
+                "continent_code": "EU",
+                "continent_name": "Europe",
+                "country_code": "DK",
+                "country_name": "Denmark",
+                "country_subdivision_code": "84",
+                "country_subdivision_name": "Capital Region",
+                "lat": 55.67594,
+                "lng": 12.56553,
+                "name": "Copenhagen"
+              },
+              "geonames_id": 2618425
+            }
+          ],
+          "names": [
+            {
+              "lang": null,
+              "types": [
+                "ror_display",
+                "label"
+              ],
+              "value": "Galecto (Denmark)"
+            },
+            {
+              "lang": null,
+              "types": [
+                "alias"
+              ],
+              "value": "Galecto Biotech"
+            }
+          ],
+          "relationships": [],
+          "status": "active",
+          "types": [
+            "company",
+            "funder"
+          ]
+        }
+      }
+    ]
+  }
+}

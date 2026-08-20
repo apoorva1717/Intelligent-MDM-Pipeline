@@ -328,7 +328,10 @@ class TestExitPaths:
         # only guarantees that CASING adds and removes nothing — see
         # `test_no_character_is_added_or_removed`.
         assert r.name1_enriched == "Coastal Diagnostics, Inc"
-        assert r.street_cleaned == "500 Tech Dr MS-4"
+        # "MS-4" is a mail stop and is routed to its own field, so the
+        # cleaned street keeps only the street itself.
+        assert r.street_cleaned == "500 Tech Dr"
+        assert r.mail_stop == "4"
         assert r.city == "Gainesville"
         assert r.email_enriched == "orders@meridianlabs.com"
         assert r.contact_enriched == "Charles Farber"

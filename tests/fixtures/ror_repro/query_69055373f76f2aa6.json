@@ -1,0 +1,1474 @@
+{
+  "params": {
+    "query": "Acme Biotech",
+    "filter": "locations.geonames_details.country_code:US"
+  },
+  "response": {
+    "number_of_results": 34,
+    "time_taken": 5,
+    "items": [
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 1980,
+        "external_ids": [
+          {
+            "all": [
+              "grid.432168.a"
+            ],
+            "preferred": "grid.432168.a",
+            "type": "grid"
+          }
+        ],
+        "id": "https://ror.org/055e84666",
+        "links": [
+          {
+            "type": "website",
+            "value": "http://azure.acmex.com/index.asp?"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "NA",
+              "continent_name": "North America",
+              "country_code": "US",
+              "country_name": "United States",
+              "country_subdivision_code": "OH",
+              "country_subdivision_name": "Ohio",
+              "lat": 41.4995,
+              "lng": -81.69541,
+              "name": "Cleveland"
+            },
+            "geonames_id": 5150529
+          }
+        ],
+        "names": [
+          {
+            "lang": null,
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Acme Express"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "company"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2026-05-30",
+            "schema_version": "2.1"
+          },
+          "last_modified": {
+            "date": "2026-06-02",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [
+          "cutera.com"
+        ],
+        "established": null,
+        "external_ids": [],
+        "id": "https://ror.org/02353ee06",
+        "links": [
+          {
+            "type": "website",
+            "value": "https://cutera.com"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "NA",
+              "continent_name": "North America",
+              "country_code": "US",
+              "country_name": "United States",
+              "country_subdivision_code": "CA",
+              "country_subdivision_name": "California",
+              "lat": 37.68077,
+              "lng": -122.39997,
+              "name": "Brisbane"
+            },
+            "geonames_id": 5330810
+          }
+        ],
+        "names": [
+          {
+            "lang": null,
+            "types": [
+              "alias"
+            ],
+            "value": "Acme Medical, Inc."
+          },
+          {
+            "lang": null,
+            "types": [
+              "alias"
+            ],
+            "value": "Altus Medical, Inc."
+          },
+          {
+            "lang": null,
+            "types": [
+              "alias"
+            ],
+            "value": "Cutera"
+          },
+          {
+            "lang": null,
+            "types": [
+              "label"
+            ],
+            "value": "Cutera, Inc."
+          },
+          {
+            "lang": null,
+            "types": [
+              "label",
+              "ror_display"
+            ],
+            "value": "Cutera, Inc. (United States)"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "company"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 2003,
+        "external_ids": [
+          {
+            "all": [
+              "grid.420526.7"
+            ],
+            "preferred": "grid.420526.7",
+            "type": "grid"
+          }
+        ],
+        "id": "https://ror.org/03p5x8053",
+        "links": [
+          {
+            "type": "website",
+            "value": "http://www.cpsibiotech.com/"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "NA",
+              "continent_name": "North America",
+              "country_code": "US",
+              "country_name": "United States",
+              "country_subdivision_code": "NY",
+              "country_subdivision_name": "New York",
+              "lat": 42.10341,
+              "lng": -76.26215,
+              "name": "Owego"
+            },
+            "geonames_id": 5130273
+          }
+        ],
+        "names": [
+          {
+            "lang": null,
+            "types": [
+              "alias"
+            ],
+            "value": "CPSI Biotech"
+          },
+          {
+            "lang": null,
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Cell Preservation Services (United States)"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "company"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2023-11-08",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 2017,
+        "external_ids": [],
+        "id": "https://ror.org/03s7s9j23",
+        "links": [
+          {
+            "type": "website",
+            "value": "https://nkgenbiotech.com"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "NA",
+              "continent_name": "North America",
+              "country_code": "US",
+              "country_name": "United States",
+              "country_subdivision_code": "CA",
+              "country_subdivision_name": "California",
+              "lat": 33.74557,
+              "lng": -117.86783,
+              "name": "Santa Ana"
+            },
+            "geonames_id": 5392900
+          }
+        ],
+        "names": [
+          {
+            "lang": null,
+            "types": [
+              "acronym"
+            ],
+            "value": "NKGN"
+          },
+          {
+            "lang": null,
+            "types": [
+              "alias"
+            ],
+            "value": "NKGen Biotech"
+          },
+          {
+            "lang": null,
+            "types": [
+              "alias"
+            ],
+            "value": "NKGen Biotech Inc."
+          },
+          {
+            "lang": null,
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "NKGen Biotech Inc. (United States)"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "company"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2020-07-06",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 2018,
+        "external_ids": [
+          {
+            "all": [
+              "grid.507940.f"
+            ],
+            "preferred": "grid.507940.f",
+            "type": "grid"
+          }
+        ],
+        "id": "https://ror.org/04rpfqy30",
+        "links": [
+          {
+            "type": "website",
+            "value": "https://caspr.bio/technology.html"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "NA",
+              "continent_name": "North America",
+              "country_code": "US",
+              "country_name": "United States",
+              "country_subdivision_code": "CA",
+              "country_subdivision_name": "California",
+              "lat": 37.77493,
+              "lng": -122.41942,
+              "name": "San Francisco"
+            },
+            "geonames_id": 5391959
+          }
+        ],
+        "names": [
+          {
+            "lang": "en",
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Caspr Biotech"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "facility"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2020-12-21",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 1983,
+        "external_ids": [
+          {
+            "all": [
+              "grid.509642.c"
+            ],
+            "preferred": "grid.509642.c",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "0000 0004 0410 3592"
+            ],
+            "preferred": null,
+            "type": "isni"
+          }
+        ],
+        "id": "https://ror.org/02eb03q95",
+        "links": [
+          {
+            "type": "website",
+            "value": "https://adherathera.com/"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "NA",
+              "continent_name": "North America",
+              "country_code": "US",
+              "country_name": "United States",
+              "country_subdivision_code": "NC",
+              "country_subdivision_name": "North Carolina",
+              "lat": 35.97987,
+              "lng": -78.50972,
+              "name": "Wake Forest"
+            },
+            "geonames_id": 4497290
+          }
+        ],
+        "names": [
+          {
+            "lang": null,
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Adhera Therapeutics (United States)"
+          },
+          {
+            "lang": null,
+            "types": [
+              "alias"
+            ],
+            "value": "Marina Biotech"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "company"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": null,
+        "external_ids": [
+          {
+            "all": [
+              "grid.427958.5"
+            ],
+            "preferred": "grid.427958.5",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "Q30286683"
+            ],
+            "preferred": null,
+            "type": "wikidata"
+          }
+        ],
+        "id": "https://ror.org/01tzp8w95",
+        "links": [],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "NA",
+              "continent_name": "North America",
+              "country_code": "US",
+              "country_name": "United States",
+              "country_subdivision_code": "CA",
+              "country_subdivision_name": "California",
+              "lat": 37.33939,
+              "lng": -121.89496,
+              "name": "San Jose"
+            },
+            "geonames_id": 5392171
+          }
+        ],
+        "names": [
+          {
+            "lang": null,
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Best Biotech"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "company"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2026-07-05",
+            "schema_version": "2.1"
+          },
+          "last_modified": {
+            "date": "2026-07-20",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [
+          "legendbiotech.com"
+        ],
+        "established": 2014,
+        "external_ids": [
+          {
+            "all": [
+              "100019886"
+            ],
+            "preferred": "100019886",
+            "type": "fundref"
+          }
+        ],
+        "id": "https://ror.org/04zawcj85",
+        "links": [
+          {
+            "type": "website",
+            "value": "https://legendbiotech.com"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "NA",
+              "continent_name": "North America",
+              "country_code": "US",
+              "country_name": "United States",
+              "country_subdivision_code": "NJ",
+              "country_subdivision_name": "New Jersey",
+              "lat": 40.4976,
+              "lng": -74.48849,
+              "name": "Somerset"
+            },
+            "geonames_id": 5104755
+          }
+        ],
+        "names": [
+          {
+            "lang": "en",
+            "types": [
+              "label"
+            ],
+            "value": "Legend Biotech"
+          },
+          {
+            "lang": null,
+            "types": [
+              "label",
+              "ror_display"
+            ],
+            "value": "Legend Biotech (United States)"
+          },
+          {
+            "lang": "en",
+            "types": [
+              "alias"
+            ],
+            "value": "Legend Biotech Corp"
+          },
+          {
+            "lang": "en",
+            "types": [
+              "label"
+            ],
+            "value": "Legend Biotech Corporation"
+          },
+          {
+            "lang": "en",
+            "types": [
+              "alias"
+            ],
+            "value": "Legend Biotech Inc."
+          },
+          {
+            "lang": "en",
+            "types": [
+              "alias"
+            ],
+            "value": "Legend Biotech, Inc."
+          },
+          {
+            "lang": "zh",
+            "types": [
+              "label"
+            ],
+            "value": "\u4f20\u5947\u751f\u7269"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "company",
+          "funder"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2026-03-11",
+            "schema_version": "2.1"
+          },
+          "last_modified": {
+            "date": "2026-03-12",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [
+          "aumbiotech.com"
+        ],
+        "established": 2015,
+        "external_ids": [],
+        "id": "https://ror.org/0106fnq84",
+        "links": [
+          {
+            "type": "website",
+            "value": "http://www.aumbiotech.com"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "NA",
+              "continent_name": "North America",
+              "country_code": "US",
+              "country_name": "United States",
+              "country_subdivision_code": "PA",
+              "country_subdivision_name": "Pennsylvania",
+              "lat": 39.95238,
+              "lng": -75.16362,
+              "name": "Philadelphia"
+            },
+            "geonames_id": 4560349
+          }
+        ],
+        "names": [
+          {
+            "lang": "en",
+            "types": [
+              "label",
+              "ror_display"
+            ],
+            "value": "AUM BioTech"
+          },
+          {
+            "lang": "en",
+            "types": [
+              "label"
+            ],
+            "value": "AUM BioTech, LLC."
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "company"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 2000,
+        "external_ids": [
+          {
+            "all": [
+              "grid.421702.2"
+            ],
+            "preferred": "grid.421702.2",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "Q5514015"
+            ],
+            "preferred": null,
+            "type": "wikidata"
+          }
+        ],
+        "id": "https://ror.org/01bjkkp81",
+        "links": [
+          {
+            "type": "website",
+            "value": "http://www.gnshealthcare.com/"
+          },
+          {
+            "type": "wikipedia",
+            "value": "https://en.wikipedia.org/wiki/GNS_Healthcare"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "NA",
+              "continent_name": "North America",
+              "country_code": "US",
+              "country_name": "United States",
+              "country_subdivision_code": "MA",
+              "country_subdivision_name": "Massachusetts",
+              "lat": 42.3751,
+              "lng": -71.10561,
+              "name": "Cambridge"
+            },
+            "geonames_id": 4931972
+          }
+        ],
+        "names": [
+          {
+            "lang": null,
+            "types": [
+              "alias"
+            ],
+            "value": "GNS Biotech, Inc"
+          },
+          {
+            "lang": null,
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "GNS Healthcare (United States)"
+          },
+          {
+            "lang": null,
+            "types": [
+              "alias"
+            ],
+            "value": "Gene Network Sciences"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "company"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 1997,
+        "external_ids": [
+          {
+            "all": [
+              "grid.417450.3"
+            ],
+            "preferred": "grid.417450.3",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "0000 0004 6011 2362"
+            ],
+            "preferred": null,
+            "type": "isni"
+          }
+        ],
+        "id": "https://ror.org/05de34168",
+        "links": [
+          {
+            "type": "website",
+            "value": "https://bc30probiotic.com/"
+          },
+          {
+            "type": "wikipedia",
+            "value": "https://en.wikipedia.org/wiki/Ganeden"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "NA",
+              "continent_name": "North America",
+              "country_code": "US",
+              "country_name": "United States",
+              "country_subdivision_code": "OH",
+              "country_subdivision_name": "Ohio",
+              "lat": 41.51922,
+              "lng": -81.4579,
+              "name": "Mayfield Heights"
+            },
+            "geonames_id": 5162188
+          }
+        ],
+        "names": [
+          {
+            "lang": null,
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Ganeden Biotech (United States)"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "company"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 1982,
+        "external_ids": [
+          {
+            "all": [
+              "grid.420613.2"
+            ],
+            "preferred": "grid.420613.2",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "0000 0004 0409 5705"
+            ],
+            "preferred": null,
+            "type": "isni"
+          }
+        ],
+        "id": "https://ror.org/032jtv165",
+        "links": [
+          {
+            "type": "website",
+            "value": "http://www.hibiotech.com/"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "NA",
+              "continent_name": "North America",
+              "country_code": "US",
+              "country_name": "United States",
+              "country_subdivision_code": "HI",
+              "country_subdivision_name": "Hawaii",
+              "lat": 21.38222,
+              "lng": -157.93361,
+              "name": "\u2018Aiea"
+            },
+            "geonames_id": 5856430
+          }
+        ],
+        "names": [
+          {
+            "lang": null,
+            "types": [
+              "acronym"
+            ],
+            "value": "HBI"
+          },
+          {
+            "lang": null,
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Hawaii Biotech (United States)"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "company"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 1998,
+        "external_ids": [
+          {
+            "all": [
+              "grid.420818.7"
+            ],
+            "preferred": "grid.420818.7",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "Q30282768"
+            ],
+            "preferred": null,
+            "type": "wikidata"
+          }
+        ],
+        "id": "https://ror.org/00q9fjw02",
+        "links": [
+          {
+            "type": "website",
+            "value": "http://www.ecibiotech.com/"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "NA",
+              "continent_name": "North America",
+              "country_code": "US",
+              "country_name": "United States",
+              "country_subdivision_code": "MA",
+              "country_subdivision_name": "Massachusetts",
+              "lat": 42.26259,
+              "lng": -71.80229,
+              "name": "Worcester"
+            },
+            "geonames_id": 4956184
+          }
+        ],
+        "names": [
+          {
+            "lang": null,
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "ECI Biotech (United States)"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "company"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 2007,
+        "external_ids": [
+          {
+            "all": [
+              "grid.450037.5"
+            ],
+            "preferred": "grid.450037.5",
+            "type": "grid"
+          }
+        ],
+        "id": "https://ror.org/020z47w89",
+        "links": [
+          {
+            "type": "website",
+            "value": "http://www.novicibiotech.com/"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "NA",
+              "continent_name": "North America",
+              "country_code": "US",
+              "country_name": "United States",
+              "country_subdivision_code": "CA",
+              "country_subdivision_name": "California",
+              "lat": 38.35658,
+              "lng": -121.98774,
+              "name": "Vacaville"
+            },
+            "geonames_id": 5405228
+          }
+        ],
+        "names": [
+          {
+            "lang": null,
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Novici Biotech (United States)"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "company"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 2002,
+        "external_ids": [
+          {
+            "all": [
+              "grid.434371.6"
+            ],
+            "preferred": "grid.434371.6",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "Q30256617"
+            ],
+            "preferred": null,
+            "type": "wikidata"
+          }
+        ],
+        "id": "https://ror.org/031evws22",
+        "links": [
+          {
+            "type": "website",
+            "value": "http://www.galaxybiotech.com/"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "NA",
+              "continent_name": "North America",
+              "country_code": "US",
+              "country_name": "United States",
+              "country_subdivision_code": "CA",
+              "country_subdivision_name": "California",
+              "lat": 37.36883,
+              "lng": -122.03635,
+              "name": "Sunnyvale"
+            },
+            "geonames_id": 5400075
+          }
+        ],
+        "names": [
+          {
+            "lang": null,
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Galaxy Biotech (United States)"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "company"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": null,
+        "external_ids": [
+          {
+            "all": [
+              "grid.434611.5"
+            ],
+            "preferred": "grid.434611.5",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "0000 0004 0387 3579"
+            ],
+            "preferred": null,
+            "type": "isni"
+          },
+          {
+            "all": [
+              "Q30256795"
+            ],
+            "preferred": null,
+            "type": "wikidata"
+          }
+        ],
+        "id": "https://ror.org/01fbtw415",
+        "links": [
+          {
+            "type": "website",
+            "value": "https://gen-bio.com/"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "NA",
+              "continent_name": "North America",
+              "country_code": "US",
+              "country_name": "United States",
+              "country_subdivision_code": "NJ",
+              "country_subdivision_name": "New Jersey",
+              "lat": 40.29733,
+              "lng": -74.7296,
+              "name": "Lawrenceville"
+            },
+            "geonames_id": 5100356
+          }
+        ],
+        "names": [
+          {
+            "lang": null,
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Generation Biotech (United States)"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "company"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": null,
+        "external_ids": [
+          {
+            "all": [
+              "grid.439140.b"
+            ],
+            "preferred": "grid.439140.b",
+            "type": "grid"
+          }
+        ],
+        "id": "https://ror.org/04g86yb67",
+        "links": [
+          {
+            "type": "website",
+            "value": "http://www.vlpbiotech.com/"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "NA",
+              "continent_name": "North America",
+              "country_code": "US",
+              "country_name": "United States",
+              "country_subdivision_code": "CA",
+              "country_subdivision_name": "California",
+              "lat": 32.71571,
+              "lng": -117.16472,
+              "name": "San Diego"
+            },
+            "geonames_id": 5391811
+          }
+        ],
+        "names": [
+          {
+            "lang": null,
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "VLP Biotech (United States)"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "company"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 2011,
+        "external_ids": [
+          {
+            "all": [
+              "grid.465130.5"
+            ],
+            "preferred": "grid.465130.5",
+            "type": "grid"
+          }
+        ],
+        "id": "https://ror.org/006bwjz47",
+        "links": [
+          {
+            "type": "website",
+            "value": "http://490biotech.com/"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "NA",
+              "continent_name": "North America",
+              "country_code": "US",
+              "country_name": "United States",
+              "country_subdivision_code": "TN",
+              "country_subdivision_name": "Tennessee",
+              "lat": 35.96064,
+              "lng": -83.92074,
+              "name": "Knoxville"
+            },
+            "geonames_id": 4634946
+          }
+        ],
+        "names": [
+          {
+            "lang": null,
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "490 BioTech (United States)"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "company"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 2005,
+        "external_ids": [
+          {
+            "all": [
+              "grid.470418.e"
+            ],
+            "preferred": "grid.470418.e",
+            "type": "grid"
+          }
+        ],
+        "id": "https://ror.org/04g3bhm14",
+        "links": [
+          {
+            "type": "website",
+            "value": "http://www.russellbiotech.com/index.html"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "NA",
+              "continent_name": "North America",
+              "country_code": "US",
+              "country_name": "United States",
+              "country_subdivision_code": "PA",
+              "country_subdivision_name": "Pennsylvania",
+              "lat": 40.31011,
+              "lng": -75.12989,
+              "name": "Doylestown"
+            },
+            "geonames_id": 5187247
+          }
+        ],
+        "names": [
+          {
+            "lang": null,
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Russell Biotech (United States)"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "company"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 2006,
+        "external_ids": [
+          {
+            "all": [
+              "100006768"
+            ],
+            "preferred": null,
+            "type": "fundref"
+          },
+          {
+            "all": [
+              "grid.429012.c"
+            ],
+            "preferred": "grid.429012.c",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "Q30287599"
+            ],
+            "preferred": null,
+            "type": "wikidata"
+          }
+        ],
+        "id": "https://ror.org/01ay7an66",
+        "links": [
+          {
+            "type": "website",
+            "value": "https://www.vero-biotech.com"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "NA",
+              "continent_name": "North America",
+              "country_code": "US",
+              "country_name": "United States",
+              "country_subdivision_code": "GA",
+              "country_subdivision_name": "Georgia",
+              "lat": 33.749,
+              "lng": -84.38798,
+              "name": "Atlanta"
+            },
+            "geonames_id": 4180439
+          }
+        ],
+        "names": [
+          {
+            "lang": null,
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "VERO Biotech (United States)"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "company",
+          "funder"
+        ]
+      }
+    ],
+    "meta": {
+      "types": [
+        {
+          "id": "company",
+          "title": "company",
+          "count": 32
+        },
+        {
+          "id": "funder",
+          "title": "funder",
+          "count": 2
+        },
+        {
+          "id": "facility",
+          "title": "facility",
+          "count": 1
+        },
+        {
+          "id": "nonprofit",
+          "title": "nonprofit",
+          "count": 1
+        }
+      ],
+      "countries": [
+        {
+          "id": "us",
+          "title": "United States",
+          "count": 34
+        }
+      ],
+      "continents": [
+        {
+          "id": "na",
+          "title": "North America",
+          "count": 34
+        }
+      ],
+      "statuses": [
+        {
+          "id": "active",
+          "title": "active",
+          "count": 34
+        }
+      ]
+    }
+  }
+}

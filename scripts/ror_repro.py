@@ -44,6 +44,8 @@ from rapidfuzz import fuzz  # noqa: E402
 from enrichment.tier1_ror import (  # noqa: E402
     _CANONICAL_NAME_TYPES,
     _COMMON_DOMAIN_WORDS,
+    _CONNECTOR_WORDS,
+    _DISTINCTIVE_TOKEN_MIN_LEN,
     _compute_name_score,
     _expand_institution_acronyms,
     _expand_state_abbrevs,
@@ -204,7 +206,9 @@ def diagnose_score(
         v_tokens = set(val.split())
         q_distinctive = {
             t for t in query_tokens
-            if len(t) >= 5 and t not in _COMMON_DOMAIN_WORDS
+            if len(t) >= _DISTINCTIVE_TOKEN_MIN_LEN
+            and t not in _COMMON_DOMAIN_WORDS
+            and t not in _CONNECTOR_WORDS
             and t not in location_tokens
         }
         uncovered = [
@@ -460,6 +464,20 @@ CASES: dict[str, dict[str, Any]] = {
         "label": "FLA — row 23, must resolve to Florida State, never Kent State",
         "name1": "FL STATE UNIV.",
         "city": "TALLAHASSEE",
+        "state": "FL",
+    },
+    "HFT2": {
+        "label": "HFT2 — row 9 as SAP stores it, with the umlaut transliterated",
+        "name1": "Hochschule fuer Technik Stuttgart",
+        "city": "STUTTGART",
+        "state": None,
+        "country": "DE",
+        "country_code": "DE",
+    },
+    "ACME": {
+        "label": "ACME — Customer 40000015, must MISS, never 'AUM BioTech'",
+        "name1": "Acme Biotech",
+        "city": "TAMPA",
         "state": "FL",
     },
 }

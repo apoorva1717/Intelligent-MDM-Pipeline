@@ -469,8 +469,9 @@ def _compute_name_score(
         # trustworthy same-org signal, so it must not save the score.
         q_distinctive = {
             t for t in query_tokens
-            if len(t) >= 5
+            if len(t) >= _DISTINCTIVE_TOKEN_MIN_LEN
             and t not in _COMMON_DOMAIN_WORDS
+            and t not in _CONNECTOR_WORDS
             and t not in location_tokens
         }
         if q_distinctive and not all(
@@ -519,9 +520,72 @@ _COMMON_DOMAIN_WORDS = {
     "regional", "health", "medical", "center", "centre", "research",
     "hospital", "clinic", "system", "systems", "services", "care",
     "university", "college", "institute", "school", "department",
-    "division", "faculty", "laboratory", "group", "company", "inc",
-    "corporation", "corp", "ltd", "llc", "international", "national",
-    "american", "united", "global",
+    "division", "faculty", "laboratory", "laboratories", "labs", "group",
+    "company", "inc", "corporation", "corp", "ltd", "llc", "gmbh", "kgaa",
+    "sarl", "intl", "international", "national", "american", "united",
+    "global",
+}
+
+# Minimum length for a query token to count as DISTINCTIVE in the step-4
+# guard. Four, matching `significant_query_tokens` and
+# `_extract_location_tokens` above — every other length test in this module
+# treats ≥4 as significant, and the guard has no reason to be the exception.
+#
+# A five-char floor silently exempted every organisation whose distinguishing
+# word is four letters — Acme, Duke, Yale, Mayo, Ohio, Iowa — from the guard
+# entirely: with the discriminating token invisible to `q_distinctive`, all
+# that remained was a shared generic word, and the raw token_sort_ratio stood.
+# "Acme Biotech" (Tampa FL) scored 0.87 against ROR's "AUM BioTech"
+# (Philadelphia PA) on the shared "biotech" alone and was written as a
+# verified Tier 1 match, name and domain and ror_id together. At four, "acme"
+# is distinctive, "aum" does not cover it, and the candidate caps at 0.7.
+#
+# Dropping the floor pulls generic four-letter tokens into scope, so the
+# non-distinguishing ones are named in `_COMMON_DOMAIN_WORDS` above: legal
+# forms ("gmbh", "kgaa", "sarl") and the abbreviations `_fuzzy_token_covers`
+# cannot bridge because they are not prefixes of their expansion ("labs" ↛
+# "laboratories", "intl" ↛ "international"). Abbreviations that ARE prefixes
+# ("univ", "inst", "hosp", "dept", "tech") need no entry — coverage already
+# accepts them.
+_DISTINCTIVE_TOKEN_MIN_LEN = 4
+
+# Articles, prepositions and conjunctions. A connector never says WHICH
+# organisation, so it must not be able to cap a candidate no matter how long
+# it is — this is a separate exclusion from `_COMMON_DOMAIN_WORDS`, which
+# holds words that *are* about the org but describe its type.
+#
+# Most connectors are under the length floor already and never reach the
+# distinctive set. The one that bites is German "fuer": SAP stores names in
+# ASCII, so row 9 arrives as "Hochschule fuer Technik Stuttgart" while ROR
+# holds "Hochschule für Technik Stuttgart" (ror.org/039gdg280). The pair
+# fuzzes to 0.95 and ROR's own affiliation scorer returns it at 0.97, but
+# "fuer" ↔ "für" is not a coverable pair — `_fuzzy_token_covers` needs both
+# tokens at ≥4 characters before it will accept a spelling difference, and
+# "für" is three.
+#
+# This list is the narrow fix for the connectors, NOT for transliteration in
+# general. `_fuzzy_token_covers` bridges a transliterated umlaut only when the
+# two spellings fuzz above 85, which is the exception: "universitaet" ↔
+# "universität" clears it at 86.96, but "koeln" ↔ "köln" (66.67), "muenchen" ↔
+# "münchen" (80.00) and "strasse" ↔ "straße" (76.92) do not. Those are all ≥5
+# characters, so they were already capping matches under the old floor — a
+# pre-existing gap this change neither caused nor closes. Folding ü→ue / ö→oe
+# / ä→ae / ß→ss in `_normalise_for_tokens` would close the whole class; it is
+# left alone deliberately, because no record in the demo batch exercises it
+# and the change would move every German match at once.
+_CONNECTOR_WORDS = {
+    # English
+    "the", "of", "and", "for", "in", "at", "on",
+    # German
+    "fuer", "für", "und", "der", "die", "das", "des", "dem", "den",
+    "von", "vom", "zur", "zum", "im",
+    # French
+    "de", "du", "la", "le", "les", "et", "pour", "aux",
+    # Spanish / Portuguese / Italian
+    "del", "della", "delle", "degli", "dei", "da", "do", "dos", "das",
+    "y", "e", "en",
+    # Dutch
+    "van", "het", "voor",
 }
 
 

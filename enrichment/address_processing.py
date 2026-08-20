@@ -215,12 +215,26 @@ def _extract_po_box(text: str) -> tuple[str, str | None]:
     return _strip_residue(new), value
 
 
+# Mail-stop marker. Covers the spelled-out form ("Mail Stop", "Mailstop"),
+# the slashed form ("M/S") and the bare "MS", each with an optional
+# separator before the value: "MS 42", "MS-4", "MS: NE-L3", "MS#RD45".
+_MAIL_STOP_RE = re.compile(
+    r"\b(?:Mail\s*Stop|M\.?\s*/\s*S|MS)\b\.?\s*[:#\-]?\s*(\w[\w\-]*)\b",
+    re.IGNORECASE,
+)
+# The marker alone, used to keep the bare mail-code scan (below) from
+# stealing the value that belongs to a mail stop.
+_MAIL_STOP_MARKER_RE = re.compile(
+    r"\b(?:Mail\s*Stop|M\.?\s*/\s*S|MS)\b\.?\s*[:#\-]?\s*$",
+    re.IGNORECASE,
+)
+
 # Sub-location markers. Order matters: most specific first so "Mail Stop"
 # wins over a bare "MS".
 _SUITE_PATTERNS = [
     # "Campus Box 7212" / "Campus Box 90" — a mail stop; keep the full phrase.
     (re.compile(r"\b(Campus\s+Box\s+[\w\-]+)\b", re.IGNORECASE), "mail_stop"),
-    (re.compile(r"\b(?:Mail\s+Stop|MS)\s+(\w[\w\-]*)\b", re.IGNORECASE), "mail_stop"),
+    (_MAIL_STOP_RE, "mail_stop"),
     (re.compile(r"\b(?:Suite|Ste\.?)\s+(\w[\w\-]*)\b", re.IGNORECASE), "suite"),
     (re.compile(r"\b(?:Bldg\.?|Building)\s+(\w[\w\-]*)\b", re.IGNORECASE), "building"),
     # Marker-before-value ("Floor 3", "Fl. 3").
@@ -254,7 +268,8 @@ _SUITE_PATTERNS = [
 # Bare marker (no value) — used after the value patterns fail to detect
 # "Ste" or "Suite" with nothing after them.
 _BARE_MARKER_RE = re.compile(
-    r"\b(?:Suite|Ste|Bldg|Building|Floor|Fl|Room|Rm|Unit|Mail\s+Stop|MS)\b\s*$",
+    r"\b(?:Suite|Ste|Bldg|Building|Floor|Fl|Room|Rm|Unit|Mail\s*Stop"
+    r"|M\.?\s*/\s*S|MS)\b\.?\s*$",
     re.IGNORECASE,
 )
 # Subset of bare markers safe to DELETE when value-less: interior
@@ -262,7 +277,8 @@ _BARE_MARKER_RE = re.compile(
 # "Building"/"Bldg" is excluded — it can be a descriptor for a named
 # building ("Research I Bldg"), so it is flagged but kept.
 _BARE_MARKER_DELETE_RE = re.compile(
-    r"\b(?:Suite|Ste|Floor|Fl|Room|Rm|Unit|Mail\s+Stop|MS)\b\s*$",
+    r"\b(?:Suite|Ste|Floor|Fl|Room|Rm|Unit|Mail\s*Stop"
+    r"|M\.?\s*/\s*S|MS)\b\.?\s*$",
     re.IGNORECASE,
 )
 
@@ -428,6 +444,11 @@ def _extract_mail_code(text: str, allow_bare: bool) -> tuple[str, str | None]:
         for m in _MAIL_CODE_BARE_RE.finditer(text):
             token = m.group(1)
             if token.upper() in _STREET_TYPE_ABBREVS:
+                continue
+            # "MS-RD45" is a mail stop, not a bare mail code — leave the
+            # token for _extract_sublocations rather than splitting it off
+            # and stranding the marker.
+            if _MAIL_STOP_MARKER_RE.search(text[: m.start()]):
                 continue
             new = text[: m.start()] + text[m.end():]
             return _strip_residue(new), token

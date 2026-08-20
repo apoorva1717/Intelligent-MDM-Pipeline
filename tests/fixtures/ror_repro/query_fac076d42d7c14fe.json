@@ -1,0 +1,1868 @@
+{
+  "params": {
+    "query": "Hochschule fuer Technik Stuttgart",
+    "filter": "locations.geonames_details.country_code:DE"
+  },
+  "response": {
+    "number_of_results": 310,
+    "time_taken": 6,
+    "items": [
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2025-07-15",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [
+          "hft-stuttgart.de"
+        ],
+        "established": 1832,
+        "external_ids": [
+          {
+            "all": [
+              "grid.434950.f"
+            ],
+            "preferred": "grid.434950.f",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "0000 0001 2270 6264"
+            ],
+            "preferred": null,
+            "type": "isni"
+          },
+          {
+            "all": [
+              "Q1540704"
+            ],
+            "preferred": null,
+            "type": "wikidata"
+          }
+        ],
+        "id": "https://ror.org/039gdg280",
+        "links": [
+          {
+            "type": "website",
+            "value": "https://www.hft-stuttgart.de"
+          },
+          {
+            "type": "wikipedia",
+            "value": "http://en.wikipedia.org/wiki/University_of_Applied_Sciences_Stuttgart"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "EU",
+              "continent_name": "Europe",
+              "country_code": "DE",
+              "country_name": "Germany",
+              "country_subdivision_code": "BW",
+              "country_subdivision_name": "Baden-Wurttemberg",
+              "lat": 48.78232,
+              "lng": 9.17702,
+              "name": "Stuttgart"
+            },
+            "geonames_id": 2825297
+          }
+        ],
+        "names": [
+          {
+            "lang": "de",
+            "types": [
+              "label"
+            ],
+            "value": "Hochschule f\u00fcr Technik Stuttgart"
+          },
+          {
+            "lang": "en",
+            "types": [
+              "label",
+              "ror_display"
+            ],
+            "value": "Stuttgart Technical University of Applied Sciences"
+          },
+          {
+            "lang": "en",
+            "types": [
+              "alias"
+            ],
+            "value": "Stuttgart University of Applied Sciences"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "education"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [
+          "hs-pforzheim.de"
+        ],
+        "established": 1877,
+        "external_ids": [
+          {
+            "all": [
+              "grid.449261.c"
+            ],
+            "preferred": "grid.449261.c",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "0000 0001 1349 5207"
+            ],
+            "preferred": null,
+            "type": "isni"
+          },
+          {
+            "all": [
+              "Q884358"
+            ],
+            "preferred": null,
+            "type": "wikidata"
+          }
+        ],
+        "id": "https://ror.org/00qakfc35",
+        "links": [
+          {
+            "type": "website",
+            "value": "https://www.hs-pforzheim.de/"
+          },
+          {
+            "type": "wikipedia",
+            "value": "https://en.wikipedia.org/wiki/Pforzheim_University_of_Applied_Sciences"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "EU",
+              "continent_name": "Europe",
+              "country_code": "DE",
+              "country_name": "Germany",
+              "country_subdivision_code": "BW",
+              "country_subdivision_name": "Baden-Wurttemberg",
+              "lat": 48.88436,
+              "lng": 8.69892,
+              "name": "Pforzheim"
+            },
+            "geonames_id": 2853969
+          }
+        ],
+        "names": [
+          {
+            "lang": "de",
+            "types": [
+              "label"
+            ],
+            "value": "Hochschule Pforzheim"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "alias"
+            ],
+            "value": "Hochschule fuer Gestaltung, Technik und Wirtschaft"
+          },
+          {
+            "lang": "en",
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Pforzheim University of Applied Sciences"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "education"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2023-07-27",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 1928,
+        "external_ids": [
+          {
+            "all": [
+              "Q1453964"
+            ],
+            "preferred": "Q1453964",
+            "type": "wikidata"
+          }
+        ],
+        "id": "https://ror.org/001e43z98",
+        "links": [
+          {
+            "type": "website",
+            "value": "https://www.freie-hochschule-stuttgart.de"
+          },
+          {
+            "type": "wikipedia",
+            "value": "https://de.wikipedia.org/wiki/Freie_Hochschule_Stuttgart"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "EU",
+              "continent_name": "Europe",
+              "country_code": "DE",
+              "country_name": "Germany",
+              "country_subdivision_code": "BW",
+              "country_subdivision_name": "Baden-Wurttemberg",
+              "lat": 48.78232,
+              "lng": 9.17702,
+              "name": "Stuttgart"
+            },
+            "geonames_id": 2825297
+          }
+        ],
+        "names": [
+          {
+            "lang": "en",
+            "types": [
+              "label"
+            ],
+            "value": "Free University of Stuttgart"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Freie Hochschule Stuttgart"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "alias"
+            ],
+            "value": "Freie Hochschule Stuttgart \u2013 Seminar f\u00fcr Waldorfp\u00e4dagogik"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "education"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 2001,
+        "external_ids": [
+          {
+            "all": [
+              "grid.434945.b"
+            ],
+            "preferred": "grid.434945.b",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "0000 0001 2155 8642"
+            ],
+            "preferred": null,
+            "type": "isni"
+          },
+          {
+            "all": [
+              "Q1233544"
+            ],
+            "preferred": null,
+            "type": "wikidata"
+          }
+        ],
+        "id": "https://ror.org/022r03w28",
+        "links": [
+          {
+            "type": "website",
+            "value": "https://www.hdm-stuttgart.de/english"
+          },
+          {
+            "type": "wikipedia",
+            "value": "https://en.wikipedia.org/wiki/Stuttgart_Media_University"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "EU",
+              "continent_name": "Europe",
+              "country_code": "DE",
+              "country_name": "Germany",
+              "country_subdivision_code": "BW",
+              "country_subdivision_name": "Baden-Wurttemberg",
+              "lat": 48.78232,
+              "lng": 9.17702,
+              "name": "Stuttgart"
+            },
+            "geonames_id": 2825297
+          }
+        ],
+        "names": [
+          {
+            "lang": "de",
+            "types": [
+              "label"
+            ],
+            "value": "Hochschule der Medien"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "alias"
+            ],
+            "value": "Hochschule der Medien Stuttgart"
+          },
+          {
+            "lang": "en",
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Stuttgart Media University"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "education"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2025-04-28",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 1971,
+        "external_ids": [
+          {
+            "all": [
+              "grid.440921.a"
+            ],
+            "preferred": "grid.440921.a",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "0000 0000 9738 8195"
+            ],
+            "preferred": null,
+            "type": "isni"
+          },
+          {
+            "all": [
+              "Q851413"
+            ],
+            "preferred": null,
+            "type": "wikidata"
+          }
+        ],
+        "id": "https://ror.org/00w7whj55",
+        "links": [
+          {
+            "type": "website",
+            "value": "https://www.bht-berlin.de"
+          },
+          {
+            "type": "wikipedia",
+            "value": "https://en.wikipedia.org/wiki/Berliner_Hochschule_f\u00fcr_Technik"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "EU",
+              "continent_name": "Europe",
+              "country_code": "DE",
+              "country_name": "Germany",
+              "country_subdivision_code": "BE",
+              "country_subdivision_name": "State of Berlin",
+              "lat": 52.52437,
+              "lng": 13.41053,
+              "name": "Berlin"
+            },
+            "geonames_id": 2950159
+          }
+        ],
+        "names": [
+          {
+            "lang": null,
+            "types": [
+              "acronym"
+            ],
+            "value": "BHT"
+          },
+          {
+            "lang": "en",
+            "types": [
+              "alias"
+            ],
+            "value": "Berlin University of Applied Sciences"
+          },
+          {
+            "lang": "en",
+            "types": [
+              "alias"
+            ],
+            "value": "Berlin University of Applied Sciences and Technology"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Berliner Hochschule f\u00fcr Technik"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "alias"
+            ],
+            "value": "Beuth Hochschule f\u00fcr Technik Berlin"
+          },
+          {
+            "lang": "en",
+            "types": [
+              "alias"
+            ],
+            "value": "Beuth University of Applied Sciences"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "alias"
+            ],
+            "value": "Technische Fachhochschule Berlin"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "education"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2025-03-26",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [
+          "h-ka.de"
+        ],
+        "established": 1878,
+        "external_ids": [
+          {
+            "all": [
+              "grid.434954.b"
+            ],
+            "preferred": "grid.434954.b",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "0000 0001 0681 1275"
+            ],
+            "preferred": null,
+            "type": "isni"
+          },
+          {
+            "all": [
+              "Q761708"
+            ],
+            "preferred": null,
+            "type": "wikidata"
+          }
+        ],
+        "id": "https://ror.org/01c0m1t63",
+        "links": [
+          {
+            "type": "website",
+            "value": "https://www.h-ka.de"
+          },
+          {
+            "type": "wikipedia",
+            "value": "http://en.wikipedia.org/wiki/Karlsruhe_University_of_Applied_Sciences"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "EU",
+              "continent_name": "Europe",
+              "country_code": "DE",
+              "country_name": "Germany",
+              "country_subdivision_code": "BW",
+              "country_subdivision_name": "Baden-Wurttemberg",
+              "lat": 49.00937,
+              "lng": 8.40444,
+              "name": "Karlsruhe"
+            },
+            "geonames_id": 2892794
+          }
+        ],
+        "names": [
+          {
+            "lang": "de",
+            "types": [
+              "acronym"
+            ],
+            "value": "H-KA"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "acronym"
+            ],
+            "value": "HKA"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "alias"
+            ],
+            "value": "Hochschule Karlsruhe"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "label"
+            ],
+            "value": "Hochschule Karlsruhe Technik und Wirtschaft"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "acronym"
+            ],
+            "value": "HsKA"
+          },
+          {
+            "lang": "en",
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Karlsruhe University of Applied Sciences"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "education"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [
+          "hs-aalen.de"
+        ],
+        "established": 1962,
+        "external_ids": [
+          {
+            "all": [
+              "grid.440920.b"
+            ],
+            "preferred": "grid.440920.b",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "0000 0000 9720 0711"
+            ],
+            "preferred": null,
+            "type": "isni"
+          }
+        ],
+        "id": "https://ror.org/04gg60e72",
+        "links": [
+          {
+            "type": "website",
+            "value": "https://www.hs-aalen.de"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "EU",
+              "continent_name": "Europe",
+              "country_code": "DE",
+              "country_name": "Germany",
+              "country_subdivision_code": "BW",
+              "country_subdivision_name": "Baden-Wurttemberg",
+              "lat": 48.83777,
+              "lng": 10.0933,
+              "name": "Aalen"
+            },
+            "geonames_id": 2959927
+          }
+        ],
+        "names": [
+          {
+            "lang": "de",
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Hochschule Aalen"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "alias"
+            ],
+            "value": "Hochschule Aalen - Technik und Wirtschaft"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "education"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 2007,
+        "external_ids": [
+          {
+            "all": [
+              "grid.466285.b"
+            ],
+            "preferred": "grid.466285.b",
+            "type": "grid"
+          }
+        ],
+        "id": "https://ror.org/04j1sr579",
+        "links": [
+          {
+            "type": "website",
+            "value": "http://www.my-campus-berlin.com/de/"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "EU",
+              "continent_name": "Europe",
+              "country_code": "DE",
+              "country_name": "Germany",
+              "country_subdivision_code": "BE",
+              "country_subdivision_name": "Berlin",
+              "lat": 52.52437,
+              "lng": 13.41053,
+              "name": "Berlin"
+            },
+            "geonames_id": 2950159
+          }
+        ],
+        "names": [
+          {
+            "lang": "de",
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Hochschule f\u00fcr Gesundheit & Sport, Technik & Kunst"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "education"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 1998,
+        "external_ids": [
+          {
+            "all": [
+              "grid.466343.0"
+            ],
+            "preferred": "grid.466343.0",
+            "type": "grid"
+          }
+        ],
+        "id": "https://ror.org/05eyxqf74",
+        "links": [
+          {
+            "type": "website",
+            "value": "http://www.fhwt.de/home.html"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "EU",
+              "continent_name": "Europe",
+              "country_code": "DE",
+              "country_name": "Germany",
+              "country_subdivision_code": "NI",
+              "country_subdivision_name": "Lower Saxony",
+              "lat": 52.72632,
+              "lng": 8.28598,
+              "name": "Vechta"
+            },
+            "geonames_id": 2817812
+          }
+        ],
+        "names": [
+          {
+            "lang": "de",
+            "types": [
+              "label"
+            ],
+            "value": "Fachhochschule f\u00fcr Wirtschaft und Technik"
+          },
+          {
+            "lang": null,
+            "types": [
+              "acronym"
+            ],
+            "value": "PHWT"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Private Hochschule f\u00fcr Wirtschaft und Technik"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "education"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 1994,
+        "external_ids": [
+          {
+            "all": [
+              "grid.410722.2"
+            ],
+            "preferred": "grid.410722.2",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "0000 0001 0198 6180"
+            ],
+            "preferred": null,
+            "type": "isni"
+          },
+          {
+            "all": [
+              "Q875138"
+            ],
+            "preferred": null,
+            "type": "wikidata"
+          }
+        ],
+        "id": "https://ror.org/01xzwj424",
+        "links": [
+          {
+            "type": "website",
+            "value": "https://www.htw-berlin.de/"
+          },
+          {
+            "type": "wikipedia",
+            "value": "http://en.wikipedia.org/wiki/Hochschule_f%C3%BCr_Technik_und_Wirtschaft_Berlin"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "EU",
+              "continent_name": "Europe",
+              "country_code": "DE",
+              "country_name": "Germany",
+              "country_subdivision_code": "BE",
+              "country_subdivision_name": "Berlin",
+              "lat": 52.52437,
+              "lng": 13.41053,
+              "name": "Berlin"
+            },
+            "geonames_id": 2950159
+          }
+        ],
+        "names": [
+          {
+            "lang": "de",
+            "types": [
+              "alias"
+            ],
+            "value": "HTW Berlin"
+          },
+          {
+            "lang": "en",
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "HTW Berlin - University of Applied Sciences"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "label"
+            ],
+            "value": "Hochschule f\u00fcr Technik und Wirtschaft Berlin"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "education"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [
+          "htwg-konstanz.de"
+        ],
+        "established": 1906,
+        "external_ids": [
+          {
+            "all": [
+              "grid.454352.1"
+            ],
+            "preferred": "grid.454352.1",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "0000 0001 0727 5531"
+            ],
+            "preferred": null,
+            "type": "isni"
+          },
+          {
+            "all": [
+              "Q1622118"
+            ],
+            "preferred": null,
+            "type": "wikidata"
+          }
+        ],
+        "id": "https://ror.org/051qw9f78",
+        "links": [
+          {
+            "type": "website",
+            "value": "https://www.htwg-konstanz.de"
+          },
+          {
+            "type": "wikipedia",
+            "value": "https://en.wikipedia.org/wiki/Hochschule_Konstanz"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "EU",
+              "continent_name": "Europe",
+              "country_code": "DE",
+              "country_name": "Germany",
+              "country_subdivision_code": "BW",
+              "country_subdivision_name": "Baden-Wurttemberg",
+              "lat": 47.66033,
+              "lng": 9.17582,
+              "name": "Konstanz"
+            },
+            "geonames_id": 2885679
+          }
+        ],
+        "names": [
+          {
+            "lang": null,
+            "types": [
+              "acronym"
+            ],
+            "value": "HTWG"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "HTWG Hochschule Konstanz - Technik, Wirtschaft und Gestaltung"
+          },
+          {
+            "lang": "en",
+            "types": [
+              "label"
+            ],
+            "value": "HTWG Konstanz - University of Applied Sciences"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "alias"
+            ],
+            "value": "Hochschule Konstanz Technik, Wirtschaft und Gestaltung"
+          },
+          {
+            "lang": "en",
+            "types": [
+              "alias"
+            ],
+            "value": "Hochschule Konstanz University of Applied Sciences"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "education"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2026-07-20",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [
+          "htw-dresden.de"
+        ],
+        "established": 1992,
+        "external_ids": [
+          {
+            "all": [
+              "grid.434947.9"
+            ],
+            "preferred": "grid.434947.9",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "0000 0004 0643 2840"
+            ],
+            "preferred": null,
+            "type": "isni"
+          },
+          {
+            "all": [
+              "Q1622222"
+            ],
+            "preferred": "Q1622222",
+            "type": "wikidata"
+          }
+        ],
+        "id": "https://ror.org/05q5pk319",
+        "links": [
+          {
+            "type": "website",
+            "value": "https://www.htw-dresden.de"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "EU",
+              "continent_name": "Europe",
+              "country_code": "DE",
+              "country_name": "Germany",
+              "country_subdivision_code": "SN",
+              "country_subdivision_name": "Saxony",
+              "lat": 51.05089,
+              "lng": 13.73832,
+              "name": "Dresden"
+            },
+            "geonames_id": 2935022
+          }
+        ],
+        "names": [
+          {
+            "lang": "en",
+            "types": [
+              "alias"
+            ],
+            "value": "Dresden University of Applied Sciences"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "alias"
+            ],
+            "value": "HTW Dresden"
+          },
+          {
+            "lang": null,
+            "types": [
+              "acronym"
+            ],
+            "value": "HTWD"
+          },
+          {
+            "lang": "en",
+            "types": [
+              "alias"
+            ],
+            "value": "HTWD - University of Applied Sciences"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "alias"
+            ],
+            "value": "Hochschule f\u00fcr Technik und Wirtschaft Dresden"
+          },
+          {
+            "lang": "en",
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Hochschule f\u00fcr Technik und Wirtschaft Dresden \u2013 University of Applied Sciences"
+          }
+        ],
+        "relationships": [
+          {
+            "label": "Responsible Electronics in the Climate Change Era",
+            "type": "related",
+            "id": "https://ror.org/03rymtb94"
+          }
+        ],
+        "status": "active",
+        "types": [
+          "education"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2023-07-27",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 1949,
+        "external_ids": [
+          {
+            "all": [
+              "0000 0004 7470 8925"
+            ],
+            "preferred": "0000 0004 7470 8925",
+            "type": "isni"
+          },
+          {
+            "all": [
+              "Q1736343"
+            ],
+            "preferred": "Q1736343",
+            "type": "wikidata"
+          }
+        ],
+        "id": "https://ror.org/04e7egx43",
+        "links": [
+          {
+            "type": "website",
+            "value": "https://www.kirchenmusik-hochschule.org"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "EU",
+              "continent_name": "Europe",
+              "country_code": "DE",
+              "country_name": "Germany",
+              "country_subdivision_code": "BW",
+              "country_subdivision_name": "Baden-Wurttemberg",
+              "lat": 48.47629,
+              "lng": 8.93528,
+              "name": "Rottenburg"
+            },
+            "geonames_id": 2843729
+          }
+        ],
+        "names": [
+          {
+            "lang": "de",
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Hochschule f\u00fcr Kirchenmusik der Di\u00f6zese Rottenburg-Stuttgart"
+          },
+          {
+            "lang": "en",
+            "types": [
+              "label"
+            ],
+            "value": "University of Church Music of the Diocese of Rottenburg-Stuttgart"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "education"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [
+          "htwsaar.de"
+        ],
+        "established": 1946,
+        "external_ids": [
+          {
+            "all": [
+              "grid.424705.0"
+            ],
+            "preferred": "grid.424705.0",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "0000 0004 0374 4072"
+            ],
+            "preferred": null,
+            "type": "isni"
+          }
+        ],
+        "id": "https://ror.org/02ge27m07",
+        "links": [
+          {
+            "type": "website",
+            "value": "https://www.htwsaar.de"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "EU",
+              "continent_name": "Europe",
+              "country_code": "DE",
+              "country_name": "Germany",
+              "country_subdivision_code": "SL",
+              "country_subdivision_name": "Saarland",
+              "lat": 49.23262,
+              "lng": 7.00982,
+              "name": "Saarbr\u00fccken"
+            },
+            "geonames_id": 2842647
+          }
+        ],
+        "names": [
+          {
+            "lang": null,
+            "types": [
+              "acronym"
+            ],
+            "value": "HTW"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "alias"
+            ],
+            "value": "HTW Saar"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Hochschule f\u00fcr Technik und Wirtschaft des Saarlandes"
+          },
+          {
+            "lang": "en",
+            "types": [
+              "label"
+            ],
+            "value": "htw saar - University of Applied Sciences"
+          }
+        ],
+        "relationships": [
+          {
+            "label": "Institut f\u00fcr ZukunftsEnergie- und Stoffstromsysteme",
+            "type": "child",
+            "id": "https://ror.org/026xpx458"
+          }
+        ],
+        "status": "active",
+        "types": [
+          "education"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [
+          "htwk-leipzig.de"
+        ],
+        "established": 1992,
+        "external_ids": [
+          {
+            "all": [
+              "grid.448945.0"
+            ],
+            "preferred": "grid.448945.0",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "0000 0001 2163 0667"
+            ],
+            "preferred": null,
+            "type": "isni"
+          },
+          {
+            "all": [
+              "Q1622216"
+            ],
+            "preferred": null,
+            "type": "wikidata"
+          }
+        ],
+        "id": "https://ror.org/03xgcq477",
+        "links": [
+          {
+            "type": "website",
+            "value": "https://www.htwk-leipzig.de"
+          },
+          {
+            "type": "wikipedia",
+            "value": "https://en.wikipedia.org/wiki/Leipzig_University_of_Applied_Sciences"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "EU",
+              "continent_name": "Europe",
+              "country_code": "DE",
+              "country_name": "Germany",
+              "country_subdivision_code": "SN",
+              "country_subdivision_name": "Saxony",
+              "lat": 51.33962,
+              "lng": 12.37129,
+              "name": "Leipzig"
+            },
+            "geonames_id": 2879139
+          }
+        ],
+        "names": [
+          {
+            "lang": "de",
+            "types": [
+              "alias"
+            ],
+            "value": "HTWK Leipzig"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "label"
+            ],
+            "value": "Hochschule f\u00fcr Technik, Wirtschaft und Kultur Leipzig"
+          },
+          {
+            "lang": "en",
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Leipzig University of Applied Sciences"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "education"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 1890,
+        "external_ids": [
+          {
+            "all": [
+              "grid.459736.a"
+            ],
+            "preferred": "grid.459736.a",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "0000 0000 8976 658X"
+            ],
+            "preferred": null,
+            "type": "isni"
+          }
+        ],
+        "id": "https://ror.org/00g01gj95",
+        "links": [
+          {
+            "type": "website",
+            "value": "http://www.marienhospital-stuttgart.de/"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "EU",
+              "continent_name": "Europe",
+              "country_code": "DE",
+              "country_name": "Germany",
+              "country_subdivision_code": "BW",
+              "country_subdivision_name": "Baden-Wurttemberg",
+              "lat": 48.78232,
+              "lng": 9.17702,
+              "name": "Stuttgart"
+            },
+            "geonames_id": 2825297
+          }
+        ],
+        "names": [
+          {
+            "lang": "de",
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Marienhospital Stuttgart"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "healthcare"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 1999,
+        "external_ids": [
+          {
+            "all": [
+              "grid.419842.2"
+            ],
+            "preferred": "grid.419842.2",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "0000 0001 0341 9964"
+            ],
+            "preferred": null,
+            "type": "isni"
+          }
+        ],
+        "id": "https://ror.org/059jfth35",
+        "links": [
+          {
+            "type": "website",
+            "value": "http://www.klinikum-stuttgart.de/"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "EU",
+              "continent_name": "Europe",
+              "country_code": "DE",
+              "country_name": "Germany",
+              "country_subdivision_code": "BW",
+              "country_subdivision_name": "Baden-Wurttemberg",
+              "lat": 48.78232,
+              "lng": 9.17702,
+              "name": "Stuttgart"
+            },
+            "geonames_id": 2825297
+          }
+        ],
+        "names": [
+          {
+            "lang": "de",
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Klinikum Stuttgart"
+          }
+        ],
+        "relationships": [
+          {
+            "label": "Katharinenhospital",
+            "type": "child",
+            "id": "https://ror.org/002n0by50"
+          },
+          {
+            "label": "Olgahospital",
+            "type": "child",
+            "id": "https://ror.org/01xet8208"
+          }
+        ],
+        "status": "active",
+        "types": [
+          "healthcare"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 1919,
+        "external_ids": [
+          {
+            "all": [
+              "grid.248501.a"
+            ],
+            "preferred": "grid.248501.a",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "Q316089"
+            ],
+            "preferred": null,
+            "type": "wikidata"
+          }
+        ],
+        "id": "https://ror.org/00vxe3x87",
+        "links": [
+          {
+            "type": "website",
+            "value": "https://www.sternwarte.de/english.html"
+          },
+          {
+            "type": "wikipedia",
+            "value": "https://en.wikipedia.org/wiki/Stuttgart_Observatory"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "EU",
+              "continent_name": "Europe",
+              "country_code": "DE",
+              "country_name": "Germany",
+              "country_subdivision_code": "BW",
+              "country_subdivision_name": "Baden-Wurttemberg",
+              "lat": 48.78232,
+              "lng": 9.17702,
+              "name": "Stuttgart"
+            },
+            "geonames_id": 2825297
+          }
+        ],
+        "names": [
+          {
+            "lang": "de",
+            "types": [
+              "label"
+            ],
+            "value": "Sternwarte Stuttgart"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Stuttgart Observatory"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "facility"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": null,
+        "external_ids": [
+          {
+            "all": [
+              "grid.470092.8"
+            ],
+            "preferred": "grid.470092.8",
+            "type": "grid"
+          }
+        ],
+        "id": "https://ror.org/04mjv5x61",
+        "links": [
+          {
+            "type": "website",
+            "value": "http://www.olg-stuttgart.de/pb/,Lde/Startseite"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "EU",
+              "continent_name": "Europe",
+              "country_code": "DE",
+              "country_name": "Germany",
+              "country_subdivision_code": "BW",
+              "country_subdivision_name": "Baden-Wurttemberg",
+              "lat": 48.78232,
+              "lng": 9.17702,
+              "name": "Stuttgart"
+            },
+            "geonames_id": 2825297
+          }
+        ],
+        "names": [
+          {
+            "lang": "de",
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Oberlandesgericht Stuttgart"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "other"
+        ]
+      },
+      {
+        "admin": {
+          "created": {
+            "date": "2018-11-14",
+            "schema_version": "1.0"
+          },
+          "last_modified": {
+            "date": "2024-12-11",
+            "schema_version": "2.1"
+          }
+        },
+        "domains": [],
+        "established": 1857,
+        "external_ids": [
+          {
+            "all": [
+              "grid.466250.3"
+            ],
+            "preferred": "grid.466250.3",
+            "type": "grid"
+          },
+          {
+            "all": [
+              "0000 0001 0789 9627"
+            ],
+            "preferred": null,
+            "type": "isni"
+          },
+          {
+            "all": [
+              "Q568692"
+            ],
+            "preferred": null,
+            "type": "wikidata"
+          }
+        ],
+        "id": "https://ror.org/057qv9h29",
+        "links": [
+          {
+            "type": "website",
+            "value": "https://www.hmdk-stuttgart.de"
+          },
+          {
+            "type": "wikipedia",
+            "value": "https://en.wikipedia.org/wiki/State_University_of_Music_and_Performing_Arts_Stuttgart"
+          }
+        ],
+        "locations": [
+          {
+            "geonames_details": {
+              "continent_code": "EU",
+              "continent_name": "Europe",
+              "country_code": "DE",
+              "country_name": "Germany",
+              "country_subdivision_code": "BW",
+              "country_subdivision_name": "Baden-Wurttemberg",
+              "lat": 48.78232,
+              "lng": 9.17702,
+              "name": "Stuttgart"
+            },
+            "geonames_id": 2825297
+          }
+        ],
+        "names": [
+          {
+            "lang": "de",
+            "types": [
+              "alias"
+            ],
+            "value": "HMDK Stuttgart"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "alias"
+            ],
+            "value": "Musikhochschule Stuttgart"
+          },
+          {
+            "lang": "de",
+            "types": [
+              "ror_display",
+              "label"
+            ],
+            "value": "Staatliche Hochschule f\u00fcr Musik und Darstellende Kunst Stuttgart"
+          },
+          {
+            "lang": "en",
+            "types": [
+              "label"
+            ],
+            "value": "State University of Music and Performing Arts Stuttgart"
+          }
+        ],
+        "relationships": [],
+        "status": "active",
+        "types": [
+          "education"
+        ]
+      }
+    ],
+    "meta": {
+      "types": [
+        {
+          "id": "education",
+          "title": "education",
+          "count": 269
+        },
+        {
+          "id": "funder",
+          "title": "funder",
+          "count": 21
+        },
+        {
+          "id": "company",
+          "title": "company",
+          "count": 13
+        },
+        {
+          "id": "nonprofit",
+          "title": "nonprofit",
+          "count": 7
+        },
+        {
+          "id": "archive",
+          "title": "archive",
+          "count": 6
+        },
+        {
+          "id": "facility",
+          "title": "facility",
+          "count": 6
+        },
+        {
+          "id": "healthcare",
+          "title": "healthcare",
+          "count": 4
+        },
+        {
+          "id": "other",
+          "title": "other",
+          "count": 3
+        },
+        {
+          "id": "government",
+          "title": "government",
+          "count": 2
+        }
+      ],
+      "countries": [
+        {
+          "id": "de",
+          "title": "Germany",
+          "count": 310
+        }
+      ],
+      "continents": [
+        {
+          "id": "eu",
+          "title": "Europe",
+          "count": 310
+        }
+      ],
+      "statuses": [
+        {
+          "id": "active",
+          "title": "active",
+          "count": 310
+        }
+      ]
+    }
+  }
+}
