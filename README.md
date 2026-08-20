@@ -182,17 +182,18 @@ The Orchestrator processes each record through a sequential pipeline (Stage 0 ->
 
 **File:** `enrichment/overflow_check.py`
 
-**Problem:** Sometimes a single organization name is split across Name1 and Name2 because the name exceeds SAP's field length limit. For example:
+**Problem:** Sometimes a single organization name is split across two adjacent Name fields because the name exceeds SAP's field length limit. For example:
 
-| Name1 | Name2 | Actual Organization |
+| Upper slot | Lower slot | Actual Organization |
 |-------|-------|--------------------|
 | Adams Air | Hydraulics Inc | Adams Air Hydraulics Inc |
 | Brigham and Women's | Hospital | Brigham and Women's Hospital |
+| Department of Molecular | Biology and Genetics | Department of Molecular Biology and Genetics |
 
-**Trigger:** Both Name1 and Name2 are non-blank.
+**Trigger:** Every adjacent pair in the name block — Name1/Name2, Name2/Name3, Name3/Name4, Name4/Name5 — where both fields are non-blank and not equal. The split can land at any slot boundary, so the check is not specific to the Name1/Name2 pair.
 
-**Logic:**
-1. Concatenate Name1 + " " + Name2
+**Logic:** for each such pair,
+1. Concatenate upper + " " + lower
 2. Ask the LLM: "Does this read as a single continuous organization name?"
 3. LLM returns `is_overflow` (boolean), `confidence` (high/medium/low), and `reasoning`
 
@@ -277,7 +278,7 @@ SAP exports sometimes place organisation/department names in a Street field (wit
 Routing rules:
 - The **institution** always takes Name 1 when Name 1 is empty (`_looks_like_institution`); sub-units (`Division of…`, `… Branch`, `Center for…`) fill Name 2+.
 - A **bare location fragment** that is neither an address nor an org (e.g. "Queens Campus") goes to the next empty **street** slot, not a Name field.
-- **Overflow is flagged, never silently dropped** — when org segments exceed the four Name slots (or location fragments exceed the street slots), a `name-slots-full` / `street-slots-full` signal is raised, which finalisation turns into the `overflow` flag code. It is the same defect UC 0 detects from the other end: content the SAP field split could not place.
+- **Overflow is flagged, never silently dropped** — when org segments exceed the five Name slots (or location fragments exceed the street slots), a `name-slots-full` / `street-slots-full` signal is raised, which finalisation turns into the `overflow` flag code. It is the same defect UC 0 detects from the other end: content the SAP field split could not place.
 
 #### Address Sub-Location Extraction (Floor / Room / c-o)
 
@@ -607,7 +608,7 @@ Tier 2 has three sub-modes that handle different scenarios for enriching Name2 (
 **Outcome (success):**
 - `Name2_enriched` ← parent department (e.g. `"Department of Chemistry"`)
 - `Name3_enriched` ← original lab name (e.g. `"NMR Spectroscopy Group"`) **only when input Name3 was empty**
-- If input Name3 was already populated, the lab is **not** demoted (data-loss avoidance) and the record additionally carries `name3-not-demoted`.
+- If input Name3 was already populated, the lab is demoted into the next free slot below it (Name 4, then Name 5) so no value is overwritten. Only when **every** slot below Name 2 is occupied is the lab **not** demoted (data-loss avoidance), and the record then additionally carries `name3-not-demoted`.
 - `tier_used = 2`, `source = "dept_search"`, `source_url` = the page used, `use_cases_triggered` includes `13`, and the record carries `dept-via-lab` scoped to `name2` + `name3` — the parent department was *inferred from the lab's own page*, not read from a stated department, which is what makes it a claim a reviewer has to check.
 
 **Outcome (failure):** Falls through to existing Tier 2 canonical / Tier 2A / Tier 2B / Tier 3, whose existing scope filters keep the original granular Name2.
@@ -682,7 +683,7 @@ After all tiers have run, the finalization step applies a set of deterministic r
 
 1. **Empty string guard:** Enriched fields must be either `None` or a non-empty string. Empty strings (`""`) are converted to `None`.
 
-2. **Abbreviation expansion on output names:** Name 1 through Name 4 are run through the **global** `expand_abbreviations()` map, so no output name ships a bare `Univ`, `Dept`, `Grp`, `Svcs` or `Inst`:
+2. **Abbreviation expansion on output names:** Name 1 through Name 5 are run through the **global** `expand_abbreviations()` map, so no output name ships a bare `Univ`, `Dept`, `Grp`, `Svcs` or `Inst`:
    - "FL State Univ" -> "FL State University"
    - "Cardinal Research GRP" -> "Cardinal Research Group"
    - "Coastal Analytical Svcs" -> "Coastal Analytical Services"
@@ -700,7 +701,7 @@ After all tiers have run, the finalization step applies a set of deterministic r
 
    **A casing-only difference is not a modification.** Rule 7 cases every free-text output field on every record, so counting casing here would set the flag on most rows and reduce it to "this field is non-empty". The comparison therefore ignores letter case: `Mayo Clinic FLA` → `Mayo Clinic in Florida` is `True`; `GAINESVILLE MEDICAL` → `Gainesville Medical` is `False`. The flag keeps its documented meaning — *this field was enriched*. See [Why casing does not set a changed flag](#why-casing-does-not-set-a-changed-flag).
 
-   Twelve fields carry a changed flag: Name 1–4, Care Of, Contact, Email and Street 1–5. They are **internal** — `EnrichmentResult` does not declare them, so they are dropped at the model boundary and appear in neither the JSON response nor the file export. Their consumers are the test fixtures and `scripts/test_local.py`. City and PO Box have no changed flag at all.
+   Thirteen fields carry a changed flag: Name 1–5, Care Of, Contact, Email and Street 1–5. They are **internal** — `EnrichmentResult` does not declare them, so they are dropped at the model boundary and appear in neither the JSON response nor the file export. Their consumers are the test fixtures and `scripts/test_local.py`. City and PO Box have no changed flag at all.
 
 6. **Deduplication rules:**
    - **Rule 1:** If Name2 was blank in input AND no tier populated it AND no contact was available, set `name2_enriched = None` (don't fabricate)
@@ -744,7 +745,7 @@ Before this rule, casing was applied by whatever happened to touch a field. `sma
 
 | Fields | Treatment |
 |---|---|
-| Name 1–4 | Cased in **name mode**: a ≤3-letter upper-case token defaults to an acronym (`HCA`, `UCI`, `MRI`), which is `smart_title_case`'s long-standing behaviour. |
+| Name 1–5 | Cased in **name mode**: a ≤3-letter upper-case token defaults to an acronym (`HCA`, `UCI`, `MRI`), which is `smart_title_case`'s long-standing behaviour. |
 | Care Of, Contact, Street 1–5, City, PO Box | Cased in **text mode**: a ≤3-letter upper-case token defaults to a *word* (`WAY`, `OAK`, `DR`), because in a street, a city or a person's name that is what it almost always is. |
 | Email | Lower-cased entirely. `ORDERS@MERIDIANLABS.COM` is never the right output form. |
 | Country/Region Key, Region, Language Key, Postal Code, Account group, Customer | Untouched. These are codes; their case is meaningful. |
@@ -790,11 +791,11 @@ Every path that takes a name from a registry writes it through `_write_registry_
 | Tier 1 GLEIF match | `name1_enriched` (legal name) |
 | [Tier 1 re-lookup](#stage-5-tier-1-re-lookup-after-canonicalisation) hit, ROR or GLEIF | `name1_enriched` |
 
-**A registry-owned name is never abbreviation-expanded.** ROR and GLEIF are the authority on their own spelling; re-processing a verified official name could only corrupt it. If ROR's display name for an organisation is "Inst Pasteur", that is what ships. (UC 5 unit canonicalisation on Name 2–4 is a separate, older rule and is unchanged — it still rewrites a "`<Unit>` of X" construction whatever its source.)
+**A registry-owned name is never abbreviation-expanded.** ROR and GLEIF are the authority on their own spelling; re-processing a verified official name could only corrupt it. If ROR's display name for an organisation is "Inst Pasteur", that is what ships. (UC 5 unit canonicalisation on Name 2–5 is a separate, older rule and is unchanged — it still rewrites a "`<Unit>` of X" construction whatever its source.)
 
 > **Why there is no identity gate here.** The ROR write used to run through `canonical_preserves_identity()`, which keeps the input whenever the registry's name appears to drop a distinctive token. That guard is right for the **LLM** canonicalisation paths (`company_canonical`, the Tier 3 suggestion path) — an LLM can substitute a different company outright — but a registry match is *verified*, not suggested. Against a registry name the guard mostly fired on abbreviations: "Mayo Clinic FLA" vs "Mayo Clinic in Florida" reads as a dropped `fla`, so it suppressed exactly the writes that mattered. It remains in force on the LLM paths and is gone from the ROR path.
 >
-> **Parent substitution is not a risk on this path.** The name1 match is scored directly against Name 1, and the local rescore requires every distinctive/identifier token of Name 1 to be covered before a candidate can reach the threshold — so a parent that drops the child's distinguishing tokens cannot match in the first place. Local child matching writes Name 2–4 only, never Name 1.
+> **Parent substitution is not a risk on this path.** The name1 match is scored directly against Name 1, and the local rescore requires every distinctive/identifier token of Name 1 to be covered before a candidate can reach the threshold — so a parent that drops the child's distinguishing tokens cannot match in the first place. Local child matching writes Name 2–5 only, never Name 1.
 
 ---
 
@@ -1188,10 +1189,10 @@ The scope is encoded in the reason text **as well as** in `flagged_fields`, so a
 | `no-match` | Every tier failed: no identifier, no domain, no evidence URL, no field changed. Suppressed when any other code applies — it means "nothing to go on at all" | `name1` |
 | `low-confidence-unchanged` | Canonicalisation was attempted, came back below threshold, and the input value was left in place | the field(s) left as supplied |
 | `dept-via-lab` | UC 13 fired: Name 2 was a granular unit and the parent department was **inferred from the lab's page**, not read from a stated department | `name2`, `name3` |
-| `name3-not-demoted` | UC 13 fired but Name 3 was already populated, so the lab name could not be moved down | `name2`, `name3` |
+| `name3-not-demoted` | UC 13 fired but every slot below Name 2 was already populated, so the lab name could not be moved down | `name2`…`name5` |
 | `person-unresolved` | A person was detected in Name 1 and their affiliation could not be resolved | `name1` |
-| `overflow` | UC 0, or preprocessing ran out of name/street slots — one value split across several SAP fields | `name1`, `name2` |
-| `opaque-code` | UC 10: Name 1 holds an internal code, not a name (preprocessing clears these from Name 2-4 but never from Name 1) | `name1` |
+| `overflow` | UC 0, or preprocessing ran out of name/street slots — one value split across several SAP fields | the overflowing pair (e.g. `name3`, `name4`); the whole name block when preprocessing ran out of slots |
+| `opaque-code` | UC 10: Name 1 holds an internal code, not a name (preprocessing clears these from Name 2-5 but never from Name 1) | `name1` |
 | `domain-unverified` | The candidate website failed every ownership condition, so nothing was written — see [§2b](#2b--ownership-guard-domain_ownership_guard_enabled-default-on) | `domain` |
 | `email-conflict` | An email found in the record differs from a populated email field | `email` |
 | `multiple-contacts` | The contact field names more than one person and Tier 2A could not act | `contact`, `name2` |
@@ -1771,7 +1772,7 @@ enrichment_api/
 │   ├── preprocess.py             # Deterministic cleanup: UC 6-12 (regex-based)
 │   ├── classifier.py             # THE record_type authority — ranked evidence, decided once in finalise
 │   ├── elf_codes.py              # ISO 20275 legal-form codes split by commercial character (generated)
-│   ├── overflow_check.py         # UC 0: Name1+Name2 overflow detection
+│   ├── overflow_check.py         # UC 0: adjacent-name-pair overflow detection
 │   ├── tier1_ror.py              # Tier 1: ROR API client, scoring, child matching, acronym expansion
 │   ├── tier1_lei.py              # Tier 1 (company): GLEIF/LEI registry client + verification guard
 │   ├── tier2a_contact.py         # Tier 2A: Contact person lookup (Modes A & B)
@@ -1999,7 +2000,7 @@ HTTP page fetcher with BeautifulSoup parsing. Extracts structured elements: URL 
 - `name_initials()` / `acronym_matches_name()`: initials of a name; whether an acronym matches them (ROR acronym currency check + subdomain-acronym search term)
 - `seg_matches_needle()`: host/subdomain-vs-token match (substring or shared ≥3-char leading prefix) — shared by the department probe and the search-term rules
 - `is_admin_unit()`: detects administrative / back-office desks (accounts payable, finance, billing, procurement, treasury, …) — drives `search_term_2 = "ADMIN"` and department-probe suppression
-- `clean_passthrough_org_name()`: title-cases ALL-CAPS + expands abbreviations for names that pass through un-canonicalised. It is no longer the only route by which `expand_abbreviations` reaches an output name — [Finalization](#finalization) expands Name 1–4 on every non-registry path
+- `clean_passthrough_org_name()`: title-cases ALL-CAPS + expands abbreviations for names that pass through un-canonicalised. It is no longer the only route by which `expand_abbreviations` reaches an output name — [Finalization](#finalization) expands Name 1–5 on every non-registry path
 - `smart_title_case()`: ALL-CAPS → title case while preserving acronyms (`MRI`, `NIST`, `UCSF`), `Mc` surnames, and hyphen segments. A **whole-string** rule — it refuses any value that is not entirely upper-case, which is why a half-corrected value like "500 TECH Dr MS-4" kept its uppercase "TECH". Still used for Name 1 inside `clean_passthrough_org_name`; `normalise_case()` is what finishes the job
 - `normalise_case()`: the token-level caser behind [Finalization Rule 7](#rule-7--output-casing-normalisation). Each token is judged on its own — digit-bearing and already-mixed-case tokens untouched, everything else title-cased against the legal-form / acronym / directional / Roman-numeral tables — with explicit `Mc`, hyphen, ampersand and apostrophe handling (`WOMEN'S` → `Women's`, never `str.title()`'s `Women'S`). `mode="name"` defaults a short upper-case token to an acronym; `mode="text"` defaults it to a word. Changes letter case and nothing else, and checks that invariant before returning
 
@@ -2340,7 +2341,7 @@ Route Handler → Orchestrator.enrich_batch()
 For each record (async, concurrency-limited via Semaphore):
   │
   ├──► STAGE 0: UC 0 — Overflow Check
-  │    ├─ LLM: "Is Name1+Name2 one continuous org name?"
+  │    ├─ LLM, per adjacent name pair: "Are these one continuous org name?"
   │    └─ If YES (medium/high confidence) → FLAG and RETURN (no further tiers)
   │
   ├──► STAGE 1: Preprocessing (deterministic regex, no network)
@@ -2419,7 +2420,7 @@ For each record (async, concurrency-limited via Semaphore):
        ├─ Rule 2: Preprocessing stripped Name2 → don't let Tier 3 fabricate
        ├─ Rule 3: name2_enriched == name1_enriched → drop Name2 (no echo)
        ├─ Derive search terms · classify record_type
-       ├─ Rule 7: output casing — Name 1-4, Care Of, Contact, Street 1-5,
+       ├─ Rule 7: output casing — Name 1-5, Care Of, Contact, Street 1-5,
        │          City, PO Box (token level); Email lower-cased;
        │          registry names and code fields skipped
        └─ RETURN EnrichmentResult

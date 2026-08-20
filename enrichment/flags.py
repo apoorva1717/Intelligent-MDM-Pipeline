@@ -40,6 +40,7 @@ import logging
 from typing import Any
 
 from enrichment.preprocess import _is_opaque_code
+from utils.name_slots import DEPT_SLOTS, NAME_SLOT_LABELS, NAME_SLOTS
 
 logger = logging.getLogger(__name__)
 
@@ -130,9 +131,9 @@ _REASONS: dict[str, str] = {
         "— confirm which address is correct"
     ),
     NAME3_NOT_DEMOTED: (
-        "the parent department was written to Name 2 but Name 3 was already "
-        "populated, so the lab name could not be moved down — confirm the "
-        "Name 2 / Name 3 split"
+        "the parent department was written to Name 2 but every slot below it "
+        "was already populated, so the lab name could not be moved down — "
+        "confirm the department split across these fields"
     ),
     MULTIPLE_CONTACTS: (
         "names more than one person, so the department could not be "
@@ -147,10 +148,7 @@ _REASONS: dict[str, str] = {
 
 # The `flagged_fields` vocabulary, and how each renders in the reason prose.
 FIELD_LABELS: dict[str, str] = {
-    "name1": "Name 1",
-    "name2": "Name 2",
-    "name3": "Name 3",
-    "name4": "Name 4",
+    **NAME_SLOT_LABELS,
     "domain": "Domain",
     "contact": "Contact",
     "email": "Email",
@@ -158,8 +156,7 @@ FIELD_LABELS: dict[str, str] = {
 }
 
 _FIELD_ORDER: tuple[str, ...] = (
-    "name1", "name2", "name3", "name4", "domain", "contact", "email",
-    "address",
+    *NAME_SLOTS, "domain", "contact", "email", "address",
 )
 
 # Transient evidence keys written by the tiers and consumed here. Popped in
@@ -169,6 +166,7 @@ _EVIDENCE_KEYS: tuple[str, ...] = (
     "_ev_person_unresolved",
     "_ev_dept_via_lab",
     "_ev_name3_not_demoted",
+    "_ev_demoted_to",
     "_ev_low_conf_unchanged",
     "_ev_tier3_wrote",
     "_ev_email_conflict",
@@ -212,7 +210,7 @@ def _nothing_was_enriched(result: dict[str, Any]) -> bool:
         return False
     return not any(
         result.get(f"{f}_changed")
-        for f in ("name1", "name2", "name3", "name4", "contact", "email")
+        for f in (*NAME_SLOTS, "contact", "email")
     )
 
 
@@ -237,13 +235,23 @@ def compute_flags(result: dict[str, Any]) -> None:
             scopes.setdefault(code, set()).add(field)
 
     # ── Structural input problems ─────────────────────────────────────────
-    # UC 0 (Name 1 overflowing into Name 2) and preprocessing's slots-full
-    # signals are the same defect seen from two ends: content that the SAP
-    # field split placed wrongly, or could not place at all.
-    if evidence.get("_ev_overflow"):
-        raise_flag(OVERFLOW, "name1", "name2")
+    # UC 0 (one Name overflowing into the Name below it, at any slot
+    # boundary) and preprocessing's slots-full signals are the same defect
+    # seen from two ends: content that the SAP field split placed wrongly,
+    # or could not place at all.
+    overflow_fields = evidence.get("_ev_overflow")
+    if overflow_fields:
+        # UC 0 reports the exact slots whose contents ran together; the
+        # preprocess `slots-full` signal has no pair to name, so it scopes
+        # to the whole name block. A bare True from either side falls back
+        # to the block as well.
+        if isinstance(overflow_fields, (list, tuple, set)):
+            scoped = [f for f in NAME_SLOTS if f in set(overflow_fields)]
+        else:
+            scoped = []
+        raise_flag(OVERFLOW, *(scoped or NAME_SLOTS))
 
-    # UC 10. Preprocessing clears an opaque code out of Name 2-4, but never
+    # UC 10. Preprocessing clears an opaque code out of Name 2..N, but never
     # out of Name 1 — a Name 1 that is only a code leaves the pipeline with
     # no name at all, and a reviewer has to supply one.
     name1 = result.get("name1_enriched")
@@ -302,10 +310,13 @@ def compute_flags(result: dict[str, Any]) -> None:
         raise_flag(LOW_CONFIDENCE_UNCHANGED, field)
 
     # ── UC 13 ─────────────────────────────────────────────────────────────
+    # The lab name normally lands in Name 3, but a full Name 3 sends it
+    # further down the block — scope the flag to wherever it actually went.
+    demoted_to = evidence.get("_ev_demoted_to") or "name3"
     if evidence.get("_ev_dept_via_lab"):
-        raise_flag(DEPT_VIA_LAB, "name2", "name3")
+        raise_flag(DEPT_VIA_LAB, "name2", demoted_to)
     if evidence.get("_ev_name3_not_demoted"):
-        raise_flag(NAME3_NOT_DEMOTED, "name2", "name3")
+        raise_flag(NAME3_NOT_DEMOTED, *DEPT_SLOTS)
 
     # ── Contact / email / domain ──────────────────────────────────────────
     # Multiple people in one Contact field is only a problem because it stops

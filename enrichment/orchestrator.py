@@ -37,7 +37,7 @@ from enrichment.address_processing import (
 from enrichment.batch_consensus import apply_batch_consensus
 from enrichment.company_canonical import run_company_canonical
 from enrichment.lab_resolver import run_lab_resolver
-from enrichment.overflow_check import run_overflow_check
+from enrichment.overflow_check import run_overflow_check_block
 from enrichment.person_affiliation import run_person_affiliation
 from enrichment.search_terms import (
     clean_name2_phrase,
@@ -71,6 +71,13 @@ from search.duckduckgo_client import DuckDuckGoClient
 from search.page_fetcher import PageFetcher
 from search.serpapi_client import SerpAPIClient
 from utils.cache import BatchCache, SerpCache
+from utils.name_slots import (
+    ADJACENT_NAME_PAIRS,
+    DEPT_ENRICHED_FIELDS,
+    DEPT_SLOTS,
+    ENRICHED_NAME_FIELDS,
+    NAME_SLOTS,
+)
 from utils.domain_resolver import (
     DomainDecision,
     DomainEvidence,
@@ -301,18 +308,9 @@ def _init_result(record: EnrichmentRecord) -> dict[str, Any]:
         "created_by": record.created_by,
         "vat_registration_no": record.vat_registration_no,
         "terms_of_payment": record.terms_of_payment_contact,
-        "name1_original": record.name1,
-        "name2_original": record.name2,
-        "name3_original": record.name3,
-        "name4_original": record.name4,
-        "name1_enriched": None,
-        "name2_enriched": None,
-        "name3_enriched": None,
-        "name4_enriched": None,
-        "name1_changed": False,
-        "name2_changed": False,
-        "name3_changed": False,
-        "name4_changed": False,
+        **{f"{slot}_original": getattr(record, slot, None) for slot in NAME_SLOTS},
+        **{f"{slot}_enriched": None for slot in NAME_SLOTS},
+        **{f"{slot}_changed": False for slot in NAME_SLOTS},
         "search_term_1": None,
         "search_term_2": None,
         # Original SAP Search Term 1 — used only as a last-resort fallback
@@ -430,9 +428,7 @@ def _write_registry_name(
 
 # Name fields. A short upper-case token defaults to an acronym here ("HCA",
 # "UCI"), which is the long-standing behaviour of `smart_title_case`.
-_CASE_NAME_FIELDS = (
-    "name1_enriched", "name2_enriched", "name3_enriched", "name4_enriched",
-)
+_CASE_NAME_FIELDS = ENRICHED_NAME_FIELDS
 # Address / person fields. A short upper-case token defaults to a WORD here
 # ("WAY", "OAK", "DR"), because that is what it almost always is in a street,
 # a city or a person's name.
@@ -492,32 +488,36 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     FIX(Bug 8): changed flags are True only when enriched is not None
     AND enriched differs from original.
     """
-    for field in ("name1_enriched", "name2_enriched", "name3_enriched",
-                  "name4_enriched"):
+    for field in ENRICHED_NAME_FIELDS:
         val = result.get(field)
         if val is not None and not str(val).strip():
             result[field] = None
 
-    # Item 6c: a Name 2 that was blank in the input and was populated ONLY by
-    # Tier 3 (LLM inference) is a guess. Require high confidence, otherwise
-    # return null rather than emit a fabricated department (e.g. "St. Louis
-    # Site" invented from nothing).
-    if (
-        result.get("tier_used") == 3
-        and result.get("_name2_from_tier3")
-        and result.get("name2_enriched")
-        and not (result.get("name2_original") and str(result.get("name2_original")).strip())
-        and str(result.get("confidence") or "").lower() != "high"
-    ):
-        logger.info(
-            "[%s] Tier 3 name2 guess dropped (input blank, confidence=%s): %r",
-            result.get("record_id"), result.get("confidence"),
-            result.get("name2_enriched"),
-        )
-        # No flag: the input Name 2 was blank and the output Name 2 is
-        # blank. Nothing was dropped and nothing is uncertain — the record
-        # simply has no department, which is not a defect.
-        result["name2_enriched"] = None
+    # Item 6c: a department slot that was blank in the input and was
+    # populated ONLY by Tier 3 (LLM inference) is a guess. Require high
+    # confidence, otherwise return null rather than emit a fabricated unit
+    # (e.g. "St. Louis Site" invented from nothing). Applies to every slot
+    # below Name 1 — a fabricated Name 4 is no more defensible than a
+    # fabricated Name 2.
+    if result.get("tier_used") == 3 and str(
+        result.get("confidence") or ""
+    ).lower() != "high":
+        for _slot in DEPT_SLOTS:
+            _orig = result.get(f"{_slot}_original")
+            if (
+                result.get(f"_{_slot}_from_tier3")
+                and result.get(f"{_slot}_enriched")
+                and not (_orig and str(_orig).strip())
+            ):
+                logger.info(
+                    "[%s] Tier 3 %s guess dropped (input blank, confidence=%s): %r",
+                    result.get("record_id"), _slot, result.get("confidence"),
+                    result.get(f"{_slot}_enriched"),
+                )
+                # No flag: the input slot was blank and the output slot is
+                # blank. Nothing was dropped and nothing is uncertain — the
+                # record simply has no unit there, which is not a defect.
+                result[f"{_slot}_enriched"] = None
 
     # Normalise Name 1 when it was passed through uncanonicalised (a ROR miss
     # left the raw source value — often ALL-CAPS and abbreviated, e.g. "LARGO
@@ -535,7 +535,7 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # Expand organisational abbreviations in the OUTPUT name fields. Before
     # Fix 4 `expand_abbreviations` only ever reached an output name via
     # `clean_passthrough_org_name` (name1, and only when source ==
-    # "passthrough") and via `canonicalise_unit_name` (name2-4, and only when
+    # "passthrough") and via `canonicalise_unit_name` (name2..N, and only when
     # the value is a "<Unit> of X" construction), so "FL State Univ" and
     # "Cardinal Research GRP" shipped verbatim from every other path.
     #
@@ -547,7 +547,7 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # authority on their own spelling, and re-processing a verified official
     # name could only corrupt it.
     registry_named = result.get("_registry_name_fields") or set()
-    for field in ("name1", "name2", "name3", "name4"):
+    for field in NAME_SLOTS:
         if field in registry_named:
             continue
         val = result.get(f"{field}_enriched")
@@ -558,20 +558,19 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # (input passthrough, ROR, GLEIF, or LLM): "… Aktiengesellschaft" → "… AG",
     # "… Incorporated" → "… Inc". Preprocess (UC 17) already does this on the
     # input; this backstops any long form a downstream tier introduces.
-    for field in ("name1_enriched", "name2_enriched", "name3_enriched",
-                  "name4_enriched"):
+    for field in ENRICHED_NAME_FIELDS:
         val = result.get(field)
         if val:
             result[field] = collapse_legal_suffix(val)
 
-    # Canonicalise academic unit names on name2/name3 only. name1
+    # Canonicalise academic unit names on the department slots only. name1
     # (the institution) is never a "Department of X", so we leave
     # it alone. This collapses "Chemistry Department",
     # "Dept of Chemistry", "Department of Chemistry" all to
     # "Department of Chemistry".
     # UC 5 scope: never canonicalise granular units (lab/group/
     # centre/facility) — leave them verbatim.
-    for field in ("name2_enriched", "name3_enriched", "name4_enriched"):
+    for field in DEPT_ENRICHED_FIELDS:
         val = result.get(field)
         if val and not is_granular_unit(val):
             canonical = canonicalise_unit_name(val)
@@ -587,12 +586,12 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
 
     preprocess_cleared = result.get("_preprocess_cleared") or set()
 
-    # Passthrough: if no tier enriched name2/name3 but the record had
+    # Passthrough: if no tier enriched a department slot but the record had
     # one, retain the original value — UNLESS preprocessing deliberately
     # cleared the field (e.g. extracted an email, address, contact
     # name). Enrichment must never silently drop user-supplied fields
     # but must also respect preprocessing's decision to empty a field.
-    for field in ("name2", "name3", "name4"):
+    for field in DEPT_SLOTS:
         if result.get(f"{field}_enriched") is None and field not in preprocess_cleared:
             orig = result.get(f"{field}_original")
             if orig and str(orig).strip():
@@ -611,7 +610,7 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
                 result[f"{base}_enriched"] = str(orig).strip()
 
     # Address-in-name safety net. By this point a street address can still
-    # be sitting in a name field: a tier wrote one into name2/name3 AFTER
+    # be sitting in a name field: a tier wrote one into a department slot AFTER
     # preprocessing's UC 9 ran, or the passthrough above restored an
     # address-bearing original. The address stage handles the common case,
     # but it runs before this passthrough — so re-check the FINAL name
@@ -621,7 +620,7 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # with all street slots full never silently drops part of an address.
     _street_out = ("street_cleaned", "street_2_cleaned", "street_3_cleaned",
                    "street_4_cleaned", "street_5_cleaned")
-    for _nf in ("name2_enriched", "name3_enriched", "name4_enriched"):
+    for _nf in DEPT_ENRICHED_FIELDS:
         _nval = result.get(_nf)
         if not (_nval and str(_nval).strip()):
             continue
@@ -660,7 +659,7 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
             result[f"{base}_enriched"] = preprocessed
 
     # Post-tier dedup of the department slots. Preprocess already deduped, but
-    # the tiers (especially the Tier 3 LLM) can set name2/name3/name4 to the
+    # the tiers (especially the Tier 3 LLM) can set two department slots to the
     # same unit — or a near-duplicate/typo — AFTER that ran. Collapse
     # equivalent enriched name slots here (canonical + fuzzy match) and pack
     # the survivors leftward so a duplicate never reaches the output.
@@ -672,7 +671,7 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
 
     kept_vals: list[Any] = []
     kept_norms: list[str] = []
-    for f in ("name2_enriched", "name3_enriched", "name4_enriched"):
+    for f in DEPT_ENRICHED_FIELDS:
         val = result.get(f)
         n = _name_norm(val)
         if not n:
@@ -681,7 +680,7 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
             continue
         kept_vals.append(val)
         kept_norms.append(n)
-    for i, f in enumerate(("name2_enriched", "name3_enriched", "name4_enriched")):
+    for i, f in enumerate(DEPT_ENRICHED_FIELDS):
         result[f] = kept_vals[i] if i < len(kept_vals) else None
 
     # Compute all changed flags.
@@ -701,7 +700,7 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
             return False
         return str(enr).casefold() != str(orig or "").casefold()
 
-    for f in ("name1", "name2", "name3", "name4", "care_of", "contact",
+    for f in (*NAME_SLOTS, "care_of", "contact",
               "email", "street1", "street2", "street3", "street4", "street5"):
         result[f"{f}_changed"] = _changed(f)
 
@@ -769,6 +768,9 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     result.pop("_preprocess_cleared", None)
     result.pop("_dba_values", None)
     result.pop("_pp_name1", None)
+    # One per department slot — set by _apply_tier3, read by finalise().
+    for _slot in DEPT_SLOTS:
+        result.pop(f"_{_slot}_from_tier3", None)
     result.pop("_ror_acronym", None)
     result.pop("_search_term_1_original", None)
     result.pop("_name1_was_person", None)
@@ -1016,20 +1018,24 @@ def _apply_tier3(result: dict, tier3: Tier3Result) -> None:
                     "(different entity — identity not preserved)",
                     result.get("record_id"), original_name1, suggestion,
                 )
-        if tier3.name2_suggestion and tier3.name2_suggestion.strip():
-            result["name2_enriched"] = tier3.name2_suggestion.strip()
-            result["_name2_from_tier3"] = True
-            written.add("name2")
-        if tier3.name3_suggestion and tier3.name3_suggestion.strip():
-            result["name3_enriched"] = tier3.name3_suggestion.strip()
-            written.add("name3")
+        # Every department slot takes its suggestion the same way. Name 2
+        # additionally records that Tier 3 authored it, because finalisation
+        # drops a Tier-3-invented department when the input slot was blank
+        # and the model was not certain — the same doubt applies to the
+        # slots below it, so they are marked too.
+        for slot in DEPT_SLOTS:
+            suggestion = getattr(tier3, f"{slot}_suggestion", None)
+            if suggestion and suggestion.strip():
+                result[f"{slot}_enriched"] = suggestion.strip()
+                result[f"_{slot}_from_tier3"] = True
+                written.add(slot)
 
     # Tier 3 is the last resort. A field it was asked about and declined to
     # write leaves the pipeline holding exactly what the record supplied, with
     # nothing having confirmed it — 8f's other half. A field an earlier tier
     # already rewrote is excluded: that value was settled before Tier 3 ran.
     unchanged: set[str] = result.setdefault("_ev_low_conf_unchanged", set())
-    for field in ("name1", "name2", "name3"):
+    for field in NAME_SLOTS:
         if field in written:
             continue
         enriched = result.get(f"{field}_enriched")
@@ -1945,7 +1951,7 @@ class Orchestrator:
         result["tier_used"] = 2
         has_enriched = any(
             result.get(f"{f}_enriched") and result.get(f"{f}_enriched") != getattr(record, f)
-            for f in ("name2", "name3", "name4")
+            for f in DEPT_SLOTS
         )
         if has_enriched:
             result["source"] = "llm_canonical"
@@ -1961,7 +1967,7 @@ class Orchestrator:
             # Attempted, below threshold, input left in place — per field, so
             # finalisation can scope the flag to whichever slot is populated.
             result.setdefault("_ev_low_conf_unchanged", set()).update(
-                {"name2", "name3"},
+                DEPT_SLOTS,
             )
         return await self._finalise_and_return(result, start, record, cache)
 
@@ -2221,6 +2227,8 @@ class Orchestrator:
                 name1=_pick("name1"),
                 name2=_pick("name2"),
                 name3=_pick("name3"),
+                name4=_pick("name4"),
+                name5=_pick("name5"),
                 street=_street("street1"),
                 street_2=_street("street2"),
                 street_3=_street("street3"),
@@ -2332,45 +2340,42 @@ class Orchestrator:
         start = time.monotonic()
 
         try:
-            # ── UC 0: Name 1 overflow check ──────────────────────────
-            # Single LLM call. If Name1 + Name2 read as ONE continuous
-            # organisation name, flag the record and return immediately
-            # — no other tier runs, no auto-correction. Flagged records
-            # go to manual review.
-            # Skip when name1 and name2 are identical (case/whitespace-
-            # normalized): two equal strings are duplicates, not an
-            # overflow split. UC 12 dedup in preprocess handles them.
-            n1_norm = re.sub(r"\s+", " ", (record.name1 or "").strip()).lower()
-            n2_norm = re.sub(r"\s+", " ", (record.name2 or "").strip()).lower()
-            if (
-                record.name1 and record.name1.strip()
-                and record.name2 and record.name2.strip()
-                and n1_norm != n2_norm
-            ):
-                overflow = await run_overflow_check(
-                    record_id=record.record_id,
-                    name1=record.name1,
-                    name2=record.name2,
-                    llm_client=self._llm_client,
-                )
-                if overflow.is_overflow:
-                    logger.info({
-                        "record_id": record.record_id,
-                        "step": "uc0_overflow_flagged",
-                        "confidence": overflow.confidence,
-                        "reasoning": overflow.reasoning,
-                    })
-                    # Pass through originals untouched. Flag only.
-                    result["name1_enriched"] = record.name1.strip()
-                    result["name2_enriched"] = record.name2.strip()
-                    result["routing_type"] = "unknown"
-                    result["tier_used"] = 1
-                    result["source"] = "pattern_match"
-                    result["confidence"] = overflow.confidence
-                    result["enrichment_status"] = "unresolved"
-                    result["_ev_overflow"] = True
-                    result["use_cases_triggered"] = [0]
-                    return await self._finalise_and_return(result, start, record, cache)
+            # ── UC 0: name overflow check ────────────────────────────
+            # One LLM call per adjacent name pair. If any upper Name +
+            # the Name below it read as ONE continuous organisation
+            # name, flag the record and return immediately — no other
+            # tier runs, no auto-correction. Flagged records go to
+            # manual review. Pairs whose two values are identical
+            # (case/whitespace-normalised) are skipped inside the check:
+            # two equal strings are duplicates, not an overflow split,
+            # and UC 12 dedup in preprocess handles them.
+            block_names = {slot: getattr(record, slot, None) for slot in NAME_SLOTS}
+            overflow = await run_overflow_check_block(
+                record_id=record.record_id,
+                names=block_names,
+                llm_client=self._llm_client,
+            )
+            if overflow.is_overflow:
+                logger.info({
+                    "record_id": record.record_id,
+                    "step": "uc0_overflow_flagged",
+                    "fields": overflow.fields,
+                    "confidence": overflow.confidence,
+                    "reasoning": overflow.reasoning,
+                })
+                # Pass through originals untouched. Flag only.
+                for slot in NAME_SLOTS:
+                    value = block_names.get(slot)
+                    if value and value.strip():
+                        result[f"{slot}_enriched"] = value.strip()
+                result["routing_type"] = "unknown"
+                result["tier_used"] = 1
+                result["source"] = "pattern_match"
+                result["confidence"] = overflow.confidence
+                result["enrichment_status"] = "unresolved"
+                result["_ev_overflow"] = overflow.fields
+                result["use_cases_triggered"] = [0]
+                return await self._finalise_and_return(result, start, record, cache)
 
             # ── PREPROCESS (UC 6, 7, 8, 9): deterministic cleanup ─────
             # Pulls emails, addresses, contact-person names, and AP
@@ -2380,7 +2385,7 @@ class Orchestrator:
             # suspicious — no title, no org signals, 2-3 capitalised
             # words.
             suspicious = find_suspicious_plain_names(
-                record.name1, record.name2, record.name3, record.name4,
+                *(getattr(record, slot, None) for slot in NAME_SLOTS),
             )
             person_verdicts = await llm_classify_plain_names_async(
                 self._llm_client, suspicious,
@@ -2391,6 +2396,7 @@ class Orchestrator:
                 name2=record.name2,
                 name3=record.name3,
                 name4=record.name4,
+                name5=record.name5,
                 contact=record.contact,
                 email=record.email,
                 street1=result["street1_original"],
@@ -2418,12 +2424,9 @@ class Orchestrator:
             # "changed" = field value is different (includes cleared).
             # Both types prevent finalise() from restoring the original.
             preprocess_cleared: set[str] = set()
-            for base, pre_val, orig in (
-                ("name1", pre.name1, record.name1),
-                ("name2", pre.name2, record.name2),
-                ("name3", pre.name3, record.name3),
-                ("name4", pre.name4, record.name4),
-            ):
+            for base in NAME_SLOTS:
+                pre_val = getattr(pre, base, None)
+                orig = getattr(record, base, None)
                 orig_stripped = (orig or "").strip()
                 pre_stripped = (pre_val or "").strip()
                 if orig_stripped and not pre_stripped:
@@ -2493,6 +2496,7 @@ class Orchestrator:
             pp_name2 = pre.name2
             pp_name3 = pre.name3
             pp_name4 = pre.name4
+            pp_name5 = pre.name5
             pp_contact = pre.contact
             pp_street1 = pre.street1
 
@@ -2527,8 +2531,15 @@ class Orchestrator:
             # including Tier 1's short-circuit — can flag a research
             # institution with no actionable signal (no dept + no
             # contact, or multiple contacts).
+            # Any populated department slot counts, not only Name 2.
+            # Preprocessing packs the block leftward so a department normally
+            # lands in Name 2, but a slot the packing could not reach (or a
+            # value a tier writes later) is just as much a signal.
             result["_has_dept_signal"] = bool(
-                (pp_name2 and pp_name2.strip())
+                any(
+                    (getattr(pre, slot, None) or "").strip()
+                    for slot in DEPT_SLOTS
+                )
                 or (pp_contact and pp_contact.strip())
             )
             result["_multi_contact"] = has_multiple_contacts(pp_contact)
@@ -2697,9 +2708,11 @@ class Orchestrator:
                             result, start, record, cache,
                         )
 
-                    # ── Child match for name2 and name3 ──────────────
+                    # ── Child match across every department slot ─────
                     children = ror_parent.get("children", [])
-                    for field_key, field_val in [("name2", pp_name2), ("name3", pp_name3), ("name4", pp_name4)]:
+                    for field_key, field_val in zip(
+                        DEPT_SLOTS, (pp_name2, pp_name3, pp_name4, pp_name5),
+                    ):
                         if not (field_val and field_val.strip()):
                             continue
                         val_for_match = (
@@ -2869,19 +2882,23 @@ class Orchestrator:
 
                     institution_domain = None
 
-            name2_already_filled = bool(pp_name2 and pp_name2.strip())
+            name2_already_filled = any(
+                (getattr(pre, slot, None) or "").strip() for slot in DEPT_SLOTS
+            )
             has_dept_signal = result["_has_dept_signal"]
             multi_contact = result["_multi_contact"]
 
             # ── AP short-circuit: handled entirely by preprocessing ──
-            # Check both name2 and name3 for AP normalisation. If any
-            # AP field is present, return immediately.
+            # Check every name slot for AP normalisation. If any AP field
+            # is present, return immediately.
             any_ap = any(
                 (getattr(pre, f) or "").strip().lower() == "accounts payable"
-                for f in ("name1", "name2", "name3")
+                for f in NAME_SLOTS
             )
             if any_ap:
-                for f, pp_val in [("name2", pp_name2), ("name3", pp_name3)]:
+                for f, pp_val in zip(
+                    DEPT_SLOTS, (pp_name2, pp_name3, pp_name4, pp_name5),
+                ):
                     if pp_val and pp_val.strip():
                         result[f"{f}_enriched"] = pp_val.strip()
                 result["tier_used"] = 2
@@ -2937,11 +2954,26 @@ class Orchestrator:
                     "url": lab_res.source_url,
                 })
                 if lab_res.success and lab_res.parent_department:
-                    name3_already_set = bool(pp_name3 and pp_name3.strip())
+                    # Demote the original lab name into the first free slot
+                    # below Name 2. Name 3 is the natural landing spot, but
+                    # when it is occupied the slots below it will do just as
+                    # well — the parent/child order is preserved either way.
+                    # Only a name block with no free slot at all loses the
+                    # lab name, and that is what the flag reports.
+                    pp_dept_values = {
+                        slot: getattr(pre, slot, None) for slot in DEPT_SLOTS
+                    }
+                    demote_target = next(
+                        (
+                            slot for slot in DEPT_SLOTS[1:]
+                            if not (pp_dept_values.get(slot) or "").strip()
+                        ),
+                        None,
+                    )
+                    name3_already_set = demote_target is None
                     result["name2_enriched"] = lab_res.parent_department
-                    if not name3_already_set:
-                        # Promote the original lab name to Name3.
-                        result["name3_enriched"] = pp_name2.strip()
+                    if demote_target is not None:
+                        result[f"{demote_target}_enriched"] = pp_name2.strip()
                     result["tier_used"] = 2
                     result["source"] = "dept_search"
                     result["source_url"] = lab_res.source_url
@@ -2954,9 +2986,14 @@ class Orchestrator:
                     # source_url and is not flagged.
                     result["_ev_dept_via_lab"] = True
                     if name3_already_set:
-                        # The lab name could not be demoted, so Name 2 / Name
-                        # 3 no longer describe a clean parent/child split.
+                        # Every slot below Name 2 is occupied, so the lab name
+                        # could not be demoted anywhere and the name block no
+                        # longer describes a clean parent/child split.
                         result["_ev_name3_not_demoted"] = True
+                    elif demote_target != "name3":
+                        # Demoted, but past Name 3 — record where it landed so
+                        # the flag scope points a reviewer at the right column.
+                        result["_ev_demoted_to"] = demote_target
                     if 13 not in result["use_cases_triggered"]:
                         result["use_cases_triggered"].append(13)
                     return await self._finalise_and_return(result, start, record, cache)
@@ -2983,7 +3020,7 @@ class Orchestrator:
             )
 
             # ── TIER 2 (canonical — UC 5): LLM canonicalization ──────
-            # Runs the same logic for BOTH name2 and name3: child match
+            # Runs the same logic for EVERY department slot: child match
             # first (already done above), then Tier 2 canonical LLM,
             # then UC 5 scope filter. Zero SerpAPI calls.
             # Uses a shared helper to avoid duplication.
@@ -2992,7 +3029,9 @@ class Orchestrator:
                 and result.get("name1_enriched")
             )
             any_canonical_ran = False
-            for field_key, pp_val in [("name2", pp_name2), ("name3", pp_name3), ("name4", pp_name4)]:
+            for field_key, pp_val in zip(
+                DEPT_SLOTS, (pp_name2, pp_name3, pp_name4, pp_name5),
+            ):
                 if not (pp_val and pp_val.strip()):
                     continue
                 # Already resolved by child match above?
@@ -3084,6 +3123,7 @@ class Orchestrator:
                     llm_client=self._llm_client,
                     cache=cache,
                     settings=self._settings,
+                    extra_departments=(pp_name4, pp_name5),
                 )
 
                 logger.info({
@@ -3164,6 +3204,8 @@ class Orchestrator:
                 name1=pp_name1,
                 name2=pp_name2,
                 name3=pp_name3,
+                name4=pp_name4,
+                name5=pp_name5,
                 contact=pp_contact,
                 street=pp_street1 or record.street,
                 city=record.city,
@@ -3179,39 +3221,53 @@ class Orchestrator:
             if not result.get("name1_enriched") and not is_blank(pp_name1):
                 result["name1_enriched"] = (pp_name1 or "").strip()
 
-            # Rule: if the input had no name2 and no contact, there is no
-            # signal from which to infer a department — name2_enriched
-            # must remain empty regardless of what any tier produced.
+            # Rule: if the input had no department and no contact, there is
+            # no signal from which to infer one — EVERY department slot must
+            # remain empty regardless of what any tier produced. The rule is
+            # about the record carrying no department signal at all, so it
+            # cannot stop at Name 2.
             if not has_dept_signal:
-                result["name2_enriched"] = None
+                for _slot in DEPT_SLOTS:
+                    result[f"{_slot}_enriched"] = None
 
-            # Rule: if preprocessing stripped name2 down to empty
+            # Rule: if preprocessing stripped a department slot down to empty
             # (because it was actually a contact / email / address /
             # AP reference), do not let Tier 3 fabricate a replacement.
-            if (
-                record.name2 and record.name2.strip()
-                and not (pp_name2 and pp_name2.strip())
-            ):
-                logger.info({
-                    "record_id": record.record_id,
-                    "step": "name2_cleared_by_preprocess",
-                    "original": record.name2,
-                })
-                result["name2_enriched"] = None
+            pp_dept_values = {
+                "name2": pp_name2, "name3": pp_name3,
+                "name4": pp_name4, "name5": pp_name5,
+            }
+            for _slot in DEPT_SLOTS:
+                _original = getattr(record, _slot, None)
+                _preprocessed = pp_dept_values.get(_slot)
+                if (
+                    _original and _original.strip()
+                    and not (_preprocessed and _preprocessed.strip())
+                ):
+                    logger.info({
+                        "record_id": record.record_id,
+                        "step": f"{_slot}_cleared_by_preprocess",
+                        "original": _original,
+                    })
+                    result[f"{_slot}_enriched"] = None
 
-            # Rule: name2_enriched should never echo name1_enriched.
-            if (
-                result.get("name2_enriched")
-                and result.get("name1_enriched")
-                and result["name2_enriched"].strip().lower()
-                    == result["name1_enriched"].strip().lower()
-            ):
-                logger.info({
-                    "record_id": record.record_id,
-                    "step": "name2_equals_name1_dropped",
-                    "value": result["name2_enriched"],
-                })
-                result["name2_enriched"] = None
+            # Rule: no department slot should echo name1_enriched. A unit
+            # value equal to the institution names nothing new, at whichever
+            # slot it landed.
+            _n1 = result.get("name1_enriched")
+            if _n1:
+                for _slot in DEPT_SLOTS:
+                    _val = result.get(f"{_slot}_enriched")
+                    if (
+                        _val
+                        and _val.strip().lower() == _n1.strip().lower()
+                    ):
+                        logger.info({
+                            "record_id": record.record_id,
+                            "step": f"{_slot}_equals_name1_dropped",
+                            "value": _val,
+                        })
+                        result[f"{_slot}_enriched"] = None
 
             return await self._finalise_and_return(result, start, record, cache)
 

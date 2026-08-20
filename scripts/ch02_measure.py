@@ -84,6 +84,10 @@ from enrichment.preprocess import (  # noqa: E402
     _street_person_name,
     has_multiple_contacts,
 )
+from utils.name_slots import (  # noqa: E402
+    ADJACENT_RECORD_NAME_PAIRS,
+    RECORD_NAME_FIELDS,
+)
 from utils.text_utils import (  # noqa: E402
     country_to_iso_code,
     is_blank,
@@ -100,6 +104,7 @@ ENRICHED_WORKBOOK = ROOT / "PresentationTestData_enriched_checked_v1.xlsx"
 # SAP column name for each EnrichmentRecord field the locators report on.
 COLUMN = {
     "name_1": "Name 1", "name_2": "Name 2", "name_3": "Name 3", "name_4": "Name 4",
+    "name_5": "Name 5",
     "street_1": "Street 1", "street_2": "Street 2", "street_3": "Street 3",
     "street_4": "Street 4", "street_5": "Street 5",
     "house_number": "House Number", "po_box": "PO Box",
@@ -109,7 +114,9 @@ COLUMN = {
     "search_term_1": "Search Term 1", "search_term_2": "Search Term 2",
     "contact": "Contact", "care_of": "Care Of", "email": "Email",
 }
-NAME_FIELDS = ["name_1", "name_2", "name_3", "name_4"]
+NAME_FIELDS = list(RECORD_NAME_FIELDS)
+DEPT_FIELDS = NAME_FIELDS[1:]
+NAME_PAIRS = list(ADJACENT_RECORD_NAME_PAIRS)
 STREET_FIELDS = ["street_1", "street_2", "street_3", "street_4", "street_5"]
 
 
@@ -189,17 +196,21 @@ def locate(record: EnrichmentRecord, present: set[str] | None) -> dict[str, set[
         if _looks_like_department(_val(record, f)):
             add("G1-ADDR-011", f)
             break
-    # G1-NAME-001 (:299-305)
-    if (
-        not is_blank(record.name_1)
-        and not is_blank(record.name_2)
-        and not _has_legal_suffix(record.name_1 or "")
-        and _NAME_CONTINUATION_RE.search(record.name_2 or "")
-    ):
-        add("G1-NAME-001", "name_1", "name_2")
-    # G1-NAME-004 (:308-309)
-    if is_blank(record.name_2) and not is_blank(record.name_3):
-        add("G1-NAME-004", "name_2", "name_3")
+    # G1-NAME-001 — every adjacent pair, not only Name 1 / Name 2.
+    for upper, lower in NAME_PAIRS:
+        if (
+            not is_blank(_val(record, upper))
+            and not is_blank(_val(record, lower))
+            and not _has_legal_suffix(_val(record, upper) or "")
+            and _NAME_CONTINUATION_RE.search(_val(record, lower) or "")
+        ):
+            add("G1-NAME-001", upper, lower)
+            break
+    # G1-NAME-004 — a blank slot with a populated one below it.
+    for upper, lower in NAME_PAIRS:
+        if is_blank(_val(record, upper)) and not is_blank(_val(record, lower)):
+            add("G1-NAME-004", upper, lower)
+            break
     # G1-NAME-013 (:312-315)
     for f in NAME_FIELDS:
         v = _val(record, f)
@@ -214,23 +225,30 @@ def locate(record: EnrichmentRecord, present: set[str] | None) -> dict[str, set[
             continue
         if is_blank(getattr(record, field_name)):
             add(code, field_name)
-    name2_blank = is_blank(record.name_2)
+    # "No department" is the whole block below Name 1 being empty.
+    dept_values = [_val(record, f) for f in DEPT_FIELDS]
+    name2_blank = all(is_blank(v) for v in dept_values)
     # G2-NAME-012 (:342-343)
     if looks_like_university_or_research_institute(record.name_1) and name2_blank:
-        add("G2-NAME-012", "name_1", "name_2")
-    # G2-NAME-009 (:347-351)
-    if is_granular_unit(record.name_2) and not any(
-        is_specific_unit_construction(x) or is_unit_construction(x)
-        for x in (record.name_3, record.name_4)
-    ):
-        add("G2-NAME-009", "name_2", "name_3", "name_4")
+        add("G2-NAME-012", "name_1", *DEPT_FIELDS)
+    # G2-NAME-009 — a granular unit in any slot with no parent elsewhere.
+    for i, value in enumerate(dept_values):
+        if not is_granular_unit(value):
+            continue
+        others = [v for j, v in enumerate(dept_values) if j != i]
+        if not any(
+            is_specific_unit_construction(x) or is_unit_construction(x)
+            for x in others
+        ):
+            add("G2-NAME-009", *DEPT_FIELDS)
+            break
     # G2-CONTACT-008 / -009 (:364-369)
     if name2_blank and looks_like_university_or_research_institute(record.name_1):
         if is_blank(record.contact) and is_blank(record.care_of):
             if "G2-NAME-012" not in hits:
-                add("G2-CONTACT-008", "name_2", "contact", "care_of")
+                add("G2-CONTACT-008", *DEPT_FIELDS, "contact", "care_of")
         elif not is_blank(record.contact) and not has_multiple_contacts(record.contact):
-            add("G2-CONTACT-009", "name_2", "contact")
+            add("G2-CONTACT-009", *DEPT_FIELDS, "contact")
 
     # --- G3 ---------------------------------------------------------------
     # G3-NAME-003 (:381-384)
@@ -239,11 +257,12 @@ def locate(record: EnrichmentRecord, present: set[str] | None) -> dict[str, set[
         if v and _normalise_dba(v)[1]:
             add("G3-NAME-003", f)
             break
-    # G3-NAME-005 (:387-390)
-    if _norm(record.name_1) and _norm(record.name_1) == _norm(record.name_2):
-        add("G3-NAME-005", "name_1", "name_2")
-    elif _norm(record.name_2) and _norm(record.name_2) == _norm(record.name_3):
-        add("G3-NAME-005", "name_2", "name_3")
+    # G3-NAME-005 — same value in two adjacent slots, at any boundary.
+    for upper, lower in NAME_PAIRS:
+        upper_norm = _norm(_val(record, upper))
+        if upper_norm and upper_norm == _norm(_val(record, lower)):
+            add("G3-NAME-005", upper, lower)
+            break
     # PO-box count (:393-397)
     po_fields = [f for f in STREET_FIELDS if (_val(record, f) or "") and _PO_BOX_RE.search(_val(record, f) or "")]
     po_box_count = len(po_fields)
@@ -533,6 +552,7 @@ def measure_duplicates(path: Path) -> None:
             row_id=r.record_id or f"row-{i}",
             block_id=None,
             name1=r.name_1, name2=r.name_2,
+            name3=r.name_3, name4=r.name_4, name5=r.name_5,
             street=r.street_1, house_no=r.house_number,
             postal_code=r.postal_code, city=r.city, country=r.country_region_key,
         )

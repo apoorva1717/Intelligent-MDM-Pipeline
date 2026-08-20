@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from llm.openai_client import OpenAIClient
 from llm.prompts import TIER3_SYSTEM_PROMPT, TIER3_USER_PROMPT_TEMPLATE
+from utils.name_slots import NAME_SLOTS
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,14 @@ def _is_address_like_name(value: str | None, street: str | None) -> bool:
     return False
 
 
+# One suggestion attribute per name slot: "name1_suggestion" … The prompt
+# asks for the whole block, so the guard, the caller and the dataclass all
+# walk the same list.
+SUGGESTION_ATTRS: tuple[str, ...] = tuple(
+    f"{slot}_suggestion" for slot in NAME_SLOTS
+)
+
+
 @dataclass
 class Tier3Result:
     """Outcome of Tier 3 LLM inference."""
@@ -55,6 +64,8 @@ class Tier3Result:
     name1_suggestion: str | None = None
     name2_suggestion: str | None = None
     name3_suggestion: str | None = None
+    name4_suggestion: str | None = None
+    name5_suggestion: str | None = None
     confidence: str = "none"
     enrichment_status: str = "unresolved"
     source: str = "LLM"
@@ -72,6 +83,8 @@ async def run_tier3(
     zip_code: str | None,
     country: str | None,
     llm_client: OpenAIClient,
+    name4: str | None = None,
+    name5: str | None = None,
 ) -> Tier3Result:
     """Execute Tier 3 LLM inference.
 
@@ -91,6 +104,8 @@ async def run_tier3(
         name1=name1 or "not recorded",
         name2=name2 or "not recorded",
         name3=name3 or "not recorded",
+        name4=name4 or "not recorded",
+        name5=name5 or "not recorded",
         contact=contact or "not recorded",
         street=street or "",
         city=city or "",
@@ -119,6 +134,10 @@ async def run_tier3(
         result.name2_suggestion = n2.strip() if n2 and str(n2).strip() else None
         n3 = extraction.get("name3_suggestion")
         result.name3_suggestion = n3.strip() if n3 and str(n3).strip() else None
+        n4 = extraction.get("name4_suggestion")
+        result.name4_suggestion = n4.strip() if n4 and str(n4).strip() else None
+        n5 = extraction.get("name5_suggestion")
+        result.name5_suggestion = n5.strip() if n5 and str(n5).strip() else None
         result.enrichment_status = "unresolved"
 
         # Deterministic guard: reject any name suggestion that is actually
@@ -126,7 +145,7 @@ async def run_tier3(
         # Setting it to None keeps the original; the caller never overwrites a
         # name with a dropped suggestion.
         rejected = []
-        for attr in ("name1_suggestion", "name2_suggestion", "name3_suggestion"):
+        for attr in SUGGESTION_ATTRS:
             val = getattr(result, attr)
             if val and _is_address_like_name(val, street):
                 setattr(result, attr, None)

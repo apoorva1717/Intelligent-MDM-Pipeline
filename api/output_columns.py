@@ -35,6 +35,7 @@ RESPONSE_COLUMNS: dict[str, str] = {
     "name2_enriched": "Name 2",
     "name3_enriched": "Name 3",
     "name4_enriched": "Name 4",
+    "name5_enriched": "Name 5",
     # "Domain" and "Website URL" are merged into a single "Domain" column. It
     # carries the registrable ``domain`` (mit.edu) — never a full URL: the
     # homepage ``website_url`` is derived from it (https://mit.edu) and kept

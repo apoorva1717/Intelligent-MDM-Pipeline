@@ -128,11 +128,11 @@ class TestLabResolverOrchestrator:
         assert 13 not in result.use_cases_triggered
 
     @pytest.mark.asyncio
-    async def test_name3_occupied_flags_instead_of_overwrite(
+    async def test_name3_occupied_demotes_to_the_next_free_slot(
         self, orchestrator, options,
     ):
-        """When Name 3 already has a value, the lab name must NOT be
-        moved into Name 3 — flag the record instead."""
+        """When Name 3 already has a value, the lab name must NOT overwrite
+        it — it moves down to the next free slot instead."""
         record = EnrichmentRecord(
             record_id="A15_NAME3_OCCUPIED",
             name1="Stanford University",
@@ -144,5 +144,33 @@ class TestLabResolverOrchestrator:
         result = response.results[0]
 
         assert result.name3_enriched == "Existing Value Here"
+        assert result.name4_enriched == "Bhatt Research Group"
+        # Demoted, so the parent/child split is intact — the only flag is
+        # the dept-via-lab inference, scoped to where the lab actually landed.
         assert result.flag_for_review is True
-        assert result.flag_reason and "Name 3" in result.flag_reason
+        assert result.flag_reason and "Name 4" in result.flag_reason
+        assert "name3-not-demoted" not in result.flag_codes
+
+    @pytest.mark.asyncio
+    async def test_all_dept_slots_occupied_flags_instead_of_overwrite(
+        self, orchestrator, options,
+    ):
+        """With every slot below Name 2 full there is nowhere to demote the
+        lab name to — flag the record rather than drop it silently."""
+        record = EnrichmentRecord(
+            record_id="A15_ALL_SLOTS_OCCUPIED",
+            name1="Stanford University",
+            name2="Bhatt Research Group",
+            name3="Existing Value Here",
+            name4="Another Value",
+            name5="Third Value",
+            city="Stanford", state="CA", country="US",
+        )
+        response = await orchestrator.enrich_batch([record], options)
+        result = response.results[0]
+
+        assert result.name3_enriched == "Existing Value Here"
+        assert result.name4_enriched == "Another Value"
+        assert result.name5_enriched == "Third Value"
+        assert result.flag_for_review is True
+        assert "name3-not-demoted" in result.flag_codes

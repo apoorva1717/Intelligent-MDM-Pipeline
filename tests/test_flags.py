@@ -150,7 +150,21 @@ class TestFlagFieldsStayConsistent:
             _ev_overflow=True, _domain_unverified=True,
         )
         assert out["flag_codes"] == ["overflow", "domain-unverified"]
-        assert out["flagged_fields"] == ["name1", "name2", "domain"]
+        # A bare True is preprocessing's slots-full signal: it names no pair,
+        # so the whole name block is the scope.
+        assert out["flagged_fields"] == [
+            "name1", "name2", "name3", "name4", "name5", "domain",
+        ]
+
+    def test_overflow_scopes_to_the_reported_pair(self):
+        """UC 0 names the two slots whose contents ran together, and the flag
+        points at exactly those — not at the whole block."""
+        out = _finalised(
+            name1_enriched="Acme Labs",
+            _ev_overflow=["name3", "name4"],
+        )
+        assert out["flag_codes"] == ["overflow"]
+        assert out["flagged_fields"] == ["name3", "name4"]
 
 
 # ---------------------------------------------------------------------------

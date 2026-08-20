@@ -64,6 +64,7 @@ from enrichment.address_processing import (
     _looks_like_department,
     _looks_like_street,
 )
+from utils.name_slots import ADJACENT_RECORD_NAME_PAIRS, RECORD_NAME_FIELDS
 from utils.text_utils import (
     country_to_iso_code,
     is_blank,
@@ -90,7 +91,7 @@ ISSUE_CATALOGUE: dict[str, str] = {
     "G1-ADDR-006": "Mail Code in Street Field",
     "G1-ADDR-011": "Department Label in Street Field",
     "G1-NAME-001": "Name Overflow Across Fields",
-    "G1-NAME-004": "Name 2 Empty With Name 3 Populated",
+    "G1-NAME-004": "Name Field Empty With a Populated Field Below It",
     "G1-NAME-013": "SAP Internal Code in Name Field",
     "G1-ADDR-009": "Unclassified Residual in Address",  # LLM-only — never emitted
     # G2 — Missing Required Data
@@ -113,7 +114,7 @@ ISSUE_CATALOGUE: dict[str, str] = {
     "G3-ADDR-014": "PO Box and Street Both Present",
     "G3-CONTACT-007": "Multiple Contacts on Record",
     # G4 — Invalid Format or Length
-    "G4-NAME-015": "Name Overflow Beyond Name 4",
+    "G4-NAME-015": "Name Overflow Beyond the Name Block",
     "G4-ADDR-008": "Bare Sub-location Marker Without Value",
     "G4-ADDR-025": "Sub-location Overflow Beyond Street 5",  # LLM-only — never emitted
     "G4-ADDR-026": "Postal Code Format Invalid",
@@ -123,7 +124,7 @@ ISSUE_CATALOGUE: dict[str, str] = {
     "G5-NAME-002": "Unit Name Not in Official Form",
 }
 
-# SAP name-field length limit (Name 1–4 combined).
+# SAP name-field length limit (the whole name block combined).
 _SAP_NAME_LIMIT = 140
 
 # Required-field rules (G2-VAL family): EnrichmentRecord field -> issue code.
@@ -177,7 +178,7 @@ _POSTAL_FORMATS: dict[str, re.Pattern[str]] = {
 
 
 def _names(record: EnrichmentRecord) -> list[str | None]:
-    return [record.name_1, record.name_2, record.name_3, record.name_4]
+    return [getattr(record, f, None) for f in RECORD_NAME_FIELDS]
 
 
 def _streets(record: EnrichmentRecord) -> list[str | None]:
@@ -299,20 +300,32 @@ def _detect_wrong_field(record: EnrichmentRecord, found: set[str]) -> None:
             found.add("G1-ADDR-011")
             break
 
-    # G1-NAME-001 — Name 1 and Name 2 read as one continuous org name.
-    # Heuristic: Name 2 opens with a connector / lowercase word AND Name 1 has
-    # no legal suffix that would close the entity. (True rule is LLM-only.)
-    if (
-        not is_blank(record.name_1)
-        and not is_blank(record.name_2)
-        and not _has_legal_suffix(record.name_1 or "")
-        and _NAME_CONTINUATION_RE.search(record.name_2 or "")
-    ):
-        found.add("G1-NAME-001")
+    # G1-NAME-001 — two adjacent Name fields read as one continuous org
+    # name. Heuristic: the lower field opens with a connector / lowercase
+    # word AND the upper has no legal suffix that would close the entity.
+    # (True rule is LLM-only.) Checked at every slot boundary: the SAP field
+    # split can drop a continuation anywhere in the block, not only after
+    # Name 1.
+    for upper, lower in ADJACENT_RECORD_NAME_PAIRS:
+        upper_val = getattr(record, upper, None)
+        lower_val = getattr(record, lower, None)
+        if (
+            not is_blank(upper_val)
+            and not is_blank(lower_val)
+            and not _has_legal_suffix(upper_val or "")
+            and _NAME_CONTINUATION_RE.search(lower_val or "")
+        ):
+            found.add("G1-NAME-001")
+            break
 
-    # G1-NAME-004 — Name 2 blank while Name 3 is populated.
-    if is_blank(record.name_2) and not is_blank(record.name_3):
-        found.add("G1-NAME-004")
+    # G1-NAME-004 — a blank Name field with a populated one below it. The
+    # gap is the defect regardless of which slot it sits in.
+    for upper, lower in ADJACENT_RECORD_NAME_PAIRS:
+        if is_blank(getattr(record, upper, None)) and not is_blank(
+            getattr(record, lower, None)
+        ):
+            found.add("G1-NAME-004")
+            break
 
     # G1-NAME-013 — a Name field whose entire value is an internal/opaque code.
     for nm in names:
@@ -339,22 +352,31 @@ def _detect_missing(
         if is_blank(getattr(record, field_name)):
             found.add(code)
 
-    name2_blank = is_blank(record.name_2)
+    # "No department" means the whole block below Name 1 is empty — a
+    # department sitting in Name 3 with Name 2 blank is still a department
+    # the record carries, so reading Name 2 alone would report it missing.
+    dept_values = _names(record)[1:]
+    no_department = all(is_blank(v) for v in dept_values)
 
-    # G2-NAME-012 — university / research institute (Name 1) with no department
-    # in Name 2. Gated on the narrower university-or-research signal so clinical
-    # orgs (hospitals, clinics, medical centres) — which routinely have no
-    # department — are not flagged.
-    if looks_like_university_or_research_institute(record.name_1) and name2_blank:
+    # G2-NAME-012 — university / research institute (Name 1) with no
+    # department anywhere in the block. Gated on the narrower
+    # university-or-research signal so clinical orgs (hospitals, clinics,
+    # medical centres) — which routinely have no department — are not flagged.
+    if looks_like_university_or_research_institute(record.name_1) and no_department:
         found.add("G2-NAME-012")
 
-    # G2-NAME-009 — a granular research group (Name 2) with no parent department
-    # anywhere in the name block.
-    if is_granular_unit(record.name_2) and not any(
-        is_specific_unit_construction(x) or is_unit_construction(x)
-        for x in (record.name_3, record.name_4)
-    ):
-        found.add("G2-NAME-009")
+    # G2-NAME-009 — a granular research group in any department slot with no
+    # parent department anywhere else in the name block.
+    for i, value in enumerate(dept_values):
+        if not is_granular_unit(value):
+            continue
+        others = [v for j, v in enumerate(dept_values) if j != i]
+        if not any(
+            is_specific_unit_construction(x) or is_unit_construction(x)
+            for x in others
+        ):
+            found.add("G2-NAME-009")
+            break
 
     # G2-CONTACT-009 — department missing but enrichable: exactly one contact
     # is available to look it up from. Only meaningful for universities and
@@ -367,7 +389,7 @@ def _detect_missing(
     # G2-NAME-012's gate exactly, so G2-NAME-012 has already reported the
     # missing department. Only the enrichable case carries new information.
     if (
-        name2_blank
+        no_department
         and looks_like_university_or_research_institute(record.name_1)
         and not is_blank(record.contact)
         and not has_multiple_contacts(record.contact)
@@ -389,11 +411,13 @@ def _detect_duplicate(record: EnrichmentRecord, found: set[str]) -> None:
             found.add("G3-NAME-003")
             break
 
-    # G3-NAME-005 — same value in two adjacent name fields.
-    if (_norm(record.name_1) and _norm(record.name_1) == _norm(record.name_2)) or (
-        _norm(record.name_2) and _norm(record.name_2) == _norm(record.name_3)
-    ):
-        found.add("G3-NAME-005")
+    # G3-NAME-005 — same value in two adjacent name fields, at any slot
+    # boundary in the block.
+    for upper, lower in ADJACENT_RECORD_NAME_PAIRS:
+        upper_norm = _norm(getattr(record, upper, None))
+        if upper_norm and upper_norm == _norm(getattr(record, lower, None)):
+            found.add("G3-NAME-005")
+            break
 
     # PO boxes across street slots + the dedicated PO Box field.
     po_box_count = sum(
@@ -443,7 +467,7 @@ def _detect_duplicate(record: EnrichmentRecord, found: set[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def _detect_format(record: EnrichmentRecord, found: set[str]) -> None:
-    # G4-NAME-015 — combined Name 1–4 exceeds the SAP 140-char limit.
+    # G4-NAME-015 — the combined name block exceeds the SAP 140-char limit.
     combined = sum(len(nm) for nm in _names(record) if nm)
     if combined > _SAP_NAME_LIMIT:
         found.add("G4-NAME-015")
@@ -480,8 +504,8 @@ def _detect_naming(record: EnrichmentRecord, found: set[str]) -> None:
     if record.name_1 and _ABBREV_TOKEN_RE.search(record.name_1):
         found.add("G5-NAME-001")
 
-    # G5-NAME-002 — a unit-level name (Name 2–4) abbreviated / non-canonical.
-    for nm in (record.name_2, record.name_3, record.name_4):
+    # G5-NAME-002 — a unit-level name (Name 2..N) abbreviated / non-canonical.
+    for nm in _names(record)[1:]:
         if nm and _ABBREV_TOKEN_RE.search(nm):
             found.add("G5-NAME-002")
             break

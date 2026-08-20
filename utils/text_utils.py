@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 
 from rapidfuzz import fuzz
 
+from utils.name_slots import DEPT_SLOTS
+
 logger = logging.getLogger(__name__)
 
 
@@ -95,12 +97,21 @@ def build_affiliation_string(record: object, include_name2: bool = False) -> str
 
     Retained for backward compatibility / logging. The primary ROR lookup
     now uses the query parameter with a country filter instead.
+
+    ``include_name2`` adds the record's department text. It appends every
+    populated department slot, not Name 2 alone — a record whose unit sits
+    in Name 3 describes the same child affiliation and must produce the
+    same string. The parameter keeps its name for callers that pass it by
+    keyword.
     """
     parts: list[str] = []
     if getattr(record, "name1", None):
         parts.append(record.name1)
-    if include_name2 and getattr(record, "name2", None):
-        parts.append(record.name2)
+    if include_name2:
+        for slot in DEPT_SLOTS:
+            value = getattr(record, slot, None)
+            if value and str(value).strip():
+                parts.append(value)
     if getattr(record, "city", None):
         parts.append(record.city)
     if getattr(record, "state", None):
@@ -594,7 +605,8 @@ def looks_like_research_institution(name: str | None) -> bool:
 
 # A narrower signal than the ROR-miss one above: universities, research
 # institutes, colleges and academies — the org types where a department
-# (Name 2) is genuinely expected, so its absence is a reportable issue.
+# is genuinely expected somewhere in the name block, so its absence from
+# every slot is a reportable issue.
 # Clinical types (hospitals, clinics, medical/cancer centres, health
 # systems) and bare labs/observatories are deliberately excluded: they
 # routinely carry no department and should not raise the missing-department
@@ -627,9 +639,9 @@ def is_granular_unit(text: str | None) -> bool:
     UC 5 scope — labs, groups, centres, or facilities.
 
     UC 5 explicitly excludes these: department/division/school/college/
-    faculty are the only levels a present Name2 may be corrected to.
-    If the LLM canonicalises 'NMR Lab' to 'NMR Facility', we must not
-    overwrite — leave the original name2 as-is.
+    faculty are the only levels a present department slot may be
+    corrected to. If the LLM canonicalises 'NMR Lab' to 'NMR Facility',
+    we must not overwrite — leave the original value as-is.
 
     Important: if the name is already an in-scope construction
     (starts with 'Department of', 'Division of', 'School of',

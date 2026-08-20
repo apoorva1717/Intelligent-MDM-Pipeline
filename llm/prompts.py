@@ -4,7 +4,7 @@ Centralised here so they can be versioned, reviewed, and tested independently.
 """
 
 # ---------------------------------------------------------------------------
-# UC 0 — Name1 overflow into Name2 detection
+# UC 0 — Name overflow into the adjacent name field
 # ---------------------------------------------------------------------------
 
 OVERFLOW_CHECK_SYSTEM_PROMPT = (
@@ -13,14 +13,19 @@ OVERFLOW_CHECK_SYSTEM_PROMPT = (
     "fields, or as two separate entities. Return valid JSON only."
 )
 
+# {upper_label} / {lower_label} name the two SAP columns being compared
+# ("Name 1" and "Name 2", "Name 3" and "Name 4", …) so the same prompt
+# serves every adjacent pair in the block. {name1} is always the upper
+# field's value and {name2} the lower field's.
 OVERFLOW_CHECK_USER_PROMPT_TEMPLATE = (
-    "Name 1: {name1}\n"
-    "Name 2: {name2}\n\n"
+    "{upper_label}: {name1}\n"
+    "{lower_label}: {name2}\n\n"
     "Read these two fields together as if they were the full name of "
-    "one organisation. Does the concatenation 'Name 1 + Name 2' form "
-    "a single continuous organisation name (an overflow), or do "
-    "Name 1 and Name 2 describe two distinct entities (e.g. an "
-    "institution + a department)?\n\n"
+    "one organisation. Does the concatenation "
+    "'{upper_label} + {lower_label}' form a single continuous "
+    "organisation name (an overflow), or do {upper_label} and "
+    "{lower_label} describe two distinct entities (e.g. an "
+    "institution + a department, or a department + a lab)?\n\n"
     "Return JSON:\n"
     "{{\n"
     '  "is_overflow": true | false,\n'
@@ -28,17 +33,22 @@ OVERFLOW_CHECK_USER_PROMPT_TEMPLATE = (
     '  "reasoning": "str"\n'
     "}}\n\n"
     "Rules:\n"
-    "1. is_overflow=true only when Name 1 + Name 2 reads naturally as "
-    "ONE organisation name — e.g. 'Adams Air' + 'Hydraulics Inc' → "
-    "'Adams Air Hydraulics Inc'.\n"
-    "2. is_overflow=false when Name 2 is a department, division, "
+    "1. is_overflow=true only when {upper_label} + {lower_label} reads "
+    "naturally as ONE name — e.g. 'Adams Air' + 'Hydraulics Inc' → "
+    "'Adams Air Hydraulics Inc', or 'Department of Molecular' + "
+    "'Biology and Genetics' → 'Department of Molecular Biology and "
+    "Genetics'.\n"
+    "2. is_overflow=false when {lower_label} is a department, division, "
     "research group, lab, contact person, or any standalone unit "
-    "within Name 1.\n"
+    "within {upper_label}.\n"
     "3. When in doubt, prefer false. The goal is to surface likely "
     "overflows, not to flag every case with a shared word.\n"
     "4. Legal suffixes (Inc, Ltd, LLC, Corp, Co, GmbH, AG) appearing "
-    "in Name 2 with no department qualifier are a strong overflow "
-    "signal."
+    "in {lower_label} with no department qualifier are a strong "
+    "overflow signal.\n"
+    "5. A lower field opening with a connector ('and', '&', 'of', "
+    "'for', 'der', 'und') or a lowercase word is a strong overflow "
+    "signal at any slot boundary."
 )
 
 
@@ -56,6 +66,7 @@ TIER2A_USER_PROMPT_TEMPLATE = (
     "Institution: {institution}\n"
     "Existing Name 2: {name2}\n"
     "Existing Name 3: {name3}\n"
+    "{existing_departments}"
     "Page: {page_text}\n\n"
     "Return JSON:\n"
     "{{\n"
@@ -326,6 +337,8 @@ TIER3_USER_PROMPT_TEMPLATE = (
     "Name 1: {name1}\n"
     "Name 2: {name2}\n"
     "Name 3: {name3}\n"
+    "Name 4: {name4}\n"
+    "Name 5: {name5}\n"
     "Contact: {contact}\n"
     "Address: {street}, {city}, {state} {zip}, {country}\n\n"
     "Return JSON:\n"
@@ -333,6 +346,8 @@ TIER3_USER_PROMPT_TEMPLATE = (
     '  "name1_suggestion": "str or null",\n'
     '  "name2_suggestion": "str or null",\n'
     '  "name3_suggestion": "str or null",\n'
+    '  "name4_suggestion": "str or null",\n'
+    '  "name5_suggestion": "str or null",\n'
     '  "confidence": "high|medium|low",\n'
     '  "reasoning": "str",\n'
     '  "requires_verification": true\n'
@@ -355,13 +370,17 @@ TIER3_USER_PROMPT_TEMPLATE = (
     "plausible department guess exists.\n"
     "4. Return null for name2_suggestion only when the institution "
     "is unknown to you or the contact has no inferrable affiliation.\n"
-    "5. Do NOT return name2_suggestion equal to name1, and do NOT "
-    "return a parent of name1 (e.g. name1='Harvard Medical School' "
-    "must not yield name2='Harvard University').\n"
+    "5. Do NOT return any of name2..name5 equal to name1, equal to each "
+    "other, or a parent of name1 (e.g. name1='Harvard Medical School' "
+    "must not yield name2='Harvard University'). Name 2 is the "
+    "department, and each slot below it is a narrower unit inside the "
+    "one above — a division, then a lab or group. Return null for a "
+    "slot with no such narrower unit rather than restating a broader "
+    "one.\n"
     "6. No fabrication of institutions or invented people.\n"
     "7. NEVER put address content in a name field. The street, house "
     "number, postal code, and city provided as context are address "
-    "fields — name1_suggestion, name2_suggestion and name3_suggestion "
+    "fields — every name*_suggestion "
     "must never contain a street name, house number, postal/ZIP code, "
     "or a city/site string copied from the address. If you cannot infer "
     "a real organisation or department name, return null for that field."

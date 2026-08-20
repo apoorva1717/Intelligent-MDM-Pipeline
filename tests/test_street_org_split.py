@@ -54,18 +54,18 @@ class TestPipeDelimitedStreet:
         # The institution always takes Name 1, not the first (most granular) part.
         assert r.name1 == "U.S. Food and Drug Administration"
         # The departments were routed into the remaining name slots.
-        names = [r.name2, r.name3, r.name4]
+        names = [r.name2, r.name3, r.name4, r.name5]
         assert "Bioanalytical Methods Branch" in names
         assert "Division of Bioanalytical Chemistry" in names
 
     def test_name_overflow_raises_review_flag(self):
-        # 5 org segments but only 4 name slots — the overflow must raise the
+        # 6 org segments but only 5 name slots — the overflow must raise the
         # slots-full flag (→ flag_for_review) instead of being silently dropped.
         chain = (
             "Bioanalytical Methods Branch | Division of Bioanalytical Chemistry | "
             "Office of Regulatory Science (HFS-717) | Center for Food Safety and "
-            "Applied Nutrition | U.S. Food and Drug Administration | "
-            "5100 Paint Branch Pkwy"
+            "Applied Nutrition | Office of Analytics and Outreach | "
+            "U.S. Food and Drug Administration | 5100 Paint Branch Pkwy"
         )
         r = _pp(name1=None, street1=chain)
         assert "name-slots-full" in r.flags

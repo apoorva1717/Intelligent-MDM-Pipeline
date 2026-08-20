@@ -47,6 +47,7 @@ from enrichment.preprocess import (
     _extract_addresses,
     _street_person_name,
 )
+from utils.name_slots import DEPT_SLOTS
 from utils.text_utils import is_logistics_location, smart_title_case
 
 logger = logging.getLogger(__name__)
@@ -613,8 +614,7 @@ def _cross_field_checks(
     street_cleaned: str | None,
     street_2_cleaned: str | None,
     name1: str | None,
-    name2: str | None,
-    name3: str | None,
+    dept_names: list[str | None],
     po_box_present: bool,
 ) -> None:
     # Street == Street_2 duplicate.
@@ -634,7 +634,7 @@ def _cross_field_checks(
         res.issue("G3-ADDR-014")
 
     # Name fields contain street-like pattern.
-    for nm in (name1, name2, name3):
+    for nm in (name1, *dept_names):
         if nm and _NAME_STREET_LIKE_RE.search(nm):
             res.issue("G1-CROSS-001")
             break
@@ -901,6 +901,8 @@ async def process_address(
     street: str | None,
     street_2: str | None,
     street_3: str | None,
+    name4: str | None = None,
+    name5: str | None = None,
     street_4: str | None = None,
     street_5: str | None = None,
     city: str | None,
@@ -942,7 +944,11 @@ async def process_address(
     # so the address lands in an empty street slot instead of the name
     # output. Name 1 is the institution and is left untouched.
     _slot_order = ("s1", "s2", "s3", "s4", "s5")
-    for _name_field, _name_val in (("name2", name2), ("name3", name3)):
+    _dept_values: dict[str, str | None] = {
+        "name2": name2, "name3": name3, "name4": name4, "name5": name5,
+    }
+    for _name_field in DEPT_SLOTS:
+        _name_val = _dept_values.get(_name_field)
         if not (_name_val and _name_val.strip()):
             continue
         _addrs, _cleaned = _extract_addresses(_name_val)
@@ -959,10 +965,7 @@ async def process_address(
         # full-slots record never silently drops part of an address.
         if _placed_all:
             res.name_overrides[_name_field] = _cleaned or None
-            if _name_field == "name2":
-                name2 = _cleaned or None
-            else:
-                name3 = _cleaned or None
+            _dept_values[_name_field] = _cleaned or None
 
     # Step 2a — full address jammed into street1 → split.
     if slots["s1"]:
@@ -1069,8 +1072,7 @@ async def process_address(
         street_cleaned=slots["s1"],
         street_2_cleaned=slots["s2"],
         name1=name1,
-        name2=name2,
-        name3=name3,
+        dept_names=[_dept_values[slot] for slot in DEPT_SLOTS],
         po_box_present=po_box_present,
     )
 
@@ -1194,12 +1196,12 @@ def merge_into_result(
             cleared = result_dict.setdefault("_preprocess_cleared", set())
             cleared.add(name_field)
 
-    # Place a detected department into the first empty name slot (name2,
-    # then name3). A slot is "empty" only when both the enriched and the
-    # original value are blank. If both name2 and name3 are filled, the
-    # address_issues flag is the only record of the finding.
+    # Place a detected department into the first empty name slot, walking
+    # the block downward from name2. A slot is "empty" only when both the
+    # enriched and the original value are blank. If every department slot is
+    # filled, the address_issues flag is the only record of the finding.
     if addr.department_addendum:
-        for target in ("name2", "name3"):
+        for target in DEPT_SLOTS:
             enr = result_dict.get(f"{target}_enriched")
             orig = result_dict.get(f"{target}_original")
             slot_empty = (

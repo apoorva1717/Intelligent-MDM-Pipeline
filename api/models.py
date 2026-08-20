@@ -95,6 +95,10 @@ class EnrichmentRecord(BaseModel):
         default=None,
         validation_alias=AliasChoices("Name 4", "name_4", "name4"),
     )
+    name_5: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("Name 5", "name_5", "name5"),
+    )
 
     # ── Address block ────────────────────────────────────────────────
     street_1: Optional[str] = Field(
@@ -247,6 +251,10 @@ class EnrichmentRecord(BaseModel):
         return self.name_4
 
     @property
+    def name5(self) -> Optional[str]:
+        return self.name_5
+
+    @property
     def street(self) -> Optional[str]:
         # Legacy single-street accessor → SAP "Street 1".
         return self.street_1
@@ -336,6 +344,7 @@ class EnrichmentResult(BaseModel):
     name2_enriched: Optional[str] = None
     name3_enriched: Optional[str] = None
     name4_enriched: Optional[str] = None
+    name5_enriched: Optional[str] = None
     # Serialised as the "Domain" column: the registrable domain ('mit.edu'),
     # written only through utils.domain_resolver.resolve_domain. Null when the
     # candidate could not be verified as belonging to this organisation (the

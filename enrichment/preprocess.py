@@ -11,7 +11,7 @@ found with no title prefix and no other signals.
 The shape of the returned dict mirrors the mutable subset of an
 ``EnrichmentRecord``:
     {
-      "name1": ..., "name2": ..., "name3": ...,
+      "name1": ..., "name2": ..., ... "name5": ...,
       "care_of": ..., "contact": ..., "email": ...,
       "street1": ..., "street2": ..., "street3": ...,
     }
@@ -31,6 +31,11 @@ from dataclasses import dataclass, field
 
 from rapidfuzz import fuzz
 
+from utils.name_slots import (
+    ADJACENT_NAME_PAIRS,
+    DEPT_SLOTS,
+    NAME_SLOTS,
+)
 from utils.text_utils import (
     canonicalise_unit_name,
     is_granular_unit,
@@ -41,6 +46,13 @@ from utils.text_utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+# The address block, in slot order. Name slots come from ``utils.name_slots``
+# so every name rule shares one definition; the street block is local because
+# nothing outside preprocessing walks it.
+STREET_SLOTS: tuple[str, ...] = (
+    "street1", "street2", "street3", "street4", "street5",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +65,7 @@ class PreprocessResult:
     name2: str | None = None
     name3: str | None = None
     name4: str | None = None
+    name5: str | None = None
     care_of: str | None = None
     contact: str | None = None
     email: str | None = None
@@ -226,7 +239,7 @@ def _duplicates_existing_street(
     if not nf:
         return False
     hn = (house_number or "").strip()
-    for slot in ("street1", "street2", "street3", "street4", "street5"):
+    for slot in STREET_SLOTS:
         v = getattr(res, slot)
         if not (v and v.strip()):
             continue
@@ -551,9 +564,16 @@ _PHONE_RE = re.compile(
 _OPAQUE_CODE_TOKEN_RE = re.compile(r"^(?:\d{4,}|[A-Za-z]{1,4}-?\d{2,})$")
 
 
-def _strip_name3_junk(value: str) -> str | None:
+def _strip_dept_slot_junk(value: str) -> str | None:
     """Strip URLs, phone/fax numbers and standalone opaque codes from a
-    Name 3 value, returning the tidied remainder (or None)."""
+    department-slot value, returning the tidied remainder (or None).
+
+    Applies to every slot below Name 1. Name 3 was the original overflow
+    slot this cleaned, but the same stray URL / phone / code residue lands
+    in Name 2 and the slots below Name 3 just as readily. Name 1 is
+    excluded: an opaque code there is the organisation name the record
+    supplied, and UC 10 flags it for a reviewer rather than deleting it.
+    """
     out = _URL_RE.sub(" ", value)
     out = _PHONE_RE.sub(" ", out)
     kept = [
@@ -567,7 +587,7 @@ def _strip_name3_junk(value: str) -> str | None:
 def _strip_street_junk(value: str) -> str | None:
     """Strip URLs and phone/fax numbers from a street value.
 
-    Unlike Name 3, opaque numeric codes are NOT stripped — a street number
+    Unlike the name slots, opaque numeric codes are NOT stripped — a street number
     is itself numeric, so removing bare-digit tokens would destroy the
     address.
     """
@@ -848,17 +868,23 @@ def _strip_title(name: str) -> str:
     return _TITLE_STRIP_RE.sub("", name).strip()
 
 
-def _extract_co_attn_from_name2(
+def _extract_co_attn_from_slot(
     res: PreprocessResult,
+    slot: str,
     llm_person_verdicts: dict[str, str],
 ) -> bool:
-    """Apply the 5-case c/o + ATTN classifier to Name 2.
+    """Apply the 5-case c/o + ATTN classifier to one department slot.
 
-    Mutates *res* in place. Returns True if Name 2 was rewritten or
+    Mutates *res* in place. Returns True if the slot was rewritten or
     cleared so the caller can skip the legacy UC 7 Pattern A loop for
     that field.
+
+    Runs for every slot below Name 1: a "c/o" or "ATTN:" prefix is just as
+    likely to land in Name 3 or Name 4 as in Name 2 — the SAP entry order
+    decides which, and the routing decision is identical either way. Name 1
+    is excluded because it holds the organisation, not routing text.
     """
-    val = res.name2
+    val = getattr(res, slot)
     if not val or not val.strip():
         return False
 
@@ -867,8 +893,8 @@ def _extract_co_attn_from_name2(
     if not payload:
         # Prefix-only value ("Attn:") — nothing to route, just clear it.
         if had_prefix:
-            res.name2 = None
-            res.note(15, "name2 cleared — prefix only, no payload")
+            setattr(res, slot, None)
+            res.note(15, f"{slot} cleared — prefix only, no payload")
             return True
         return False
 
@@ -879,33 +905,33 @@ def _extract_co_attn_from_name2(
         payload_is_just_email = re.sub(r"\s+", " ", payload).strip() == email
         if had_prefix or payload_is_just_email:
             if res.email and res.email.strip() and res.email.strip().lower() != email.lower():
-                res.note(15, f"Case D: email '{email}' in name2 but Email already populated — flag for review")
+                res.note(15, f"Case D: email '{email}' in {slot} but Email already populated — flag for review")
                 res.flags.append("email-conflict")
             else:
                 res.email = email
-                res.note(15, f"Case D: email extracted from name2 ({email})")
-            res.name2 = None
+                res.note(15, f"Case D: email extracted from {slot} ({email})")
+            setattr(res, slot, None)
             return True
 
     # ── No prefix: only Case E (clear job title) fires ───────────────
     if not had_prefix:
         if _is_job_title(payload):
-            res.care_of = payload
-            res.name2 = None
+            _set_care_of(res, slot, payload)
+            setattr(res, slot, None)
             res.note(15, f"Case E: job title routed to care_of ({payload!r})")
             return True
         return False
 
     # ── Case C: Department / Functional Unit ─────────────────────────
     if _is_department_payload(payload):
-        res.name2 = payload
-        res.note(15, f"Case C: department/unit kept in name2 (prefix stripped, was {val!r})")
+        setattr(res, slot, payload)
+        res.note(15, f"Case C: department/unit kept in {slot} (prefix stripped, was {val!r})")
         return True
 
     # ── Case B: Company ──────────────────────────────────────────────
     if _has_legal_suffix(payload):
-        res.care_of = payload
-        res.name2 = None
+        _set_care_of(res, slot, payload)
+        setattr(res, slot, None)
         res.note(15, f"Case B: company routed to care_of ({payload!r})")
         return True
 
@@ -939,26 +965,64 @@ def _extract_co_attn_from_name2(
         care_of_value = candidate
         contact_value = _strip_title(candidate) or candidate
         if res.contact and res.contact.strip() and res.contact.strip().lower() != contact_value.lower():
-            res.note(15, f"Case A: person '{contact_value}' in name2 but Contact already populated — flag for review")
+            res.note(15, f"Case A: person '{contact_value}' in {slot} but Contact already populated — flag for review")
             res.flags.append("contact-conflict")
         else:
             res.contact = contact_value
-        res.care_of = care_of_value
-        res.name2 = None
-        res.trigger_dept_lookup = True
+        _set_care_of(res, slot, care_of_value)
+        setattr(res, slot, None)
+        # The department lookup's precondition is an empty Name 2. Clearing a
+        # lower slot does not create one, so only Name 2 triggers it.
+        if slot == "name2":
+            res.trigger_dept_lookup = True
         if flagged_slash:
             res.flags.append(
-                f"name2 had slash-separated payload — only leading person "
+                f"{slot} had slash-separated payload — only leading person "
                 f"name retained ({candidate!r}); remainder needs manual review"
             )
         res.note(15, f"Case A: person routed to care_of+contact ({candidate!r})")
         return True
 
     # ── Case E: Fallback ─────────────────────────────────────────────
-    res.care_of = payload
-    res.name2 = None
+    _set_care_of(res, slot, payload)
+    setattr(res, slot, None)
     res.note(15, f"Case E: unclassified payload routed to care_of ({payload!r})")
     return True
+
+
+def _set_care_of(res: PreprocessResult, slot: str, value: str) -> None:
+    """Write *value* to care_of, or flag when a different one is already there.
+
+    With the classifier running across every department slot, two slots can
+    each produce a c/o payload. The first one wins — Name 2 is scanned before
+    Name 3 — and the loser is reported rather than silently dropped.
+    """
+    existing = (res.care_of or "").strip()
+    if existing and existing.lower() != value.strip().lower():
+        res.note(
+            15,
+            f"c/o payload {value!r} from {slot} discarded — Care Of already "
+            f"holds {existing!r}",
+        )
+        res.flags.append("care-of-conflict")
+        return
+    res.care_of = value
+
+
+def _extract_co_attn_from_names(
+    res: PreprocessResult,
+    llm_person_verdicts: dict[str, str],
+) -> set[str]:
+    """Run the c/o + ATTN classifier across every department slot.
+
+    Returns the set of slots it handled, so the caller can skip the legacy
+    UC 7 Pattern A loop for exactly those fields.
+    """
+    handled: set[str] = set()
+    for slot in DEPT_SLOTS:
+        if _extract_co_attn_from_slot(res, slot, llm_person_verdicts):
+            handled.add(slot)
+    return handled
 
 
 # ---------------------------------------------------------------------------
@@ -1177,6 +1241,7 @@ def preprocess_record(
     street2: str | None,
     street3: str | None,
     name4: str | None = None,
+    name5: str | None = None,
     street4: str | None = None,
     street5: str | None = None,
     house_number: str | None = None,
@@ -1190,7 +1255,7 @@ def preprocess_record(
     via ``llm_person_verdicts`` (keyed by lowercased text).
     """
     res = PreprocessResult(
-        name1=name1, name2=name2, name3=name3, name4=name4,
+        name1=name1, name2=name2, name3=name3, name4=name4, name5=name5,
         contact=contact, email=email,
         street1=street1, street2=street2, street3=street3,
         street4=street4, street5=street5,
@@ -1203,7 +1268,7 @@ def preprocess_record(
     # real content is exposed — in particular so a following c/o clause
     # becomes a prefix that UC 15 can route. Runs FIRST, before UC 15.
     # ---------------------------------------------------------------
-    for slot in ("name1", "name2", "name3", "name4"):
+    for slot in NAME_SLOTS:
         val = getattr(res, slot)
         stripped = _strip_leading_opaque_code(val)
         if stripped != val:
@@ -1215,8 +1280,7 @@ def preprocess_record(
     # ("Department of Central Receiving Department of Central Receiving"
     # → "Department of Central Receiving"). Applies to name and street slots.
     # ---------------------------------------------------------------
-    for slot in ("name1", "name2", "name3", "name4",
-                 "street1", "street2", "street3", "street4", "street5"):
+    for slot in (*NAME_SLOTS, *STREET_SLOTS):
         val = getattr(res, slot)
         collapsed = _collapse_repeated_phrase(val)
         if collapsed != val:
@@ -1244,12 +1308,13 @@ def preprocess_record(
                 res.note(12, f"redundant acronym dropped from name1 (was {original!r})")
 
     # ---------------------------------------------------------------
-    # UC 15 — c/o + ATTN extraction from Name 2 (5-case classifier).
-    # Runs FIRST so the legacy UC 7 Pattern A loop and UC 6 AP
-    # normalisation see the already-routed state. Touches Name 2,
-    # care_of, contact, email only — Name 1 / Name 3 are untouched.
+    # UC 15 — c/o + ATTN extraction from the department slots (5-case
+    # classifier). Runs FIRST so the legacy UC 7 Pattern A loop and UC 6
+    # AP normalisation see the already-routed state. Touches Name 2..N,
+    # care_of, contact and email only — Name 1 holds the organisation and
+    # is never routing text, so it is left alone.
     # ---------------------------------------------------------------
-    name2_handled_by_co_attn = _extract_co_attn_from_name2(res, llm_person_verdicts)
+    co_attn_handled = _extract_co_attn_from_names(res, llm_person_verdicts)
 
     # ---------------------------------------------------------------
     # Named building → Building field. A name OR street slot whose value is a
@@ -1261,8 +1326,7 @@ def preprocess_record(
     # misread as a contact or department. name1 is left alone — the
     # institution name is not an address field.
     # ---------------------------------------------------------------
-    for slot in ("name2", "name3", "name4",
-                 "street1", "street2", "street3", "street4", "street5"):
+    for slot in (*DEPT_SLOTS, *STREET_SLOTS):
         bldg = _named_building(getattr(res, slot))
         if bldg:
             res.building = bldg
@@ -1276,7 +1340,7 @@ def preprocess_record(
     # first empty street slot — it is an address, not a department. Runs
     # before contact/dept logic so the descriptors are not misread.
     # ---------------------------------------------------------------
-    for slot in ("name2", "name3", "name4"):
+    for slot in DEPT_SLOTS:
         frag = _location_fragment(getattr(res, slot))
         if not frag:
             continue
@@ -1293,11 +1357,11 @@ def preprocess_record(
     # Pipe-delimited street that concatenates an org hierarchy with the
     # address ("Dept X | Division Y | ... | U.S. FDA | 5100 Paint Branch Pkwy").
     # Keep the address segment(s) in the street field and route each org /
-    # department segment to the first empty Name slot; overflow beyond Name 4
-    # is dropped (redundant hierarchy) and noted. Runs BEFORE the single-value
+    # department segment to the first empty Name slot; overflow past the last
+    # slot is dropped (redundant hierarchy) and noted. Runs BEFORE the single-value
     # org/dept routers below.
     # ---------------------------------------------------------------
-    for slot in ("street1", "street2", "street3", "street4", "street5"):
+    for slot in STREET_SLOTS:
         split = _split_pipe_street(getattr(res, slot))
         if not split:
             continue
@@ -1314,7 +1378,7 @@ def preprocess_record(
     # are present, so a plain address ("51 Sleeper Street, 7th Floor") is never
     # split. Runs after the pipe split, before the single-value org/dept routers.
     # ---------------------------------------------------------------
-    for slot in ("street1", "street2", "street3", "street4", "street5"):
+    for slot in STREET_SLOTS:
         split = _split_comma_street(getattr(res, slot))
         if not split:
             continue
@@ -1339,7 +1403,7 @@ def preprocess_record(
     # non-address segment may be a bare acronym. Keep the address in the street
     # field and route the org segment(s) to Name slots.
     # ---------------------------------------------------------------
-    for slot in ("street1", "street2", "street3", "street4", "street5"):
+    for slot in STREET_SLOTS:
         split = _split_semicolon_street(getattr(res, slot))
         if not split:
             continue
@@ -1364,7 +1428,7 @@ def preprocess_record(
     # Name 1 down to the next empty name slot. Otherwise it goes to the first
     # empty name slot. Only the first such street value is moved.
     # ---------------------------------------------------------------
-    for slot in ("street1", "street2", "street3", "street4", "street5"):
+    for slot in STREET_SLOTS:
         val = getattr(res, slot)
         if not _street_is_org_name(val):
             continue
@@ -1396,7 +1460,7 @@ def preprocess_record(
     # slot. Processed in order so once one department fills a name slot, any
     # further street departments are treated as redundant.
     # ---------------------------------------------------------------
-    for slot in ("street1", "street2", "street3", "street4", "street5"):
+    for slot in STREET_SLOTS:
         val = getattr(res, slot)
         if not _street_is_department(val):
             continue
@@ -1429,9 +1493,9 @@ def preprocess_record(
     # not a contact — leave the field untouched in that case.
     # e.g. "Attn: FISH LAB" → NOT a contact.
     # ---------------------------------------------------------------
-    for field_name in ("name1", "name2", "name3", "name4"):
-        # name2 is handled exclusively by UC 15 above (5-case classifier).
-        if field_name == "name2" and name2_handled_by_co_attn:
+    for field_name in NAME_SLOTS:
+        # Slots UC 15 above already routed (5-case classifier) are settled.
+        if field_name in co_attn_handled:
             continue
         val = getattr(res, field_name)
         if not val:
@@ -1475,7 +1539,7 @@ def preprocess_record(
     # ---------------------------------------------------------------
     # UC 6 — Accounts Payable normalisation
     # ---------------------------------------------------------------
-    for field_name in ("name1", "name2", "name3", "name4"):
+    for field_name in NAME_SLOTS:
         val = getattr(res, field_name)
         if val and _is_ap_reference(val):
             setattr(res, field_name, "Accounts Payable")
@@ -1489,8 +1553,7 @@ def preprocess_record(
     # conflict (a DIFFERENT email already populated): keep the source
     # value intact and flag it so a reviewer can reconcile the two.
     # ---------------------------------------------------------------
-    for field_name in ("name1", "name2", "name3", "name4",
-                       "street1", "street2", "street3", "street4", "street5"):
+    for field_name in (*NAME_SLOTS, *STREET_SLOTS):
         val = getattr(res, field_name)
         if not val:
             continue
@@ -1519,7 +1582,7 @@ def preprocess_record(
     # ---------------------------------------------------------------
     # UC 9 — Address extraction
     # ---------------------------------------------------------------
-    for field_name in ("name1", "name2", "name3", "name4"):
+    for field_name in NAME_SLOTS:
         val = getattr(res, field_name)
         if not val:
             continue
@@ -1546,7 +1609,7 @@ def preprocess_record(
     # ---------------------------------------------------------------
     # UC 11 — DBA normalisation (rewrite any variant to "DBA")
     # ---------------------------------------------------------------
-    for field_name in ("name1", "name2", "name3", "name4"):
+    for field_name in NAME_SLOTS:
         val = getattr(res, field_name)
         if not val:
             continue
@@ -1562,7 +1625,7 @@ def preprocess_record(
     # company name resolves on the same path regardless of which legal
     # form the source system recorded.
     # ---------------------------------------------------------------
-    for field_name in ("name1", "name2", "name3", "name4"):
+    for field_name in NAME_SLOTS:
         val = getattr(res, field_name)
         if not val:
             continue
@@ -1574,7 +1637,7 @@ def preprocess_record(
     # ---------------------------------------------------------------
     # UC 10 — Opaque code / meaningless identifier clearing
     # ---------------------------------------------------------------
-    for field_name in ("name2", "name3", "name4"):
+    for field_name in DEPT_SLOTS:
         val = getattr(res, field_name)
         if val and _is_opaque_code(val):
             res.note(10, f"{field_name} cleared — opaque code {val!r}")
@@ -1583,7 +1646,7 @@ def preprocess_record(
     # ---------------------------------------------------------------
     # UC 7 — Contact extraction
     # ---------------------------------------------------------------
-    for field_name in ("name1", "name2", "name3", "name4"):
+    for field_name in NAME_SLOTS:
         val = getattr(res, field_name)
         if not val:
             continue
@@ -1645,42 +1708,37 @@ def preprocess_record(
             prefix = res.name1[: m.start()].strip(" ,;-")
             dept = m.group(1).strip(" ,;-")
             if prefix and _INSTITUTION_PREFIX_RE.search(prefix):
-                target = None
-                if not (res.name2 and res.name2.strip()):
-                    target = "name2"
-                elif not (res.name3 and res.name3.strip()):
-                    target = "name3"
-                elif not (res.name4 and res.name4.strip()):
-                    target = "name4"
+                target = _first_empty_name_slot(res)
                 if target:
                     setattr(res, target, dept)
                     res.name1 = prefix
                     res.note(16, f"split department {dept!r} from name1 to {target}")
                 else:
                     res.flags.append("name1-embedded-department")
-                    res.note(16, f"department {dept!r} embedded in name1 but name2/name3/name4 full")
+                    res.note(
+                        16,
+                        f"department {dept!r} embedded in name1 but "
+                        f"{'/'.join(DEPT_SLOTS)} full",
+                    )
 
     # ---------------------------------------------------------------
-    # UC 13 — Name 3 residual junk cleanup. After the structured
-    # extractors above, the Name 3 overflow slot can still carry stray
-    # URLs, phone/fax numbers, or opaque codes. Strip them so the
-    # tertiary name value is clean. Runs before UC 14 so a junk-only
-    # Name 3 is not promoted into Name 2.
+    # UC 13 — department-slot residual junk cleanup. After the structured
+    # extractors above, any slot below Name 1 can still carry stray URLs,
+    # phone/fax numbers, or opaque codes. Strip them so every unit value is
+    # clean. Runs before UC 14 so a junk-only slot is not promoted upward.
     # ---------------------------------------------------------------
-    if res.name3 and res.name3.strip():
-        cleaned3 = _strip_name3_junk(res.name3)
-        if cleaned3 != res.name3:
-            res.note(13, f"name3 junk stripped (was {res.name3!r})")
-            res.name3 = cleaned3
-    if res.name4 and res.name4.strip():
-        cleaned4 = _strip_name3_junk(res.name4)
-        if cleaned4 != res.name4:
-            res.note(13, f"name4 junk stripped (was {res.name4!r})")
-            res.name4 = cleaned4
+    for slot in DEPT_SLOTS:
+        val = getattr(res, slot)
+        if not (val and val.strip()):
+            continue
+        cleaned = _strip_dept_slot_junk(val)
+        if cleaned != val:
+            res.note(13, f"{slot} junk stripped (was {val!r})")
+            setattr(res, slot, cleaned)
 
     # Same residual cleanup for the street slots — URLs and phone/fax
     # numbers only (opaque codes are left alone so street numbers survive).
-    for slot in ("street1", "street2", "street3", "street4", "street5"):
+    for slot in STREET_SLOTS:
         val = getattr(res, slot)
         if not (val and val.strip()):
             continue
@@ -1702,12 +1760,13 @@ def preprocess_record(
 
     # ---------------------------------------------------------------
     # UC 14 — Name-slot consolidation.
-    # If name2 is empty but name3 has a value, shift name3 → name2.
+    # Close any gap in the department block by packing it leftward, so a
+    # value in a lower slot moves up into the first empty one above it.
     # The dept-lookup logic (Tier 1 ROR child match, Tier 2 canonical)
-    # operates on name2; a record with the dept in name3 and name2 blank
-    # would skip those tiers entirely. Move the value into the slot the
-    # pipeline expects.
-    # Runs after UC 7/8/9 so a name3 cleared by contact/email/address
+    # operates on name2; a record with the dept in name3 (or name5) and
+    # name2 blank would skip those tiers entirely. Move the value into the
+    # slot the pipeline expects.
+    # Runs after UC 7/8/9 so a slot cleared by contact/email/address
     # extraction is not promoted, and before UC 12 so dedup sees the
     # post-shift state.
     # ---------------------------------------------------------------
@@ -1728,31 +1787,31 @@ def preprocess_record(
         res.name1 = res.name2
         res.name2 = None
 
-    # Pack the dept slots (name2, name3, name4) leftward so any gap left
+    # Pack the dept slots (every slot below Name 1) leftward so any gap left
     # by a cleared field is closed and the dept lands in name2 where the
     # tiers look for it. With only name3 populated this reduces to the
     # original name3 -> name2 shift.
     current = [
-        (v.strip() if v and v.strip() else None)
-        for v in (res.name2, res.name3, res.name4)
+        (v.strip() if (v := getattr(res, slot)) and v.strip() else None)
+        for slot in DEPT_SLOTS
     ]
     packed = [v for v in current if v]
-    packed += [None] * (3 - len(packed))
+    packed += [None] * (len(DEPT_SLOTS) - len(packed))
     if current != packed:
-        res.note(
-            14,
-            "name slots packed leftward "
-            f"(name2={res.name2!r}, name3={res.name3!r}, name4={res.name4!r})",
+        before = ", ".join(
+            f"{slot}={getattr(res, slot)!r}" for slot in DEPT_SLOTS
         )
-        res.name2, res.name3, res.name4 = packed
+        res.note(14, f"name slots packed leftward ({before})")
+        for slot, value in zip(DEPT_SLOTS, packed):
+            setattr(res, slot, value)
 
     # ---------------------------------------------------------------
     # UC 12 — Identical duplicate name fields cleared silently.
     # Runs LAST so that it sees the post-normalisation values
     # (e.g. name1 and name2 both collapsed to "Accounts Payable" by
-    # UC 6 will be deduped here). Evaluate name2/name3 before
-    # name1/name2 so an all-three-equal case collapses cleanly:
-    # ("A","A","A") → name3 cleared first, then name2 cleared.
+    # UC 6 will be deduped here). Lower slots are evaluated before higher
+    # ones so an all-equal case collapses cleanly: ("A","A","A") → name3
+    # cleared first, then name2 cleared.
     # No flag is added — duplicate clearing is informational only.
     # ---------------------------------------------------------------
     # Compare on the CANONICAL unit form so surface variants of the same
@@ -1775,38 +1834,37 @@ def preprocess_record(
             return False
         return na == nb or fuzz.ratio(na, nb) >= 92
 
-    # Clear later slots first so an all-equal case collapses cleanly.
-    if res.name3 and res.name4 and _equiv(res.name3, res.name4):
-        res.note(12, f"name4 cleared — duplicate of name3 ({res.name4!r})")
-        res.name4 = None
-    if res.name2 and res.name4 and _equiv(res.name2, res.name4):
-        res.note(12, f"name4 cleared — duplicate of name2 ({res.name4!r})")
-        res.name4 = None
-    if res.name1 and res.name4 and _equiv(res.name1, res.name4):
-        res.note(12, f"name4 cleared — duplicate of name1 ({res.name4!r})")
-        res.name4 = None
-    if res.name2 and res.name3 and _equiv(res.name2, res.name3):
-        res.note(12, f"name3 cleared — duplicate of name2 ({res.name3!r})")
-        res.name3 = None
-    if res.name1 and res.name3 and _equiv(res.name1, res.name3):
-        res.note(12, f"name3 cleared — duplicate of name1 ({res.name3!r})")
-        res.name3 = None
-    if res.name1 and res.name2 and _equiv(res.name1, res.name2):
-        res.note(12, f"name2 cleared — duplicate of name1 ({res.name2!r})")
-        res.name2 = None
+    # Clear later slots first so an all-equal case collapses cleanly:
+    # every slot is compared against every slot above it, walking the block
+    # from the bottom up, so ("A","A","A") clears name3 then name2 and
+    # leaves name1 holding the single value.
+    for i in range(len(NAME_SLOTS) - 1, 0, -1):
+        lower = NAME_SLOTS[i]
+        lower_val = getattr(res, lower)
+        if not lower_val:
+            continue
+        for upper in NAME_SLOTS[:i]:
+            upper_val = getattr(res, upper)
+            if upper_val and _equiv(upper_val, lower_val):
+                res.note(
+                    12,
+                    f"{lower} cleared — duplicate of {upper} ({lower_val!r})",
+                )
+                setattr(res, lower, None)
+                break
 
     return res
 
 
 def _first_empty_street_slot(res: PreprocessResult) -> str | None:
-    for slot in ("street1", "street2", "street3", "street4", "street5"):
+    for slot in STREET_SLOTS:
         if not getattr(res, slot):
             return slot
     return None
 
 
 def _first_empty_name_slot(res: PreprocessResult) -> str | None:
-    for slot in ("name2", "name3", "name4"):
+    for slot in DEPT_SLOTS:
         val = getattr(res, slot)
         if not (val and val.strip()):
             return slot
@@ -2059,7 +2117,8 @@ def _segment_is_org(seg: str) -> bool:
 def _route_org_parts_to_names(res: "PreprocessResult", parts: list[str], slot: str) -> None:
     """Route org/department segments to the Name block. The institution (if any)
     always takes Name 1 when Name 1 is empty; the remaining segments fill the
-    next empty Name slots in order. Overflow beyond Name 4 is dropped and noted.
+    next empty Name slots in order. Overflow past the last slot is dropped
+    and noted.
     """
     # Strip a redundant acronym dash form on each routed segment ("MRC -
     # Medical Research Council" → "Medical Research Council"). The name1 acronym
@@ -2191,12 +2250,12 @@ def _split_semicolon_street(
 def _name_block_has_department(res: PreprocessResult) -> bool:
     """True when a DEPARTMENT slot already holds a department / group / unit.
 
-    Only Name 2-4 are checked — Name 1 is the institution slot, and many
+    Only Name 2..N are checked — Name 1 is the institution slot, and many
     institution names ("School of Medicine", "Scripps Research Institute",
     "Moffitt Cancer Center") read as unit/granular constructions; counting
     them here would wrongly drop a real department found in a street field.
     """
-    for slot in ("name2", "name3", "name4"):
+    for slot in DEPT_SLOTS:
         val = getattr(res, slot)
         if val and (is_unit_construction(val) or is_granular_unit(val)):
             return True
@@ -2212,12 +2271,7 @@ _smart_title_case = smart_title_case
 # Async helpers used by the orchestrator
 # ---------------------------------------------------------------------------
 
-def find_suspicious_plain_names(
-    name1: str | None,
-    name2: str | None,
-    name3: str | None,
-    name4: str | None = None,
-) -> list[str]:
+def find_suspicious_plain_names(*names: str | None) -> list[str]:
     """Return distinct plain-name candidates that need LLM classification.
 
     A candidate is a value that:
@@ -2225,9 +2279,13 @@ def find_suspicious_plain_names(
       - matches the 2-3 word capitalised pattern,
       - contains NO organisation signal words.
 
-    Name 2 is checked twice: once raw, and once with any leading c/o or
-    ATTN prefix stripped (so payloads like "Attn: Victoria Babinetz"
-    surface "Victoria Babinetz" as a candidate for UC 15 Case A).
+    *names* are the name-block values in slot order (Name 1 first).
+
+    Every department slot — every slot below Name 1 — is read through the
+    c/o / ATTN prefix stripper, so payloads like "Attn: Victoria Babinetz"
+    surface "Victoria Babinetz" as a candidate for UC 15 Case A wherever
+    they were entered. UC 15 itself runs across the same slots, so the two
+    have to agree on which fields can carry a routing prefix.
     """
     out: list[str] = []
     seen: set[str] = set()
@@ -2255,17 +2313,16 @@ def find_suspicious_plain_names(
         seen.add(key)
         out.append(normalised)
 
-    for field_name, val in (("name1", name1), ("name2", name2),
-                            ("name3", name3), ("name4", name4)):
+    for field_name, val in zip(NAME_SLOTS, names):
         if not val:
             continue
         stripped = val.strip()
         if not stripped:
             continue
-        # Strip c/o / ATTN prefix and parenthetical noise for Name 2 so
-        # UC 15 Case A can resolve the inner person name via the LLM
-        # verdict map.
-        if field_name == "name2":
+        # Strip c/o / ATTN prefix and parenthetical noise for the department
+        # slots so UC 15 Case A can resolve the inner person name via the
+        # LLM verdict map.
+        if field_name in DEPT_SLOTS:
             payload, _had_prefix = _strip_co_attn_prefix(stripped)
             payload = _strip_parenthetical_noise(payload)
             # Drop a slash-separated tail so "John Smith/Some Lab" still
@@ -2273,8 +2330,14 @@ def find_suspicious_plain_names(
             if "/" in payload:
                 payload = payload.split("/", 1)[0].strip()
             _maybe_add(payload)
+            # Also surface the normalised form ("Smith, John" → "John Smith")
+            # so a reversed or credentialed person name behind a c/o prefix
+            # reaches the classifier too — the same courtesy Name 1 gets.
+            cand = _person_candidate(payload)
+            if cand:
+                _maybe_add(cand)
             continue
-        # name1 / name3 — legacy behaviour: skip if attn-prefixed.
+        # name1 — legacy behaviour: skip if attn-prefixed.
         if _ATTN_RE.search(stripped):
             continue
         _maybe_add(stripped)

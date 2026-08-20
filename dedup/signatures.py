@@ -1,11 +1,16 @@
 """STEP A — conservative normalization and signature collapsing (no LLM).
 
-A *signature* is a distinct ``(norm_name1, norm_name2)`` key within a block.
-100 byte-identical rows collapse to one signature; the LLM only ever works on
-distinct signatures, never on raw rows. This is the blow-up guard.
+A *signature* is a distinct ``(norm_name1, norm_department)`` key within a
+block. 100 byte-identical rows collapse to one signature; the LLM only ever
+works on distinct signatures, never on raw rows. This is the blow-up guard.
+
+The department half of the key reads the WHOLE name block below Name 1, not
+Name 2 alone: two rows at one address whose units differ only in Name 3 are
+two departments, and collapsing them would merge records that name different
+things.
 
 The normalized key is internal only — it never reaches the LLM, which always
-sees the original (un-normalized) name1/name2.
+sees the original (un-normalized) names.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from dedup.models import DedupRow
+from utils.name_slots import DEPT_SLOTS
 
 # Strip anything that is not a letter, digit, or whitespace. We deliberately
 # do NOT strip legal forms (GmbH, AG, Inc.) or expand abbreviations here —
@@ -56,9 +62,27 @@ def derive_block_id(row: DedupRow) -> str:
     return f"blk-{digest}"
 
 
+def department_text(row: DedupRow) -> str:
+    """The row's whole department block joined into one string.
+
+    Every populated slot below Name 1, in block order, separated by " / ".
+    This is what both the signature key and the LLM see as "Name 2" — the
+    unit the row names, wherever the SAP entry happened to put it.
+    """
+    parts = [
+        str(getattr(row, slot, None) or "").strip()
+        for slot in DEPT_SLOTS
+    ]
+    return " / ".join(p for p in parts if p)
+
+
 @dataclass
 class Signature:
-    """A distinct ``(norm_name1, norm_name2)`` within a block."""
+    """A distinct ``(norm_name1, norm_name2)`` within a block.
+
+    ``norm_name2`` / ``name2`` carry the row's whole department block (see
+    :func:`department_text`), not the Name 2 column alone.
+    """
 
     signature_id: str
     norm_name1: str
@@ -84,10 +108,11 @@ class Signature:
 
     @property
     def has_name2(self) -> bool:
-        """Whether Name 2 is populated (after conservative normalization).
+        """Whether the row names any department at all (after conservative
+        normalization of the whole block below Name 1).
 
-        Drives the deterministic asymmetry rule: an empty-Name 2 signature
-        can never share an entity with a populated-Name 2 signature.
+        Drives the deterministic asymmetry rule: a signature with no
+        department can never share an entity with one that has any.
         """
         return bool(self.norm_name2)
 
@@ -119,7 +144,8 @@ def build_signatures(rows: List[DedupRow]) -> List[Signature]:
     by_key: "OrderedDict[tuple[str, str], Signature]" = OrderedDict()
     for row in rows:
         n1 = normalize_key(row.name1)
-        n2 = normalize_key(row.name2)
+        departments = department_text(row)
+        n2 = normalize_key(departments)
         key = (n1, n2)
         sig = by_key.get(key)
         if sig is None:
@@ -128,7 +154,7 @@ def build_signatures(rows: List[DedupRow]) -> List[Signature]:
                 norm_name1=n1,
                 norm_name2=n2,
                 name1=(row.name1 or "").strip(),
-                name2=(row.name2 or "").strip(),
+                name2=departments,
                 ror_id=(row.ror_id or None),
                 row_ids=[],
                 lei_id=(row.lei_id or None),

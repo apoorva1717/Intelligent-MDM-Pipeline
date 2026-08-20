@@ -45,6 +45,7 @@ from dedup.candidates import strip_legal_suffix
 from dedup.models import DedupRow
 from dedup.signatures import derive_block_id, normalize_key
 from enrichment.tier1_ror import _normalise_for_tokens
+from utils.name_slots import DEPT_ENRICHED_FIELDS
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from api.models import EnrichmentResult
@@ -70,9 +71,7 @@ PROPAGATED_FIELDS: tuple[str, ...] = (
 # Stanford's ROR id and domain and keep their own department name and
 # department domain.
 NEVER_PROPAGATED: tuple[str, ...] = (
-    "name2_enriched",
-    "name3_enriched",
-    "name4_enriched",
+    *DEPT_ENRICHED_FIELDS,
     "department_domain",
     "contact_enriched",
     "care_of_enriched",

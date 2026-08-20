@@ -36,6 +36,12 @@ class DedupRow(BaseModel):
     )
     name1: Optional[str] = Field(default=None, description="Institution / company.")
     name2: Optional[str] = Field(default=None, description="Department / sub-unit (may be empty).")
+    # The rest of the SAP name block. A record's unit can sit in any of these
+    # — Name 3 as readily as Name 2 — so the signature key reads all of them.
+    # Defaulted last so existing positional/keyword construction is unchanged.
+    name3: Optional[str] = Field(default=None, description="Further sub-unit (may be empty).")
+    name4: Optional[str] = Field(default=None, description="Further sub-unit (may be empty).")
+    name5: Optional[str] = Field(default=None, description="Further sub-unit (may be empty).")
     street: Optional[str] = None
     house_no: Optional[str] = None
     postal_code: Optional[str] = None

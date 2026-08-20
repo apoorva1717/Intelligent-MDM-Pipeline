@@ -15,6 +15,7 @@ from rapidfuzz import fuzz
 from config import Settings
 from llm.openai_client import OpenAIClient
 from llm.prompts import TIER2A_SYSTEM_PROMPT, TIER2A_USER_PROMPT_TEMPLATE
+from utils.name_slots import DEPT_SLOTS, slot_label
 from search.base import SearchClient, SearchResult
 from search.page_fetcher import PageContent, PageFetcher
 from utils.cache import BatchCache
@@ -78,6 +79,7 @@ async def run_tier2a(
     llm_client: OpenAIClient,
     cache: BatchCache,
     settings: Settings,
+    extra_departments: tuple[str | None, ...] = (),
 ) -> Tier2AResult:
     """Execute Tier 2A contact person lookup.
 
@@ -143,8 +145,7 @@ async def run_tier2a(
         try:
             extraction = await _extract_affiliation(
                 llm_client, contact, institution,
-                name2 or "not recorded",
-                name3 or "not recorded",
+                (name2, name3, *extra_departments),
                 page_blob,
             )
         except Exception:
@@ -378,16 +379,33 @@ async def _extract_affiliation(
     llm_client: OpenAIClient,
     contact: str,
     institution: str,
-    name2: str,
-    name3: str,
+    departments: tuple[str | None, ...],
     page_text: str,
 ) -> dict:
-    """Use OpenAI to extract person affiliation from page text."""
+    """Use OpenAI to extract person affiliation from page text.
+
+    *departments* is the record's whole department block in slot order, so
+    the model sees every unit the record already carries — a lab in Name 4
+    is as much context for "which department is this person in" as one in
+    Name 2, and withholding it invites a contradictory answer. Name 2 and
+    Name 3 keep their own prompt lines (the verification verdict is scored
+    against Name 2 by name); the slots below them are appended as extra
+    lines, and contribute nothing when the record has none.
+    """
+    extra = "".join(
+        f"Existing {slot_label(slot)}: {value.strip()}\n"
+        for slot, value in zip(DEPT_SLOTS[2:], departments[2:])
+        if value and value.strip()
+    )
+    def _shown(value: str | None) -> str:
+        return value.strip() if value and value.strip() else "not recorded"
+
     user_prompt = TIER2A_USER_PROMPT_TEMPLATE.format(
         contact=contact,
         institution=institution,
-        name2=name2,
-        name3=name3,
+        name2=_shown(departments[0] if departments else None),
+        name3=_shown(departments[1] if len(departments) > 1 else None),
+        existing_departments=extra,
         page_text=page_text,
     )
     return await llm_client.extract_json(TIER2A_SYSTEM_PROMPT, user_prompt)
