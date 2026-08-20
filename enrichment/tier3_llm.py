@@ -56,8 +56,6 @@ class Tier3Result:
     name2_suggestion: str | None = None
     name3_suggestion: str | None = None
     confidence: str = "none"
-    flag_for_review: bool = True
-    flag_reason: str = "LLM inference — requires verification"
     enrichment_status: str = "unresolved"
     source: str = "LLM"
 
@@ -78,9 +76,13 @@ async def run_tier3(
     """Execute Tier 3 LLM inference.
 
     Decision points:
-    - Always flag for review (requires_verification = true)
     - High/medium confidence: write suggestions, status=unresolved
     - Low confidence: do NOT overwrite originals, status=unresolved
+
+    Tier 3 raises no review flag of its own. It reports what it inferred and
+    how confident it was; ``enrichment.flags`` decides what that means once
+    the record is final — a value Tier 3 wrote reads as ``unverified-inference``
+    unless a later authority (Fix 2's Tier 1 retry) overwrote it.
     """
     logger.info("[%s] Tier 3 starting — LLM inference last resort", record_id)
     result = Tier3Result()
@@ -103,14 +105,12 @@ async def run_tier3(
         logger.exception("[%s] Tier 3: LLM call failed", record_id)
         result.confidence = "none"
         result.enrichment_status = "failed"
-        result.flag_reason = "LLM call failed"
         return result
 
     llm_confidence = extraction.get("confidence", "low")
     result.confidence = llm_confidence
 
     if llm_confidence in ("high", "medium"):
-        # Write suggestions but still flag for review
         result.success = True
         # FIX(Bug 5): never assign empty string to suggestion fields
         n1 = extraction.get("name1_suggestion")
@@ -120,8 +120,6 @@ async def run_tier3(
         n3 = extraction.get("name3_suggestion")
         result.name3_suggestion = n3.strip() if n3 and str(n3).strip() else None
         result.enrichment_status = "unresolved"
-        result.flag_for_review = True
-        result.flag_reason = "LLM inference — requires verification"
 
         # Deterministic guard: reject any name suggestion that is actually
         # address content (street/postal/high overlap with the record's street).
@@ -134,11 +132,9 @@ async def run_tier3(
                 setattr(result, attr, None)
                 rejected.append(attr)
         if rejected:
-            result.flag_for_review = True
-            result.flag_reason = (
-                "Tier 3 address-like name rejected "
-                f"({', '.join(rejected)}) — original kept"
-            )
+            # The suggestion is dropped, so the original stands and there is
+            # nothing new to verify — finalisation describes the record by
+            # what it holds, not by what was rejected on the way.
             logger.info(
                 "[%s] Tier 3: rejected address-like name suggestion(s): %s",
                 record_id, rejected,
@@ -155,8 +151,6 @@ async def run_tier3(
         # Low confidence — do NOT overwrite originals
         result.success = False
         result.enrichment_status = "unresolved"
-        result.flag_for_review = True
-        result.flag_reason = "LLM low confidence — manual review required"
         logger.info("[%s] Tier 3: low confidence, not overwriting", record_id)
 
     return result

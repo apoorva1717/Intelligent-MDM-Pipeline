@@ -37,8 +37,6 @@ class Tier2BResult:
     name2_match_score: float = 0.0
     confidence: str = "none"
     source_url: str | None = None
-    flag_for_review: bool = True
-    flag_reason: str | None = None
     enrichment_status: str = "failed"
     source: str = "none"
 
@@ -153,13 +151,12 @@ async def run_tier2b(
         )
         result.name2_match_score = score
 
-    if url_on_official_domain:
-        result.confidence = "medium"
-        result.flag_reason = "Extracted by LLM from official domain page"
-    else:
-        result.confidence = "low"
-        result.flag_reason = "Extracted by LLM from non-official source"
-    result.flag_for_review = True
+    # A department STATED on a page of the organisation's own domain is
+    # evidence, and `source_url` records exactly which page — a reviewer can
+    # audit it, so no review flag is raised. An off-domain page is weaker and
+    # says so through `confidence`; finalisation, not this module, decides
+    # what that is worth.
+    result.confidence = "medium" if url_on_official_domain else "low"
     result.enrichment_status = "enriched"
 
     logger.info(

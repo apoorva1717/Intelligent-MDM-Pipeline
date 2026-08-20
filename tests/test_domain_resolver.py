@@ -303,15 +303,16 @@ class TestFinaliseEmitsCanonicalFields:
         )
         assert out["department_domain"] == f"https://{host}"
 
-    def test_unverified_candidate_raises_the_flag_code_without_masking(self):
+    def test_unverified_candidate_raises_the_flag_code(self):
         out = self._finalise(
             domain=None, website_url=None, _domain_unverified=True,
-            flag_reason="LLM low confidence — manual review required",
+            ror_id="https://ror.org/00jmfr291",
         )
         assert out["domain"] is None
         assert out["flag_for_review"] is True
-        assert out["flag_reason"].startswith("LLM low confidence")
-        assert "domain-unverified" in out["flag_reason"]
+        # Scoped to the one field in doubt: the registry match stands.
+        assert out["flag_codes"] == ["domain-unverified"]
+        assert out["flagged_fields"] == ["domain"]
 
 
 class TestNameSimilarity:

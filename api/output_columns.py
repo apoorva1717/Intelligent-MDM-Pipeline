@@ -83,6 +83,8 @@ RESPONSE_COLUMNS: dict[str, str] = {
     "terms_of_payment": "Terms of Payment",
     # ── Review metadata (enrichment output) ──────────────────────────
     "flag_for_review": "Flag for Review",
+    "flag_codes": "Flag Codes",
+    "flagged_fields": "Flagged Fields",
     "flag_reason": "Flag Reason",
     "error": "Error",
     "record_type": "Record Type",

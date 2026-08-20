@@ -55,6 +55,7 @@ from enrichment.preprocess import (
 )
 from dedup.signatures import normalize_key
 from enrichment.classifier import TypeEvidence, classify
+from enrichment.flags import compute_flags
 from enrichment.tier1_lei import LEIClient, clear_lei_cache, lei_normalised_hits
 from enrichment.tier1_ror import RORClient, clear_ror_cache, ror_normalised_hits
 from enrichment.tier2_canonical import run_tier2_canonical
@@ -71,7 +72,6 @@ from search.page_fetcher import PageFetcher
 from search.serpapi_client import SerpAPIClient
 from utils.cache import BatchCache, SerpCache
 from utils.domain_resolver import (
-    DOMAIN_UNVERIFIED_REASON,
     DomainDecision,
     DomainEvidence,
     canonicalise_host,
@@ -378,7 +378,12 @@ def _init_result(record: EnrichmentRecord) -> dict[str, Any]:
         "contact_used": False,
         "name2_match_result": "not_applicable",
         "use_cases_triggered": [],
+        # Written once, by enrichment.flags.compute_flags, at the end of
+        # finalise. No tier touches them; tiers leave `_ev_*` evidence behind
+        # and finalisation decides what it means.
         "flag_for_review": False,
+        "flag_codes": [],
+        "flagged_fields": [],
         "flag_reason": None,
         "enrichment_status": "failed",
         "duration_ms": 0,
@@ -509,12 +514,10 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
             result.get("record_id"), result.get("confidence"),
             result.get("name2_enriched"),
         )
+        # No flag: the input Name 2 was blank and the output Name 2 is
+        # blank. Nothing was dropped and nothing is uncertain — the record
+        # simply has no department, which is not a defect.
         result["name2_enriched"] = None
-        result["flag_for_review"] = True
-        result["flag_reason"] = (
-            "Tier 3 Name 2 guess dropped — input Name 2 blank and not "
-            "high confidence"
-        )
 
     # Normalise Name 1 when it was passed through uncanonicalised (a ROR miss
     # left the raw source value — often ALL-CAPS and abbreviated, e.g. "LARGO
@@ -717,33 +720,15 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
             serp_url=result.get("source_url"),
         )
 
-    # Apply the research-institution manual-review flag last so any
-    # earlier tier-specific flag_reason cannot mask it. A research
-    # institution with no actionable dept-lookup signal (no dept and
-    # no contact, or multiple contacts in the contact field) MUST be
-    # flagged for manual review.
-    has_dept_signal = result.pop("_has_dept_signal", True)
-    multi_contact = result.pop("_multi_contact", False)
-    if result.get("routing_type") == "research_institution":
-        if multi_contact:
-            result["flag_for_review"] = True
-            result["flag_reason"] = (
-                "Research institution with multiple contacts — "
-                "manual review required"
-            )
-        elif not has_dept_signal:
-            result["flag_for_review"] = True
-            result["flag_reason"] = (
-                "Research institution with no department and no "
-                "contact — manual review required"
-            )
-
-    # A candidate website that no ownership condition could tie to this
-    # organisation. Raised after the research-institution block, which
-    # overwrites flag_reason, so the code is never masked. Appends — it
-    # never replaces an existing reason.
-    if result.pop("_domain_unverified", False):
-        _flag_website_review(result, DOMAIN_UNVERIFIED_REASON)
+    # THE flag decision, taken once, here. Every name, contact and domain
+    # field above has settled and the `*_changed` flags are computed, so the
+    # codes describe the state the record ended in rather than the tiers that
+    # ran to get there. Ordering against the rest of finalise: after the
+    # domain fallback (which is the last thing that can raise
+    # `_domain_unverified`) and before `_registry_name_fields` is stripped
+    # below, which is what tells compute_flags that a name is registry-owned
+    # and so not an unverified inference.
+    compute_flags(result)
 
     # Compact search handles for downstream consumers. Runs after all
     # name / domain fields are settled so the derivation sees final
@@ -932,18 +917,6 @@ def _apply_domain(
     return decision
 
 
-def _flag_website_review(result: dict[str, Any], reason: str) -> None:
-    """Mark a result for manual review because the website needs
-    verification. Preserves any pre-existing ``flag_reason`` (which
-    came from earlier tiers) by appending instead of overwriting."""
-    result["flag_for_review"] = True
-    existing = result.get("flag_reason")
-    if existing and reason not in existing:
-        result["flag_reason"] = f"{existing}; {reason}"
-    elif not existing:
-        result["flag_reason"] = reason
-
-
 # ── Child matching helper ─────────────────────────────────────────────────────
 
 _CHILD_MATCH_THRESHOLD = 70  # rapidfuzz token_sort_ratio minimum
@@ -991,10 +964,12 @@ def _apply_tier2a(result: dict, tier2a: Tier2AResult, mode: str) -> None:
     # up being derived from this page in finalise().
     result["_source_title"] = tier2a.source_title
     result["confidence"] = tier2a.confidence
-    result["flag_for_review"] = tier2a.flag_for_review
-    result["flag_reason"] = tier2a.flag_reason
     result["enrichment_status"] = tier2a.enrichment_status
     result["name2_match_result"] = tier2a.name2_match
+    if tier2a.low_conf_unchanged:
+        result.setdefault("_ev_low_conf_unchanged", set()).update(
+            tier2a.low_conf_unchanged,
+        )
 
     if tier2a.name2_enriched and tier2a.name2_enriched.strip():
         result["name2_enriched"] = tier2a.name2_enriched.strip()
@@ -1015,9 +990,15 @@ def _apply_tier3(result: dict, tier3: Tier3Result) -> None:
     result["tier_used"] = 3
     result["source"] = "LLM"
     result["confidence"] = tier3.confidence
-    result["flag_for_review"] = tier3.flag_for_review
-    result["flag_reason"] = tier3.flag_reason
     result["enrichment_status"] = tier3.enrichment_status
+
+    # Which fields Tier 3 actually wrote. Tier 3 has no external evidence —
+    # it relies entirely on the LLM's training data — so anything it writes
+    # is an unverified inference regardless of the model's stated confidence.
+    # Finalisation decides that; recording the fields is all that happens here.
+    # A low-confidence run writes nothing, so this stays empty and the record
+    # is described as unchanged instead.
+    written: set[str] = result.setdefault("_ev_tier3_wrote", set())
 
     if tier3.success:
         if tier3.name1_suggestion and tier3.name1_suggestion.strip():
@@ -1028,6 +1009,7 @@ def _apply_tier3(result: dict, tier3: Tier3Result) -> None:
             original_name1 = result.get("name1_original")
             if canonical_preserves_identity(original_name1, suggestion):
                 result["name1_enriched"] = suggestion
+                written.add("name1")
             else:
                 logger.warning(
                     "[%s] Tier 3: REJECTED name1 '%s' → '%s' "
@@ -1037,8 +1019,27 @@ def _apply_tier3(result: dict, tier3: Tier3Result) -> None:
         if tier3.name2_suggestion and tier3.name2_suggestion.strip():
             result["name2_enriched"] = tier3.name2_suggestion.strip()
             result["_name2_from_tier3"] = True
+            written.add("name2")
         if tier3.name3_suggestion and tier3.name3_suggestion.strip():
             result["name3_enriched"] = tier3.name3_suggestion.strip()
+            written.add("name3")
+
+    # Tier 3 is the last resort. A field it was asked about and declined to
+    # write leaves the pipeline holding exactly what the record supplied, with
+    # nothing having confirmed it — 8f's other half. A field an earlier tier
+    # already rewrote is excluded: that value was settled before Tier 3 ran.
+    unchanged: set[str] = result.setdefault("_ev_low_conf_unchanged", set())
+    for field in ("name1", "name2", "name3"):
+        if field in written:
+            continue
+        enriched = result.get(f"{field}_enriched")
+        original = result.get(f"{field}_original")
+        if enriched and (
+            str(enriched).strip().casefold()
+            != str(original or "").strip().casefold()
+        ):
+            continue
+        unchanged.add(field)
 
 
 # ── Orchestrator ──────────────────────────────────────────────────────────────
@@ -1267,12 +1268,12 @@ class Orchestrator:
                 serp_url=serp_res.url,
                 settings=self._settings,
             )
-            if decision.accepted and serp_res.confidence != "high":
-                _flag_website_review(
-                    result,
-                    "Website resolved by SERP with low confidence — "
-                    "verify",
-                )
+            # No provenance flag. "Resolved by SERP with low confidence"
+            # described where the URL came from, not whether it belongs to
+            # this organisation — which is the question `_apply_domain`'s
+            # ownership guard already answers, and answers with evidence. A
+            # candidate it cannot tie to the record is not written at all and
+            # raises `domain-unverified` instead.
             return
 
         # Path C: LLM fallback when SERP returned nothing usable.
@@ -1288,14 +1289,9 @@ class Orchestrator:
         if llm_res.url:
             # Path C has no search evidence to offer — an LLM-inferred URL
             # stands or falls on name similarity / the record's own email.
-            decision = _apply_domain(
-                result, llm_res.url, settings=self._settings,
-            )
-            if decision.accepted:
-                _flag_website_review(
-                    result,
-                    "Website inferred by LLM — verify",
-                )
+            # Same rule as Path B: an accepted candidate cleared the
+            # ownership guard, so its provenance is not itself a doubt.
+            _apply_domain(result, llm_res.url, settings=self._settings)
 
     async def _resolve_probe_base(
         self, result: dict[str, Any], registrable: str, cache: BatchCache,
@@ -1905,11 +1901,10 @@ class Orchestrator:
             if department and is_blank(pp_name2):
                 result["name2_enriched"] = department
 
-            result["flag_for_review"] = True
-            result["flag_reason"] = (
-                f"Name 1 inferred from contact's web affiliation — verify "
-                f"({official})"
-            )
+            # No flag. The affiliation was confirmed against ROR through the
+            # same country and distinctive-token guards as any other Tier 1
+            # match, and the record leaves with the registry's official name,
+            # its id and its domain — evidence a reviewer can audit.
             result["_pp_name1"] = official
             logger.info({
                 "record_id": record.record_id,
@@ -1919,18 +1914,7 @@ class Orchestrator:
                 "department": result.get("name2_enriched"),
             })
         else:
-            result["flag_for_review"] = True
-            if affil.institution:
-                result["flag_reason"] = (
-                    f"person in Name 1 — web affiliation '{affil.institution}' "
-                    f"not confirmed by registry in {record.country or 'record country'}; "
-                    f"manual lookup needed"
-                )
-            else:
-                result["flag_reason"] = (
-                    "person in Name 1 — affiliation could not be resolved; "
-                    "manual lookup needed"
-                )
+            result["_ev_person_unresolved"] = True
             result["_pp_name1"] = None
             logger.info({
                 "record_id": record.record_id,
@@ -1967,16 +1951,17 @@ class Orchestrator:
             result["source"] = "llm_canonical"
             result["confidence"] = "high"
             result["enrichment_status"] = "enriched"
-            result["flag_for_review"] = True
-            result["flag_reason"] = "LLM canonical form — verify"
+            # No flag — "Tier 2 Canonical high confidence → No flag" is the
+            # documented rule, and canonicalisation is a normalisation of a
+            # value the record already carried, not a new claim about it.
         else:
             result["source"] = "passthrough"
             result["confidence"] = "low"
             result["enrichment_status"] = "unresolved"
-            result["flag_for_review"] = True
-            result["flag_reason"] = (
-                "name2/name3 could not be canonicalised with "
-                "high confidence — left unchanged"
+            # Attempted, below threshold, input left in place — per field, so
+            # finalisation can scope the flag to whichever slot is populated.
+            result.setdefault("_ev_low_conf_unchanged", set()).update(
+                {"name2", "name3"},
             )
         return await self._finalise_and_return(result, start, record, cache)
 
@@ -2383,11 +2368,7 @@ class Orchestrator:
                     result["source"] = "pattern_match"
                     result["confidence"] = overflow.confidence
                     result["enrichment_status"] = "unresolved"
-                    result["flag_for_review"] = True
-                    result["flag_reason"] = (
-                        f"UC 0: possible Name 1 overflow into Name 2 — "
-                        f"{overflow.reasoning}"
-                    )
+                    result["_ev_overflow"] = True
                     result["use_cases_triggered"] = [0]
                     return await self._finalise_and_return(result, start, record, cache)
 
@@ -2552,17 +2533,13 @@ class Orchestrator:
             )
             result["_multi_contact"] = has_multiple_contacts(pp_contact)
 
-            # Flag if preprocessing triggered a conflict or ran out of slots
-            # (street OR name slots full — content it could not place).
-            if any(
-                "conflict" in f or "slots-full" in f or "acronym-ambiguous" in f
-                for f in pre.flags
-            ):
-                result["flag_for_review"] = True
-                result["flag_reason"] = "; ".join(
-                    f for f in pre.flags
-                    if "conflict" in f or "slots-full" in f or "acronym-ambiguous" in f
-                )
+            # Preprocessing signals that survive into the review model.
+            # `slots-full` is UC 0's defect seen from the other end — content
+            # the SAP field split could not place — so it reads as overflow.
+            if any("slots-full" in f for f in pre.flags):
+                result["_ev_overflow"] = True
+            if any("email-conflict" == f for f in pre.flags):
+                result["_ev_email_conflict"] = True
 
             institution_domain: str | None = None
 
@@ -2774,11 +2751,9 @@ class Orchestrator:
                         result["tier_used"] = 1
                         result["routing_type"] = "research_institution"
                         result["enrichment_status"] = "unresolved"
-                        result["flag_for_review"] = True
-                        result["flag_reason"] = (
-                            "Research-institution name not found in ROR — "
-                            "left unchanged for manual review"
-                        )
+                        result.setdefault(
+                            "_ev_low_conf_unchanged", set(),
+                        ).add("name1")
                         institution_domain = None
                         # Short-circuit if no name2/contact to process.
                         if not (pp_name2 and pp_name2.strip()) and not (
@@ -2874,8 +2849,8 @@ class Orchestrator:
                         if 3 not in result["use_cases_triggered"]:
                             result["use_cases_triggered"].append(3)
                         result["enrichment_status"] = "enriched"
-                        result["flag_for_review"] = True
-                        result["flag_reason"] = "LLM canonical company name — verify"
+                        # No flag — see the note in
+                        # _return_canonical_short_circuit.
 
                         # If no name2, we're done — return immediately
                         # so Tier 3 doesn't overwrite the canonical name.
@@ -2913,8 +2888,6 @@ class Orchestrator:
                 result["source"] = "pattern_match"
                 result["confidence"] = "high"
                 result["enrichment_status"] = "enriched"
-                result["flag_for_review"] = True
-                result["flag_reason"] = "Accounts Payable record — verify"
                 if 6 not in result["use_cases_triggered"]:
                     result["use_cases_triggered"].append(6)
                 return await self._finalise_and_return(result, start, record, cache)
@@ -2974,32 +2947,24 @@ class Orchestrator:
                     result["source_url"] = lab_res.source_url
                     result["confidence"] = lab_res.confidence
                     result["enrichment_status"] = "enriched"
-                    result["flag_for_review"] = True
+                    # The parent department was INFERRED from the lab's own
+                    # page rather than read from a stated department, so it
+                    # is a claim a reviewer has to check — unlike a stated
+                    # department read off an on-domain page, which carries a
+                    # source_url and is not flagged.
+                    result["_ev_dept_via_lab"] = True
                     if name3_already_set:
-                        result["flag_reason"] = (
-                            "Lab → parent dept resolved into Name 2; "
-                            "Name 3 already populated, lab name not "
-                            "demoted — verify manually"
-                        )
-                    else:
-                        result["flag_reason"] = (
-                            "Lab → parent dept resolved; lab moved to "
-                            "Name 3 — verify"
-                        )
+                        # The lab name could not be demoted, so Name 2 / Name
+                        # 3 no longer describe a clean parent/child split.
+                        result["_ev_name3_not_demoted"] = True
                     if 13 not in result["use_cases_triggered"]:
                         result["use_cases_triggered"].append(13)
                     return await self._finalise_and_return(result, start, record, cache)
-                # Granular Name2 detected but no parent could be
-                # resolved (no candidates, or LLM said null). Flag
-                # explicitly so manual review knows this is a known-
-                # granular value rather than a generic miss; then fall
-                # through to existing tier 2 canonical / 2A / 2B / 3
-                # which apply the same scope filters.
-                result["flag_for_review"] = True
-                result["flag_reason"] = (
-                    "Lab/group detected in Name 2 but parent "
-                    "department could not be determined"
-                )
+                # Granular Name2 detected but no parent could be resolved
+                # (no candidates, or LLM said null). No flag is raised here:
+                # the record falls through to tier 2 canonical / 2A / 2B / 3,
+                # any of which may settle Name 2, and finalisation flags
+                # whatever state it actually ends in.
                 if 13 not in result["use_cases_triggered"]:
                     result["use_cases_triggered"].append(13)
 

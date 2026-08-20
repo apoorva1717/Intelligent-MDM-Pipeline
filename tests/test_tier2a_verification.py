@@ -86,7 +86,6 @@ class TestTier2AVerification:
         assert result.success is True
         assert result.mode == "2A_verification"
         assert result.name2_enriched == "Department of Chemistry"
-        assert result.flag_for_review is True
         # "Dept of AI" vs "Department of Chemistry" scores far below the
         # threshold, and the curated mock reports high confidence, so the
         # record is treated as wrong and overwritten.
@@ -94,9 +93,9 @@ class TestTier2AVerification:
         assert result.name2_match_score < settings.fuzzy_match_threshold
         assert result.enrichment_status == "enriched"
         assert result.source == "contact_lookup_corrected"
-        assert result.flag_reason == (
-            "Name 2 corrected — did not match contact page affiliation"
-        )
+        # The correction is backed by the contact's page (source_url), so
+        # nothing is left unsettled for a reviewer.
+        assert result.low_conf_unchanged == set()
 
     @pytest.mark.asyncio
     async def test_verification_name2_matches(self, settings, cache):
@@ -122,12 +121,11 @@ class TestTier2AVerification:
         assert result.name2_match_score >= 95
         assert result.enrichment_status == "verified"
         assert result.source == "contact_lookup_found"
-        assert result.flag_for_review is False
-        assert result.flag_reason is None
+        assert result.low_conf_unchanged == set()
 
     @pytest.mark.asyncio
     async def test_verification_partial_band(self, settings, cache):
-        """80 <= score < 95 — normalise to the page wording, but flag it.
+        """80 <= score < 95 — normalise to the page wording.
 
         "Dept of Radiology" against "Department of Radiology" scores in
         the partial band: same unit, non-canonical wording.
@@ -152,8 +150,8 @@ class TestTier2AVerification:
         assert result.name2_enriched == "Department of Radiology"
         assert result.enrichment_status == "enriched"
         assert result.source == "contact_lookup_found"
-        assert result.flag_for_review is True
-        assert result.flag_reason == "Partial match — confirm enriched Name 2"
+        # Same unit, canonical wording, page-backed — no flag.
+        assert result.low_conf_unchanged == set()
 
     @pytest.mark.asyncio
     async def test_verification_also_extracts_name3(self, settings, cache):
@@ -227,10 +225,7 @@ class TestTier2AVerificationLowScoreSplit:
         assert result.name2_enriched == "Department of Chemistry"
         assert result.enrichment_status == "enriched"
         assert result.source == "contact_lookup_corrected"
-        assert result.flag_for_review is True
-        assert result.flag_reason == (
-            "Name 2 corrected — did not match contact page affiliation"
-        )
+        assert result.low_conf_unchanged == set()
 
     @pytest.mark.asyncio
     async def test_low_score_medium_confidence_preserves_original(
@@ -262,8 +257,6 @@ class TestTier2AVerificationLowScoreSplit:
         assert result.name2_enriched is None
         assert result.enrichment_status == "unresolved"
         assert result.source == "contact_lookup_found"
-        assert result.flag_for_review is True
-        assert result.flag_reason == (
-            "Name 2 disagrees with contact page affiliation — "
-            "not corrected, verify manually"
-        )
+        # Attempted, below threshold, input left in place — the one Tier 2A
+        # outcome that leaves something for a reviewer, scoped to Name 2.
+        assert result.low_conf_unchanged == {"name2"}

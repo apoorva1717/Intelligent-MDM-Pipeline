@@ -523,12 +523,9 @@ def _derive_search_term_2(result: dict[str, Any]) -> str | None:
         if "name2" in dba:
             name2 = ""  # UC 11 DBA trade name — never a unit handle
         elif looks_like_research_institution(name2) and not _name2_is_unit_phrase(name2):
-            # An institution in the Name 2 slot → probable field swap.
-            result["flag_for_review"] = True
-            if not (result.get("flag_reason") or "").strip():
-                result["flag_reason"] = (
-                    "probable Name 1 / Name 2 field swap — institution in Name 2"
-                )
+            # An institution in the Name 2 slot → probable field swap, so it
+            # is not a unit handle. Search-term derivation does not raise
+            # review flags; enrichment.flags is the single flag authority.
             name2 = ""
 
     # 0. Admin override (accounts payable, finance, billing, …).

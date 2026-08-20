@@ -57,9 +57,11 @@ class TestRunTier3RejectsAddress:
             street="ASTER HOUSE, 2A University ROAD", city="Belfast",
             state=None, zip_code="BT7 1NH", country="UK", llm_client=llm,
         )
+        # The suggestion is dropped, so the original stands. Tier 3 raises no
+        # flag of its own — finalisation describes the record by what it
+        # holds, not by what was rejected on the way there.
         assert r.name2_suggestion is None
-        assert r.flag_for_review is True
-        assert "address-like" in r.flag_reason
+        assert not hasattr(r, "flag_for_review")
 
     @pytest.mark.asyncio
     async def test_real_name2_kept(self):
@@ -107,8 +109,14 @@ class TestFinaliseBlankName2Guard:
             name2_original=None, name2_enriched="St. Louis Site",
             _name2_from_tier3=True,
         ), time.perf_counter())
+        # Fix 8 (8e): the input Name 2 was blank and the output Name 2 is
+        # blank. Nothing was dropped and nothing about Name 2 is uncertain, so
+        # no flag names it. (This synthetic record is empty in every other
+        # field too, so it does carry `no-match` — which is about the record
+        # as a whole, not about the dropped guess.)
         assert out["name2_enriched"] is None
-        assert out["flag_for_review"] is True
+        assert "name2" not in out["flagged_fields"]
+        assert out["flag_codes"] == ["no-match"]
 
     def test_preprocess_routed_name2_not_dropped(self):
         # A Name 2 routed from the street by preprocessing (no _name2_from_tier3)

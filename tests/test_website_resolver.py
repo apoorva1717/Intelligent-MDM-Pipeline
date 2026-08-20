@@ -404,7 +404,8 @@ class TestOrchestratorWebsiteFields:
         assert result.domain is None
         assert result.website_url is None
         assert result.flag_for_review is True
-        assert "domain-unverified" in (result.flag_reason or "")
+        assert "domain-unverified" in result.flag_codes
+        assert result.flagged_fields == ["domain"]
         assert response.summary.domain_rejected_unverified == 1
 
     @pytest.mark.asyncio

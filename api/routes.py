@@ -303,6 +303,19 @@ def _passthrough_headers(input_headers: list[str], output_headers: list[str]) ->
     return passthrough
 
 
+def _cell(value: object) -> object:
+    """Render one response value as an XLSX cell.
+
+    openpyxl accepts only scalars, so a list-valued response field
+    (``flag_codes``, ``flagged_fields``) is joined into the semicolon-separated
+    form the other multi-value columns already use. Every other value is
+    written unchanged — this is a serialisation adapter, not a transform.
+    """
+    if isinstance(value, (list, tuple)):
+        return "; ".join(str(v) for v in value) or None
+    return value
+
+
 def _build_output_xlsx(
     results: list[EnrichmentResult],
     input_headers: list[str] | None = None,
@@ -336,7 +349,7 @@ def _build_output_xlsx(
         data = result.model_dump()
         row_dict = row_dicts[index] if row_dicts is not None else {}
         ws.append(
-            [data.get(field) for field in fields]
+            [_cell(data.get(field)) for field in fields]
             + [row_dict.get(header) for header in passthrough]
         )
 

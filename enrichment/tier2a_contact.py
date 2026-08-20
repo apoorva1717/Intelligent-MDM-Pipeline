@@ -8,7 +8,7 @@ Supports two modes:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from rapidfuzz import fuzz
 
@@ -56,8 +56,12 @@ class Tier2AResult:
     # the domain ownership guard (utils/domain_resolver.py) when the domain has
     # to be derived from this page; it never influences the lookup itself.
     source_title: str | None = None
-    flag_for_review: bool = True
-    flag_reason: str | None = None
+    # Evidence, not a flag. Output fields Tier 2A tried to settle and left
+    # exactly as the record supplied them, because the page disagreed and the
+    # extraction was not confident enough to overwrite. `enrichment.flags`
+    # turns this into `low-confidence-unchanged`; every other Tier 2A outcome
+    # writes a value backed by `source_url` and needs no flag.
+    low_conf_unchanged: set[str] = field(default_factory=set)
     enrichment_status: str = "failed"
     source: str = "none"
 
@@ -398,7 +402,6 @@ def _apply_mode_a(
     """Mode A: name2 was null — populate from discovered department.
 
     Success: name2_enriched = official_dept, name3_enriched = official_group (bonus)
-    Flag for review if confidence is medium.
     """
     if not official_dept or not official_dept.strip():
         return result  # No department found, stay unsuccessful
@@ -410,14 +413,10 @@ def _apply_mode_a(
     result.source = "contact_lookup_found"
     result.name2_match = "not_applicable"  # No pre-existing name2 to compare
 
-    if llm_confidence == "high":
-        result.flag_for_review = False
-        result.flag_reason = None
-        result.enrichment_status = "enriched"
-    else:  # medium
-        result.flag_for_review = True
-        result.flag_reason = "Medium confidence — recommend review"
-        result.enrichment_status = "enriched"
+    # Either way the department was read off the contact's own page on the
+    # institution's domain, and `source_url` records which page. That is
+    # auditable evidence, so no review flag is raised at either confidence.
+    result.enrichment_status = "enriched"
 
     return result
 
@@ -434,8 +433,8 @@ def _apply_mode_b(
     """Mode B: name2 exists — verify or correct via contact page.
 
     Uses rapidfuzz to compare existing name2 against official_dept from the page.
-    ≥ 95 exact: normalise to official format, no review needed
-    80–94 partial: normalise to official format, flag for review
+    ≥ 95 exact: normalise to official format
+    80–94 partial: normalise to official format
     < 80: the page disagrees substantially with the record. That has two
         explanations — the record is wrong, or the wrong page was found —
         and this is precisely where the evidence is weakest. Split on the
@@ -471,28 +470,22 @@ def _apply_mode_b(
             # Near-exact match
             result.name2_match = "exact"
             result.enrichment_status = "verified"
-            result.flag_for_review = False
-            result.flag_reason = None
             result.source = "contact_lookup_found"
         else:
-            # Partial match — normalise but flag
+            # Partial match — normalise to the page's wording.
             result.name2_match = "partial"
             result.enrichment_status = "enriched"
-            result.flag_for_review = True
-            result.flag_reason = "Partial match — confirm enriched Name 2"
             result.source = "contact_lookup_found"
     else:
         # No match. Who is wrong — the record, or the page we picked?
         result.name2_match = "no_match"
         result.name2_match_score = effective_score
-        result.flag_for_review = True
         if llm_confidence == "high":
             # The extraction is solid, so treat the record as wrong and
             # replace it with the page version.
             # FIX(Bug 5): guard against empty string
             result.name2_enriched = official_dept.strip() if official_dept and official_dept.strip() else None
             result.enrichment_status = "enriched"
-            result.flag_reason = "Name 2 corrected — did not match contact page affiliation"
             result.source = "contact_lookup_corrected"
         else:
             # Medium confidence on a substantial disagreement is not
@@ -501,10 +494,7 @@ def _apply_mode_b(
             # then keeps whatever the record already had — and surface
             # the disagreement for manual review instead.
             result.enrichment_status = "unresolved"
-            result.flag_reason = (
-                "Name 2 disagrees with contact page affiliation — "
-                "not corrected, verify manually"
-            )
+            result.low_conf_unchanged.add("name2")
             result.source = "contact_lookup_found"
 
     # FIX(Bug 5): guard against empty string for name3

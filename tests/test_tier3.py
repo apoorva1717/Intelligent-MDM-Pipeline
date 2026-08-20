@@ -32,7 +32,6 @@ class TestTier3:
             country="US",
             llm_client=MockOpenAIClient(),
         )
-        assert result.flag_for_review is True
         assert result.enrichment_status == "unresolved"
         assert result.source == "LLM"
         if result.success:
@@ -54,14 +53,18 @@ class TestTier3:
             country=None,
             llm_client=MockOpenAIClient(),
         )
-        assert result.flag_for_review is True
         assert result.enrichment_status == "unresolved"
         # With no info, mock returns low confidence
         assert result.success is False
 
     @pytest.mark.asyncio
-    async def test_tier3_always_flags(self):
-        """Tier 3 should always flag for review regardless of confidence."""
+    async def test_tier3_raises_no_flag_of_its_own(self):
+        """Tier 3 reports confidence; it never sets a review flag.
+
+        Flagging is finalisation's job (enrichment/flags.py) — see
+        ``test_flags.py`` for the rule that a value Tier 3 wrote becomes
+        ``unverified-inference`` regardless of the confidence reported here.
+        """
         result = await run_tier3(
             record_id="TEST_032",
             name1="Massachusetts Institute of Technology",
@@ -75,7 +78,9 @@ class TestTier3:
             country="US",
             llm_client=MockOpenAIClient(),
         )
-        assert result.flag_for_review is True
+        assert not hasattr(result, "flag_for_review")
+        assert not hasattr(result, "flag_reason")
+        assert result.confidence in ("high", "medium", "low", "none")
 
     @pytest.mark.asyncio
     async def test_tier3_preserves_originals_on_low_confidence(self):

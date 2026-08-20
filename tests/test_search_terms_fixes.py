@@ -68,13 +68,17 @@ class TestSearchTerm2:
     def test_st2(self, result, expected):
         assert derive_search_terms(result)[1] == expected
 
-    def test_field_swap_flags_and_nulls(self):
+    def test_field_swap_nulls_search_term_2(self):
+        """An institution in the Name 2 slot yields no unit handle.
+
+        Search-term derivation no longer raises a review flag of its own —
+        ``enrichment.flags`` is the single flag authority (Fix 8).
+        """
         r = _st(name2_enriched="Tufts University",
                 name1_original="John F Florek", _name1_was_person=True)
         st1, st2 = derive_search_terms(r)
         assert st2 is None
-        assert r["flag_for_review"] is True
-        assert "field swap" in (r["flag_reason"] or "").lower()
+        assert r["flag_for_review"] is False
 
     def test_dba_name2_nulled(self):
         r = _st(name2_enriched="Coastal Marine",

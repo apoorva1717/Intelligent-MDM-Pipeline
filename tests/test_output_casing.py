@@ -300,9 +300,10 @@ class TestExitPaths:
             name1="Adams Air", name2="HYDRAULICS INC",
             street1="450 INDUSTRIAL WAY", city="GAINESVILLE",
         )
-        # Flag logic unchanged.
+        # Still flagged as an overflow — only the reason text changed.
         assert r.flag_for_review is True
-        assert "UC 0" in (r.flag_reason or "")
+        assert r.flag_codes == ["overflow"]
+        assert r.flagged_fields == ["name1", "name2"]
         assert r.record_type == "unknown"
         # No tier ran.
         assert ror.queries == []

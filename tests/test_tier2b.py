@@ -50,7 +50,10 @@ class TestTier2B:
         assert result.success is True
         assert result.name2_enriched is not None
         assert result.source == "dept_search"
-        assert result.flag_for_review is True
+        # A stated department read off an on-domain page is auditable
+        # evidence: source_url says which page. No review flag.
+        assert result.source_url
+        assert not hasattr(result, "flag_for_review")
 
     @pytest.mark.asyncio
     async def test_company_division_found(self, settings, cache):
@@ -92,8 +95,8 @@ class TestTier2B:
         assert isinstance(result.success, bool)
 
     @pytest.mark.asyncio
-    async def test_non_official_source_flagged(self, settings, cache):
-        """Results from non-official domain get low confidence and flag."""
+    async def test_non_official_source_gets_low_confidence(self, settings, cache):
+        """An off-domain page is weaker evidence and says so via confidence."""
         result = await run_tier2b(
             record_id="TEST_023",
             name1="Some Unknown Research Center",
@@ -109,4 +112,4 @@ class TestTier2B:
             settings=settings,
         )
         if result.success:
-            assert result.flag_for_review is True
+            assert result.confidence in ("medium", "low")

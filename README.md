@@ -92,7 +92,7 @@ The API uses a **tiered escalation approach**: start with the cheapest, most rel
 | **Tier 2A** | Contact person web lookup (SERP + page fetch + LLM) | Medium | Medium-High | When contact is available and Tier 1 matched the parent org |
 | **Tier 2 Canonical** | LLM canonicalization (no web search) | Low-Medium | High (only accepts high-confidence answers) | When Name2/3 present but no ROR child match |
 | **Tier 2B** | Department web search (SERP + page fetch + LLM) | Medium | Medium-Low | When no contact or Tier 2A failed |
-| **Tier 3** | Pure LLM inference | Medium | Low (always flagged) | Last resort, all other tiers failed |
+| **Tier 3** | Pure LLM inference | Medium | Low (anything it writes is flagged `unverified-inference`) | Last resort, all other tiers failed |
 
 **Key design principles:**
 
@@ -100,7 +100,7 @@ The API uses a **tiered escalation approach**: start with the cheapest, most rel
 2. **Deterministic before probabilistic.** Regex-based preprocessing runs before any API or LLM call.
 3. **Structured extraction over free-form generation.** LLM prompts extract from structured page elements (URL path, title, H1, breadcrumb) rather than interpreting free-form body text.
 4. **Scope filtering.** The pipeline distinguishes department-level units (acceptable) from granular units like individual labs, groups, or facilities (rejected per UC 4/5 scope rules).
-5. **Transparency.** Every result includes `tier_used`, `source`, `confidence`, `domain`, `flag_for_review`, and `flag_reason` so humans can audit the pipeline's decisions.
+5. **Transparency.** Every result includes `tier_used`, `source`, `confidence`, `domain`, and the four review fields — `flag_for_review`, `flag_codes`, `flagged_fields`, `flag_reason` — so humans can audit the pipeline's decisions and see which field a doubt attaches to.
 
 ---
 
@@ -277,7 +277,7 @@ SAP exports sometimes place organisation/department names in a Street field (wit
 Routing rules:
 - The **institution** always takes Name 1 when Name 1 is empty (`_looks_like_institution`); sub-units (`Division of…`, `… Branch`, `Center for…`) fill Name 2+.
 - A **bare location fragment** that is neither an address nor an org (e.g. "Queens Campus") goes to the next empty **street** slot, not a Name field.
-- **Overflow is flagged, never silently dropped** — when org segments exceed the four Name slots (or location fragments exceed the street slots), a `name-slots-full` / `street-slots-full` flag is raised, which the orchestrator turns into `flag_for_review` with a reason.
+- **Overflow is flagged, never silently dropped** — when org segments exceed the four Name slots (or location fragments exceed the street slots), a `name-slots-full` / `street-slots-full` signal is raised, which finalisation turns into the `overflow` flag code. It is the same defect UC 0 detects from the other end: content the SAP field split could not place.
 
 #### Address Sub-Location Extraction (Floor / Room / c-o)
 
@@ -497,8 +497,8 @@ ROR is the registry for *research institutions* and has no good coverage of ordi
 **How (with hard reliability guards):**
 1. **Propose** — one grounded web lookup: SERP on the person (`"Jane Smith" mit.edu` when the email domain is corporate/edu, else `"Jane Smith" <city, region, country>`), then a single LLM extraction over the result **snippets only** (`PERSON_AFFILIATION_*`) returning `{institution, department, confidence}`. The prompt is grounded — it must return `institution=null` rather than guess from the name alone. `enrichment/person_affiliation.py` never writes any field.
 2. **Confirm** — the proposed institution is verified against **ROR in the record's country**. ROR's country filter rejects a wrong-country match (e.g. an Irish university proposed for a Belfast/GB address).
-3. **Accept** — only on a ROR match: Name 1 = **ROR's official name**, and the **id / domain / website come from ROR** (never a website-resolver guess). Department = a Tier 2A lookup on the *confirmed* domain, falling back to the web-proposed department. `source = "ROR"`, `confidence = "medium"`, and `flag_for_review = True` (reason `"Name 1 inferred from contact's web affiliation — verify (…)"`).
-4. **Fail safe** — no proposal, low confidence, or ROR does not confirm → the contact is kept, Name 1 is left **empty**, and the record is flagged (`"… not confirmed by registry in <country>; manual lookup needed"` or `"… could not be resolved; manual lookup needed"`).
+3. **Accept** — only on a ROR match: Name 1 = **ROR's official name**, and the **id / domain / website come from ROR** (never a website-resolver guess). Department = a Tier 2A lookup on the *confirmed* domain, falling back to the web-proposed department. `source = "ROR"`, `confidence = "medium"`, and **no flag**: the proposal went through ROR's own country and distinctive-token guards, so this is a verified Tier 1 match like any other, and it ships a registry id and domain a reviewer can audit.
+4. **Fail safe** — no proposal, low confidence, or ROR does not confirm → the contact is kept, Name 1 is left **empty**, and the record is flagged `person-unresolved` (scoped to `name1`).
 
 In **all** cases the pipeline **short-circuits after Stage 2b** (Tier 3 never runs for person-only records), so Tier 3 can neither fabricate an institution nor overwrite the ROR-confirmed one. Cost is ~1 SERP + 1 LLM (+ Tier 2A on accept) and is incurred **only** for person-only Name 1 records.
 
@@ -518,7 +518,7 @@ Tier 2 has three sub-modes that handle different scenarios for enriching Name2 (
 - Institution has a known domain (from ROR)
 - Contact field names exactly **one** person (multi-contact strings like "John Smith and Jane Doe" skip Tier 2A and flag the record for manual review)
 
-**Manual-review guard:** Research institutions where Tier 2A is not actionable — i.e. (a) no department AND no contact, or (b) the contact field names more than one person — are flagged for manual review regardless of which tier ultimately runs. See the [Flag Rules table](#flag-rules) for exact reasons.
+**Manual-review guard (multi-contact only):** when the contact field names more than one person, Tier 2A cannot pick a page to verify against, and the record carries `multiple-contacts` (scoped to `contact` + `name2`) unless some later step settles the department anyway. A research institution with **no department and no contact** is *not* flagged: an absent department is not a defect, and there is nothing for a reviewer to do. That blanket rule was 20 % of all flags on the demo batch and was removed in Fix 8 — see the [Flag Rules table](#flag-rules).
 
 **Two modes:**
 
@@ -607,8 +607,8 @@ Tier 2 has three sub-modes that handle different scenarios for enriching Name2 (
 **Outcome (success):**
 - `Name2_enriched` ← parent department (e.g. `"Department of Chemistry"`)
 - `Name3_enriched` ← original lab name (e.g. `"NMR Spectroscopy Group"`) **only when input Name3 was empty**
-- If input Name3 was already populated, the lab is **not** demoted (data-loss avoidance) and the record is flagged with a "Name 3 already populated" warning.
-- `tier_used = 2`, `source = "dept_search"`, `source_url` = the page used, `flag_for_review = True`, `use_cases_triggered` includes `13`.
+- If input Name3 was already populated, the lab is **not** demoted (data-loss avoidance) and the record additionally carries `name3-not-demoted`.
+- `tier_used = 2`, `source = "dept_search"`, `source_url` = the page used, `use_cases_triggered` includes `13`, and the record carries `dept-via-lab` scoped to `name2` + `name3` — the parent department was *inferred from the lab's own page*, not read from a stated department, which is what makes it a claim a reviewer has to check.
 
 **Outcome (failure):** Falls through to existing Tier 2 canonical / Tier 2A / Tier 2B / Tier 3, whose existing scope filters keep the original granular Name2.
 
@@ -649,7 +649,7 @@ Tier 2 has three sub-modes that handle different scenarios for enriching Name2 (
    - Pick highest-ranked result
    - Assign confidence: `medium` if source is on-domain, `low` if external
 
-**Note:** Tier 2B results are always flagged for human review because web search evidence is inherently less reliable than ROR or contact page verification.
+**Note:** a Tier 2B result that read a **stated** department off a page on the organisation's own domain is **not** flagged. `source_url` names the exact page, so the evidence is auditable — which is the whole test the flag model applies. (Before Fix 8 every Tier 2B result was flagged on the general principle that web evidence is weaker than ROR; that principle is now expressed through `confidence` — `medium` on-domain, `low` off-domain — rather than through a flag that gave a reviewer nothing specific to do.)
 
 ---
 
@@ -662,10 +662,15 @@ Tier 2 has three sub-modes that handle different scenarios for enriching Name2 (
 **Process:** A single LLM call receives ALL available fields — Name1, Name2, Name3, contact, email, city, state, country, street — and attempts to infer the correct organization and department names.
 
 **Confidence handling:**
-- **High or medium confidence:** Write LLM suggestions to enriched fields, but mark status as `unresolved` (always requires human review)
+- **High or medium confidence:** Write LLM suggestions to enriched fields, mark status as `unresolved`
 - **Low confidence:** Do NOT overwrite originals — return originals unchanged, mark as `unresolved`
 
-**Why always flagged?** Tier 3 has no external evidence — it relies entirely on the LLM's training data. This makes it useful as a starting point for human review but not reliable enough for automatic application.
+**Why is anything Tier 3 writes flagged?** Tier 3 has no external evidence — it relies entirely on the LLM's training data. So **every value Tier 3 writes carries `unverified-inference`, regardless of the confidence it reported**: a confident unverifiable claim is the more dangerous case, not the safer one. (The demo batch bears this out — rows 41, 44, 47 and 50 are Tier 3 outputs that were confident and wrong.) Two things narrow it, and both are evidence rather than provenance:
+
+- a field a later authority overwrote is no longer Tier 3's claim — Fix 2's Tier 1 retry writing the registry's official name is the common case;
+- a Name 2 the department probe went on to locate on the organisation's own web presence is corroborated by `department_domain`, a column a reviewer can open.
+
+Where Tier 3 **leaves** a value unchanged there is no new claim, and the record reads as `low-confidence-unchanged` (or `no-match`) instead. Tier 3 itself raises no flag: it reports its suggestions and its confidence, and `enrichment/flags.py` decides what that means once the record is final.
 
 ---
 
@@ -893,7 +898,7 @@ On a record that inherited at least one field:
 |---|---|
 | **`source`** | set to `"batch_consensus"` |
 | **`tier_used`** | **kept**, never set to 1. Inflating the Tier 1 count would corrupt the tier-distribution figures used in evaluation. |
-| **`flag_for_review` / `flag_reason`** | untouched. A record that inherits keeps the flags it earned on its own. |
+| **review fields** | untouched by the pass itself. Consensus runs *after* every record is finalised, so a record keeps the flags it earned on its own; inheriting a field never adds or clears one. |
 | **`record_type_source`** | untouched, and therefore still names the evidence *that record's own* classification came from. The classification authority is [`classifier`](#record-classification-logic); this stage moves a decided value, it does not decide one. |
 
 A record whose fields already agree with the consensus is not counted as updated and keeps its own `source`. The donor inherits nothing from itself.
@@ -1036,7 +1041,7 @@ Every path produces a **candidate URL**, never a field value: the candidate goes
 
 **Path C — LLM inference** (`infer_website_via_llm`, only when Path B found nothing). One LLM call with Name 1 + city/state/country; `""/null/none/unknown/n-a` are treated as no result; the URL shape is validated. Always returned `low` confidence.
 
-**Confidence → write/flag semantics.** `high` → write, no flag. `low` → write + `flag_for_review` ("resolved by SERP with low confidence — verify" / "inferred by LLM — verify"). `none` → leave empty. The flag is paired with the write: when the ownership guard rejects the candidate nothing is written, so the "verify this website" flag does not fire either — the record carries `domain-unverified` instead (§2). Path B's chosen SERP title rides along on `WebsiteResolution.title` as read-only evidence for the guard's on-domain condition; it never influences selection.
+**Confidence → write semantics.** `high` → write. `low` → write. `none` → leave empty. Provenance alone no longer raises a flag: the old "inferred by LLM — verify" reason said *where the URL came from*, not whether it is right, and Fix 8 replaced it with the evidence-based `domain-unverified` — raised when the ownership guard (§2b) can tie the candidate to nothing, in which case nothing is written either. Path B's chosen SERP title rides along on `WebsiteResolution.title` as read-only evidence for the guard's on-domain condition; it never influences selection.
 
 **`WEBSITE_TRACE` diagnostic** (`config.WEBSITE_TRACE`, default off). When on, `resolve_website_via_serp` / `infer_website_via_llm` emit one structured JSON line per attempt on the `enrichment.trace.website` logger — per-candidate `rejected_by` (`url_shape`/`blacklist`/`name_overlap`/`rank_0`), matched token, foreign label, rank, chosen, confidence, and the outcome. Read-only: it never changes resolution. Driver script: `scripts/trace_website.py` (six records, writes `logs/website_trace.json`).
 
@@ -1076,7 +1081,7 @@ A canonicalised candidate is accepted only when at least one holds:
 
 Precedence is registry → name → email → on-domain evidence; the first hit wins and names the accepting condition. Name similarity is consulted *before* the email so a well-matched candidate is never clobbered by an unrelated address on the record (a distributor's mailbox).
 
-**None holds** → `domain = null`, no `website_url`, and the record is flagged `domain-unverified` ("website could not be verified as belonging to this organisation — verify"). The flag is raised at the end of `finalise`, *after* the research-institution review block that overwrites `flag_reason`, and it appends rather than replaces, so it can neither be masked nor mask anything else.
+**None holds** → `domain = null`, no `website_url`, and the record carries the `domain-unverified` code, scoped to the `domain` field. Nothing can mask it: flags are no longer appended as tiers run but computed once, from final state, at the end of `finalise` (see [Flag Rules](#flag-rules)), and a record simply carries every code that applies to it.
 
 Two records both reading "Cardinal Instruments" (Tampa and Boston) fail name similarity against `cardinalhealth.com` and `cardinalguitars.com` alike, and both end with no domain. That is the intended outcome.
 
@@ -1134,7 +1139,7 @@ Computed by `search_terms.derive_search_terms(result)` once in `finalise`. `sear
 
 > This **inverts** the old precedence — Name 2 text now beats the department-domain host, which had produced junk handles (`scrippscollege`, `leuphana`, `uwm`).
 
-**Field-content guards on Name 2.** If UC 11 flagged Name 2 as a **DBA** trade name, or Name 2 is an **institution** in the department slot (`looks_like_research_institution` and not a unit phrase → probable field swap, e.g. `John F Florek` / `Tufts University`), Name 2 is not used for a handle (the field swap also sets `flag_for_review`).
+**Field-content guards on Name 2.** If UC 11 flagged Name 2 as a **DBA** trade name, or Name 2 is an **institution** in the department slot (`looks_like_research_institution` and not a unit phrase → probable field swap, e.g. `John F Florek` / `Tufts University`), Name 2 is not used for a handle. Search-term derivation raises no review flag of its own — `enrichment/flags.py` is the single flag authority.
 
 **Name-1 standardisation on a kept ROR name.** When Tier 1 matches but the identity guard keeps *your* Name 1 over ROR's divergent official form (e.g. ROR's German `Hochschule für Technik Stuttgart` vs input `Stuttgart Univ of Applied Sciences`), the kept name is still run through `clean_passthrough_org_name` — so `Univ` → `University` and ALL-CAPS is title-cased, exactly as a ROR-miss passthrough is cleaned.
 
@@ -1142,7 +1147,7 @@ Computed by `search_terms.derive_search_terms(result)` once in `finalise`. `sear
 
 ## Confidence, Flags, and Enrichment Status
 
-**File:** `enrichment/confidence.py`
+**Files:** `enrichment/confidence.py` (status) · `enrichment/flags.py` (flags)
 
 ### Enrichment Status Values
 
@@ -1155,22 +1160,53 @@ Computed by `search_terms.derive_search_terms(result)` once in `finalise`. `sear
 
 ### Flag Rules
 
-| Scenario | Flagged? | Flag Reason |
-|----------|----------|-------------|
-| Tier 1 ROR match, high confidence | No | — |
-| Tier 2A exact match (>=95% fuzzy) | No | — |
-| Tier 2A partial match (60-95%) | Yes | "Partial match — confirm enriched Name 2" |
-| Tier 2A correction (no match) | Yes | "Name 2 corrected via contact lookup" |
-| Research institution with no dept and no contact | Yes | "Research institution with no department and no contact — manual review required" |
-| Research institution with multiple contacts (e.g. "John Smith and Jane Doe") | Yes | "Research institution with multiple contacts — manual review required" |
-| Tier 2B any result | Yes | "Department search — verify enriched Name 2" |
-| Tier 2 Canonical high confidence | No | — |
-| Tier 3 any result | Yes | "LLM inference — requires verification" |
-| Medium confidence from any tier | Yes | "Medium confidence — recommend review" |
-| UC 0 overflow detected | Yes | "Name1 overflow — Name1+Name2 appear to be one name" |
-| Candidate website fails every ownership condition | Yes | "domain-unverified: website could not be verified as belonging to this organisation — verify" |
+**File:** `enrichment/flags.py`
 
-> `domain-unverified` is raised at the end of `finalise`, after the research-institution block, and **appends** to any existing reason (`"…; domain-unverified: …"`) — it never replaces one, and no other flag can mask it. See [§2b](#2b--ownership-guard-domain_ownership_guard_enabled-default-on).
+The flag answers one question for a reviewer: *is there something here for me to do, and to which field?* It used to answer a different one — *which tier ran?* — because each tier appended its own reason as it executed. That put a flag on 47 of the 50 demo records and made it useless as a triage signal. Fix 8 replaced the model.
+
+**Three properties hold by construction.**
+
+1. **Rebuilt, never appended.** `compute_flags` is called **once**, from `finalise`, after every name, domain and contact field has settled. Tiers record *evidence*; they never write a flag. A record that reached Tier 3 and was then rescued by Fix 2's Tier 1 retry ends with a registry identifier and **no** Tier 3 reason, because the reason is derived from what the record *holds*, not from what ran.
+2. **Field-scoped.** `flagged_fields` names the output fields the flag concerns. A record with a verified ROR ID and an uncertain department scopes to `name2` alone — which is what tells a reviewer a one-field check from a full record review.
+3. **`flag_for_review` is true if and only if `flag_codes` is non-empty**, and `flag_reason` is the prose rendering of the same codes.
+
+#### Output fields
+
+| Field | Column | Meaning |
+|---|---|---|
+| `flag_for_review` | Flag for Review | boolean; true iff `flag_codes` is non-empty |
+| `flag_codes` | Flag Codes | machine-readable codes from the table below; a record may carry several |
+| `flagged_fields` | Flagged Fields | which output fields the codes concern (`name1`, `name2`, `name3`, `name4`, `domain`, `contact`, `email`, `address`) |
+| `flag_reason` | Flag Reason | human-readable prose, one clause per code, each prefixed with its own field scope |
+
+The scope is encoded in the reason text **as well as** in `flagged_fields`, so a consumer reading only the two pre-Fix-8 columns still learns which field is in doubt.
+
+#### The codes
+
+| Code | Raised when | Scope |
+|---|---|---|
+| `no-match` | Every tier failed: no identifier, no domain, no evidence URL, no field changed. Suppressed when any other code applies — it means "nothing to go on at all" | `name1` |
+| `low-confidence-unchanged` | Canonicalisation was attempted, came back below threshold, and the input value was left in place | the field(s) left as supplied |
+| `dept-via-lab` | UC 13 fired: Name 2 was a granular unit and the parent department was **inferred from the lab's page**, not read from a stated department | `name2`, `name3` |
+| `name3-not-demoted` | UC 13 fired but Name 3 was already populated, so the lab name could not be moved down | `name2`, `name3` |
+| `person-unresolved` | A person was detected in Name 1 and their affiliation could not be resolved | `name1` |
+| `overflow` | UC 0, or preprocessing ran out of name/street slots — one value split across several SAP fields | `name1`, `name2` |
+| `opaque-code` | UC 10: Name 1 holds an internal code, not a name (preprocessing clears these from Name 2-4 but never from Name 1) | `name1` |
+| `domain-unverified` | The candidate website failed every ownership condition, so nothing was written — see [§2b](#2b--ownership-guard-domain_ownership_guard_enabled-default-on) | `domain` |
+| `email-conflict` | An email found in the record differs from a populated email field | `email` |
+| `multiple-contacts` | The contact field names more than one person and Tier 2A could not act | `contact`, `name2` |
+| `unverified-inference` | Tier 3 **wrote** a value, at any confidence — see [Tier 3](#stage-4-tier-3--llm-inference-last-resort) | the field(s) Tier 3 wrote |
+
+#### What is deliberately NOT flagged
+
+- Any **Tier 1 ROR or LEI match that passed its verification guard** — including the person-affiliation path, which re-enters Tier 1 through the same guards.
+- **Tier 2A verified or exact match**, and any Tier 2A outcome that wrote a value backed by a `source_url`.
+- **Tier 2 canonicalisation at high confidence.** This was always the documented rule; before Fix 8 the code contradicted it and shipped `"LLM canonical form — verify"` / `"LLM canonical company name — verify"` on 8 of 50 demo records.
+- **Tier 2B department search that read a STATED department off an on-domain page.** There is a `source_url` to audit. This replaces the old blanket "Tier 2B results are always flagged".
+- **A research institution having no department, no contact, or neither.** An absent department is not a defect and gives a reviewer nothing to do. This rule alone was a fifth of all flags on the demo batch.
+- **Any deterministic normalisation** — casing, abbreviation expansion, unit canonicalisation, legal-suffix collapse, a Name 2 dropped because it duplicated Name 1 (Rule 3).
+- **Batch consensus inheritance** (Fix 6) — see the note in [Batch Consensus](#batch-consensus).
+- **An empty input field that stayed empty.** In particular a blank Name 2 that Finalization Rule 1 leaves blank: nothing was dropped, so nothing is flagged.
 
 ---
 
@@ -1272,7 +1308,9 @@ The two **registry identifiers are deliberately included** in the JSON so the Ph
       "lei_id": null,
       "domain": "mit.edu",
       "flag_for_review": true,
-      "flag_reason": "Partial match — confirm enriched Name 2",
+      "flag_codes": ["low-confidence-unchanged"],
+      "flagged_fields": ["name2"],
+      "flag_reason": "Name 2: left exactly as supplied — the canonical form could not be established with enough confidence to rewrite it; confirm the value is correct",
       "error": null
     }
   ],
@@ -1869,11 +1907,15 @@ LLM-based check for Name1+Name2 being a single split organization name. Early-ex
 
 ### `enrichment/batch_consensus.py` — Batch Consensus (Stage 6)
 
-`apply_batch_consensus` converges organisation-level fields across a finalised batch, in place. Groups by address block (`derive_block_id`, reused from `dedup/signatures.py`) then by canonicalised Name 1 plus a compatible legal form. A group with exactly one registry identity propagates `ror_id`, `lei_id`, `name1_enriched`, `domain`, `website_url` and `record_type` from a deterministically elected donor; a group with none falls back to `_consensus_name_form` (modal Name 1 spelling) plus unanimous-gap-fill on the remaining fields, never choosing between competing values. Inheriting records are marked `source = "batch_consensus"`. `PROPAGATED_FIELDS` and `NEVER_PROPAGATED` are module-level data so the exclusion of department-level fields is readable and testable. Never merges, drops or reorders a record; never touches `tier_used` or any flag. Full description in [Stage 6: Batch consensus](#stage-6-batch-consensus).
+`apply_batch_consensus` converges organisation-level fields across a finalised batch, in place. Groups by address block (`derive_block_id`, reused from `dedup/signatures.py`) then by canonicalised Name 1 plus a compatible legal form. A group with exactly one registry identity propagates `ror_id`, `lei_id`, `name1_enriched`, `domain`, `website_url` and `record_type` from a deterministically elected donor; a group with none falls back to `_consensus_name_form` (modal Name 1 spelling) plus unanimous-gap-fill on the remaining fields, never choosing between competing values. Inheriting records are marked `source = "batch_consensus"`. `PROPAGATED_FIELDS` and `NEVER_PROPAGATED` are module-level data so the exclusion of department-level fields is readable and testable. Never merges, drops or reorders a record; never touches `tier_used` or any flag — it runs after every record is finalised, so the flags are already settled. Full description in [Stage 6: Batch consensus](#stage-6-batch-consensus).
 
-### `enrichment/confidence.py` — Scoring and Flags
+### `enrichment/confidence.py` — Enrichment Status
 
-Centralizes all flag-for-review logic and enrichment status assignment. Ensures consistent flagging rules across all tiers.
+Derives `enrichment_status` from confidence, match result and tier. Flag rules used to live here too, in a `should_flag_for_review` function that **nothing ever called** — every tier set `flag_for_review` inline as it ran, which is how the code came to contradict its own documented rules. Fix 8 removed it; flags now live in `enrichment/flags.py`.
+
+### `enrichment/flags.py` — Review Flags
+
+The single flag authority. `compute_flags` is called once, from `finalise`, and rebuilds `flag_for_review`, `flag_codes`, `flagged_fields` and `flag_reason` from the record's final state. Tiers record evidence (`_ev_*` transient keys, stripped here) and never write a flag, so no reason can name a tier that ran and no reason can mask another. Holds the code vocabulary, the detection rule for each code, the field-scope vocabulary and the reason prose. Full description in [Flag Rules](#flag-rules). Tests `test_flags.py`.
 
 ### `dedup/models.py` — Dedup Schemas
 
@@ -2400,7 +2442,19 @@ RETURN EnrichmentResponse (JSON)
 
 ## Changelog
 
-### Batch consensus — one identity per organisation per address (newest)
+### Flag model redesign — triage signal, not an execution trace (newest)
+
+47 of the 50 demo records were flagged, so the flag could not be used to decide what to look at. Four structural causes, all fixed here. Full description in [Flag Rules](#flag-rules).
+
+- **The code contradicted the documented spec.** `enrichment/confidence.py` held a `should_flag_for_review` function that matched the README's Flag Rules table — and **nothing ever called it**. Every tier set `flag_for_review` inline instead, which is how 8 of 50 records shipped `"LLM canonical form — verify"` / `"LLM canonical company name — verify"` against a table that had always said *Tier 2 Canonical high confidence → No flag*. The dead function is gone and the documented rule is now enforced.
+- **Rebuilt from final state, not appended as tiers run.** `compute_flags` is called once, from `finalise`. Tiers record evidence; finalisation decides what it means. A record rescued by [Fix 2's Tier 1 re-lookup](#stage-5-tier-1-re-lookup-after-canonicalisation) ends with a registry identifier and no earlier-tier reason — row 4 held `ror.org/0106fnq84` next to `"LLM low confidence — manual review required"`, and now carries no flag at all.
+- **Field-scoped.** New `flagged_fields` column names the output fields a flag concerns, and the scope is repeated in the reason prose. Rows 14 / 36 / 38 hold verified ROR IDs and an uncertain department: they now scope to `name2` alone, so a reviewer can tell a one-field check from a full record review. 9 of the 21 flagged records are single-field.
+- **New `flag_codes` column** — a machine-readable list, because a record can hold several conditions and the single concatenated `flag_reason` string did not scale. `flag_for_review` is true **iff** `flag_codes` is non-empty; `flag_reason` is prose only, and states what is uncertain and what to do rather than which tier ran.
+- **Absence of data is not a defect.** "Research institution with no department and no contact" fired on 10 of 50 records — all resolved by ROR with verified identifiers, and none of them actionable. Removed, along with the blanket "Tier 2B results are always flagged" (a stated department read off an on-domain page has a `source_url` to audit) and the provenance-based "Website inferred by LLM — verify" (superseded by the evidence-based `domain-unverified`).
+- **Tier 3 is flagged on what it wrote, not on the fact that it ran.** Anything Tier 3 writes carries `unverified-inference` regardless of its confidence — a confident unverifiable claim is the more dangerous case. Where it leaves a value unchanged the record reads `low-confidence-unchanged` or `no-match` instead, and a blank Name 2 that Finalization Rule 1 leaves blank carries nothing at all: nothing was dropped.
+- **Measured on the demo batch** (live run) — flag rate **47/50 → 21/50**, and one of the 21 is the workbook's trailing phantom row. 13 distinct reason strings collapse to 6 codes in use: `low-confidence-unchanged` 15, `domain-unverified` 12, and one each of `person-unresolved`, `dept-via-lab`, `overflow`, `no-match`. Tests `test_flags.py`.
+
+### Batch consensus — one identity per organisation per address
 
 Rows that share an organisation *and* an address could still leave the batch with different identities: each record is enriched in isolation, so one resolved against a registry and another did not. Four groups in the demo batch — the Coastal Diagnostics trio, four Lockheed Martin rows, two MIT rows, three Stuttgart rows. [Canonical cache keys + the Tier 1 re-lookup](#stage-5-tier-1-re-lookup-after-canonicalisation) fix most of this at source; this is the safety net for the rest, and it is cheaper than having Phase 2 adjudicate the divergence later. Full detail in [Stage 6: Batch consensus](#stage-6-batch-consensus).
 
@@ -2444,6 +2498,8 @@ Full detail in [§2 · `domain` — the single write path](#2--domain--the-singl
 
 - **Single chokepoint** — `utils/domain_resolver.resolve_domain()` is now the only place `domain` / `website_url` are decided; every tier hands it a *candidate* URL and the evidence the record carries. `orchestrator._apply_domain` is the wrapper. Previously five call sites wrote the fields directly.
 - **The "Domain" column now carries `domain`, not `website_url`** — the exported column shipped the raw URL, which is why every value in the demo export had a scheme and some had a deep path (`http://www.uni-stuttgart.de/home/index.en.html`) or a sub-site host (`https://investors.lockheedmartin.com`). The bare `domain` was already canonical; the export mapping was the format bug. `website_url` is now derived (`https://<domain>`) and internal-only. **Same column names, same column order** — only the value changes, so the DATAshaper / ADF schema is untouched.
+
+- **Two new review columns** — `Flag Codes` and `Flagged Fields`, inserted between `Flag for Review` and `Flag Reason`. Both are lists in the JSON response and semicolon-joined strings in the XLSX. Existing columns keep their names, order and meaning, so a consumer that ignores the two new headers behaves exactly as before — and because the field scope is repeated inside `Flag Reason`, such a consumer still sees which field is in doubt.
 - **Ownership guard (§2b)** — a candidate is attributed to the organisation only with registry provenance, name similarity at `DOMAIN_NAME_MATCH_THRESHOLD` (82), a non-generic email domain on the record, or an on-domain SERP title naming it. Otherwise `domain = null` + flag `domain-unverified`. This is the domain-path counterpart to ROR's country guard and GLEIF's name verification; without it `delta.com` was attached to "Delta Analytical" and `cardinalhealth.com` to "Cardinal Instruments", which reads as successful enrichment.
 - **Email evidence is used, not discarded** — a record holding `ORDERS@MERIDIANLABS.COM` now yields `meridianlabs.com`, outranking the search result's `meridianlabs.ai`.
 - **`department_domain` is host-canonicalised, never subdomain-collapsed** — path/query/fragment stripped (`medschool.umich.edu/departments/radiation-oncology` → `medschool.umich.edu`) while `chemistry.stanford.edu` / `be.mit.edu` keep their subdomains. Stage-2b path winners now emit the host rather than the full URL (§3).
@@ -2456,7 +2512,7 @@ Full detail in [Website, Domain, Department-Domain & Search-Term Resolution](#we
 
 - **Search Term 1 rewrite** — chain is now ROR-acronym → `strip_tld(domain)` → required handle (SAP term, else Name-1 words with legal suffixes dropped) → `None`. `derive_acronym` was **removed** from ST1 (it produced evidence-free initials `VI`/`SB`/`JFF`). The required handle is emitted **only when Name 1 is usable** — non-blank *and* not an unresolved person (`_name1_was_person` propagated from UC 7) — so a blank row no longer ships its passthrough SAP term and a person row emits `None`. Tests `test_search_terms_fixes.py`.
 - **ROR acronym currency selection** — ROR may carry several `acronym` entries (current + historical); `_extract_org_fields` now selects the one whose letters are the initials of the *current* official name (`NIST` ✓ / `NBS` ✗), else none. `name_initials` / `acronym_matches_name` added to `text_utils`.
-- **Search Term 2 rewrite** — chain is `ADMIN` (admin desk via `is_admin_unit`) → subdomain acronym (only when genuinely an acronym) → **Name 2 phrase filled to 32 chars** → department-domain host → `None`. This **inverts** the old precedence (Name 2 text now beats the department-domain host, which had produced `scrippscollege`/`leuphana`/`uwm`). Guards: a UC 11 **DBA** trade name and an **institution in the Name 2 slot** (probable field swap → `flag_for_review`) are not used for a handle.
+- **Search Term 2 rewrite** — chain is `ADMIN` (admin desk via `is_admin_unit`) → subdomain acronym (only when genuinely an acronym) → **Name 2 phrase filled to 32 chars** → department-domain host → `None`. This **inverts** the old precedence (Name 2 text now beats the department-domain host, which had produced `scrippscollege`/`leuphana`/`uwm`). Guards: a UC 11 **DBA** trade name and an **institution in the Name 2 slot** (probable field swap) are not used for a handle.
 - **Terminal normalisation** — both search terms are trimmed, internal-whitespace-collapsed, uppercased, and truncated to **32 chars** on a word boundary (SAP SORT1/SORT2 width).
 - **Website Path B guards (§7)** — a *distinctive* (non-generic) Name-1 token must appear in the **host** (or, for research institutions, the acronym — `fit.edu` ↔ "Florida Institute of Technology"); both branches now rank 0/1/2 and **reject rank 0** (title-only matches like `scup.org` for "Bayfront Research"); an authoritative TLD grants `high` **only** with a clean host match. Tests `test_website_resolver.py::TestPathBGuards`.
 - **Website Path B retrieval (§8)** — `num_results` 5 → 10, plus one **unquoted retry** when the exact-phrase query finds nothing (recovers `Atlantic Testing Labs` → `atlantictesting.com`, `Fine Organics Limited` → `fineorganics.com`). Logged in `WEBSITE_TRACE`. Tests `TestPathBRetry`.
@@ -2469,7 +2525,7 @@ Full detail in [Website, Domain, Department-Domain & Search-Term Resolution](#we
 ### Name / address routing, person affiliation & scoring column contract
 
 - **Person in Name 1 → Contact + affiliation lookup** — UC 7 now moves more person formats out of Name 1 to `contact`: ALL-CAPS names (case-insensitive, title-cased, `Mc`/hyphen preserved), title + credentials (`Dr. Jane Smith, PhD`), `Last, First` (reordered to `John Smith`), and `Name, credentials` / `Name MD` (surfaced to the LLM classifier via a normalised candidate). When the person was the whole of Name 1, Stage 2b (`enrichment/person_affiliation.py`) discovers the institution + department from the web and **confirms it against ROR in the record's country** before writing anything — Name 1/id/domain come from ROR, the department from a Tier 2A lookup on the confirmed domain, everything flagged `verify`. A wrong-country or unconfirmed proposal is rejected (Name 1 stays empty, flagged for manual lookup), and Tier 3 is always short-circuited so it can never fabricate or overwrite. See [Stage 2b](#stage-2b-person-affiliation-lookup). Tests `test_person_in_name1.py`, `test_person_affiliation.py`, `test_person_affiliation_guard.py`, `test_person_in_name1_flag.py`.
-- **Organisation/department content in a street field → Name block** — a pipe-delimited org hierarchy (`Dept | Div | … | U.S. FDA | 5100 Paint Branch Pkwy`) or a comma-delimited mix of org + address (incl. **German streets** like `Scharnhorststraße 1`) is split: org/department segments go to the Name fields, the address stays in the street. The **institution** always takes Name 1; sub-units fill Name 2+; a bare location fragment ("Queens Campus") goes to the next street slot. Guarded so a plain address is never split. Overflow raises `name-slots-full` / `street-slots-full` → `flag_for_review` (never a silent drop). "Accounts Payable" in a street field routes to Name 2. Tests `test_street_org_split.py`.
+- **Organisation/department content in a street field → Name block** — a pipe-delimited org hierarchy (`Dept | Div | … | U.S. FDA | 5100 Paint Branch Pkwy`) or a comma-delimited mix of org + address (incl. **German streets** like `Scharnhorststraße 1`) is split: org/department segments go to the Name fields, the address stays in the street. The **institution** always takes Name 1; sub-units fill Name 2+; a bare location fragment ("Queens Campus") goes to the next street slot. Guarded so a plain address is never split. Overflow raises `name-slots-full` / `street-slots-full` → the `overflow` flag code (never a silent drop). "Accounts Payable" in a street field routes to Name 2. Tests `test_street_org_split.py`.
 - **Street reduced to one line — full scope table** (items 3 & 4) — the late `process_address` stage now reduces a mixed street to a single main street line, routing every other segment to its own field: **Building** (named buildings too — `Aster House`, `Polaris House`, `The Sherard Bldg`, `Emerging Technologies Building`; a *second* building → next free street slot), **Floor** (bare ordinal `7th`), **Room** (`A104`, `Lab 576`), **Mail Stop** (`Campus Box 7212`), **Mail Code** (`3120 TAMU`), **Care Of** (per-segment, incl. the misspelled `Atnn:`), campus/science-park → next street slot, and city/region/postcode already in their own fields → dropped. The pipe splitter is no longer inverted: each pipe segment is classified individually, only org/dept routes to a Name (acronym-deduped), and the source street is cleaned (`|` dropped). A functional desk (`Finance/Procurement`) routes to a Name. Preprocessing owns the street values end-to-end (`_pp_streets`), so a slot it empties never reappears from the raw original. Tests `test_street_scope_table.py`, `test_street_scope_routing.py`, `test_pipe_splitter_inversion.py`, `test_person_org_in_street.py`.
 - **Name 1 acronym/full-form dedupe** — when Name 1 carries both an acronym and its expansion (`MIT Massachusetts Institute of Technology`, `… (MIT)`, `MIT (…)`, and dash forms like `MRC - Medical Research Council`), only the verified full form is kept; unrelated tokens (`UC Berkeley`, `3M Company`, `AT&T`) are untouched. University acronyms (`UCSF`, `UCLA`, `SUNY`, …) keep their casing. Tests `test_acronym_dedupe.py`, `test_smart_title_case.py`.
 - **Address sub-location fixes** ([address_processing.py](enrichment/address_processing.py)) — value-before-marker floors (`7th Floor`, `22nd Floor`) now populate `floor`; `Room number: F107` / `Room No. 3` now populate `room` (filler words skipped); a `c/o` / `Attn` capture stops at the start of a street address so `Att. Bayard Huck 200 Clarendon Street 22nd Floor` splits into contact + street + floor. Tests `test_address_cleanup.py`.

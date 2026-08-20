@@ -394,7 +394,21 @@ class EnrichmentResult(BaseModel):
     terms_of_payment: Optional[str] = None
 
     # ── Review metadata (enrichment output) ──────────────────────────
+    # The three flag fields are always consistent, and are rebuilt together
+    # once per record from its final state — see enrichment/flags.py.
+    # `flag_for_review` is true if and only if `flag_codes` is non-empty.
     flag_for_review: bool = False
+    # Machine-readable triage codes from enrichment.flags.ALL_CODES. A record
+    # can carry several; the single concatenated `flag_reason` string it
+    # replaced did not scale past one condition.
+    flag_codes: List[str] = Field(default_factory=list)
+    # The output fields this record's flags concern (name1, name2, name3,
+    # domain, contact, email, address). A record with a verified ROR ID and an
+    # uncertain department lists `name2` alone, which is what tells a reviewer
+    # a one-field check from a full record review.
+    flagged_fields: List[str] = Field(default_factory=list)
+    # Human-readable prose rendering of `flag_codes`, field scope included so
+    # the scope survives for a consumer that reads only this column.
     flag_reason: Optional[str] = None
     error: Optional[str] = None
     record_type: Literal["research_institution", "company", "unknown"] = "unknown"

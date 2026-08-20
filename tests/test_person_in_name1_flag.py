@@ -62,5 +62,6 @@ class TestPersonInName1FlagOnly:
         assert r.contact_enriched == "Dr. Jane Smith"
         assert r.name1_enriched is None       # not fabricated by Tier 3
         assert r.name2_enriched is None
-        assert r.flag_for_review is True
-        assert "manual lookup" in (r.flag_reason or "")
+        assert r.flag_codes == ["person-unresolved"]
+        assert r.flagged_fields == ["name1"]
+        assert "identify the organisation manually" in (r.flag_reason or "")

@@ -86,7 +86,11 @@ class TestLabResolverOrchestrator:
         assert result.record_type == "research_institution"
         assert result.name2_enriched == "Department of Chemistry"
         assert result.name3_enriched == "Smith Research Program"
-        assert result.flag_for_review is True
+        # The parent department was inferred from the lab's page, not read
+        # from a stated department — and the doubt is about the department
+        # slots, not the institution.
+        assert result.flag_codes == ["dept-via-lab"]
+        assert result.flagged_fields == ["name2", "name3"]
         assert 13 in result.use_cases_triggered
 
     @pytest.mark.asyncio

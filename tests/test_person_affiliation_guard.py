@@ -119,8 +119,10 @@ class TestAffiliationConfirmed:
         assert r.name1_enriched == "Massachusetts Institute of Technology"
         assert r.domain == "mit.edu"
         assert r.name2_enriched == "Department of Chemistry"
-        assert r.flag_for_review is True
-        assert "verify" in (r.flag_reason or "").lower()
+        # A verified Tier 1 match: ROR's name, id and domain, through ROR's
+        # own country and distinctive-token guards. Nothing to review.
+        assert r.flag_for_review is False
+        assert r.flag_codes == []
 
 
 class TestAffiliationWrongCountry:
@@ -147,8 +149,8 @@ class TestAffiliationWrongCountry:
         assert r.contact_enriched == "Dr. Madhurima Chaudhuri"
         assert r.name1_enriched is None       # not accepted, not fabricated
         assert r.name2_enriched is None
-        assert r.flag_for_review is True
-        assert "not confirmed" in (r.flag_reason or "").lower()
+        assert r.flag_codes == ["person-unresolved"]
+        assert r.flagged_fields == ["name1"]
 
 
 class TestAffiliationNotFound:
@@ -164,5 +166,5 @@ class TestAffiliationNotFound:
 
         assert r.contact_enriched == "Dr. Nobody Atall"
         assert r.name1_enriched is None
-        assert r.flag_for_review is True
-        assert "manual lookup" in (r.flag_reason or "").lower()
+        assert r.flag_codes == ["person-unresolved"]
+        assert r.flagged_fields == ["name1"]
