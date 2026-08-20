@@ -150,6 +150,69 @@ class TestNameScoring:
         }
         assert _score_org("ASL Analytical, Inc.", asl_org) == 1.0
 
+    def test_unshared_distinctive_token_capped(self) -> None:
+        """'Coastal Analytical Services' must not match 'Analytical Services'.
+
+        The non-acronym twin of the EMSL/ASL case. ANSER trades as
+        "Analytical Services" (ror.org/04g2rbh88, Falls Church VA) and shares
+        'analytical' + 'services' with a Charleston SC lab, token-sorting to
+        ~0.83. The identifier guard cannot help — "Coastal" is neither short
+        nor capitalised — so the distinctive-token guard must require EVERY
+        distinctive query token to be covered, not merely one of them.
+
+        Reachable since Fix 4 added Svcs → Services to the global map: before
+        that the unexpanded "Svcs" held the fuzz below threshold by accident.
+        """
+        from enrichment.tier1_ror import _score_org
+
+        anser_org = {
+            "names": [
+                {"value": "Analytical Services", "types": ["ror_display", "label"]},
+                {"value": "ANSER", "types": ["acronym"]},
+            ],
+        }
+        score = _score_org("Coastal Analytical Services", anser_org)
+        assert score < 0.8, f"Coastal→ANSER should be capped, got {score}"
+
+    @pytest.mark.parametrize("query,canonical", [
+        # Typos in the SAP input. The guard must not undo what fuzzy matching
+        # is for — these are covered tokens, spelled badly.
+        ("Massachusetts Insitute of Technology",
+         "Massachusetts Institute of Technology"),
+        ("Leuphana University of Lüneborg", "Leuphana University of Lüneburg"),
+        # Abbreviation → full form is a prefix relation, also covered.
+        ("Colorado State Univ", "Colorado State University"),
+    ])
+    def test_guard_tolerates_typos_and_prefixes(self, query, canonical) -> None:
+        """Coverage is `_fuzzy_token_covers`, not set membership."""
+        from enrichment.tier1_ror import _score_org
+
+        org = {"names": [{"value": canonical, "types": ["ror_display", "label"]}]}
+        assert _score_org(query, org) >= 0.8
+
+    def test_unrelated_leading_token_still_capped(self) -> None:
+        """The fuzzy coverage must not re-open the door: a genuinely different
+        organisation is still capped. "Belharra Therapeutics" was matching
+        "Carrick Therapeutics" (ror.org/021n8pt68) on the shared trade word."""
+        from enrichment.tier1_ror import _score_org
+
+        org = {"names": [{"value": "Carrick Therapeutics",
+                          "types": ["ror_display", "label"]}]}
+        assert _score_org("Belharra Therapeutics, Inc.", org) < 0.8
+
+    def test_covered_distinctive_tokens_still_score_high(self) -> None:
+        """The guard caps only what the candidate fails to cover — a candidate
+        carrying every distinctive query token is unaffected."""
+        from enrichment.tier1_ror import _score_org
+
+        org = {
+            "names": [
+                {"value": "Coastal Analytical Services",
+                 "types": ["ror_display", "label"]},
+            ],
+        }
+        assert _score_org("Coastal Analytical Services", org) == 1.0
+
     def test_initialism_matches_expansion(self) -> None:
         """An org referenced by its initials matches its expanded canonical name.
 

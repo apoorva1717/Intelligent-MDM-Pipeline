@@ -364,8 +364,10 @@ The scoring system (`_compute_name_score()`) is carefully designed to prevent fa
 3. **Substring match** -> score 1.0 (query is >90% the length of a canonical name and is contained within it)
 4. **Fuzzy token sort ratio** (0.0 to 1.0):
    - Only compared against canonical names (not short aliases, which cause false positives)
-   - **Distinctive-token guard:** When the query contains generic domain words (regional, health, medical, center, national, general, community, memorial), the scorer requires at least one **distinctive token** (5+ characters) to be shared between query and match
+   - **Distinctive-token guard:** the scorer requires **every distinctive token** of the query (5+ characters, not a generic domain word such as regional/health/medical/center/research/services, not a city/state token) to appear in the matched variant. Any that is missing caps the fuzzy score at 0.7, below the 0.8 match threshold.
    - Example: "Newman Regional Health" has distinctive token "newman". "Lakeland Regional Health" does not contain "newman", so the fuzzy score is capped at 0.7 even if the generic words produce a high fuzzy ratio.
+   - Sharing *one* distinctive token is not enough. "Coastal Analytical Services" and "Analytical Services" (ANSER, `ror.org/04g2rbh88`, Falls Church VA) share `analytical` and token-sort to ~0.83, yet the query's leading `Coastal` — the token that says *which* organisation — appears nowhere in the candidate. Likewise "Belharra Therapeutics" was matching "Carrick Therapeutics" (`ror.org/021n8pt68`) on the shared trade word. This is the non-acronym twin of the identifier-token guard below; "EMSL"/"ASL" are caught there because they are short and capitalised, "Coastal" and "Belharra" are not.
+   - "Covered" is `_fuzzy_token_covers`, **not** exact set membership, so the guard does not undo what fuzzy matching is for. A prefix (`univ` ↔ `university`) and a typo (`insitute` ↔ `institute`, `Lüneborg` ↔ `Lüneburg`) still count as covered; only a token with no counterpart at all caps the score. This matters more since the [name write became unconditional](#registry-names-are-authoritative): a false-positive match now overwrites Name 1 rather than merely adding an id, so the match guard is the only thing standing between a wrong candidate and a wrong output name.
    - This prevents the common false-positive pattern where organizations with similar generic names (many hospitals, regional health systems, community colleges) match each other.
 5. **Legal-form normalization:** before scoring, `_normalise_for_tokens()` strips `.`/`,` and canonicalizes legal-entity suffixes (Incorporated→inc, Corporation→corp, Company→co, Limited→ltd, "L.L.C."→llc, "Limited Liability Company"→llc, …) **symmetrically** on the query and every ROR name variant. So "Acme Corp.", "Acme Corp" and "Acme Corporation" all compare equal, and two SAP rows that differ only by legal form don't diverge (one matching ROR, the other missing).
 6. **Identifier-token (acronym) guard:** short all-caps acronyms in the query (e.g. "HFT", "EMSL", "ASL") must appear in the candidate before the exact/subset/substring shortcuts can score 1.0. Without it, "HFT Stuttgart" would subset-match *any* "… Stuttgart" org on the shared city token alone (Marienhospital Stuttgart, Stuttgart Observatory) and produce a confidently wrong match.
@@ -374,9 +376,31 @@ The scoring system (`_compute_name_score()`) is carefully designed to prevent fa
 
 Some institutions are referenced by an acronym that ROR does **not** carry as an alias — e.g. "HFT Stuttgart" (ROR has no "HFT" alias, so the bare query returns unrelated same-city orgs). A small ROR-local map (`_INSTITUTION_ACRONYMS`, e.g. `HFT → Hochschule für Technik`) drives an **additive** affiliation retry: when the raw name misses, the affiliation endpoint is tried once more with the acronym expanded ("HFT Stuttgart" → "Hochschule für Technik Stuttgart"). It is kept out of the global `expand_abbreviations` map so it never affects search terms or output names, and names that already resolve never reach it. Extend the map as new institution acronyms come up.
 
+Keys may be **multi-token** (`GA Tech → Georgia Institute of Technology`); the match regex is built from the map's own keys, longest first, so only known acronyms can fire. `GA Tech` is deliberately owned here rather than by the [bounded two-letter pattern](#us-state-abbreviation-expansion-ror-local) below: that pattern would produce "Georgia Tech", which ROR resolves to **Georgia Tech Foundation** (`ror.org/00adhzq59`) — a different legal entity from the university (`ror.org/01zkghx44`). Mapping the whole phrase to the full official name resolves the institute directly. `VA Tech` needs no entry: `Virginia Tech` *is* ROR's display name for `ror.org/02smfhw86`, so the bounded pattern resolves it correctly on its own.
+
+Whatever the map expands is **never** what ships. The expansion exists to find the ROR record; once found, [the registry's official name is what is written](#registry-names-are-authoritative) — "HFT Stuttgart" outputs ROR's official name, not "Hochschule für Technik Stuttgart" assembled locally.
+
 #### US State-Abbreviation Expansion (ROR-local)
 
-A US state-name abbreviation in the query is expanded before the ROR lookup (`_expand_state_abbrevs`, `_US_STATE_ABBREVS`): `Fla State Univ` → `Florida State Univ`, `Wash State Univ` → `Washington State Univ`, `Penn State Univ` → `Pennsylvania State Univ`. Without this, the distinctive geographic token is lost and the query `… State University` matches **any** "_ State University" — e.g. `Fla State Univ` was resolving to **Kent State University** (whose only shared tokens are the generic `State`/`University`). Like the acronym map, this is applied **only** when building the ROR affiliation string / query / local rescore — never in the global `expand_abbreviations`, so output names and search terms are untouched. Two-letter postal codes (`FL`, `IN`, `OR`) are intentionally excluded (too collision-prone).
+A US state-name abbreviation in the query is expanded before the ROR lookup (`_expand_state_abbrevs`, `_US_STATE_ABBREVS`): `Fla State Univ` → `Florida State Univ`, `Wash State Univ` → `Washington State Univ`, `Penn State Univ` → `Pennsylvania State Univ`. Without this, the distinctive geographic token is lost and the query `… State University` matches **any** "_ State University" — e.g. `Fla State Univ` was resolving to **Kent State University** (whose only shared tokens are the generic `State`/`University`). Like the acronym map, this is applied **only** when building the ROR affiliation string / query / local rescore — never in the global `expand_abbreviations`, so output names and search terms are untouched.
+
+**Two-letter postal codes: bounded, not general.** Bare `FL`, `IN`, `OR`, `ME` remain excluded from `_US_STATE_ABBREVS`, and that general exclusion still stands — on their own these are ordinary English words, and expanding them wholesale turns "IN Laboratories" into "Indiana Laboratories" and "OR Diagnostics" into "Oregon Diagnostics". What was added instead is a **closed context**: a two-letter code in `_US_POSTAL_CODES` is expanded only when the tokens *immediately* following it are one of
+
+| Context | Example |
+|---|---|
+| `State Univ` | `FL State Univ` → `Florida State Univ` |
+| `State University` | `IN State University` → `Indiana State University` |
+| `Tech` | `TX Tech` → `Texas Tech`, `VA Tech` → `Virginia Tech` |
+| `Institute of Technology` | `NJ Institute of Technology` → `New Jersey Institute of Technology` |
+
+Inside that context the collision the exclusion guards against does not arise: "IN State Univ" and "OR State Univ" are unambiguous in a way that bare "IN" and "OR" are not. Outside it nothing fires — `IN Laboratories`, `OR Diagnostics`, `State Univ of IN` and a bare `OR` all pass through untouched.
+
+Two carve-outs inside the context:
+
+- **Word-like codes** (`HI`, `IN`, `OR`, `OK`, `ME`, `LA`, `DE`) are allowed before `State Univ…` — "Hi State University" names nothing — but held back from the bare `Tech` contexts, where "Hi Tech" and "In Tech" are real company names.
+- A phrase owned by [`_INSTITUTION_ACRONYMS`](#institution-acronym-expansion) is left to that map's retry, which expands it to an exact official name. This is why `GA Tech` does *not* become "Georgia Tech" here.
+
+This stays ROR-local exactly as the rest of the map does: affiliation string, query and local rescore only, never an output name and never a search term.
 
 #### Child Matching
 
@@ -645,19 +669,54 @@ After all tiers have run, the finalization step applies a set of deterministic r
 
 1. **Empty string guard:** Enriched fields must be either `None` or a non-empty string. Empty strings (`""`) are converted to `None`.
 
-2. **Unit canonicalization:** Academic unit names are normalized to standard forms:
+2. **Abbreviation expansion on output names:** Name 1 through Name 4 are run through the **global** `expand_abbreviations()` map, so no output name ships a bare `Univ`, `Dept`, `Grp`, `Svcs` or `Inst`:
+   - "FL State Univ" -> "FL State University"
+   - "Cardinal Research GRP" -> "Cardinal Research Group"
+   - "Coastal Analytical Svcs" -> "Coastal Analytical Services"
+   - **Exception — a name written from a registry is skipped.** See [Registry names are authoritative](#registry-names-are-authoritative) below.
+   - Only the global map is used here. The ROR-local [`_INSTITUTION_ACRONYMS`](#institution-acronym-expansion) / [`_US_STATE_ABBREVS`](#us-state-abbreviation-expansion-ror-local) maps exist to improve ROR *resolution* and never touch an output name or a search term.
+
+3. **Unit canonicalization:** Academic unit names are normalized to standard forms:
    - "Dept of Chemistry" -> "Department of Chemistry"
    - "Chem Division" -> "Division of Chemistry"
    - Exception: Granular units (labs, groups, facilities) are NOT canonicalized
 
-3. **Passthrough logic:** If no tier enriched a field AND preprocessing didn't clear it, the original value is retained. The pipeline never blanks out a field that it couldn't improve.
+4. **Passthrough logic:** If no tier enriched a field AND preprocessing didn't clear it, the original value is retained. The pipeline never blanks out a field that it couldn't improve.
 
-4. **Changed flags:** `name1_changed`, `name2_changed`, etc. are set to `True` only when `enriched != original AND enriched is not None`. This allows consumers to know exactly which fields were modified.
+5. **Changed flags:** `name1_changed`, `name2_changed`, etc. are set to `True` only when `enriched != original AND enriched is not None`. This allows consumers to know exactly which fields were modified. A registry name write goes through this same rule — it is recorded by the flag, never gated by it.
 
-5. **Deduplication rules:**
+6. **Deduplication rules:**
    - **Rule 1:** If Name2 was blank in input AND no tier populated it AND no contact was available, set `name2_enriched = None` (don't fabricate)
    - **Rule 2:** If preprocessing stripped Name2 (e.g., it was an email address), don't let Tier 3 fabricate a replacement
    - **Rule 3:** If `name2_enriched == name1_enriched`, drop Name2 (no echo of the parent org name)
+
+#### Registry names are authoritative
+
+**A verified registry match writes the registry's official name. There is no second threshold.**
+
+If a match was good enough to attach `ror_id` / `lei_id`, it is good enough to attach the name. Holding a verified registry identifier while displaying the abbreviated SAP input is never correct — a record carrying `ror.org/03zzw1w08` must read "Mayo Clinic in Florida", not "Mayo Clinic FLA".
+
+The verification is the tier's own match guard, and nothing else:
+
+| Registry | Guard that verifies the match |
+|---|---|
+| ROR | [country guard](#country-guard) + [distinctive-token / identifier-token guards](#name-scoring-logic) |
+| GLEIF | `token_sort_ratio` name-verification guard |
+
+Every path that takes a name from a registry writes it through `_write_registry_name()` and marks the field registry-owned for the rest of `finalise`:
+
+| Path | Writes |
+|---|---|
+| Tier 1 ROR direct match | `name1_enriched` |
+| Tier 1 ROR [child matching](#child-matching) | `name2`/`name3`/`name4_enriched` |
+| Tier 1 GLEIF match | `name1_enriched` (legal name) |
+| [Tier 1 re-lookup](#stage-5-tier-1-re-lookup-after-canonicalisation) hit, ROR or GLEIF | `name1_enriched` |
+
+**A registry-owned name is never abbreviation-expanded.** ROR and GLEIF are the authority on their own spelling; re-processing a verified official name could only corrupt it. If ROR's display name for an organisation is "Inst Pasteur", that is what ships. (UC 5 unit canonicalisation on Name 2–4 is a separate, older rule and is unchanged — it still rewrites a "`<Unit>` of X" construction whatever its source.)
+
+> **Why there is no identity gate here.** The ROR write used to run through `canonical_preserves_identity()`, which keeps the input whenever the registry's name appears to drop a distinctive token. That guard is right for the **LLM** canonicalisation paths (`company_canonical`, the Tier 3 suggestion path) — an LLM can substitute a different company outright — but a registry match is *verified*, not suggested. Against a registry name the guard mostly fired on abbreviations: "Mayo Clinic FLA" vs "Mayo Clinic in Florida" reads as a dropped `fla`, so it suppressed exactly the writes that mattered. It remains in force on the LLM paths and is gone from the ROR path.
+>
+> **Parent substitution is not a risk on this path.** The name1 match is scored directly against Name 1, and the local rescore requires every distinctive/identifier token of Name 1 to be covered before a candidate can reach the threshold — so a parent that drops the child's distinguishing tokens cannot match in the first place. Local child matching writes Name 2–4 only, never Name 1.
 
 ---
 
@@ -678,12 +737,14 @@ Tier 1 runs before the pipeline knows the organisation's real name, so it is que
 | **Once per record** | Guarded by `tier1_retry_attempted`, set *before* the call. A retry can never trigger another retry. |
 | **No guard is relaxed** | Runs the full normal path — ROR's country guard and distinctive-token guard, GLEIF's name verification. A retry that fails a guard is simply a miss. |
 | **Branch rules unchanged** | ROR first; GLEIF only on the company branch, i.e. only when `looks_like_research_institution(canonical)` is false — a research name is never sent to a company registry. |
-| **On a hit** | Writes `ror_id`/`lei_id`, `tier_used = 1`, `source` (`ROR`/`gleif`), and the marker `tier1_retry_hit` (`"ROR"`/`"gleif"`) that separates a retry hit from a first-pass Tier 1 hit. Registry provenance then satisfies [ownership condition 1](#2b--ownership-guard-domain_ownership_guard_enabled-default-on), so a record that lost its domain to the guard regains a verified one. |
+| **On a hit** | Writes the registry's **official name** to `name1_enriched`, plus `ror_id`/`lei_id`, `tier_used = 1`, `source` (`ROR`/`gleif`), and the marker `tier1_retry_hit` (`"ROR"`/`"gleif"`) that separates a retry hit from a first-pass Tier 1 hit. Registry provenance then satisfies [ownership condition 1](#2b--ownership-guard-domain_ownership_guard_enabled-default-on), so a record that lost its domain to the guard regains a verified one. The name write is the same unconditional rule as the first pass — the retry runs the identical guards, so a hit here is equally verified. See [Registry names are authoritative](#registry-names-are-authoritative). |
 | **On a miss** | Nothing is written. The record keeps whatever the earlier tier produced. |
 | **Cost** | The retry consults the Tier 1 caches, so a canonical name already resolved for another row in the batch costs no API call. |
 | **`record_type`** | Not written here. The retry records ROR's verdict as evidence and [`classifier`](#record-classification-logic) ranks it first in `finalise`. Where the verdict contradicts the branch the record was routed down, that is logged as `tier1_retry_type_conflict` and counted as `routing_type_mismatch`. |
 
-> ⚠️ **The retry can only fire if a tier actually *writes* a changed `name1_enriched`.** `company_canonical.canonical_preserves_identity` rejects a suggestion that changes a distinctive token — including a corrected typo (`MASSACHUSETTS INSITUTE OF TECHNOLOGY` → `Massachusetts Institute of Technology`) and an expanded abbreviation (`GA Tech` → `Georgia Institute of Technology`, `FL State Univ` → `Florida State University`). For those records the pipeline still discards the right answer, one gate earlier than this fix reaches. Variants the guard accepts (`Universität Stuttgart` → `University of Stuttgart`, `Lockheed Martin Corp` → `Lockheed Martin Corporation`) do reach the retry and converge.
+> ⚠️ **The retry can only fire if a tier actually *writes* a changed `name1_enriched`.** `company_canonical.canonical_preserves_identity` rejects a suggestion that changes a distinctive token — including a corrected typo (`MASSACHUSETTS INSITUTE OF TECHNOLOGY` → `Massachusetts Institute of Technology`). For those records the pipeline still discards the right answer, one gate earlier than this fix reaches. Variants the guard accepts (`Universität Stuttgart` → `University of Stuttgart`, `Lockheed Martin Corp` → `Lockheed Martin Corporation`) do reach the retry and converge.
+>
+> `GA Tech` and `FL State Univ` used to sit in that trap. They no longer reach the retry at all: the [bounded two-letter pattern](#us-state-abbreviation-expansion-ror-local) and the [acronym map](#institution-acronym-expansion) resolve them on the **first** Tier 1 call, which is the cheaper fix and the reason `tier1_retry_attempts` should fall.
 
 **Telemetry.** `tier1_retry_attempts`, `tier1_retry_hits_ror`, `tier1_retry_hits_lei` on the batch summary, alongside `cache_hits_after_normalisation`.
 
@@ -1720,7 +1781,7 @@ HTTP page fetcher with BeautifulSoup parsing. Extracts structured elements: URL 
 ### `utils/text_utils.py` — Text Utilities
 
 - `country_to_iso_code()`: Maps country names/codes to ISO alpha-2 (60+ countries)
-- `expand_abbreviations()`: "Dept" -> "Department", "Univ" -> "University", etc.
+- `expand_abbreviations()`: "Dept" -> "Department", "Univ" -> "University", "Grp" -> "Group", "Svcs" -> "Services", etc. This is the **global** map — the one map that reaches output name fields (see [Finalization](#finalization)). The ROR-local acronym / state maps in `tier1_ror.py` are deliberately separate and never merged into it
 - `canonicalise_unit_name()`: Normalizes to "Department/Division/School/Faculty of X" form
 - `is_granular_unit()`: Detects lab/group/centre/facility units for scope filtering
 - `looks_like_research_institution()`: Keyword-based fallback classification
@@ -1729,7 +1790,7 @@ HTTP page fetcher with BeautifulSoup parsing. Extracts structured elements: URL 
 - `name_initials()` / `acronym_matches_name()`: initials of a name; whether an acronym matches them (ROR acronym currency check + subdomain-acronym search term)
 - `seg_matches_needle()`: host/subdomain-vs-token match (substring or shared ≥3-char leading prefix) — shared by the department probe and the search-term rules
 - `is_admin_unit()`: detects administrative / back-office desks (accounts payable, finance, billing, procurement, treasury, …) — drives `search_term_2 = "ADMIN"` and department-probe suppression
-- `clean_passthrough_org_name()`: title-cases ALL-CAPS + expands abbreviations for names that pass through un-canonicalised (and for a ROR name kept over a divergent official form)
+- `clean_passthrough_org_name()`: title-cases ALL-CAPS + expands abbreviations for names that pass through un-canonicalised. It is no longer the only route by which `expand_abbreviations` reaches an output name — [Finalization](#finalization) expands Name 1–4 on every non-registry path
 - `smart_title_case()`: ALL-CAPS → title case while preserving acronyms (`MRI`, `NIST`, `UCSF`), `Mc` surnames, and hyphen segments
 
 ### `utils/domain_resolver.py` — Domain Write Path & Ownership Guard
@@ -2084,7 +2145,7 @@ For each record (async, concurrency-limited via Semaphore):
   │    ├─ If no confident hit → fallback: ?query={name1} + country filter
   │    ├─ Score matches with distinctive-token guard
   │    ├─ If MATCH:
-  │    │   ├─ Write official ROR name to name1_enriched
+  │    │   ├─ Write official ROR name to name1_enriched (unconditional — no gate above the match threshold)
   │    │   ├─ Classify from ROR org types → research_institution | company
   │    │   ├─ If company → Tier 1 GLEIF/LEI lookup (overwrites name1, sets lei_id)
   │    │   ├─ Try child matching for Name2/Name3 (local, no 2nd API call)
@@ -2207,7 +2268,7 @@ Full detail in [Website, Domain, Department-Domain & Search-Term Resolution](#we
 - **`DEPT_PROBE_CROSS_DOMAIN` default → `false`** (§6) — matches the documented intent; the unrestricted cross-domain stage-3 SERP is now opt-in.
 - **`WEBSITE_TRACE` diagnostic flag** — off by default; when on, emits a read-only per-candidate JSON trace of Path B/C resolution on `enrichment.trace.website`. Driver: `scripts/trace_website.py`. Tests `TestWebsiteTraceFlag`.
 - **Dead code removed** — `search_terms.derive_department_domain` (superseded by `_probe_department_url`) and its test.
-- **Name 1 standardised when a ROR name is kept** — when Tier 1 matches but the identity guard keeps *your* Name 1 over ROR's divergent official form (ROR's German `Hochschule für Technik Stuttgart` vs input `Stuttgart Univ of Applied Sciences`), the kept name now runs through `clean_passthrough_org_name` (`Univ` → `University`, ALL-CAPS → title case). Tests `test_ror_name_verbatim.py`.
+- **A verified registry match writes the official name** — Tier 1 used to run ROR's official name through an identity guard and keep *your* Name 1 whenever the registry's form looked like it dropped a distinctive token. Against a registry name that mostly fired on abbreviations, so a record could hold `ror.org/03zzw1w08` and still read "Mayo Clinic FLA". The write is now unconditional on a verified match, on the first pass, on child matches, on GLEIF and on the [Tier 1 re-lookup](#stage-5-tier-1-re-lookup-after-canonicalisation) (which previously wrote no name at all). A registry name is never abbreviation-expanded afterwards; every other output name is. Tests `test_registry_name_authority.py`, `test_ror_name_verbatim.py`. See [Registry names are authoritative](#registry-names-are-authoritative).
 
 ### Name / address routing, person affiliation & scoring column contract
 
@@ -2216,7 +2277,7 @@ Full detail in [Website, Domain, Department-Domain & Search-Term Resolution](#we
 - **Street reduced to one line — full scope table** (items 3 & 4) — the late `process_address` stage now reduces a mixed street to a single main street line, routing every other segment to its own field: **Building** (named buildings too — `Aster House`, `Polaris House`, `The Sherard Bldg`, `Emerging Technologies Building`; a *second* building → next free street slot), **Floor** (bare ordinal `7th`), **Room** (`A104`, `Lab 576`), **Mail Stop** (`Campus Box 7212`), **Mail Code** (`3120 TAMU`), **Care Of** (per-segment, incl. the misspelled `Atnn:`), campus/science-park → next street slot, and city/region/postcode already in their own fields → dropped. The pipe splitter is no longer inverted: each pipe segment is classified individually, only org/dept routes to a Name (acronym-deduped), and the source street is cleaned (`|` dropped). A functional desk (`Finance/Procurement`) routes to a Name. Preprocessing owns the street values end-to-end (`_pp_streets`), so a slot it empties never reappears from the raw original. Tests `test_street_scope_table.py`, `test_street_scope_routing.py`, `test_pipe_splitter_inversion.py`, `test_person_org_in_street.py`.
 - **Name 1 acronym/full-form dedupe** — when Name 1 carries both an acronym and its expansion (`MIT Massachusetts Institute of Technology`, `… (MIT)`, `MIT (…)`, and dash forms like `MRC - Medical Research Council`), only the verified full form is kept; unrelated tokens (`UC Berkeley`, `3M Company`, `AT&T`) are untouched. University acronyms (`UCSF`, `UCLA`, `SUNY`, …) keep their casing. Tests `test_acronym_dedupe.py`, `test_smart_title_case.py`.
 - **Address sub-location fixes** ([address_processing.py](enrichment/address_processing.py)) — value-before-marker floors (`7th Floor`, `22nd Floor`) now populate `floor`; `Room number: F107` / `Room No. 3` now populate `room` (filler words skipped); a `c/o` / `Attn` capture stops at the start of a street address so `Att. Bayard Huck 200 Clarendon Street 22nd Floor` splits into contact + street + floor. Tests `test_address_cleanup.py`.
-- **ROR US state-abbreviation expansion** — `Fla State Univ` was resolving to **Kent State University** (only the generic `State`/`University` tokens matched). A ROR-local `_US_STATE_ABBREVS` map now expands the state abbreviation for the ROR query only (`Fla` → `Florida`), so it resolves to Florida State. Kept out of the global `expand_abbreviations`. Test `test_ror_state_abbrev.py`. See [US State-Abbreviation Expansion](#us-state-abbreviation-expansion-ror-local).
+- **ROR US state-abbreviation expansion** — `Fla State Univ` was resolving to **Kent State University** (only the generic `State`/`University` tokens matched). A ROR-local `_US_STATE_ABBREVS` map now expands the state abbreviation for the ROR query only (`Fla` → `Florida`), so it resolves to Florida State. Kept out of the global `expand_abbreviations`. Extended with a **bounded** two-letter postal pattern (`FL State Univ`, `TX Tech`, `NJ Institute of Technology`) that fires only in four closed contexts — the general exclusion on bare `FL`/`IN`/`OR` still stands. Tests `test_ror_state_abbrev.py`, `test_registry_name_authority.py`. See [US State-Abbreviation Expansion](#us-state-abbreviation-expansion-ror-local).
 - **`/api/dedup/score` ↔ `/api/dedup/score/file` column contract** — the JSON and XLSX scoring endpoints are now functionally identical and use the **exact same input/output column names** (`Customer`, `Sales_Order_Last_Used`, `score_final`, the `score_*` point columns, `sf1`…`sf8`, the derived `*_Count` columns, …). The JSON `/score` endpoint gained an optional `weights` override (same all-or-nothing semantics as the file's `Weights` sheet) and the derived-count outputs; Salesforce ids are eight flat `sf1`…`sf8` columns instead of a list. snake_case keys still validate for backward compatibility. See [POST /api/dedup/score](#post-apidedupscore-and-apidedupscorefile).
 - **File logging** — logs now write to **both** the console and a rotating file (`LOG_FILE`, default `logs/enrichment_api.log`, ~10 MB × 5 backups), including uvicorn access/error lines. See [Configuration](#optional-with-defaults).
 - **Azure-only LLM backend** — the dead direct-OpenAI config (`OPENAI_API_KEY` / `OPENAI_MODEL=gpt-4o`) was removed; Azure OpenAI is the only backend in every environment (the `openai_client.py` docstring was corrected).

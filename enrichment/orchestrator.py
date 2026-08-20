@@ -384,6 +384,41 @@ def _init_result(record: EnrichmentRecord) -> dict[str, Any]:
     }
 
 
+def _write_registry_name(
+    result: dict[str, Any],
+    field: str,
+    value: str | None,
+    registry: str,
+) -> None:
+    """Write a registry's official name into an output name field and record
+    that the field is registry-owned.
+
+    A verified match — one that has already passed ROR's country and
+    distinctive-token guards, or GLEIF's ``token_sort_ratio`` guard — is
+    authoritative for the name as well as for the identifier. There is no
+    second threshold: if the match was good enough to attach ``ror_id`` /
+    ``lei_id``, it is good enough to attach the name. Holding a verified
+    registry identifier while displaying the abbreviated SAP input ("Mayo
+    Clinic FLA" against ror.org/03zzw1w08) is never correct.
+
+    ``_registry_name_fields`` is transient (dropped in :func:`finalise`) and
+    tells the abbreviation-expansion pass there to leave this value alone —
+    a registry name is the authority on its own spelling and must not be
+    re-processed.
+    """
+    if not (value and value.strip()):
+        return
+    result[f"{field}_enriched"] = value.strip()
+    result.setdefault("_registry_name_fields", set()).add(field)
+    logger.info({
+        "record_id": result.get("record_id"),
+        "step": "registry_name_write",
+        "field": field,
+        "registry": registry,
+        "value": value.strip(),
+    })
+
+
 def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     """Apply empty-string guards and compute changed flags.
 
@@ -434,6 +469,28 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
             result["name1_enriched"] = clean_passthrough_org_name(name1_val)
         else:
             result["name1_enriched"] = smart_title_case(name1_val) or name1_val
+
+    # Expand organisational abbreviations in the OUTPUT name fields. Before
+    # Fix 4 `expand_abbreviations` only ever reached an output name via
+    # `clean_passthrough_org_name` (name1, and only when source ==
+    # "passthrough") and via `canonicalise_unit_name` (name2-4, and only when
+    # the value is a "<Unit> of X" construction), so "FL State Univ" and
+    # "Cardinal Research GRP" shipped verbatim from every other path.
+    #
+    # This is the GLOBAL map only. The ROR-local `_INSTITUTION_ACRONYMS` /
+    # `_US_STATE_ABBREVS` maps stay where they are — they exist to improve ROR
+    # resolution and must never touch an output name or a search term.
+    #
+    # A name written from a registry is skipped: ROR and GLEIF are the
+    # authority on their own spelling, and re-processing a verified official
+    # name could only corrupt it.
+    registry_named = result.get("_registry_name_fields") or set()
+    for field in ("name1", "name2", "name3", "name4"):
+        if field in registry_named:
+            continue
+        val = result.get(f"{field}_enriched")
+        if val:
+            result[f"{field}_enriched"] = expand_abbreviations(val) or val
 
     # Guarantee the short legal form on the final output regardless of source
     # (input passthrough, ROR, GLEIF, or LLM): "… Aktiengesellschaft" → "… AG",
@@ -658,6 +715,7 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     result.pop("_source_h1", None)
     result.pop("_tier1_query_name", None)
     result.pop("_tier1_country_code", None)
+    result.pop("_registry_name_fields", None)
     # Registry-vs-record_type disagreement surfaced by a retry hit. Logged at
     # the point of conflict and deliberately left unreconciled — record_type
     # assignment is out of scope here.
@@ -1928,6 +1986,16 @@ class Orchestrator:
 
         if ror_res.get("matched"):
             self._tier1_retry_counts["hits_ror"] += 1
+            # The retry attaches the identifier, so it must attach the name
+            # too. Before Fix 4 this path wrote ror_id and the domain but left
+            # name1_enriched as whatever the earlier tier produced, which is
+            # the same defect as the suppressed first-pass write: a record
+            # holding a ror_id while displaying a name that is not that ROR
+            # record's official name. The retry runs through the identical
+            # guards as the first pass, so a hit here is equally verified.
+            _write_registry_name(
+                result, "name1", ror_res.get("official_name"), registry="ROR",
+            )
             result["ror_id"] = ror_res["ror_id"]
             result["tier_used"] = 1
             result["source"] = "ROR"
@@ -1998,6 +2066,9 @@ class Orchestrator:
             self._lei_counts["hits_fuzzy"] += 1
 
         self._tier1_retry_counts["hits_lei"] += 1
+        _write_registry_name(
+            result, "name1", lei_res.get("legal_name"), registry="GLEIF",
+        )
         result["lei_id"] = lei_res.get("lei_id")
         _record_gleif_evidence(result, lei_res)
         result["tier_used"] = 1
@@ -2153,9 +2224,11 @@ class Orchestrator:
         else:
             self._lei_counts["hits_fuzzy"] += 1
 
-        legal_name = (lei_res.get("legal_name") or "").strip()
-        if legal_name:
-            result["name1_enriched"] = legal_name
+        # The GLEIF token_sort_ratio guard has already verified this match,
+        # so the legal name is written unconditionally — same rule as ROR.
+        _write_registry_name(
+            result, "name1", lei_res.get("legal_name"), registry="GLEIF",
+        )
         result["lei_id"] = lei_res.get("lei_id")
         # An LEI proves legal registration, not commercial status — universities,
         # hospitals and foundations hold LEIs too. The classification evidence is
@@ -2460,51 +2533,39 @@ class Orchestrator:
                 if ror_parent["matched"]:
                     # Write name1 enrichment IMMEDIATELY so later tier
                     # failures don't lose it.
-                    official = ror_parent.get("official_name")
-                    if official and official.strip():
-                        # Identity guard: ROR's short canonical form can drop a
-                        # parent qualifier the input carried ("USDA Agricultural
-                        # Research Service" → "Agricultural Research Service").
-                        # Keep the user's fuller name when ROR's would lose a
-                        # distinctive token — but still use ROR's id/domain/
-                        # website below (it is the same entity).
-                        #
-                        # Item 2: compare against the ORIGINAL Name 1 (pp_name1),
-                        # NOT the address-stripped query form. strip_address_
-                        # fragments removes a campus city that equals the record's
-                        # City ("UNIVERSITY OF CALIFORNIA, DAVIS" + City "Davis"
-                        # → "University of California"), and that campus is part of
-                        # the org identity — ROR restoring it ("…, Davis") must
-                        # not read as an identity change. On a genuine drop fall
-                        # back to the original, never the stripped fragment.
-                        # Abbreviation-expanded forms are compared too, so an
-                        # abbreviated input adopts ROR's fuller official name
-                        # ("Uni Stuttgart" → "University of Stuttgart").
-                        off = official.strip()
-                        original_name1 = (pp_name1 or name1_cleaned or "").strip()
-                        candidates = {
-                            original_name1,
-                            expand_abbreviations(original_name1) or original_name1,
-                            name1_cleaned,
-                            expand_abbreviations(name1_cleaned) or name1_cleaned,
-                        }
-                        if any(canonical_preserves_identity(c, off) for c in candidates if c):
-                            result["name1_enriched"] = off
-                        else:
-                            # Keep the user's name over ROR's divergent official
-                            # form (e.g. ROR's German "Hochschule für Technik
-                            # Stuttgart" vs input "Stuttgart Univ of Applied
-                            # Sciences"), but still STANDARDISE it: expand
-                            # abbreviations ("Univ" → "University") and title-case
-                            # ALL-CAPS, exactly as a ROR-miss passthrough is
-                            # cleaned. Otherwise the kept name ships raw.
-                            kept = original_name1 or name1_cleaned
-                            result["name1_enriched"] = clean_passthrough_org_name(kept) or kept
-                            logger.info(
-                                "[%s] ROR name '%s' drops a distinctive token "
-                                "from '%s' — keeping the standardised input name",
-                                record.record_id, off, original_name1,
-                            )
+                    #
+                    # Unconditional on a verified match. The match already
+                    # passed ROR's country guard and the distinctive-token /
+                    # identifier-token guards in tier1_ror, and README's
+                    # pipeline walkthrough says plainly: "Write official ROR
+                    # name to name1_enriched". There is deliberately no second
+                    # threshold here.
+                    #
+                    # This replaces a `canonical_preserves_identity` gate that
+                    # compared the SAP input against ROR's official name and
+                    # kept the input whenever a distinctive token appeared to
+                    # be dropped. It suppressed exactly the writes that matter:
+                    # "Mayo Clinic FLA" vs "Mayo Clinic in Florida" reads as a
+                    # dropped "fla" token, so the record shipped a verified
+                    # ror.org/03zzw1w08 next to the abbreviated input form.
+                    # The guard is still the right tool for the LLM
+                    # canonicalisation paths (company_canonical, the Tier 3
+                    # suggestion path) — an LLM can substitute a different
+                    # company outright — but a registry match is verified, not
+                    # suggested.
+                    #
+                    # Parent substitution is not a risk on this path: the match
+                    # is scored directly against Name 1, and the local rescore
+                    # requires every distinctive/identifier token of Name 1 to
+                    # be covered before a candidate can reach the threshold, so
+                    # a parent that drops the child's distinguishing tokens
+                    # cannot match. Local child matching writes name2/3/4 only,
+                    # never name1.
+                    _write_registry_name(
+                        result, "name1",
+                        ror_parent.get("official_name"),
+                        registry="ROR",
+                    )
 
                     # Carry the ROR acronym (when present) for the
                     # search_term_1 derivation in finalise().
@@ -2588,9 +2649,13 @@ class Orchestrator:
                             "best_score": child_match.get("score") if child_match else 0,
                         })
                         if child_match:
-                            child_name = child_match["name"]
-                            if child_name and child_name.strip():
-                                result[f"{field_key}_enriched"] = child_name.strip()
+                            # A matched child name comes straight from the ROR
+                            # record, so it is registry-owned like name1.
+                            _write_registry_name(
+                                result, field_key,
+                                child_match.get("name"),
+                                registry="ROR",
+                            )
 
                 else:
                     # ── ROR miss ─────────────────────────────────────

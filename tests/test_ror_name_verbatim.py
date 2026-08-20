@@ -1,11 +1,12 @@
 """Item 2: the ROR canonical name must be written verbatim into name1_enriched,
 including a post-comma campus qualifier ("University of California, Davis").
 
-The two code paths that could drop the campus are exercised without hitting the
-network: (1) `_strip_ror_country_suffix` (only strips " (Country)" / a full
-", City, ST, Country" tail — never a bare campus), and (2) the identity guard
-`canonical_preserves_identity`, which decides whether ROR's official name is
-written or the input is kept.
+Since Fix 4 the write is UNCONDITIONAL on a verified match — the identity guard
+`canonical_preserves_identity` no longer sits between the match and the name,
+so the only path that could still drop the campus is
+`_strip_ror_country_suffix` (which strips " (Country)" / a full ", City, ST,
+Country" tail — never a bare campus). The guard itself is still exercised here
+because it remains in force on the LLM canonicalisation paths.
 """
 
 from __future__ import annotations
@@ -20,31 +21,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from enrichment.tier1_ror import _strip_ror_country_suffix
 from utils.text_utils import (
     canonical_preserves_identity,
-    clean_passthrough_org_name,
-    expand_abbreviations,
     strip_address_fragments,
 )
 
 
 def _name1_decision(original, street, city, state, zipc, official):
-    """Mirror the orchestrator's name1_enriched decision: strip address
-    fragments for the ROR query, then run the identity guard against the
-    ORIGINAL name (item 2 fix) — not the stripped query form."""
-    cleaned = strip_address_fragments(
+    """Mirror the orchestrator's name1_enriched decision (Fix 4).
+
+    Address fragments are stripped to build the ROR query, and a verified
+    match writes ROR's official name unconditionally. There is no second
+    threshold between the match and the name write: if the match was good
+    enough to attach ror_id, it is good enough to attach the name.
+    """
+    strip_address_fragments(
         original, street=street, city=city, state=state, zip_code=zipc,
-    ) or original
-    candidates = {
-        original,
-        expand_abbreviations(original) or original,
-        cleaned,
-        expand_abbreviations(cleaned) or cleaned,
-    }
-    if any(canonical_preserves_identity(c, official) for c in candidates if c):
-        return official
-    # Drop path: keep the input, but STANDARDISE it (expand abbreviations,
-    # title-case ALL-CAPS) exactly as the orchestrator now does.
-    kept = original or cleaned
-    return clean_passthrough_org_name(kept) or kept
+    )
+    return (official or "").strip() or original
 
 
 class TestCampusQualifierKept:
@@ -61,8 +53,8 @@ class TestCampusQualifierKept:
         ("CALIFORNIA STATE UNIVERSITY, LONG BEACH", "California State University, Long Beach"),
     ])
     def test_identity_guard_accepts_campus_name(self, original, official):
-        # Guard True → the orchestrator writes ROR's official (full) name,
-        # not a comma-truncated fallback.
+        # The guard no longer gates the ROR write, but it still runs on the
+        # LLM canonicalisation paths, where a campus name must survive it.
         assert canonical_preserves_identity(original, official) is True
 
     def test_country_suffix_still_stripped(self):
@@ -72,8 +64,9 @@ class TestCampusQualifierKept:
 
 class TestCampusCityStripInteraction:
     """Item 2 root cause: strip_address_fragments removes a campus city that
-    equals the record's City ("…, Davis" + City "Davis"), so the guard must be
-    run against the ORIGINAL name, or the campus is lost."""
+    equals the record's City ("…, Davis" + City "Davis"). Fix 4 settles it for
+    good — the official name is written whatever the stripped query looked
+    like."""
 
     def test_uc_davis_campus_survives_city_strip(self):
         assert _name1_decision(
@@ -91,30 +84,32 @@ class TestCampusCityStripInteraction:
             official="California State University, Long Beach",
         ) == "California State University, Long Beach"
 
-    def test_usda_guard_still_keeps_original_on_drop(self):
-        # ROR dropping "USDA" is a genuine identity drop → keep the original,
-        # never a fragment.
+    def test_usda_official_name_wins(self):
+        # Fix 4: ROR matched the Agricultural Research Service and verified it.
+        # The input carried the parent department's acronym as a qualifier;
+        # the registry's official name for the matched entity is what ships.
         assert _name1_decision(
             "USDA Agricultural Research Service", street="", city="Beltsville",
             state="Maryland", zipc="20705",
             official="Agricultural Research Service",
-        ) == "USDA Agricultural Research Service"
+        ) == "Agricultural Research Service"
 
-    def test_stuttgart_univ_standardised_on_drop(self):
-        # ROR's German official "Hochschule für Technik Stuttgart" diverges from
-        # the input, so the input is kept — but it must still be standardised:
-        # "Univ" → "University". (Record 42000006.)
+    def test_stuttgart_official_name_wins(self):
+        # ROR's German official name diverges from the English input, but the
+        # match is verified, so the official name ships. Note what does NOT
+        # happen: the ROR-local _INSTITUTION_ACRONYMS expansion that got the
+        # record to resolve never reaches the output. (Record 42000006.)
         assert _name1_decision(
             "Stuttgart Univ of Applied Sciences", street="SCHELLINGSTR 24",
             city="STUTTGART", state="", zipc="70174",
             official="Hochschule für Technik Stuttgart",
-        ) == "Stuttgart University of Applied Sciences"
+        ) == "Hochschule für Technik Stuttgart"
 
-    def test_allcaps_input_titlecased_on_drop(self):
+    def test_allcaps_input_does_not_alter_official_name(self):
         assert _name1_decision(
             "STUTTGART UNIV OF APPLIED SCIENCES", street="", city="STUTTGART",
             state="", zipc="70174", official="Hochschule für Technik Stuttgart",
-        ) == "Stuttgart University of Applied Sciences"
+        ) == "Hochschule für Technik Stuttgart"
 
     def test_the_trap_old_guard_would_have_failed(self):
         # Documents the bug: comparing the STRIPPED query form against the

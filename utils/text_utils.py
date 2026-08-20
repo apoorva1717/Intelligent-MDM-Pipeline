@@ -189,6 +189,11 @@ _ABBREV_MAP: dict[str, str] = {
     r"\bMed\.?(?=\s|$)": "Medicine",
     r"\bOrg\.?(?=\s|$)": "Organization",
     r"\bAssoc\.?(?=\s|$)": "Association",
+    # Organisational suffixes that survived into output name fields before
+    # Fix 4 ("Cardinal Research GRP", "Coastal Analytical Svcs"). Unambiguous:
+    # neither token has a competing expansion in an organisation name.
+    r"\bGrp\.?(?=\s|$)": "Group",
+    r"\bSvcs\.?(?=\s|$)": "Services",
     r"\bTech\.?(?=\s|$)": "Technology",
     r"\bNatl\.?(?=\s|$)": "National",
     r"\bIntl\.?(?=\s|$)": "International",

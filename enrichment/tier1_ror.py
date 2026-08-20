@@ -23,7 +23,12 @@ from rapidfuzz import fuzz
 
 from llm.openai_client import resolve_tls_verify
 from utils.cache import CacheKey, legacy_lookup_key, lookup_key
-from utils.text_utils import acronym_matches_name, expand_abbreviations, extract_domain
+from utils.text_utils import (
+    _fuzzy_token_covers,
+    acronym_matches_name,
+    expand_abbreviations,
+    extract_domain,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,19 +76,36 @@ def ror_normalised_hits() -> int:
 # Extend with further institution acronyms as they come up.
 _INSTITUTION_ACRONYMS: dict[str, str] = {
     "hft": "Hochschule für Technik",
+    # Multi-token key. "GA Tech" must NOT go through the bounded two-letter
+    # postal expansion below: that yields "Georgia Tech", which ROR resolves
+    # to "Georgia Tech Foundation" (ror.org/00adhzq59) — a different legal
+    # entity from the university (ror.org/01zkghx44). Mapping the whole
+    # phrase to the full official name resolves the institute directly.
+    "ga tech": "Georgia Institute of Technology",
 }
 
-_INSTITUTION_ACRONYM_RE = re.compile(r"\b([A-Za-z]{2,6})\b")
+# Built from the map's keys so only KNOWN acronyms can match. Multi-token keys
+# are matched with flexible whitespace; longest key first so a phrase key wins
+# over a single-token key that is a prefix of it.
+_INSTITUTION_ACRONYM_RE = re.compile(
+    r"\b(" + "|".join(
+        re.escape(k).replace(r"\ ", r"\s+")
+        for k in sorted(_INSTITUTION_ACRONYMS, key=len, reverse=True)
+    ) + r")\b",
+    re.IGNORECASE,
+)
 
 
 def _expand_institution_acronyms(name: str) -> str:
     """Replace known institution acronyms in *name* with their full form.
 
     Token-scoped and case-insensitive: "HFT Stuttgart" → "Hochschule für
-    Technik Stuttgart". Unknown tokens are left untouched.
+    Technik Stuttgart", "GA Tech" → "Georgia Institute of Technology".
+    Unknown tokens are left untouched.
     """
     def _sub(m: "re.Match[str]") -> str:
-        return _INSTITUTION_ACRONYMS.get(m.group(1).lower(), m.group(0))
+        key = _WS_RE.sub(" ", m.group(1).lower()).strip()
+        return _INSTITUTION_ACRONYMS.get(key, m.group(0))
     return _INSTITUTION_ACRONYM_RE.sub(_sub, name)
 
 
@@ -104,13 +126,70 @@ _US_STATE_ABBREVS: dict[str, str] = {
 }
 _US_STATE_ABBREV_RE = re.compile(r"\b([A-Za-z]{3,5})\b\.?")
 
+# ── Bounded two-letter postal codes ──────────────────────────────────────
+# Two-letter postal codes stay OUT of the map above: on their own "IN", "OR",
+# "ME" and "OK" are ordinary words, so expanding them wholesale is exactly the
+# collision README warns about. They are expanded ONLY when the tokens that
+# immediately follow put the code beyond doubt — "FL State Univ" can only mean
+# Florida State University. Everything else ("IN Laboratories", "OR
+# Diagnostics") is left untouched.
+_US_POSTAL_CODES: dict[str, str] = {
+    "al": "Alabama", "ak": "Alaska", "az": "Arizona", "ar": "Arkansas",
+    "ca": "California", "co": "Colorado", "ct": "Connecticut",
+    "de": "Delaware", "fl": "Florida", "ga": "Georgia", "hi": "Hawaii",
+    "id": "Idaho", "il": "Illinois", "in": "Indiana", "ia": "Iowa",
+    "ks": "Kansas", "ky": "Kentucky", "la": "Louisiana", "me": "Maine",
+    "md": "Maryland", "ma": "Massachusetts", "mi": "Michigan",
+    "mn": "Minnesota", "ms": "Mississippi", "mo": "Missouri",
+    "mt": "Montana", "ne": "Nebraska", "nv": "Nevada",
+    "nh": "New Hampshire", "nj": "New Jersey", "nm": "New Mexico",
+    "ny": "New York", "nc": "North Carolina", "nd": "North Dakota",
+    "oh": "Ohio", "ok": "Oklahoma", "or": "Oregon",
+    "pa": "Pennsylvania", "ri": "Rhode Island", "sc": "South Carolina",
+    "sd": "South Dakota", "tn": "Tennessee", "tx": "Texas", "ut": "Utah",
+    "vt": "Vermont", "va": "Virginia", "wa": "Washington",
+    "wv": "West Virginia", "wi": "Wisconsin", "wy": "Wyoming",
+}
+
+# The closed set of following contexts. Nothing outside these four fires.
+_TWO_LETTER_CONTEXT = (
+    r"State\s+Univ(?:ersity)?|Institute\s+of\s+Technology|Tech"
+)
+_TWO_LETTER_STATE_RE = re.compile(
+    rf"\b([A-Za-z]{{2}})\b(?=\s+({_TWO_LETTER_CONTEXT})\b)",
+    re.IGNORECASE,
+)
+
+# Codes that are also ordinary English words. Safe before "State Univ…" —
+# "Hi State University" names nothing — but not before the bare "Tech"
+# contexts, where "Hi Tech" / "In Tech" are real company names.
+_WORDLIKE_POSTAL_CODES = {"hi", "in", "or", "ok", "me", "la", "de"}
+
 
 def _expand_state_abbrevs(name: str) -> str:
     """Expand a US state-name abbreviation token to its full form
-    ("Fla State Univ" → "Florida State Univ"). ROR-local; token-scoped."""
+    ("Fla State Univ" → "Florida State Univ"). ROR-local; token-scoped.
+
+    Two-letter postal codes are expanded only inside the bounded contexts of
+    :data:`_TWO_LETTER_CONTEXT` ("FL State Univ" → "Florida State Univ").
+    """
     def _sub(m: "re.Match[str]") -> str:
         return _US_STATE_ABBREVS.get(m.group(1).lower(), m.group(0))
-    return _US_STATE_ABBREV_RE.sub(_sub, name)
+
+    def _sub_two(m: "re.Match[str]") -> str:
+        code = m.group(1).lower()
+        context = _WS_RE.sub(" ", m.group(2).lower()).strip()
+        # A phrase the institution-acronym map owns is left for its retry,
+        # which expands to the exact official name ("GA Tech" → "Georgia
+        # Institute of Technology", never the ambiguous "Georgia Tech").
+        if f"{code} {context}" in _INSTITUTION_ACRONYMS:
+            return m.group(0)
+        if not context.startswith("state") and code in _WORDLIKE_POSTAL_CODES:
+            return m.group(0)
+        return _US_POSTAL_CODES.get(code, m.group(0))
+
+    expanded = _TWO_LETTER_STATE_RE.sub(_sub_two, name)
+    return _US_STATE_ABBREV_RE.sub(_sub, expanded)
 
 
 _DASH_RE = re.compile(r"[\u2010-\u2015\-]+")
@@ -341,9 +420,27 @@ def _compute_name_score(
             and t not in _COMMON_DOMAIN_WORDS
             and t not in location_tokens
         }
-        if q_distinctive and not (q_distinctive & v_tokens):
-            # No distinctive token shared — cap at 0.7 so it cannot
-            # cross the 0.8 match threshold.
+        if q_distinctive and not all(
+            any(_fuzzy_token_covers(t, u) for u in v_tokens)
+            for t in q_distinctive
+        ):
+            # A distinctive token of the query is not covered by the candidate —
+            # cap at 0.7 so it cannot cross the 0.8 match threshold.
+            #
+            # EVERY distinctive token must be covered, not merely one of them.
+            # Sharing one is not enough: "Coastal Analytical Services" and
+            # "Analytical Services" (ANSER, ror.org/04g2rbh88) share
+            # "analytical" and token_sort to 0.83, yet the query's leading
+            # "coastal" — the token that says WHICH organisation — appears
+            # nowhere in the candidate. This is the non-acronym twin of the
+            # identifier-token guard below: "EMSL"/"ASL" are caught there
+            # because they are short and capitalised, "Coastal" is not.
+            #
+            # Coverage is `_fuzzy_token_covers`, not set membership, so the
+            # guard does not undo what fuzzy matching is for: a prefix
+            # ("univ"↔"university") and a typo ("insitute"↔"institute",
+            # "lüneborg"↔"lüneburg") still count as covered. Only a token with
+            # no counterpart at all caps the score.
             token_ratio = min(token_ratio, 0.7)
         # Identifier-token check
         if q_identifiers and not q_identifiers.issubset(v_tokens):

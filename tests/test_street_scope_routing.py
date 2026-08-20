@@ -74,7 +74,9 @@ class TestStreetToNameRouting:
         r = await _run("Atnn: Suzanne W Friend, Chemistry Dept., | 6100 Main St.")
         assert r.care_of_enriched == "Suzanne W Friend"
         names = [r.name1_enriched, r.name2_enriched]
-        assert any(n and "Chemistry Dept" in n for n in names)
+        # Fix 4: output name fields are abbreviation-expanded, so the unit
+        # lands as "Chemistry Department" — never the raw "Chemistry Dept.".
+        assert any(n and "Chemistry" in n and "Dept" not in n for n in names)
         assert (r.street_cleaned or "").startswith("6100 Main St")
 
     @pytest.mark.asyncio
