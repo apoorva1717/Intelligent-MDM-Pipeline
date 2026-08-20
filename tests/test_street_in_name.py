@@ -20,6 +20,7 @@ import time
 
 from enrichment.address_processing import process_address, merge_into_result
 from enrichment.orchestrator import finalise
+from tests.conftest import make_record
 from enrichment.search_terms import derive_search_terms
 
 
@@ -124,7 +125,7 @@ def _finalise_dict(**overrides):
         "flag_for_review": False, "flag_reason": None, "address_issues": [],
     })
     base.update(overrides)
-    return base
+    return make_record(**base)
 
 
 class TestFinaliseSafetyNet:

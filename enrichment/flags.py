@@ -40,6 +40,7 @@ import logging
 from typing import Any
 
 from enrichment.preprocess import _is_opaque_code
+from enrichment.provenance import SCOPED_FIELDS, FIELD_LABELS as PROV_FIELD_LABELS, weak_fields
 from utils.name_slots import DEPT_SLOTS, NAME_SLOT_LABELS, NAME_SLOTS
 
 logger = logging.getLogger(__name__)
@@ -214,6 +215,40 @@ def _nothing_was_enriched(result: dict[str, Any]) -> bool:
     )
 
 
+#: Name slots inside Fix 10's Phase 1 provenance scope. For these the
+#: "did an evidence-free producer write this" question is answered by the
+#: record's provenance log; for the slots below them there is no log yet, so
+#: the tier's own `_ev_tier3_wrote` marker still answers it.
+_PROVENANCE_SCOPED_SLOTS: frozenset[str] = frozenset(
+    PROV_FIELD_LABELS[f] for f in SCOPED_FIELDS
+    if PROV_FIELD_LABELS[f] in NAME_SLOTS
+)
+
+
+def _evidence_free_fields(
+    result: dict[str, Any], evidence: dict[str, Any],
+) -> set[str]:
+    """Fields whose value rests on nothing but a model's training data.
+
+    Fix 10 makes this DERIVED for the fields in Phase 1 provenance scope:
+    "who wrote this last" is a question about the record's write history, and
+    the provenance log is that history — so it answers rather than a flag that
+    a tier remembered to set. It answers better, too: a field Tier 3 wrote and
+    a registry then overwrote is no longer Tier 3's claim, and the log shows
+    that directly instead of needing a second `_registry_name_fields` check.
+
+    Name 3 and below are outside Phase 1 scope, so their marker still comes
+    from the tier. Extending the scope removes the second branch.
+    """
+    log = getattr(result, "provenance", None)
+    marked = set(evidence.get("_ev_tier3_wrote") or ())
+    if log is None:
+        return marked
+    derived = weak_fields(log)
+    out_of_scope = {f for f in marked if f not in _PROVENANCE_SCOPED_SLOTS}
+    return derived | out_of_scope
+
+
 def compute_flags(result: dict[str, Any]) -> None:
     """Rebuild ``flag_codes``, ``flagged_fields``, ``flag_for_review`` and
     ``flag_reason`` from *result*'s final state, and drop the evidence keys.
@@ -281,7 +316,7 @@ def compute_flags(result: dict[str, Any]) -> None:
         corroborated.add("name2")
 
     inferred: set[str] = set()
-    for field in sorted(evidence.get("_ev_tier3_wrote") or ()):
+    for field in sorted(_evidence_free_fields(result, evidence)):
         if field in registry_named or field in corroborated:
             continue
         # Tier 3's write only stands if it survived finalisation and actually

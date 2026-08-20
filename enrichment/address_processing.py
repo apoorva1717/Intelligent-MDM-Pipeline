@@ -47,6 +47,7 @@ from enrichment.preprocess import (
     _extract_addresses,
     _street_person_name,
 )
+from enrichment.provenance import deterministic_evidence
 from utils.name_slots import DEPT_SLOTS
 from utils.text_utils import is_logistics_location, smart_title_case
 
@@ -1158,6 +1159,32 @@ async def process_address(
 # Result merge helper — called by the orchestrator
 # ---------------------------------------------------------------------------
 
+def _write_name(
+    result_dict: dict[str, Any],
+    field: str,
+    value: Any,
+    rule_id: str,
+    evidence_ref: Any = None,
+) -> None:
+    """Write a name slot, attributing it when the record enforces provenance.
+
+    The address stage is also exercised directly against plain dicts (see
+    ``tests/test_address_cleanup.py``), so this tolerates both — an
+    ``EnrichedRecord`` takes the write path, anything else is a plain
+    assignment.
+    """
+    write = getattr(result_dict, "write", None)
+    if write is None:
+        result_dict[field] = value
+        return
+    write(
+        field, value,
+        deterministic_evidence(
+            rule_id, producer="address_stage", evidence_ref=evidence_ref,
+        ),
+    )
+
+
 def merge_into_result(
     result_dict: dict[str, Any],
     addr: AddressResult,
@@ -1191,7 +1218,11 @@ def merge_into_result(
     # slot above, leaving the cleaned remainder (or None) here. Mark a now-
     # empty slot as cleared so finalise() does not restore the original.
     for name_field, new_val in addr.name_overrides.items():
-        result_dict[f"{name_field}_enriched"] = new_val
+        _write_name(
+            result_dict, f"{name_field}_enriched", new_val,
+            "uc9:address-moved-out-of-name-field",
+            {"remainder": new_val},
+        )
         if not (new_val and str(new_val).strip()):
             cleared = result_dict.setdefault("_preprocess_cleared", set())
             cleared.add(name_field)
@@ -1209,7 +1240,12 @@ def merge_into_result(
                 and not (orig and str(orig).strip())
             )
             if slot_empty:
-                result_dict[f"{target}_enriched"] = addr.department_addendum
+                _write_name(
+                    result_dict, f"{target}_enriched",
+                    addr.department_addendum,
+                    "address:department-addendum-placed",
+                    {"from": "address_stage"},
+                )
                 break
 
     if addr.address_issues:

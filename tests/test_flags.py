@@ -30,6 +30,7 @@ from api.models import EnrichmentOptions, EnrichmentRecord
 from config import Settings
 from enrichment import flags
 from enrichment.orchestrator import Orchestrator, _init_result, finalise
+from tests.conftest import seed, tier3_evidence
 from tests.mocks.lei_mock import MockLEIClient
 from tests.mocks.page_mock import MockPageFetcher
 
@@ -90,7 +91,14 @@ def _finalised(record_kw: dict[str, Any] | None = None, **overrides: Any) -> dic
     result = _init_result(EnrichmentRecord(
         record_id="F1", country="US", **(record_kw or {"name1": "Acme Labs"}),
     ))
-    result.update(overrides)
+    seed(result, **overrides)
+    # A test that declares "Tier 3 wrote these fields" writes them as Tier 3:
+    # the flag is derived from the provenance log, not from the marker.
+    tier3_wrote = overrides.get("_ev_tier3_wrote") or ()
+    for slot in tier3_wrote:
+        field = f"{slot}_enriched"
+        if field in overrides:
+            seed(result, tier3_evidence(), **{field: overrides[field]})
     return finalise(result, time.monotonic())
 
 

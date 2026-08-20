@@ -476,7 +476,18 @@ def _apply_mode_b(
     else:
         our_score = 0.0
 
-    # Prefer the higher score between LLM and our own fuzzy matching
+    # Prefer the higher score between LLM and our own fuzzy matching.
+    #
+    # CROSS-SCALE COMPARISON (Fix 10, Step 3). These two numbers are not on the
+    # same scale: `llm_score` is the model's own assertion about its own match
+    # and `our_score` is a RapidFuzz token_sort_ratio. Taking the max ranks one
+    # against the other and then thresholds the winner with a single number
+    # (`fuzzy_threshold`, and again at 95), so an LLM saying "92" outranks a
+    # measured 88 on no common footing. Left as-is deliberately — Fix 10
+    # records what happens, it does not change what happens — and reported so
+    # the decision to fix it can be taken on its own terms. The provenance
+    # event this write produces carries `llm_self_reported`, which is the scale
+    # of whichever number actually won.
     effective_score = max(float(llm_score), our_score)
 
     if effective_score >= fuzzy_threshold:

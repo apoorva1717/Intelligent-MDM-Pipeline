@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import (
     AliasChoices,
@@ -13,6 +13,15 @@ from pydantic import (
 )
 
 from api.output_columns import RESPONSE_COLUMNS
+from enrichment.provenance import (
+    DERIVED_SCALAR_FIELDS,
+    SCOPED_FIELDS,
+    Evidence,
+    MissingEvidenceError,
+    UnattributedWriteError,
+    derived_scalar,
+    log_from_dicts,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -427,12 +436,54 @@ class EnrichmentResult(BaseModel):
     ror_id: Optional[str] = None
     lei_id: Optional[str] = None
 
+    # ── Per-field provenance (Fix 10) ────────────────────────────────
+    # Six derived scalars, one per Phase 1 scoped field, in the format
+    # `producer:tier:confidence_band` — `ror:1:exact`, `llm_tier3:3:self_high`.
+    # They are REGENERATED from `provenance` and never maintained separately,
+    # so the column and the log cannot drift. Null when the field is null:
+    # there is no value to attribute.
+    name1_provenance: Optional[str] = None
+    name2_provenance: Optional[str] = None
+    domain_provenance: Optional[str] = None
+    record_type_provenance: Optional[str] = None
+    ror_id_provenance: Optional[str] = None
+    lei_id_provenance: Optional[str] = None
+
+    # The events themselves — one per write, nested, unbounded length, and
+    # NOT a file column (the XLSX writer emits `RESPONSE_COLUMNS` only, which
+    # is where the six scalars above live and this does not). It is part of
+    # the API response, not telemetry: Application Insights stays operational
+    # monitoring, and ADF decides what, if anything, to store.
+    provenance: List[Dict[str, Any]] = Field(default_factory=list)
+    # Candidates a GUARD refused — the ROR country guard, the distinctive- and
+    # identifier-token guards, Fix 1's domain ownership guard, GLEIF's name
+    # verification. Only guard rejections: the pipeline had a confident answer
+    # and deliberately declined it, which is the case worth defending later.
+    # Capped per field per record; the count of any beyond the cap is below.
+    provenance_rejected: List[Dict[str, Any]] = Field(default_factory=list)
+    provenance_rejected_omitted: Dict[str, int] = Field(default_factory=dict)
+
     # ── Internal-only fields (excluded from serialisation) ───────────
     # NOTE: the fields marked ``exclude=True`` below are still populated and
     # used internally (tier logic, batch summary counts, tests) — they are
     # just omitted from the serialised API response to keep the output lean.
     tier_used: Literal[1, 2, 3] = Field(default=1, exclude=True)
     tier2_mode: Optional[Literal["2A_population", "2A_verification", "2B"]] = Field(default=None, exclude=True)
+    # A COARSE PROJECTION, not a measurement (Fix 10, Step 3).
+    #
+    # One label fed by numbers that are not commensurable: a ROR local rescore
+    # (`ror_local`, 0-1), GLEIF's name-verification ratio (`fuzzy_ratio`,
+    # 0-100), a model's assertion about its own output (`llm_self_reported`,
+    # which is not a probability of anything) and a passthrough rule that sets
+    # "low" because nothing was found. "high" from a registry match and "high"
+    # from an LLM mean different things, and no consumer of this field can tell
+    # them apart.
+    #
+    # Kept for backward compatibility. The measurement lives per field, on the
+    # provenance events: `confidence_scale` + `confidence_value`, projected for
+    # reading into the six `*_provenance` columns, where the band is namespaced
+    # by scale (`self_high`, never a bare `high`) precisely so the two cannot
+    # be confused again.
     confidence: Literal["high", "medium", "low", "none"] = Field(default="none", exclude=True)
     source: Literal[
         "ROR", "ROR+child", "contact_lookup_found",
@@ -488,6 +539,52 @@ class EnrichmentResult(BaseModel):
     use_cases_triggered: List[int] = Field(default_factory=list, exclude=True)
     enrichment_status: Literal["enriched", "verified", "unresolved", "failed"] = Field(default="failed", exclude=True)
     duration_ms: int = Field(default=0, exclude=True)
+
+    # ── The write lock, carried past finalisation (Fix 10, Step 1) ───
+    # ``EnrichedRecord`` locks the six scoped fields for the life of the
+    # pipeline; this locks them for the life of the *result*. It matters
+    # because the batch consensus pass (Fix 6) writes ROR IDs, domains and
+    # names onto already-finalised records, and an inherited registry
+    # identifier must never be indistinguishable from a first-hand one.
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name in SCOPED_FIELDS:
+            raise UnattributedWriteError(
+                f"{name!r} is write-locked on EnrichmentResult: use "
+                f"result.write({name!r}, value, evidence).",
+            )
+        super().__setattr__(name, value)
+
+    def write(self, field: str, value: object, evidence: Evidence) -> None:
+        """The one write path for a scoped field on a finalised result.
+
+        Appends the event to ``provenance`` and regenerates that field's
+        derived scalar from the log, so the two can never disagree.
+        """
+        if not isinstance(evidence, Evidence):
+            raise MissingEvidenceError(
+                f"write to {field!r} requires an Evidence argument — a value "
+                "whose origin cannot be reconstructed is not admissible",
+            )
+        log = log_from_dicts(
+            self.provenance, self.provenance_rejected,
+            self.provenance_rejected_omitted,
+        )
+        if field in SCOPED_FIELDS:
+            log.record(field, getattr(self, field, None), value, evidence)
+        self._force(field, value)
+        self._force("provenance", log.as_dicts())
+        column = DERIVED_SCALAR_FIELDS.get(field)
+        if column:
+            self._force(
+                column,
+                derived_scalar(log, field) if value not in (None, "") else None,
+            )
+
+    def _force(self, name: str, value: object) -> None:
+        """Set a field past the lock. Only ``write`` may call this."""
+        object.__setattr__(self, name, value)
+        self.__pydantic_fields_set__.add(name)
 
 
 class EnrichmentSummary(BaseModel):

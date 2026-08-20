@@ -101,3 +101,76 @@ def fixture_loader():
 def expected_outcomes():
     """Load expected outcomes for assertion."""
     return load_expected_outcomes()
+
+
+# ---------------------------------------------------------------------------
+# Fix 10 — the test-fixture write path
+# ---------------------------------------------------------------------------
+#
+# The six Phase 1 scoped fields are write-locked on `EnrichedRecord`: nothing
+# reaches them without evidence, tests included. A test that puts a record into
+# a stated post-tier state is standing in for a producer, so it says so — the
+# evidence names the fixture as the producer rather than laundering an
+# unattributed value through a back door that production code could also use.
+
+from enrichment.provenance import (  # noqa: E402
+    SCOPED_FIELDS,
+    EnrichedRecord,
+    deterministic_evidence,
+)
+
+
+def fixture_evidence(rule_id: str = "test-fixture"):
+    """Evidence for a value a test wrote directly."""
+    return deterministic_evidence(rule_id, producer="test_fixture")
+
+
+def tier3_evidence():
+    """Evidence for a value a test is standing in for Tier 3 to have written.
+
+    Fix 10 derives the `unverified-inference` flag from the provenance log, so
+    a fixture that says "Tier 3 wrote this" has to write it AS Tier 3 — which
+    is the point: the flag now follows from the record's write history rather
+    than from a marker a tier remembered to set.
+    """
+    from llm.prompts import TIER3_PROMPT_VERSION
+    from enrichment.provenance import llm_evidence
+
+    return llm_evidence(
+        ("llm_tier3",), tier=3, prompt_version=TIER3_PROMPT_VERSION,
+        deployment="test-deployment", self_reported="high",
+    )
+
+
+def seed(record, evidence=None, **values):
+    """Set fields on a result record, routing scoped fields through ``write``.
+
+    The plain-dict equivalent of ``result.update(**values)`` for tests. Non-
+    scoped keys are set directly; scoped keys go through the one write path and
+    so appear in the record's provenance log, which is what lets the seeded
+    record survive the admissibility gate exactly as a real one does.
+    """
+    if not isinstance(record, EnrichedRecord):
+        record.update(values)
+        return record
+    for key, value in values.items():
+        if key in SCOPED_FIELDS:
+            record.write(key, value, evidence or fixture_evidence())
+        else:
+            record[key] = value
+    return record
+
+
+def make_record(**fields):
+    """An ``EnrichedRecord`` in a stated post-tier state, for finalise() tests.
+
+    Splits the scoped fields out of *fields* and writes them through the one
+    write path, so a hand-built fixture record carries the same provenance a
+    real one does and reaches the admissibility gate on the same terms.
+    """
+    scoped = {k: v for k, v in fields.items() if k in SCOPED_FIELDS}
+    base = {k: v for k, v in fields.items() if k not in SCOPED_FIELDS}
+    base.update({k: None for k in SCOPED_FIELDS if k != "record_type"})
+    base.setdefault("record_type", "unknown")
+    record = EnrichedRecord.initialise(base)
+    return seed(record, **scoped)

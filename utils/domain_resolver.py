@@ -39,6 +39,13 @@ from urllib.parse import urlparse
 
 from rapidfuzz import fuzz
 
+from enrichment.provenance import (
+    DETERMINISTIC,
+    FUZZY_RATIO,
+    GUARD_DOMAIN_OWNERSHIP,
+    REGISTRY_EXACT,
+    Evidence,
+)
 from enrichment.tier1_ror import _normalise_for_tokens
 from utils.text_utils import extract_domain
 
@@ -364,3 +371,118 @@ def resolve_domain(
         return accept(candidate, "serp")
 
     return DomainDecision(rejected=True, candidate=candidate)
+
+
+# ---------------------------------------------------------------------------
+# The write (Fix 10)
+# ---------------------------------------------------------------------------
+
+#: How each ownership condition is attributed. The condition that accepted the
+#: candidate IS its provenance: "registry" means ROR/GLEIF vouched for it,
+#: "name" means a scored string comparison did, and those are not the same
+#: claim — which is exactly why the scale travels with the value.
+_VERIFIED_BY_SCALE: dict[str, str] = {
+    "registry": REGISTRY_EXACT,
+    "name": FUZZY_RATIO,
+    "email": DETERMINISTIC,
+    "serp": DETERMINISTIC,
+    "unguarded": DETERMINISTIC,
+}
+
+
+def write_domain(
+    record,
+    candidate_url: str | None,
+    evidence: DomainEvidence,
+    *,
+    producer_chain: tuple[str, ...] = ("website_resolver",),
+    registry_identifier: str | None = None,
+    threshold: float | None = None,
+    guard_enabled: bool | None = None,
+    tier: int | None = None,
+) -> DomainDecision:
+    """Decide a candidate domain and write it through ``record.write``.
+
+    This is Fix 1's chokepoint, now attributing what it writes rather than
+    running as a parallel mechanism: :func:`resolve_domain` still takes the
+    decision, and the decision's ``verified_by`` — the ownership condition that
+    carried it — becomes the provenance of the value. A candidate the guard
+    refuses is recorded as a guard rejection (Step 4) instead of vanishing: the
+    pipeline had a confident answer and deliberately declined it, which is the
+    case most worth being able to defend afterwards.
+
+    ``record`` is an :class:`enrichment.provenance.EnrichedRecord`. Everything
+    other than ``domain`` (``website_url``, the transient raw candidate, the
+    verified-by telemetry) is unscoped and written directly, exactly as before.
+    """
+    decision = resolve_domain(
+        candidate_url, evidence,
+        threshold=threshold, guard_enabled=guard_enabled,
+    )
+
+    if decision.domain:
+        scale = _VERIFIED_BY_SCALE.get(decision.verified_by or "", DETERMINISTIC)
+        if scale == FUZZY_RATIO:
+            value = name_similarity(evidence.name1, decision.domain)
+        elif scale == REGISTRY_EXACT:
+            value = 1.0
+        else:
+            value = 1.0
+        ref: dict[str, object] = {
+            "source_url": candidate_url,
+            "verified_by": decision.verified_by,
+        }
+        if registry_identifier:
+            ref["registry_id"] = registry_identifier
+        if decision.verified_by == "email":
+            # The domain came off the record's own address, not the candidate.
+            ref["source_url"] = None
+            ref["email_domain"] = decision.domain
+        record.write(
+            "domain", decision.domain,
+            Evidence(
+                producer_chain=(
+                    (evidence.registry.lower(),)
+                    if decision.verified_by == "registry" and evidence.registry
+                    else ("record_email",)
+                    if decision.verified_by == "email"
+                    else producer_chain
+                ),
+                tier=tier,
+                confidence_scale=scale,
+                confidence_value=value,
+                evidence_ref=ref,
+                rule_id=f"domain-ownership:{decision.verified_by}",
+            ),
+        )
+        record["website_url"] = decision.website_url
+        record["_website_raw"] = candidate_url
+        record["domain_verified_by"] = decision.verified_by
+        # A later, verified candidate clears an earlier rejection.
+        record["domain_rejected"] = False
+        record.pop("_domain_unverified", None)
+    elif decision.rejected:
+        record["domain_rejected"] = True
+        record["_domain_unverified"] = True
+        record.reject(
+            "domain", decision.candidate, GUARD_DOMAIN_OWNERSHIP,
+            reason=(
+                "no ownership condition held: not from a registry, name "
+                "similarity below threshold, no non-generic email domain, "
+                "and no on-domain search evidence"
+            ),
+            evidence=Evidence(
+                producer_chain=producer_chain,
+                tier=tier,
+                confidence_scale=FUZZY_RATIO,
+                confidence_value=name_similarity(
+                    evidence.name1, decision.candidate,
+                ),
+                evidence_ref={
+                    "source_url": candidate_url,
+                    "claimed_for": evidence.name1,
+                },
+                rule_id="domain-ownership-guard",
+            ),
+        )
+    return decision

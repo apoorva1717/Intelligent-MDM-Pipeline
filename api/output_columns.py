@@ -92,4 +92,19 @@ RESPONSE_COLUMNS: dict[str, str] = {
     # Registry identifiers — ror_id for institutions, lei_id for companies.
     "ror_id": "ROR ID",
     "lei_id": "LEI ID",
+    # ── Per-field provenance, derived scalars (Fix 10) ───────────────
+    # One per Phase 1 scoped field, format `producer:tier:confidence_band`
+    # ("ror:1:exact", "llm_tier3:3:self_high"). Regenerated from the record's
+    # provenance events on every write — see enrichment/provenance.py.
+    #
+    # The full event array is deliberately NOT a column: it is nested and
+    # unbounded, and this mapping is the file schema as well as the JSON key
+    # map. `/enrich/file` returns XLSX and therefore emits these six columns
+    # only; the events ship in the `/enrich` JSON response.
+    "name1_provenance": "Name 1 Provenance",
+    "name2_provenance": "Name 2 Provenance",
+    "domain_provenance": "Domain Provenance",
+    "record_type_provenance": "Record Type Provenance",
+    "ror_id_provenance": "ROR ID Provenance",
+    "lei_id_provenance": "LEI ID Provenance",
 }

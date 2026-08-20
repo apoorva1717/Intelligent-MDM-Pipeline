@@ -44,6 +44,11 @@ from typing import TYPE_CHECKING, Any, Optional
 from dedup.candidates import strip_legal_suffix
 from dedup.models import DedupRow
 from dedup.signatures import derive_block_id, normalize_key
+from enrichment.provenance import (
+    SCOPED_FIELDS,
+    inherited_evidence,
+    log_from_dicts,
+)
 from enrichment.tier1_ror import _normalise_for_tokens
 from utils.name_slots import DEPT_ENRICHED_FIELDS
 
@@ -362,6 +367,60 @@ def _consensus_values(
     return values, ("registry" if registry_backed else "name_form")
 
 
+def _snapshot(
+    members: list["EnrichmentResult"],
+) -> dict[int, dict[str, Any]]:
+    """The members' propagated-field values BEFORE this pass writes any.
+
+    Donor resolution has to run against this, not against live state: members
+    are updated inside the loop, so a member that has itself just inherited the
+    value would otherwise be named as its donor and the trail would stop one
+    hop short of the record that actually resolved the organisation.
+    """
+    return {
+        id(m): {f: getattr(m, f, None) for f in PROPAGATED_FIELDS}
+        for m in members
+    }
+
+
+def _donor_for(
+    members: list["EnrichmentResult"],
+    before: dict[int, dict[str, Any]],
+    receiver: "EnrichmentResult",
+    field: str,
+    value: Any,
+) -> Optional["EnrichmentResult"]:
+    """The record this ONE field's value is being copied from.
+
+    Per field, not per group: a group can hold its Name 1 in one record and its
+    LEI in another, and naming the wrong one is as unhelpful as naming none.
+    The receiving record is excluded — a record cannot be its own donor, and an
+    inheritance that pointed back at itself would be exactly the "inherited ROR
+    ID indistinguishable from a first-hand one" the fix exists to prevent.
+    """
+    for member in members:
+        if member is receiver:
+            continue
+        if before.get(id(member), {}).get(field) == value:
+            return member
+    return None
+
+
+def _donor_scale(
+    donor: Optional["EnrichmentResult"], field: str,
+) -> Optional[str]:
+    """The confidence scale the DONOR's own write was on.
+
+    An inherited value is only as good as the evidence behind it, and that
+    evidence is on the donor's event, not on this one — so the scale travels
+    with the inheritance instead of the receiving record having to guess.
+    """
+    if donor is None:
+        return None
+    event = log_from_dicts(donor.provenance).attributing_event(field)
+    return event.confidence_scale if event else None
+
+
 def apply_batch_consensus(
     results: list["EnrichmentResult"],
 ) -> ConsensusTelemetry:
@@ -392,6 +451,7 @@ def apply_batch_consensus(
             continue
         values, mode = outcome
 
+        before = _snapshot(members)
         for member in members:
             changed: list[str] = []
             for name in PROPAGATED_FIELDS:
@@ -400,7 +460,24 @@ def apply_batch_consensus(
                     continue
                 # Copied verbatim from an already-finalised record: no casing,
                 # no abbreviation expansion, no re-normalisation of any kind.
-                setattr(member, name, new)
+                #
+                # The DONOR record id travels with the value. An inherited ROR
+                # ID must not be indistinguishable from a first-hand one: the
+                # receiving record never looked this organisation up, and a
+                # reviewer asking "where did this come from" has to be able to
+                # land on the record that did.
+                if name in SCOPED_FIELDS:
+                    field_donor = _donor_for(members, before, member, name, new)
+                    member.write(
+                        name, new,
+                        inherited_evidence(
+                            field_donor.record_id if field_donor else "",
+                            mode=mode,
+                            donor_scale=_donor_scale(field_donor, name),
+                        ),
+                    )
+                else:
+                    setattr(member, name, new)
                 changed.append(name)
             if not changed:
                 continue

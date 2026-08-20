@@ -336,6 +336,7 @@ def _compute_name_score(
     query: str,
     org_names: list[dict[str, Any]],
     location_tokens: set[str] | None = None,
+    caps: set[str] | None = None,
 ) -> float:
     """Score how well *query* matches any of the organisation's name variants.
 
@@ -494,9 +495,17 @@ def _compute_name_score(
             # "lüneborg"↔"lüneburg") still count as covered. Only a token with
             # no counterpart at all caps the score.
             token_ratio = min(token_ratio, 0.7)
+            # Which guard capped this candidate — read out by the caller so a
+            # rejection can name the rule that made it, rather than reporting
+            # a bare "below threshold". Recording only; the cap itself is
+            # unchanged.
+            if caps is not None:
+                caps.add("distinctive_token")
         # Identifier-token check
         if q_identifiers and not q_identifiers.issubset(v_tokens):
             token_ratio = min(token_ratio, 0.7)
+            if caps is not None:
+                caps.add("identifier_token")
         if token_ratio > best:
             best = token_ratio
 
@@ -561,9 +570,14 @@ def _score_org(
     query: str,
     org: dict[str, Any],
     location_tokens: set[str] | None = None,
+    caps: set[str] | None = None,
 ) -> float:
-    """Wrapper: extract org names and compute match score."""
-    return _compute_name_score(query, org.get("names", []), location_tokens)
+    """Wrapper: extract org names and compute match score.
+
+    ``caps`` is an optional out-parameter: the names of the guards that capped
+    this candidate's score, for the provenance rejection log (Fix 10 Step 4).
+    """
+    return _compute_name_score(query, org.get("names", []), location_tokens, caps)
 
 
 _ROR_COUNTRY_SUFFIX_RE = re.compile(
@@ -767,8 +781,33 @@ async def call_ror(
     # same-city org. Passed into every local rescore below.
     location_tokens = _extract_location_tokens(city, state, country)
 
+    # Guard rejections (Fix 10 Step 4). A candidate the country guard, the
+    # distinctive-token guard or the identifier-token guard refused: ROR was
+    # confident and the pipeline deliberately declined it, which is the case
+    # most worth being able to defend afterwards. Collected here and returned
+    # with the result; the orchestrator writes them to the record's log.
+    # Recording only — no decision changes.
+    guard_rejections: list[dict[str, Any]] = []
+
+    def _note_rejection(
+        guard: str, org: dict[str, Any], score: float, detail: str,
+    ) -> None:
+        names = org.get("names") or [{}]
+        guard_rejections.append({
+            "guard": guard,
+            "candidate_name": (names[0].get("value") if names else None),
+            "candidate_id": org.get("id"),
+            "score": score,
+            "threshold": threshold,
+            "detail": detail,
+            "query": name,
+        })
+
     def _no_match(score: float = 0.0) -> dict[str, Any]:
-        r: dict[str, Any] = {"matched": False, "score": score}
+        r: dict[str, Any] = {
+            "matched": False, "score": score,
+            "guard_rejections": guard_rejections,
+        }
         _ror_cache[cache_key] = r
         return r
 
@@ -817,8 +856,10 @@ async def call_ror(
                 # for "EMSL Analytical, Inc." (the shared 'Analytical' token
                 # dominates). The local check applies the identifier-token
                 # guard that ROR's scorer lacks.
+                caps: set[str] = set()
                 local_score = max(
-                    _score_org(n, org, location_tokens) for n in rescore_names
+                    _score_org(n, org, location_tokens, caps)
+                    for n in rescore_names
                 )
                 if local_score < threshold:
                     logger.info(
@@ -827,6 +868,11 @@ async def call_ror(
                         (org.get("names") or [{}])[0].get("value", "?")[:60],
                         local_score, threshold,
                     )
+                    for _guard in sorted(caps) or ["local_rescore"]:
+                        _note_rejection(
+                            _guard, org, local_score,
+                            "local rescore below the match threshold",
+                        )
                     return None
                 # Country guard — ROR's affiliation scorer ignores the country
                 # context in the affiliation string often enough to return a
@@ -840,11 +886,17 @@ async def call_ror(
                         (org.get("names") or [{}])[0].get("value", "?")[:60],
                         _org_country_code(org), country_code,
                     )
+                    _note_rejection(
+                        "ror_country", org, ch["score"],
+                        f"candidate country {_org_country_code(org)} != "
+                        f"requested {country_code}",
+                    )
                     return None
                 fields = _extract_org_fields(org)
                 res: dict[str, Any] = {
                     "matched": True,
                     "score": ch["score"],
+                    "guard_rejections": guard_rejections,
                     **{k: v for k, v in fields.items() if k != "org_names"},
                     "query_used": name,
                     "affiliation_used": aff_str,
@@ -925,6 +977,13 @@ async def call_ror(
             # ranking so a correct-country org can still win.
             if country_code:
                 kept = [it for it in items if _country_ok(it, country_code)]
+                for _dropped in items:
+                    if _dropped not in kept:
+                        _note_rejection(
+                            "ror_country", _dropped, 0.0,
+                            f"candidate country {_org_country_code(_dropped)} "
+                            f"!= requested {country_code}",
+                        )
                 if len(kept) != len(items):
                     logger.info(
                         "ROR query: dropped %d/%d wrong-country candidate(s) for "
@@ -995,11 +1054,20 @@ async def call_ror(
                     score, threshold, name[:60],
                     fields["official_name"] or "?",
                 )
+                _caps: set[str] = set()
+                _score_org(expanded_query, best_org, location_tokens, _caps)
+                _score_org(name, best_org, location_tokens, _caps)
+                for _guard in sorted(_caps):
+                    _note_rejection(
+                        _guard, best_org, score,
+                        "best candidate capped below the match threshold",
+                    )
                 return _no_match(score)
 
             result = {
                 "matched": True,
                 "score": score,
+                "guard_rejections": guard_rejections,
                 **{k: v for k, v in fields.items() if k != "org_names"},
                 "query_used": name,
                 "country_filter": country_code,

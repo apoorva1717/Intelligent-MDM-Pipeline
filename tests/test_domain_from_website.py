@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pytest
 
 from config import Settings
+from tests.conftest import seed
 from enrichment.orchestrator import Orchestrator, _init_result
 from api.models import EnrichmentRecord
 from utils.cache import BatchCache
@@ -49,7 +50,7 @@ def _seed(**overrides):
         email="registrar@ufl.edu",
     )
     result = _init_result(rec)
-    result.update({
+    seed(result, **{
         "name1_enriched": "University of Florida",
         # Tier gating (including the department probe) reads `routing_type`,
         # the provisional value the tiers write. `record_type` is decided in
@@ -58,7 +59,7 @@ def _seed(**overrides):
         "website_url": "https://www.ufl.edu",
         "domain": None,
     })
-    result.update(overrides)
+    seed(result, **overrides)
     return rec, result
 
 

@@ -35,9 +35,10 @@ Both phases share the same FastAPI app, configuration system, Azure Functions de
 6. [Use Case Reference Table](#use-case-reference-table)
 7. [Record Classification Logic](#record-classification-logic)
 8. [Confidence, Flags, and Enrichment Status](#confidence-flags-and-enrichment-status)
-9. [Data Models](#data-models)
-10. [API Endpoints](#api-endpoints)
-11. [Phase 2 — Deduplication Adjudicator](#phase-2--deduplication-adjudicator)
+9. [Per-Field Provenance and Admissibility](#per-field-provenance-and-admissibility)
+10. [Data Models](#data-models)
+11. [API Endpoints](#api-endpoints)
+12. [Phase 2 — Deduplication Adjudicator](#phase-2--deduplication-adjudicator)
     - [Why a Separate Pass](#why-a-separate-pass)
     - [The Two-Level Identity Model](#the-two-level-identity-model)
     - [Critical Identity Rules](#critical-identity-rules)
@@ -51,17 +52,17 @@ Both phases share the same FastAPI app, configuration system, Azure Functions de
     - [Telemetry](#telemetry)
     - [Chaining Enrichment → Dedup](#chaining-enrichment--dedup)
     - [Dedup Diagnostics](#dedup-diagnostics)
-12. [Project Structure](#project-structure)
-13. [Module-by-Module Reference](#module-by-module-reference)
-14. [External Services and APIs](#external-services-and-apis)
-15. [Configuration and Environment Variables](#configuration-and-environment-variables)
-16. [Setup and Installation](#setup-and-installation)
-17. [Running Locally](#running-locally)
-18. [Testing](#testing)
-19. [Azure Function Deployment](#azure-function-deployment)
-20. [ADF Integration and DATAshaper Mapping](#adf-integration-and-datashaper-mapping)
-21. [Complete Data Flow Diagram](#complete-data-flow-diagram)
-22. [Changelog](#changelog)
+13. [Project Structure](#project-structure)
+14. [Module-by-Module Reference](#module-by-module-reference)
+15. [External Services and APIs](#external-services-and-apis)
+16. [Configuration and Environment Variables](#configuration-and-environment-variables)
+17. [Setup and Installation](#setup-and-installation)
+18. [Running Locally](#running-locally)
+19. [Testing](#testing)
+20. [Azure Function Deployment](#azure-function-deployment)
+21. [ADF Integration and DATAshaper Mapping](#adf-integration-and-datashaper-mapping)
+22. [Complete Data Flow Diagram](#complete-data-flow-diagram)
+23. [Changelog](#changelog)
 
 ---
 
@@ -1211,6 +1212,128 @@ The scope is encoded in the reason text **as well as** in `flagged_fields`, so a
 
 ---
 
+## Per-Field Provenance and Admissibility
+
+**File:** `enrichment/provenance.py`
+
+One principle, made mechanical:
+
+> Every value the system writes must be attributable after the fact to the source that produced it and the confidence under which it was produced. A written value whose origin cannot be reconstructed is not admissible.
+
+The record-level `tier_used` / `source` / `confidence` triple could not carry that. Row 5 of the demo batch has Name 1 from ROR, Name 2 from a SERP → fetch → LLM chain and a department domain from the probe; one label per record collapses all three. Nor can a record-level label represent a field written **twice**, which is exactly what [Fix 2's Tier 1 re-lookup](#stage-5-tier-1-re-lookup-after-canonicalisation) does to `name1` — an LLM writes it, ROR overwrites it, and the final value alone does not show that an LLM wrote first. A final-state map cannot show that; a log can.
+
+### Phase 1 scope
+
+Six fields: `name1_enriched`, `name2_enriched`, `domain`, `record_type`, `ror_id`, `lei_id`.
+
+These are the fields where a wrong value causes a **wrong merge in Phase 2**, so this is where "not admissible" has consequences. They also carry no personal data, which keeps the provenance store clear of a data-protection question — `contact`, `care_of` and `email` are deliberately excluded for that reason. The write API is general; extending the scope is a change to `SCOPED_FIELDS` and the input-value map beside it.
+
+### The six fields cannot be assigned
+
+Recording provenance is easy to add and easy to bypass, so the enforcement is the point. `_init_result` returns an `EnrichedRecord` — a `dict` subclass on which the six scoped keys are **write-locked**:
+
+```python
+record.write("domain", "mit.edu", registry_evidence("ror", ror_id))   # the only way
+record["domain"] = "mit.edu"                                          # UnattributedWriteError
+record.update({"domain": "mit.edu"})                                  # UnattributedWriteError
+```
+
+`evidence` is a required, structured argument; `None` or a bare string raises `MissingEvidenceError`. Reads are unchanged — it is still a dict, so `result.get("name1_enriched")` works everywhere it did. `EnrichmentResult` carries the same lock past finalisation, because [batch consensus](#stage-6-batch-consensus) writes onto already-finalised records.
+
+This generalises what [Fix 1](#2b--ownership-guard-domain_ownership_guard_enabled-default-on) already did for `domain` through `resolve_domain`: that path is now one caller of `record.write` (`utils.domain_resolver.write_domain`) rather than a parallel mechanism.
+
+### The event model
+
+One event per **write**, not per record:
+
+| Field | Meaning |
+|---|---|
+| `seq` | Monotonic per record, across all fields — so the *interleaving* of writes is reconstructable, not just the per-field order |
+| `field` | One of the six |
+| `kind` | `write` (a producer decided this value) · `transform` (a deterministic rule restyled a value already present — casing, abbreviation expansion, slot packing) · `revert` (the admissibility gate) |
+| `old_value` / `new_value` | `old_value` is null on the first write |
+| `producer_chain` | The ordered tools that produced this **one** value, e.g. `["serp", "fetch", "llm_tier2a"]`. A chain is not competing sources; competing sources are separate events on separate `seq` numbers |
+| `evidence_ref` | The thing a reviewer opens: a `ror_id` / `lei_id`, `{source_url, retrieved_at}`, `{deployment, prompt_version, temperature}` for an LLM write, `{donor_record_id, …}` for an inheritance |
+| `confidence_scale` / `confidence_value` | See below |
+| `rule_id` | The use case or guard identifier where one applies |
+| `tier` | The tier that ran |
+
+A `transform` is recorded but never becomes the attribution: output casing did not decide that Name 1 is "Massachusetts Institute of Technology", ROR did.
+
+**LLM writes record the deployment, the prompt version and the temperature.** A value produced by a model deployment is not reproducible without them, and deployments are not permanent. The prompt **text** is never logged — `llm/prompts.py` exposes a version identifier per prompt (`tier3_llm/v1:1043574c`), a declared major plus a digest of the prompt pair that shipped, so an edit nobody thought was semantic still moves the version.
+
+### Confidence is not one scale
+
+The single `confidence` float was fed by numbers that are not commensurable:
+
+| Scale | What it is |
+|---|---|
+| `ror_local` | ROR's local rescore against the record's name variants, 0.0–1.0 |
+| `fuzzy_ratio` | RapidFuzz string similarity, 0–100 — Tier 2A/2B matching, child matching, GLEIF's name guard, the domain ownership guard |
+| `llm_self_reported` | A model's assertion about its own output. **Not a probability of anything** |
+| `registry_exact` | A registry returned an identifier it owns. Not scored, returned |
+| `deterministic` | A rule fired. `1.0` means "this rule matched", not "100% likely" |
+| `inherited` | Copied from another record in the batch; only as good as the donor's own scale, which travels with it |
+
+0.85 from the first three means three different things, and thresholding them with one number is not sound. Every event therefore carries its scale, and `provenance.comparable(a, b)` is false unless the scales are equal.
+
+The record-level `confidence` field is **kept for backward compatibility and is a coarse projection, not a measurement** — see the note on `api.models.EnrichmentResult.confidence`.
+
+### Guard-rejected candidates
+
+A candidate is logged as a rejection only when a **guard** refused it — the ROR country guard, the distinctive-token guard, the identifier-token guard, Fix 1's domain-ownership guard, GLEIF's name verification. Those are the decision-relevant refusals: the pipeline had a confident answer and deliberately declined it, which is the case most worth being able to defend afterwards. The full candidate list from every lookup is **not** logged — it multiplies volume for little value. Rejections are capped at 3 per field per record and anything beyond the cap is counted in `provenance_rejected_omitted`, never silently dropped.
+
+### The admissibility gate
+
+At the end of `finalise`, every non-null scoped field must carry at least one provenance event. One that does not is inadmissible: the value is **reverted to the input value** and the field is flagged `unattributed-value`. The record is **not** failed — shipping the original input is strictly better than failing the batch, and strictly better than shipping an unattributable value. In tests the same condition is a hard assertion (`assert_admissible`).
+
+### Response shape
+
+Two projections of the same data, both in the `/enrich` JSON:
+
+```jsonc
+"provenance": [
+  {"seq": 1, "field": "name1", "kind": "write",
+   "old_value": null, "new_value": "Massachusetts Institute of Technology",
+   "producer_chain": ["ror"], "evidence_ref": "https://ror.org/042nb2s44",
+   "confidence_scale": "registry_exact", "confidence_value": 1.0,
+   "rule_id": "tier1-ror:parent-match", "tier": 1},
+  {"seq": 4, "field": "name2", "kind": "write",
+   "old_value": null, "new_value": "MIT Department of Chemical Engineering",
+   "producer_chain": ["serp", "fetch", "llm_lab_parent"],
+   "evidence_ref": {"deployment": "…", "prompt_version": "lab_parent/v1:cb2174d6",
+                    "temperature": 0.0, "self_reported": "high",
+                    "source_url": "https://langerlab.mit.edu/…"},
+   "confidence_scale": "llm_self_reported", "confidence_value": 0.9,
+   "rule_id": "uc13:parent-department-from-lab-page", "tier": 2}
+]
+```
+
+…plus `provenance_rejected` and `provenance_rejected_omitted`, and **six derived scalar columns** — one per scoped field, format `producer:tier:confidence_band`:
+
+| Column | Example |
+|---|---|
+| `Name 1 Provenance` | `ror:1:exact` |
+| `Name 2 Provenance` | `llm_lab_parent:2:self_high` |
+| `Domain Provenance` | `ror:1:exact` |
+| `Record Type Provenance` | `classifier:-:rule` |
+| `ROR ID Provenance` | `ror:1:exact` |
+| `LEI ID Provenance` | `batch_consensus:-:inherited` |
+
+Bands are namespaced by scale (`self_high`, never a bare `high`) precisely so two scalars cannot read as comparable just because both say "high". They are **regenerated from the events** on every write and never maintained separately, so the column and the log cannot drift.
+
+The XLSX output goes from **59 to 65 columns**. `/enrich/file` cannot carry the nested array and emits the six derived columns only; the events ship in the `/enrich` JSON response.
+
+### What this is not
+
+- **Not telemetry.** The log is part of the API response. Application Insights remains operational monitoring and receives none of this.
+- **Not persisted.** The API stays stateless per batch and gains no database dependency. ADF decides what to store.
+- **Not a behaviour change.** This records what happens; it does not alter it. On the 50-record demo batch, all six scoped fields are byte-identical to the pre-fix run, live and mocked, as are `flag_codes`, `flagged_fields`, `tier_used` and `source`.
+
+**Volume** — 217 events for 50 records (4.34/record; 196 writes, 21 transforms), 53 logged rejections and 34 beyond the cap. Projected at ~43,400 events per 10,000 records. Tests `test_provenance.py`.
+
+---
+
 ## Data Models
 
 **File:** `api/models.py`
@@ -1800,11 +1923,13 @@ enrichment_api/
 │   ├── tier3_llm.py              # Tier 3: Pure LLM inference (last resort)
 │   ├── company_canonical.py      # Company name canonicalization via LLM
 │   ├── batch_consensus.py        # Stage 6: propagate one identity across a batch's same-org/same-address rows
-│   └── confidence.py             # Scoring rules, flag logic, status assignment
+│   ├── flags.py                  # THE flag authority — codes, scopes and reasons, rebuilt once in finalise
+│   ├── provenance.py             # Write-locked record + per-field provenance log + admissibility gate
+│   └── confidence.py             # Status assignment (the flag logic that lived here is dead — see flags.py)
 │
 ├── llm/                          # LLM integration layer
 │   ├── openai_client.py          # AsyncAzureOpenAI wrapper (JSON mode, retries, api_version param)
-│   ├── prompts.py                # All LLM prompt templates as module constants
+│   ├── prompts.py                # All LLM prompt templates as module constants + prompt version ids
 │   └── test_connection.py        # Connection test utility
 │
 ├── search/                       # Web search abstraction
@@ -1935,6 +2060,10 @@ Derives `enrichment_status` from confidence, match result and tier. Flag rules u
 ### `enrichment/flags.py` — Review Flags
 
 The single flag authority. `compute_flags` is called once, from `finalise`, and rebuilds `flag_for_review`, `flag_codes`, `flagged_fields` and `flag_reason` from the record's final state. Tiers record evidence (`_ev_*` transient keys, stripped here) and never write a flag, so no reason can name a tier that ran and no reason can mask another. Holds the code vocabulary, the detection rule for each code, the field-scope vocabulary and the reason prose. Full description in [Flag Rules](#flag-rules). Tests `test_flags.py`.
+
+### `enrichment/provenance.py` — Per-Field Provenance
+
+`EnrichedRecord` (the write-locked working record), the `Evidence` / `ProvenanceEvent` / `RejectedCandidate` model, the confidence-scale vocabulary and its bands, the derived-scalar projection, and the admissibility gate. Everything the pipeline writes to one of the six scoped fields passes through `EnrichedRecord.write`; there is no other way in, and direct assignment raises. Full description in [Per-Field Provenance and Admissibility](#per-field-provenance-and-admissibility). Tests `test_provenance.py`.
 
 ### `dedup/models.py` — Dedup Schemas
 
@@ -2470,7 +2599,20 @@ RETURN EnrichmentResponse (JSON)
 
 ## Changelog
 
-### Flag model redesign — triage signal, not an execution trace (newest)
+### Per-field provenance and admissibility (newest)
+
+The response carried one `tier_used` / `source` / `confidence` triple per record. Row 5 has Name 1 from ROR, Name 2 from a SERP → fetch → LLM chain and a department domain from the probe — one label collapses all three — and no record-level label can represent a field written twice, which is exactly what [Fix 2's retry](#stage-5-tier-1-re-lookup-after-canonicalisation) does to `name1`. Row 4's symptom, a verified ROR ID shipping next to an LLM-uncertainty flag, was that sequence going unrecorded. Full description in [Per-Field Provenance and Admissibility](#per-field-provenance-and-admissibility).
+
+- **The six scoped fields cannot be assigned.** `_init_result` returns an `EnrichedRecord` on which `name1_enriched`, `name2_enriched`, `domain`, `record_type`, `ror_id` and `lei_id` are write-locked: `record["domain"] = x` raises, and the only way in is `record.write(field, value, evidence)` with a required structured `evidence`. `EnrichmentResult` carries the same lock past finalisation, because batch consensus writes onto finalised records. Recording provenance is easy to add and easy to bypass, so the enforcement is the point — the phase-1 scope is six fields because those are the ones whose wrong value causes a wrong merge in Phase 2, and because none of them is personal data.
+- **One event per write, not per record.** `seq` is monotonic across the whole record so the interleaving is reconstructable; `producer_chain` names the tools that produced *one* value in sequence (`["serp","fetch","llm_tier2a"]`); a field written twice is two events. LLM writes record the deployment, the prompt version and the temperature — a value produced by a model deployment is not reproducible without them — and never the prompt text.
+- **Confidence is no longer one number.** `ror_local`, `fuzzy_ratio` and `llm_self_reported` are not commensurable: 0.85 from each means three different things. Every event carries `confidence_scale` beside `confidence_value`, and derived bands are namespaced by scale (`self_high`, never a bare `high`). The record-level `confidence` is kept for backward compatibility and documented as a coarse projection, not a measurement. Two cross-scale comparison sites are reported and left unchanged: `tier2a_contact.py`'s `max(llm_score, our_score)` and the (dead) `determine_enrichment_status`.
+- **Guard rejections are logged; candidate lists are not.** The five guards — ROR country, distinctive-token, identifier-token, Fix 1's domain ownership, GLEIF name verification — record what they refused, capped at 3 per field per record with the overflow counted rather than silently dropped. On the demo batch: 25 GLEIF name-verification, 14 distinctive-token, 11 domain-ownership, 2 GLEIF country, 2 identifier-token.
+- **An unattributable value is not shipped.** At the end of `finalise` every non-null scoped field must have an event; one that does not is reverted to the input value and flagged `unattributed-value`. The record is never failed — the original input beats both a failed batch and an unattributable value.
+- **Six new columns, 59 → 65.** `producer:tier:confidence_band` per scoped field, regenerated from the events and never maintained separately. The nested events array ships in the `/enrich` JSON only; `/enrich/file` emits the six columns. **Whether DATAshaper's column-typed validation model accepts 65 columns needs confirming externally before rollout.**
+- **`flagged_fields` is now derived from the log.** "Is this value an unverified inference" is a question about who wrote it last, and the log is that record — so the `unverified-inference` scope follows from provenance rather than from a marker a tier remembered to set, and a field a registry overwrote is no longer the LLM's claim without needing a second check.
+- **Not telemetry, not persisted, not a behaviour change.** The log is in the API response; App Insights stays operational monitoring; the API remains stateless and gains no database. On the demo batch all six scoped values are byte-identical to the pre-fix run — live and mocked — as are `flag_codes`, `flagged_fields`, `tier_used` and `source`. 217 events for 50 records, ~43,400 projected for 10,000. Tests `test_provenance.py`.
+
+### Flag model redesign — triage signal, not an execution trace
 
 47 of the 50 demo records were flagged, so the flag could not be used to decide what to look at. Four structural causes, all fixed here. Full description in [Flag Rules](#flag-rules).
 

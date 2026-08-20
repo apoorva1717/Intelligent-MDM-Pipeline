@@ -7,6 +7,14 @@ came to contradict its own documented spec (a high-confidence Tier 2
 canonicalisation was flagged "LLM canonical form — verify" even though the
 table said no flag). The flag model now lives in ``enrichment.flags`` and
 is applied from exactly one place, ``finalise``.
+
+Fix 10 note — ``determine_enrichment_status`` reads the record-level
+``confidence`` label, which is a coarse projection over four incommensurable
+scales (see ``api.models.EnrichmentResult.confidence``). It is also, like
+``should_flag_for_review`` before it, **called by nothing**: every tier sets
+``enrichment_status`` inline. It is left in place unchanged — Fix 10 records
+what happens rather than changing it — and reported as one of the sites where
+values from different scales would be compared if it were ever wired up.
 """
 
 from __future__ import annotations

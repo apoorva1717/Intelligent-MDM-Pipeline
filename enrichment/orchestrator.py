@@ -56,6 +56,26 @@ from enrichment.preprocess import (
 from dedup.signatures import normalize_key
 from enrichment.classifier import TypeEvidence, classify
 from enrichment.flags import compute_flags
+from enrichment.provenance import (
+    DERIVED_SCALAR_FIELDS,
+    EnrichedRecord,
+    Evidence,
+    FUZZY_RATIO,
+    GUARD_GLEIF_NAME,
+    LLM_SELF_REPORTED,
+    ROR_LOCAL,
+    ProvenanceLog,
+    UNATTRIBUTED_CODE,
+    UNATTRIBUTED_REASON,
+    deterministic_evidence,
+    derived_scalars,
+    enforce_admissibility,
+    inherited_evidence,
+    llm_evidence,
+    registry_evidence,
+    self_reported_value,
+    web_evidence,
+)
 from enrichment.tier1_lei import LEIClient, clear_lei_cache, lei_normalised_hits
 from enrichment.tier1_ror import RORClient, clear_ror_cache, ror_normalised_hits
 from enrichment.tier2_canonical import run_tier2_canonical
@@ -66,6 +86,15 @@ from enrichment.website_resolver import (
     resolve_website_via_serp,
 )
 from llm.openai_client import OpenAIClient, install_httpx_aclose_noise_filter
+from llm.prompts import (
+    COMPANY_CANONICAL_PROMPT_VERSION,
+    LAB_PARENT_PROMPT_VERSION,
+    PERSON_AFFILIATION_PROMPT_VERSION,
+    TIER2A_PROMPT_VERSION,
+    TIER2B_PROMPT_VERSION,
+    TIER2_CANONICAL_PROMPT_VERSION,
+    TIER3_PROMPT_VERSION,
+)
 from search.base import SearchClient
 from search.duckduckgo_client import DuckDuckGoClient
 from search.page_fetcher import PageFetcher
@@ -83,6 +112,7 @@ from utils.domain_resolver import (
     DomainEvidence,
     canonicalise_host,
     resolve_domain,
+    write_domain,
 )
 from utils.text_utils import (
     canonical_is_spelling_variant,
@@ -278,11 +308,18 @@ def _score_dept_candidate(
 
 # ── Result helpers ────────────────────────────────────────────────────────────
 
-def _init_result(record: EnrichmentRecord) -> dict[str, Any]:
-    """Create a blank result dict with originals populated."""
+def _init_result(record: EnrichmentRecord) -> EnrichedRecord:
+    """Create a blank result record with originals populated.
+
+    The six Phase 1 scoped fields (``name1_enriched``, ``name2_enriched``,
+    ``domain``, ``record_type``, ``ror_id``, ``lei_id``) are seeded empty and
+    are write-locked from here on: the only way any of them takes a value is
+    ``result.write(field, value, evidence)``. Seeding is not writing — an empty
+    field asserts nothing and so has nothing to attribute.
+    """
     # Map the legacy single 'street' input into street1 if street1 is blank.
     street1_original = record.street1 or record.street
-    return {
+    return EnrichedRecord.initialise({
         "record_id": record.record_id,
         # SAP master-data columns carried through verbatim (not enriched).
         "ecc_customer_number": record.ecc_customer_number,
@@ -386,7 +423,7 @@ def _init_result(record: EnrichmentRecord) -> dict[str, Any]:
         "enrichment_status": "failed",
         "duration_ms": 0,
         "error": None,
-    }
+    })
 
 
 def _write_registry_name(
@@ -394,6 +431,11 @@ def _write_registry_name(
     field: str,
     value: str | None,
     registry: str,
+    *,
+    identifier: str | None = None,
+    score: float | None = None,
+    scale: str | None = None,
+    rule_id: str | None = None,
 ) -> None:
     """Write a registry's official name into an output name field and record
     that the field is registry-owned.
@@ -413,7 +455,18 @@ def _write_registry_name(
     """
     if not (value and value.strip()):
         return
-    result[f"{field}_enriched"] = value.strip()
+    # ``identifier`` is the evidence_ref — the registry id a reviewer opens to
+    # check the name. A registry-supplied name is exact by definition: the
+    # scored comparison happened upstream, at the match, and its score is
+    # recorded on the identifier's own event rather than re-asserted here.
+    _write(
+        result, f"{field}_enriched", value.strip(),
+        registry_evidence(
+            registry.lower(), identifier,
+            score=score, scale=scale,
+            rule_id=rule_id or f"registry-name:{registry.lower()}",
+        ),
+    )
     result.setdefault("_registry_name_fields", set()).add(field)
     logger.info({
         "record_id": result.get("record_id"),
@@ -422,6 +475,18 @@ def _write_registry_name(
         "registry": registry,
         "value": value.strip(),
     })
+
+
+def _write(result: Any, field: str, value: Any, evidence: Evidence) -> None:
+    """Write one field, attributing it when the field is in Phase 1 scope.
+
+    A single funnel so the tier code reads the same whichever field it is
+    writing. Scoped fields go through ``EnrichedRecord.write`` and raise
+    without evidence; the name slots below Name 2 are out of Phase 1 scope and
+    are written directly, which is the one line that changes when the scope is
+    extended.
+    """
+    result.write(field, value, evidence)
 
 
 # ── Output normalisation — one function, every exit path ──────────────────────
@@ -466,7 +531,11 @@ def normalise_output_fields(result: dict[str, Any]) -> dict[str, Any]:
             continue
         val = result.get(field)
         if val:
-            result[field] = normalise_case(str(val), mode="name")
+            _cased = normalise_case(str(val), mode="name")
+            if isinstance(result, EnrichedRecord):
+                result.transform(field, _cased, rule_id="rule7:output-casing")
+            else:
+                result[field] = _cased
     for field in _CASE_TEXT_FIELDS:
         val = result.get(field)
         if val:
@@ -477,6 +546,48 @@ def normalise_output_fields(result: dict[str, Any]) -> dict[str, Any]:
     if email:
         result["email_enriched"] = str(email).lower()
     return result
+
+
+def _scoped_scalars(result: Any) -> dict[str, str | None]:
+    """The six derived scalar columns for *result*, regenerated from its log.
+
+    Format ``producer:tier:confidence_band`` — ``ror:1:exact``,
+    ``llm_tier3:3:self_high``. A null field carries a null scalar: there is no
+    value to attribute. Bands are namespaced by scale (``self_high``, never a
+    bare ``high``) so two scalars can never be read as comparable just because
+    both say "high" — see :mod:`enrichment.provenance` Step 3.
+    """
+    log = result.provenance
+    scalars: dict[str, str | None] = {}
+    for field, column in DERIVED_SCALAR_FIELDS.items():
+        value = result.get(field)
+        scalars[column] = (
+            derived_scalars(log)[column]
+            if value not in (None, "")
+            else None
+        )
+    return scalars
+
+
+def _raise_unattributed_flag(result: Any, fields: list[str]) -> None:
+    """Add the gate's flag to a record whose flags were already computed.
+
+    ``compute_flags`` is the single flag authority and runs earlier in
+    ``finalise`` — before the classifier and the output casing, both of which
+    write scoped fields. The gate can only run after those, so rather than move
+    the flag decision it appends this one code, which is the only code that can
+    be raised after ``compute_flags`` has run.
+    """
+    codes = list(result.get("flag_codes") or [])
+    if UNATTRIBUTED_CODE not in codes:
+        codes.append(UNATTRIBUTED_CODE)
+    flagged = sorted(set(result.get("flagged_fields") or []) | set(fields))
+    result["flag_codes"] = codes
+    result["flagged_fields"] = flagged
+    result["flag_for_review"] = True
+    prose = f"{', '.join(fields)}: {UNATTRIBUTED_REASON}"
+    existing = result.get("flag_reason")
+    result["flag_reason"] = f"{existing}; {prose}" if existing else prose
 
 
 def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
@@ -491,7 +602,7 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     for field in ENRICHED_NAME_FIELDS:
         val = result.get(field)
         if val is not None and not str(val).strip():
-            result[field] = None
+            result.transform(field, None, rule_id="bug5:empty-string-guard")
 
     # Item 6c: a department slot that was blank in the input and was
     # populated ONLY by Tier 3 (LLM inference) is a guess. Require high
@@ -517,7 +628,20 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
                 # No flag: the input slot was blank and the output slot is
                 # blank. Nothing was dropped and nothing is uncertain — the
                 # record simply has no unit there, which is not a defect.
-                result[f"{_slot}_enriched"] = None
+                # Recorded as a write, not a transform: dropping the value is
+                # a decision about the field, and the log is what shows a
+                # reviewer that Tier 3 offered one and the rule refused it.
+                _write(
+                    result, f"{_slot}_enriched", None,
+                    deterministic_evidence(
+                        "item6c:tier3-guess-dropped",
+                        producer="finalise", tier=3,
+                        evidence_ref={
+                            "dropped": result.get(f"{_slot}_enriched"),
+                            "confidence": result.get("confidence"),
+                        },
+                    ),
+                )
 
     # Normalise Name 1 when it was passed through uncanonicalised (a ROR miss
     # left the raw source value — often ALL-CAPS and abbreviated, e.g. "LARGO
@@ -528,9 +652,15 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     name1_val = result.get("name1_enriched")
     if name1_val:
         if result.get("source") == "passthrough":
-            result["name1_enriched"] = clean_passthrough_org_name(name1_val)
+            result.transform(
+                "name1_enriched", clean_passthrough_org_name(name1_val),
+                rule_id="rule7:passthrough-org-name-cleanup",
+            )
         else:
-            result["name1_enriched"] = smart_title_case(name1_val) or name1_val
+            result.transform(
+                "name1_enriched", smart_title_case(name1_val) or name1_val,
+                rule_id="rule7:smart-title-case",
+            )
 
     # Expand organisational abbreviations in the OUTPUT name fields. Before
     # Fix 4 `expand_abbreviations` only ever reached an output name via
@@ -552,7 +682,10 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
             continue
         val = result.get(f"{field}_enriched")
         if val:
-            result[f"{field}_enriched"] = expand_abbreviations(val) or val
+            result.transform(
+                f"{field}_enriched", expand_abbreviations(val) or val,
+                rule_id="fix4:expand-abbreviations",
+            )
 
     # Guarantee the short legal form on the final output regardless of source
     # (input passthrough, ROR, GLEIF, or LLM): "… Aktiengesellschaft" → "… AG",
@@ -561,7 +694,10 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     for field in ENRICHED_NAME_FIELDS:
         val = result.get(field)
         if val:
-            result[field] = collapse_legal_suffix(val)
+            result.transform(
+                field, collapse_legal_suffix(val),
+                rule_id="uc17:collapse-legal-suffix",
+            )
 
     # Canonicalise academic unit names on the department slots only. name1
     # (the institution) is never a "Department of X", so we leave
@@ -575,7 +711,9 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
         if val and not is_granular_unit(val):
             canonical = canonicalise_unit_name(val)
             if canonical and canonical != val:
-                result[field] = canonical
+                result.transform(
+                    field, canonical, rule_id="uc5:canonicalise-unit-name",
+                )
 
     # A named building lifted out of a name field (see preprocess) fills the
     # Building output only when the address stage did not already extract one
@@ -595,7 +733,17 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
         if result.get(f"{field}_enriched") is None and field not in preprocess_cleared:
             orig = result.get(f"{field}_original")
             if orig and str(orig).strip():
-                result[f"{field}_enriched"] = str(orig).strip()
+                # The input value IS the producer here. Attributing it to the
+                # record itself is what separates "nothing found it, so the
+                # supplied value stands" from "a tier confirmed it".
+                _write(
+                    result, f"{field}_enriched", str(orig).strip(),
+                    deterministic_evidence(
+                        "passthrough:input-retained",
+                        producer="input",
+                        evidence_ref={"input_field": f"{field}_original"},
+                    ),
+                )
 
     # Passthrough for care_of / contact / email / street fields: any
     # field that preprocessing / tiers did not touch retains its
@@ -633,7 +781,14 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
             _slot = next((s for s in _street_out if not result.get(s)), None)
             if _slot is not None:
                 result[_slot] = _normalise_street_value(_frag) or _frag
-                result[_nf] = None
+                _write(
+                    result, _nf, None,
+                    deterministic_evidence(
+                        "uc9:location-fragment-moved-to-street",
+                        producer="finalise",
+                        evidence_ref={"moved": _frag, "into": _slot},
+                    ),
+                )
             continue
         _addrs, _cleaned = _extract_addresses(str(_nval))
         if not _addrs:
@@ -646,7 +801,14 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
                 break
             result[_slot] = _normalise_street_value(_addr) or _addr
         if _placed_all:
-            result[_nf] = _cleaned or None
+            _write(
+                result, _nf, _cleaned or None,
+                deterministic_evidence(
+                    "uc9:address-in-name-extracted",
+                    producer="finalise",
+                    evidence_ref={"addresses": list(_addrs)},
+                ),
+            )
 
     # UC 11 safety net: if preprocessing rewrote a DBA variant in a name
     # field, the preprocessed value IS the canonical form. Restore it
@@ -656,7 +818,14 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     dba_values = result.get("_dba_values") or {}
     for base, preprocessed in dba_values.items():
         if preprocessed and result.get(f"{base}_enriched") != preprocessed:
-            result[f"{base}_enriched"] = preprocessed
+            _write(
+                result, f"{base}_enriched", preprocessed,
+                deterministic_evidence(
+                    "uc11:dba-marker-is-user-intent",
+                    producer="preprocess",
+                    evidence_ref={"overrode": result.get(f"{base}_enriched")},
+                ),
+            )
 
     # Post-tier dedup of the department slots. Preprocess already deduped, but
     # the tiers (especially the Tier 3 LLM) can set two department slots to the
@@ -681,7 +850,22 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
         kept_vals.append(val)
         kept_norms.append(n)
     for i, f in enumerate(DEPT_ENRICHED_FIELDS):
-        result[f] = kept_vals[i] if i < len(kept_vals) else None
+        _packed = kept_vals[i] if i < len(kept_vals) else None
+        if _packed == result.get(f):
+            continue
+        # A transform, not a write: packing decides WHICH SLOT a value sits
+        # in, never what the value is. Attribution stays with whatever
+        # produced it, which is what keeps a Tier 3 department flagged after
+        # the slots are repacked around it.
+        _write(
+            result, f, _packed,
+            deterministic_evidence(
+                "dept-slot-dedup-and-pack",
+                producer="finalise",
+                evidence_ref={"replaced": result.get(f)},
+                kind="transform",
+            ),
+        )
 
     # Compute all changed flags.
     #
@@ -763,6 +947,27 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # what tells it which names came from a registry and must not be re-cased.
     normalise_output_fields(result)
 
+    # ── The admissibility gate (Fix 10, Step 5) ──────────────────────────
+    # Last, because it has to see every write. Every non-null scoped field
+    # must carry at least one provenance event; one that does not is
+    # inadmissible and its value is reverted to the input value and flagged.
+    # The record is NOT failed — shipping the original input is strictly
+    # better than failing the batch, and strictly better than shipping a value
+    # nothing is on record as having produced.
+    reverted = enforce_admissibility(result)
+    if reverted:
+        _raise_unattributed_flag(result, reverted)
+
+    # Two projections of one log. The events array is the record; the six
+    # derived scalars are regenerated from it here and never maintained
+    # separately, so they cannot drift from what the events say.
+    result["provenance"] = result.provenance.as_dicts()
+    result["provenance_rejected"] = result.provenance.rejections_as_dicts()
+    result["provenance_rejected_omitted"] = dict(
+        result.provenance.rejections_omitted,
+    )
+    result.update(_scoped_scalars(result))
+
     result["duration_ms"] = int((time.monotonic() - start) * 1000)
     # Strip transient non-schema keys before pydantic validation.
     result.pop("_preprocess_cleared", None)
@@ -790,6 +995,60 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     result.pop("_gleif_legal_form_id", None)
     result.pop("_gleif_legal_form_other", None)
     return result
+
+
+#: Registry guard name → the field the refused candidate would have written.
+#: A refused ROR/GLEIF candidate would have supplied the identifier, the name
+#: and the domain together, so the rejection is filed against the identity that
+#: was declined rather than duplicated across all three.
+_GUARD_FIELDS: dict[str, str] = {
+    "ror_country": "ror_id",
+    "distinctive_token": "ror_id",
+    "identifier_token": "ror_id",
+    "local_rescore": "ror_id",
+    "gleif_country": "lei_id",
+    "gleif_name_verification": "lei_id",
+}
+
+
+def _log_registry_rejections(
+    result: Any,
+    registry: str,
+    res: dict[str, Any] | None,
+) -> None:
+    """Copy a registry client's guard rejections onto the record's log.
+
+    Only guards — the ROR country guard, the distinctive- and identifier-token
+    guards and GLEIF's name verification. Not the full candidate list from
+    every lookup: that multiplies volume for little value, whereas a guard
+    rejection is the pipeline refusing an answer it was confident about.
+    Capped per field per record inside :meth:`ProvenanceLog.reject`, which
+    keeps the count of anything beyond the cap.
+    """
+    if not res or not isinstance(res, dict):
+        return
+    for raw in res.get("guard_rejections") or ():
+        guard = str(raw.get("guard"))
+        field = _GUARD_FIELDS.get(guard, "ror_id")
+        score = raw.get("score")
+        result.reject(
+            field, raw.get("candidate_name"), guard,
+            reason=raw.get("detail"),
+            evidence=Evidence(
+                producer_chain=(registry,),
+                tier=1,
+                confidence_scale=(
+                    ROR_LOCAL if registry == "ror" else FUZZY_RATIO
+                ),
+                confidence_value=score,
+                evidence_ref={
+                    "candidate_id": raw.get("candidate_id"),
+                    "query": raw.get("query"),
+                    "threshold": raw.get("threshold"),
+                },
+                rule_id=f"{registry}-guard:{guard}",
+            ),
+        )
 
 
 def _record_gleif_evidence(result: dict[str, Any], lei_res: dict[str, Any]) -> None:
@@ -822,7 +1081,23 @@ def _classify_record(result: dict[str, Any]) -> None:
         gleif_legal_form_other=result.get("_gleif_legal_form_other"),
     )
     record_type, source = classify(evidence)
-    result["record_type"] = record_type
+    # `record_type` is decided from RANKED evidence, not from a score: a ROR
+    # research flag outranks a GLEIF category, which outranks a keyword. The
+    # rule that fired is the attribution, and `record_type_source` names it.
+    _write(
+        result, "record_type", record_type,
+        deterministic_evidence(
+            f"classifier:{source}",
+            producer="classifier",
+            evidence_ref={
+                "decided_by": source,
+                "ror_is_research": result.get("_ror_is_research"),
+                "lei_id": result.get("lei_id"),
+                "gleif_category": result.get("_gleif_category"),
+                "name1": evidence.name1,
+            },
+        ),
+    )
     result["record_type_source"] = source
     routing = result.get("routing_type")
     # The record ran down a branch chosen from `routing`; where that disagrees
@@ -862,6 +1137,8 @@ def _apply_domain(
     serp_h1: str | None = None,
     serp_url: str | None = None,
     settings: Settings | None = None,
+    producer_chain: tuple[str, ...] = ("website_resolver",),
+    tier: int | None = None,
 ) -> DomainDecision:
     """Route one candidate URL through the single ``domain`` write path.
 
@@ -891,26 +1168,25 @@ def _apply_domain(
         serp_h1=serp_h1,
         serp_url=serp_url or candidate_url,
     )
-    decision = resolve_domain(
+    decision = write_domain(
+        result,
         candidate_url,
         evidence,
+        producer_chain=(
+            (registry.lower(),) if registry else producer_chain
+        ),
+        registry_identifier=result.get("ror_id") or result.get("lei_id"),
         threshold=settings.domain_name_match_threshold if settings else None,
         guard_enabled=(
             settings.domain_ownership_guard_enabled if settings else None
         ),
+        # The tier that was running when the candidate was decided. Falls back
+        # to the record's current tier rather than being left unstated: a
+        # domain accepted during Tier 1 and one accepted during the Tier 2B
+        # fallback rest on different amounts of work.
+        tier=tier if tier is not None else result.get("tier_used"),
     )
-
-    if decision.domain:
-        result["domain"] = decision.domain
-        result["website_url"] = decision.website_url
-        result["_website_raw"] = candidate_url
-        result["domain_verified_by"] = decision.verified_by
-        # A later, verified candidate clears an earlier rejection.
-        result["domain_rejected"] = False
-        result.pop("_domain_unverified", None)
-    elif decision.rejected:
-        result["domain_rejected"] = True
-        result["_domain_unverified"] = True
+    if decision.rejected and not decision.domain:
         logger.info(
             "[%s] domain rejected as unverified: candidate=%s name1=%r",
             result.get("record_id"), decision.candidate,
@@ -955,7 +1231,9 @@ def _match_child_locally(
 
 # ── Tier result application helpers ───────────────────────────────────────────
 
-def _apply_tier2a(result: dict, tier2a: Tier2AResult, mode: str) -> None:
+def _apply_tier2a(
+    result: dict, tier2a: Tier2AResult, mode: str, deployment: str = "unknown",
+) -> None:
     """Transfer Tier 2A outcome into the result dict."""
     result["tier_used"] = 2
     result["tier2_mode"] = tier2a.mode
@@ -974,7 +1252,22 @@ def _apply_tier2a(result: dict, tier2a: Tier2AResult, mode: str) -> None:
         )
 
     if tier2a.name2_enriched and tier2a.name2_enriched.strip():
-        result["name2_enriched"] = tier2a.name2_enriched.strip()
+        # One value, produced by three tools in sequence: the search that found
+        # the contact's page, the fetch that retrieved it, and the model that
+        # read the department off its structured elements.
+        _write(
+            result, "name2_enriched", tier2a.name2_enriched.strip(),
+            llm_evidence(
+                ("serp", "fetch", "llm_tier2a"),
+                tier=2,
+                prompt_version=TIER2A_PROMPT_VERSION,
+                deployment=deployment,
+                self_reported=tier2a.confidence,
+                source_url=tier2a.source_url,
+                rule_id=f"tier2a:{tier2a.mode}",
+                extra={"name2_match": tier2a.name2_match},
+            ),
+        )
     # Only populate name3 if the input record originally had one.
     # Tier 2A opportunistically extracts groups/programs from the
     # contact's page — but we should not introduce a name3 the user
@@ -987,7 +1280,9 @@ def _apply_tier2a(result: dict, tier2a: Tier2AResult, mode: str) -> None:
         result["name3_enriched"] = tier2a.name3_enriched.strip()
 
 
-def _apply_tier3(result: dict, tier3: Tier3Result) -> None:
+def _apply_tier3(
+    result: dict, tier3: Tier3Result, deployment: str = "unknown",
+) -> None:
     """Transfer Tier 3 outcome into the result dict."""
     result["tier_used"] = 3
     result["source"] = "LLM"
@@ -1010,7 +1305,17 @@ def _apply_tier3(result: dict, tier3: Tier3Result) -> None:
             # reformatting / acronym expansion of the original.
             original_name1 = result.get("name1_original")
             if canonical_preserves_identity(original_name1, suggestion):
-                result["name1_enriched"] = suggestion
+                _write(
+                    result, "name1_enriched", suggestion,
+                    llm_evidence(
+                        ("llm_tier3",),
+                        tier=3,
+                        prompt_version=TIER3_PROMPT_VERSION,
+                        deployment=deployment,
+                        self_reported=tier3.confidence,
+                        rule_id="tier3:name1_suggestion",
+                    ),
+                )
                 written.add("name1")
             else:
                 logger.warning(
@@ -1026,7 +1331,17 @@ def _apply_tier3(result: dict, tier3: Tier3Result) -> None:
         for slot in DEPT_SLOTS:
             suggestion = getattr(tier3, f"{slot}_suggestion", None)
             if suggestion and suggestion.strip():
-                result[f"{slot}_enriched"] = suggestion.strip()
+                _write(
+                    result, f"{slot}_enriched", suggestion.strip(),
+                    llm_evidence(
+                        ("llm_tier3",),
+                        tier=3,
+                        prompt_version=TIER3_PROMPT_VERSION,
+                        deployment=deployment,
+                        self_reported=tier3.confidence,
+                        rule_id=f"tier3:{slot}_suggestion",
+                    ),
+                )
                 result[f"_{slot}_from_tier3"] = True
                 written.add(slot)
 
@@ -1850,11 +2165,40 @@ class Orchestrator:
                     "[%s] person_affiliation: ROR confirm failed", record.record_id,
                 )
                 confirmed = None
+        _log_registry_rejections(result, "ror", confirmed)
 
         if confirmed and confirmed.get("matched"):
             official = (confirmed.get("official_name") or affil.institution).strip()
-            result["name1_enriched"] = official
-            result["ror_id"] = confirmed.get("ror_id")
+            # The chain is what makes this defensible: a search on the person,
+            # a page fetch, a model that named their institution, and ROR
+            # confirming that institution in the record's country. Four tools,
+            # one value — not four competing sources.
+            _affil_chain = ("serp", "fetch", "llm_person_affiliation", "ror")
+            _write(
+                result, "name1_enriched", official,
+                Evidence(
+                    producer_chain=_affil_chain,
+                    tier=1,
+                    confidence_scale=ROR_LOCAL,
+                    confidence_value=confirmed.get("score"),
+                    evidence_ref={
+                        "ror_id": confirmed.get("ror_id"),
+                        "proposed_by_llm": affil.institution,
+                        "llm_confidence": affil.confidence,
+                        "prompt_version": PERSON_AFFILIATION_PROMPT_VERSION,
+                        "deployment": self._settings.openai_model,
+                        "temperature": 0.0,
+                    },
+                    rule_id="person-affiliation:ror-confirmed",
+                ),
+            )
+            _write(
+                result, "ror_id", confirmed.get("ror_id"),
+                registry_evidence(
+                    "ror", confirmed.get("ror_id"),
+                    rule_id="person-affiliation:ror-confirmed",
+                ),
+            )
             result["tier_used"] = 1
             # Name/id/domain are ROR's; the affiliation origin (web lookup on the
             # contact) is recorded in flag_reason. Confidence is capped at medium
@@ -1905,7 +2249,17 @@ class Orchestrator:
                         record.record_id,
                     )
             if department and is_blank(pp_name2):
-                result["name2_enriched"] = department
+                _write(
+                    result, "name2_enriched", department,
+                    llm_evidence(
+                        ("serp", "fetch", "llm_tier2a"),
+                        tier=2,
+                        prompt_version=TIER2A_PROMPT_VERSION,
+                        deployment=self._settings.openai_model,
+                        self_reported=affil.confidence,
+                        rule_id="person-affiliation:department",
+                    ),
+                )
 
             # No flag. The affiliation was confirmed against ROR through the
             # same country and distinctive-token guards as any other Tier 1
@@ -2066,6 +2420,7 @@ class Orchestrator:
                 record.record_id, exc,
             )
             ror_res = {"matched": False}
+        _log_registry_rejections(result, "ror", ror_res)
 
         if ror_res.get("matched"):
             self._tier1_retry_counts["hits_ror"] += 1
@@ -2078,8 +2433,19 @@ class Orchestrator:
             # guards as the first pass, so a hit here is equally verified.
             _write_registry_name(
                 result, "name1", ror_res.get("official_name"), registry="ROR",
+                identifier=ror_res["ror_id"],
+                rule_id="fix2:tier1-retry-after-canonicalisation",
             )
-            result["ror_id"] = ror_res["ror_id"]
+            # The SECOND event on name1 for a record the retry rescues. The
+            # first came from whichever tier produced the corrected name, and
+            # the final value alone would not show that an LLM wrote first.
+            _write(
+                result, "ror_id", ror_res["ror_id"],
+                registry_evidence(
+                    "ror", ror_res["ror_id"],
+                    rule_id="fix2:tier1-retry-after-canonicalisation",
+                ),
+            )
             result["tier_used"] = 1
             result["source"] = "ROR"
             result["confidence"] = "high"
@@ -2135,6 +2501,7 @@ class Orchestrator:
                 record.record_id, exc,
             )
             return
+        _log_registry_rejections(result, "gleif", lei_res)
 
         if lei_res.get("error"):
             self._lei_counts["errors"] += 1
@@ -2151,8 +2518,16 @@ class Orchestrator:
         self._tier1_retry_counts["hits_lei"] += 1
         _write_registry_name(
             result, "name1", lei_res.get("legal_name"), registry="GLEIF",
+            identifier=lei_res.get("lei_id"),
+            rule_id="fix2:tier1-retry-after-canonicalisation",
         )
-        result["lei_id"] = lei_res.get("lei_id")
+        _write(
+            result, "lei_id", lei_res.get("lei_id"),
+            registry_evidence(
+                "gleif", lei_res.get("lei_id"),
+                rule_id="fix2:tier1-retry-after-canonicalisation",
+            ),
+        )
         _record_gleif_evidence(result, lei_res)
         result["tier_used"] = 1
         result["source"] = "gleif"
@@ -2297,6 +2672,8 @@ class Orchestrator:
             "score": lei_res.get("score"),
         })
 
+        _log_registry_rejections(result, "gleif", lei_res)
+
         if lei_res.get("error"):
             self._lei_counts["errors"] += 1
             return False
@@ -2313,8 +2690,16 @@ class Orchestrator:
         # so the legal name is written unconditionally — same rule as ROR.
         _write_registry_name(
             result, "name1", lei_res.get("legal_name"), registry="GLEIF",
+            identifier=lei_res.get("lei_id"),
+            rule_id="tier1-lei:name-verified",
         )
-        result["lei_id"] = lei_res.get("lei_id")
+        _write(
+            result, "lei_id", lei_res.get("lei_id"),
+            registry_evidence(
+                "gleif", lei_res.get("lei_id"),
+                rule_id=f"tier1-lei:{lei_res.get('strategy')}",
+            ),
+        )
         # An LEI proves legal registration, not commercial status — universities,
         # hospitals and foundations hold LEIs too. The classification evidence is
         # recorded; enrichment.classifier decides, in finalise().
@@ -2367,7 +2752,18 @@ class Orchestrator:
                 for slot in NAME_SLOTS:
                     value = block_names.get(slot)
                     if value and value.strip():
-                        result[f"{slot}_enriched"] = value.strip()
+                        _write(
+                            result, f"{slot}_enriched", value.strip(),
+                            deterministic_evidence(
+                                "uc0:overflow-passthrough",
+                                producer="input", tier=1,
+                                evidence_ref={
+                                    "overflow_fields": list(
+                                        overflow.fields or (),
+                                    ),
+                                },
+                            ),
+                        )
                 result["routing_type"] = "unknown"
                 result["tier_used"] = 1
                 result["source"] = "pattern_match"
@@ -2436,12 +2832,26 @@ class Orchestrator:
                     # — write it as the enriched value now so finalise()
                     # doesn't overwrite it with the original. Example:
                     # "Accounts Payable Dept" → "Accounts Payable".
-                    result[f"{base}_enriched"] = pre_stripped
+                    _write(
+                        result, f"{base}_enriched", pre_stripped,
+                        deterministic_evidence(
+                            "preprocess:value-rewritten",
+                            producer="preprocess",
+                            evidence_ref={"input": orig_stripped},
+                        ),
+                    )
                 elif not orig_stripped and pre_stripped:
                     # Preprocessing populated a previously empty slot
                     # (UC 14 name3 → name2 shift). Record the new value
                     # so downstream tiers and finalise() see it.
-                    result[f"{base}_enriched"] = pre_stripped
+                    _write(
+                        result, f"{base}_enriched", pre_stripped,
+                        deterministic_evidence(
+                            "preprocess:slot-populated",
+                            producer="preprocess",
+                            evidence_ref={"input": orig_stripped or None},
+                        ),
+                    )
             result["_preprocess_cleared"] = preprocess_cleared
             # Names where UC 11 rewrote a DBA variant. The preprocessed
             # value IS the canonical form — record it so finalise() can
@@ -2597,6 +3007,8 @@ class Orchestrator:
                     state=record.state,
                 )
 
+                _log_registry_rejections(result, "ror", ror_parent)
+
                 logger.info({
                     "record_id": record.record_id,
                     "step": "tier1_ror_parent",
@@ -2645,6 +3057,8 @@ class Orchestrator:
                         result, "name1",
                         ror_parent.get("official_name"),
                         registry="ROR",
+                        identifier=ror_parent["ror_id"],
+                        rule_id="tier1-ror:parent-match",
                     )
 
                     # Carry the ROR acronym (when present) for the
@@ -2653,7 +3067,14 @@ class Orchestrator:
                     if ror_acronym and ror_acronym.strip():
                         result["_ror_acronym"] = ror_acronym.strip()
 
-                    result["ror_id"] = ror_parent["ror_id"]
+                    _write(
+                        result, "ror_id", ror_parent["ror_id"],
+                        registry_evidence(
+                            "ror", ror_parent["ror_id"],
+                            score=ror_parent.get("score"),
+                            rule_id="tier1-ror:parent-match",
+                        ),
+                    )
                     result["tier_used"] = 1
                     result["source"] = "ROR"
                     result["confidence"] = "high"
@@ -2758,7 +3179,22 @@ class Orchestrator:
                     })
 
                     if looks_research:
-                        result["name1_enriched"] = name1_cleaned
+                        # Nothing identified this organisation, so the SAP
+                        # input stands. The input IS the producer — recording
+                        # that is what separates a retained value from a
+                        # confirmed one.
+                        _write(
+                            result, "name1_enriched", name1_cleaned,
+                            deterministic_evidence(
+                                "tier1-ror-miss:research-passthrough",
+                                producer="input", tier=1,
+                                evidence_ref={
+                                    "queried": name1_cleaned,
+                                    "registry": "ROR",
+                                    "matched": False,
+                                },
+                            ),
+                        )
                         result["source"] = "passthrough"
                         result["confidence"] = "low"
                         result["tier_used"] = 1
@@ -2850,7 +3286,19 @@ class Orchestrator:
                                         )
 
                     if company_res and company_res.success and company_res.name1_enriched:
-                        result["name1_enriched"] = company_res.name1_enriched
+                        _write(
+                            result, "name1_enriched",
+                            company_res.name1_enriched,
+                            llm_evidence(
+                                ("llm_company_canonical",),
+                                tier=2,
+                                prompt_version=COMPANY_CANONICAL_PROMPT_VERSION,
+                                deployment=self._settings.openai_model,
+                                self_reported=company_res.confidence,
+                                rule_id="tier2:company-canonical",
+                                extra={"input_name": name1_cleaned},
+                            ),
+                        )
                         result["source"] = "llm_canonical"
                         result["confidence"] = "high"
                         # Routing only — company canonicalisation no longer
@@ -2873,7 +3321,14 @@ class Orchestrator:
                             )
                     elif company_res is not None:
                         # Company canonical was attempted but failed.
-                        result["name1_enriched"] = name1_cleaned
+                        _write(
+                            result, "name1_enriched", name1_cleaned,
+                            deterministic_evidence(
+                                "tier2:company-canonical-failed-passthrough",
+                                producer="input", tier=1,
+                                evidence_ref={"queried": name1_cleaned},
+                            ),
+                        )
                         result["source"] = "passthrough"
                         result["confidence"] = "low"
                         result["tier_used"] = 1
@@ -2900,7 +3355,13 @@ class Orchestrator:
                     DEPT_SLOTS, (pp_name2, pp_name3, pp_name4, pp_name5),
                 ):
                     if pp_val and pp_val.strip():
-                        result[f"{f}_enriched"] = pp_val.strip()
+                        _write(
+                            result, f"{f}_enriched", pp_val.strip(),
+                            deterministic_evidence(
+                                "uc6:accounts-payable-normalised",
+                                producer="preprocess", tier=2,
+                            ),
+                        )
                 result["tier_used"] = 2
                 result["source"] = "pattern_match"
                 result["confidence"] = "high"
@@ -2971,7 +3432,19 @@ class Orchestrator:
                         None,
                     )
                     name3_already_set = demote_target is None
-                    result["name2_enriched"] = lab_res.parent_department
+                    _write(
+                        result, "name2_enriched", lab_res.parent_department,
+                        llm_evidence(
+                            ("serp", "fetch", "llm_lab_parent"),
+                            tier=2,
+                            prompt_version=LAB_PARENT_PROMPT_VERSION,
+                            deployment=self._settings.openai_model,
+                            self_reported=lab_res.confidence,
+                            source_url=lab_res.source_url,
+                            rule_id="uc13:parent-department-from-lab-page",
+                            extra={"lab": pp_name2},
+                        ),
+                    )
                     if demote_target is not None:
                         result[f"{demote_target}_enriched"] = pp_name2.strip()
                     result["tier_used"] = 2
@@ -3045,7 +3518,13 @@ class Orchestrator:
                 # which would strip the marker. finalise() also restores
                 # the preprocessed value as a safety net.
                 if field_key in (result.get("_dba_values") or {}):
-                    result[f"{field_key}_enriched"] = pp_val
+                    _write(
+                        result, f"{field_key}_enriched", pp_val,
+                        deterministic_evidence(
+                            "uc11:dba-marker-skips-canonicalisation",
+                            producer="preprocess", tier=2,
+                        ),
+                    )
                     continue
 
                 canonical = await run_tier2_canonical(
@@ -3071,14 +3550,41 @@ class Orchestrator:
                             "step": f"tier2_canonical_rejected_scope_{field_key}",
                             "rejected": canonical.name2_enriched,
                         })
-                        result[f"{field_key}_enriched"] = pp_val
+                        _write(
+                            result, f"{field_key}_enriched", pp_val,
+                            deterministic_evidence(
+                                "uc5:granular-unit-rejected-passthrough",
+                                producer="input", tier=2,
+                                evidence_ref={
+                                    "rejected": canonical.name2_enriched,
+                                },
+                            ),
+                        )
                     else:
-                        result[f"{field_key}_enriched"] = canonical.name2_enriched
+                        _write(
+                            result, f"{field_key}_enriched",
+                            canonical.name2_enriched,
+                            llm_evidence(
+                                ("llm_canonical",),
+                                tier=2,
+                                prompt_version=TIER2_CANONICAL_PROMPT_VERSION,
+                                deployment=self._settings.openai_model,
+                                self_reported=canonical.confidence,
+                                rule_id="uc5:tier2-canonical",
+                                extra={"input_value": pp_val},
+                            ),
+                        )
                         if 5 not in result["use_cases_triggered"]:
                             result["use_cases_triggered"].append(5)
                 else:
                     # LLM not confident — passthrough original
-                    result[f"{field_key}_enriched"] = pp_val
+                    _write(
+                        result, f"{field_key}_enriched", pp_val,
+                        deterministic_evidence(
+                            "tier2-canonical:below-threshold-passthrough",
+                            producer="input", tier=2,
+                        ),
+                    )
 
             # If canonical ran on any field, the record is finished HERE
             # unless Tier 2A can still verify Name 2 against the contact's
@@ -3174,7 +3680,10 @@ class Orchestrator:
                                         "after": canon.name2_enriched,
                                     })
                                     tier2a_result.name2_enriched = canon.name2_enriched
-                        _apply_tier2a(result, tier2a_result, tier2a_result.mode)
+                        _apply_tier2a(
+                            result, tier2a_result, tier2a_result.mode,
+                            self._settings.openai_model,
+                        )
                         if 4 not in result["use_cases_triggered"]:
                             result["use_cases_triggered"].append(4)
                         return await self._finalise_and_return(
@@ -3215,11 +3724,17 @@ class Orchestrator:
                 llm_client=self._llm_client,
             )
 
-            _apply_tier3(result, tier3_result)
+            _apply_tier3(result, tier3_result, self._settings.openai_model)
 
             # Last resort: if nothing enriched name1, pass through the preprocessed original
             if not result.get("name1_enriched") and not is_blank(pp_name1):
-                result["name1_enriched"] = (pp_name1 or "").strip()
+                _write(
+                    result, "name1_enriched", (pp_name1 or "").strip(),
+                    deterministic_evidence(
+                        "last-resort:preprocessed-input-retained",
+                        producer="preprocess", tier=3,
+                    ),
+                )
 
             # Rule: if the input had no department and no contact, there is
             # no signal from which to infer one — EVERY department slot must
@@ -3228,7 +3743,18 @@ class Orchestrator:
             # cannot stop at Name 2.
             if not has_dept_signal:
                 for _slot in DEPT_SLOTS:
-                    result[f"{_slot}_enriched"] = None
+                    if result.get(f"{_slot}_enriched") is None:
+                        continue
+                    _write(
+                        result, f"{_slot}_enriched", None,
+                        deterministic_evidence(
+                            "no-dept-signal:slot-cleared",
+                            producer="pipeline", tier=3,
+                            evidence_ref={
+                                "dropped": result.get(f"{_slot}_enriched"),
+                            },
+                        ),
+                    )
 
             # Rule: if preprocessing stripped a department slot down to empty
             # (because it was actually a contact / email / address /
@@ -3249,7 +3775,20 @@ class Orchestrator:
                         "step": f"{_slot}_cleared_by_preprocess",
                         "original": _original,
                     })
-                    result[f"{_slot}_enriched"] = None
+                    if result.get(f"{_slot}_enriched") is not None:
+                        _write(
+                            result, f"{_slot}_enriched", None,
+                            deterministic_evidence(
+                                "preprocess-cleared:no-tier3-replacement",
+                                producer="preprocess", tier=3,
+                                evidence_ref={
+                                    "input": _original,
+                                    "dropped": result.get(
+                                        f"{_slot}_enriched",
+                                    ),
+                                },
+                            ),
+                        )
 
             # Rule: no department slot should echo name1_enriched. A unit
             # value equal to the institution names nothing new, at whichever
@@ -3267,7 +3806,14 @@ class Orchestrator:
                             "step": f"{_slot}_equals_name1_dropped",
                             "value": _val,
                         })
-                        result[f"{_slot}_enriched"] = None
+                        _write(
+                            result, f"{_slot}_enriched", None,
+                            deterministic_evidence(
+                                "dept-slot-echoes-name1:dropped",
+                                producer="pipeline", tier=3,
+                                evidence_ref={"dropped": _val},
+                            ),
+                        )
 
             return await self._finalise_and_return(result, start, record, cache)
 

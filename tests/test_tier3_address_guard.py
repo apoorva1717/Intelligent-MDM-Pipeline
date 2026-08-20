@@ -12,6 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from enrichment.orchestrator import finalise
+from tests.conftest import make_record
 from enrichment.tier3_llm import run_tier3, _is_address_like_name
 
 
@@ -99,7 +100,7 @@ class TestFinaliseBlankName2Guard:
             "flag_for_review": False, "flag_reason": None, "address_issues": [],
         })
         base.update(ov)
-        return base
+        return make_record(**base)
 
     def test_tier3_blank_name2_medium_dropped(self):
         # The guard only applies to a Name 2 that TIER 3 populated (flagged

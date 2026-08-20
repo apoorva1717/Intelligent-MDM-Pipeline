@@ -159,6 +159,7 @@ def _best_verified_candidate(
     records: list[dict[str, Any]],
     threshold: float,
     country_code: str | None = None,
+    rejections: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any] | None, float]:
     """Pick the best name-verified candidate from a list of lei-records.
 
@@ -190,10 +191,37 @@ def _best_verified_candidate(
                     fields.get("legal_name"), fields.get("lei_id"),
                     cand_country or "?", want_country,
                 )
+                if rejections is not None:
+                    rejections.append({
+                        "guard": "gleif_country",
+                        "candidate_name": fields.get("legal_name"),
+                        "candidate_id": fields.get("lei_id"),
+                        "score": None,
+                        "threshold": threshold,
+                        "detail": (
+                            f"candidate country {cand_country or '?'} != "
+                            f"requested {want_country}"
+                        ),
+                        "query": name,
+                    })
                 continue
         score = _name_match_score(name, fields["legal_name"])
         best_score = max(best_score, score)
         if score < threshold:
+            # The name-verification guard. GLEIF's own search returns confident
+            # wrong answers (a substring company at ~21 on this scale), so a
+            # candidate the registry offered and this rule refused is exactly
+            # the decision worth being able to defend afterwards.
+            if rejections is not None:
+                rejections.append({
+                    "guard": "gleif_name_verification",
+                    "candidate_name": fields.get("legal_name"),
+                    "candidate_id": fields.get("lei_id"),
+                    "score": score,
+                    "threshold": threshold,
+                    "detail": "legal-name match score below the guard threshold",
+                    "query": name,
+                })
             continue
         is_active = 1 if (fields.get("status") == "ACTIVE") else 0
         rank = (is_active, score)
@@ -258,6 +286,11 @@ async def call_lei(
     if not name or not name.strip():
         return {"matched": False, "strategy": None, "score": 0.0}
 
+    # Candidates GLEIF offered and a guard refused (Fix 10 Step 4). Returned
+    # with the result and written to the record's provenance log by the
+    # orchestrator. Recording only — no decision changes.
+    guard_rejections: list[dict[str, Any]] = []
+
     # Cache key only — the GLEIF request below uses `name` verbatim.
     global _lei_normalised_hits
     cache_key = lookup_key(name, country_code)
@@ -305,6 +338,7 @@ async def call_lei(
 
             fields, best_score = _best_verified_candidate(
                 name, records, threshold, country_code=country_code,
+                rejections=guard_rejections,
             )
             if fields is not None:
                 result = {
@@ -312,6 +346,7 @@ async def call_lei(
                     "strategy": "exact",
                     "confidence": "high",
                     "score": best_score,
+                    "guard_rejections": guard_rejections,
                     **fields,
                 }
                 logger.info(
@@ -329,12 +364,16 @@ async def call_lei(
             # ── Strategy B: fuzzycompletions fallback (best-effort) ────────
             fuzzy_result = await _fuzzy_lookup(
                 client, base, records_url, name, country_code,
-                max_retries, threshold,
+                max_retries, threshold, rejections=guard_rejections,
             )
             if fuzzy_result is not None:
+                fuzzy_result["guard_rejections"] = guard_rejections
                 return _cache(fuzzy_result)
 
-            return _cache({"matched": False, "strategy": "fuzzy", "score": best_score})
+            return _cache({
+                "matched": False, "strategy": "fuzzy", "score": best_score,
+                "guard_rejections": guard_rejections,
+            })
 
     except httpx.HTTPStatusError as exc:
         logger.error(
@@ -355,6 +394,7 @@ async def _fuzzy_lookup(
     country_code: str | None,
     max_retries: int,
     threshold: float,
+    rejections: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """fuzzycompletions → resolve candidate → verify. Returns a match dict
     or ``None`` (no usable/verified candidate). Best-effort: GLEIF's
@@ -394,6 +434,7 @@ async def _fuzzy_lookup(
 
     fields, best_score = _best_verified_candidate(
         name, candidate_records, threshold, country_code=country_code,
+        rejections=rejections,
     )
     if fields is None:
         logger.info(

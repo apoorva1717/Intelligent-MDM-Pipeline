@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from api.models import EnrichmentRecord
 from config import Settings
 from enrichment import tier1_lei, tier1_ror
+from tests.conftest import make_record, seed
 from enrichment.orchestrator import Orchestrator
 from enrichment.tier1_lei import call_lei, clear_lei_cache, lei_normalised_hits
 from enrichment.tier1_ror import call_ror, clear_ror_cache, ror_normalised_hits
@@ -358,15 +359,15 @@ class TestTier1Retry:
         await orch._retry_tier1_after_canonicalisation(record, result)
         return result
 
-    def _base_result(self, original: str, canonical: str) -> dict:
-        return {
-            "record_id": "R1",
-            "_tier1_query_name": original,
-            "_tier1_country_code": "US",
-            "name1_enriched": canonical,
-            "use_cases_triggered": [],
-            "routing_type": "company",
-        }
+    def _base_result(self, original: str, canonical: str):
+        return make_record(
+            record_id="R1",
+            _tier1_query_name=original,
+            _tier1_country_code="US",
+            name1_enriched=canonical,
+            use_cases_triggered=[],
+            routing_type="company",
+        )
 
     async def test_canonical_name_recovers_the_ror_id(self):
         """Row 24: ROR misses the typo'd input, Tier 3 produces the real name,
@@ -431,7 +432,7 @@ class TestTier1Retry:
         first = len(ror.calls)
 
         # Another tier rewrites the name again — still no second retry.
-        result["name1_enriched"] = "Acme Laboratories Incorporated"
+        seed(result, name1_enriched="Acme Laboratories Incorporated")
         await self._run_retry(orch, result)
 
         assert len(ror.calls) == first
@@ -469,18 +470,18 @@ class TestTier1Retry:
         ror = _StubROR({})
         orch = _orchestrator({"ror": ror, "lei": _StubLEI({})})
         result = self._base_result("MIT", "Massachusetts Institute of Technology")
-        result["ror_id"] = "https://ror.org/042nb2s44"
+        seed(result, ror_id="https://ror.org/042nb2s44")
         await self._run_retry(orch, result)
         assert ror.calls == []
 
     async def test_no_retry_when_tier1_never_ran(self):
         ror = _StubROR({})
         orch = _orchestrator({"ror": ror, "lei": _StubLEI({})})
-        result = {
-            "record_id": "R1",
-            "name1_enriched": "Massachusetts Institute of Technology",
-            "use_cases_triggered": [],
-        }
+        result = make_record(
+            record_id="R1",
+            name1_enriched="Massachusetts Institute of Technology",
+            use_cases_triggered=[],
+        )
         await self._run_retry(orch, result)
         assert ror.calls == []
 

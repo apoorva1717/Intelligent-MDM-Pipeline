@@ -436,3 +436,68 @@ PERSON_AFFILIATION_USER_PROMPT_TEMPLATE = (
 )
 
 
+
+
+# ---------------------------------------------------------------------------
+# Prompt versions (Fix 10)
+# ---------------------------------------------------------------------------
+#
+# A value produced by a model is not reproducible without the deployment, the
+# temperature and the prompt it was produced from — and a prompt is edited far
+# more often than a deployment is replaced. `prompt_version` is what the
+# provenance log records; the prompt TEXT is never logged.
+#
+# The version is a declared major (`v1`) plus a short digest of the prompt pair
+# that actually shipped. The declared part is for humans and moves when the
+# prompt's intent changes; the digest moves on any edit at all, including one
+# nobody thought was semantic, which is precisely the case that makes an old
+# value irreproducible without anyone noticing.
+
+import hashlib as _hashlib
+
+
+def _digest(*parts: str) -> str:
+    h = _hashlib.sha256()
+    for part in parts:
+        h.update(part.encode("utf-8"))
+        h.update(b"\x00")
+    return h.hexdigest()[:8]
+
+
+def prompt_version(name: str, major: str, *parts: str) -> str:
+    """``<name>/<major>:<digest>`` — the identifier recorded on an LLM write."""
+    return f"{name}/{major}:{_digest(*parts)}"
+
+
+OVERFLOW_CHECK_PROMPT_VERSION = prompt_version(
+    "overflow_check", "v1",
+    OVERFLOW_CHECK_SYSTEM_PROMPT, OVERFLOW_CHECK_USER_PROMPT_TEMPLATE,
+)
+TIER2A_PROMPT_VERSION = prompt_version(
+    "tier2a_contact", "v1",
+    TIER2A_SYSTEM_PROMPT, TIER2A_USER_PROMPT_TEMPLATE,
+)
+TIER2B_PROMPT_VERSION = prompt_version(
+    "tier2b_dept", "v1",
+    TIER2B_SYSTEM_PROMPT, TIER2B_USER_PROMPT_TEMPLATE,
+)
+TIER3_PROMPT_VERSION = prompt_version(
+    "tier3_llm", "v1",
+    TIER3_SYSTEM_PROMPT, TIER3_USER_PROMPT_TEMPLATE,
+)
+LAB_PARENT_PROMPT_VERSION = prompt_version(
+    "lab_parent", "v1",
+    LAB_PARENT_SYSTEM_PROMPT, LAB_PARENT_USER_PROMPT_TEMPLATE,
+)
+COMPANY_CANONICAL_PROMPT_VERSION = prompt_version(
+    "company_canonical", "v1",
+    COMPANY_CANONICAL_SYSTEM_PROMPT, COMPANY_CANONICAL_USER_PROMPT_TEMPLATE,
+)
+PERSON_AFFILIATION_PROMPT_VERSION = prompt_version(
+    "person_affiliation", "v1",
+    PERSON_AFFILIATION_SYSTEM_PROMPT, PERSON_AFFILIATION_USER_PROMPT_TEMPLATE,
+)
+TIER2_CANONICAL_PROMPT_VERSION = prompt_version(
+    "tier2_canonical", "v1",
+    TIER2_CANONICAL_SYSTEM_PROMPT, TIER2_CANONICAL_USER_PROMPT_TEMPLATE,
+)

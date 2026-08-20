@@ -271,7 +271,9 @@ class TestFinaliseEmitsCanonicalFields:
 
         from enrichment.orchestrator import finalise
 
-        result = {
+        from tests.conftest import make_record
+
+        fields = {
             "record_id": "X",
             "name1_enriched": "University of Michigan",
             "record_type": "research_institution",
@@ -280,8 +282,8 @@ class TestFinaliseEmitsCanonicalFields:
             "domain": "umich.edu",
             "website_url": "https://umich.edu",
         }
-        result.update(overrides)
-        return finalise(result, time.monotonic())
+        fields.update(overrides)
+        return finalise(make_record(**fields), time.monotonic())
 
     def test_department_domain_loses_its_path_but_keeps_its_subdomain(self):
         out = self._finalise(

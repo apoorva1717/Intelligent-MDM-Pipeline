@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from api.models import EnrichmentOptions, EnrichmentRecord
 from config import Settings
+from tests.conftest import seed
 from enrichment.orchestrator import (
     Orchestrator,
     _init_result,
@@ -197,8 +198,7 @@ class TestTokenCasing:
 class TestFieldCoverage:
     def _result(self, **over: Any) -> dict[str, Any]:
         base = _init_result(EnrichmentRecord(record_id="t", country="US"))
-        base.update(over)
-        return base
+        return seed(base, **over)
 
     def test_every_free_text_output_field_is_cased(self):
         r = self._result(
@@ -269,7 +269,7 @@ class TestChangedFlags:
         r = _init_result(EnrichmentRecord(
             record_id="t", country="US", name1="GAINESVILLE MEDICAL",
         ))
-        r["name1_enriched"] = "GAINESVILLE MEDICAL"
+        seed(r, name1_enriched="GAINESVILLE MEDICAL")
         out = finalise(r, time.monotonic())
         assert out["name1_enriched"] == "Gainesville Medical"
         assert out["name1_changed"] is False
@@ -278,8 +278,8 @@ class TestChangedFlags:
         r = _init_result(EnrichmentRecord(
             record_id="t", country="US", name1="Mayo Clinic FLA",
         ))
-        r["name1_enriched"] = "Mayo Clinic in Florida"
-        r["_registry_name_fields"] = {"name1"}
+        seed(r, name1_enriched="Mayo Clinic in Florida",
+             _registry_name_fields={"name1"})
         out = finalise(r, time.monotonic())
         assert out["name1_changed"] is True
 

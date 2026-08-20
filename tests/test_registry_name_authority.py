@@ -44,6 +44,7 @@ from enrichment.orchestrator import (
     _write_registry_name,
     finalise,
 )
+from tests.conftest import seed
 from enrichment.tier1_ror import (
     _INSTITUTION_ACRONYMS,
     _US_POSTAL_CODES,
@@ -153,7 +154,7 @@ class TestVerifiedMatchWritesOfficialName:
             result = _init_result(EnrichmentRecord(
                 record_id="t", name1=original, country="US",
             ))
-            result["name1_enriched"] = official
+            seed(result, name1_enriched=official)
             result["_registry_name_fields"] = {"name1"}
             out = finalise(result, time.monotonic())
             assert out["name1_changed"] is expected
@@ -232,7 +233,7 @@ class TestVerifiedMatchWritesOfficialName:
         # State the pipeline reaches after a ROR miss + LLM canonicalisation.
         result["_tier1_query_name"] = "MASSACHUSETTS INSITUTE OF TECHNOLOGY"
         result["_tier1_country_code"] = "US"
-        result["name1_enriched"] = "Massachusetts Institute of Technology"
+        seed(result, name1_enriched="Massachusetts Institute of Technology")
         orch = _orch(ror)
         await orch._retry_tier1_after_canonicalisation(
             EnrichmentRecord(record_id="t", country="US"), result,
@@ -280,7 +281,7 @@ class TestRegistryNamesOnEveryWritePath:
         """A registry that returns no name must not blank the field, and must
         not claim ownership of it."""
         result = _init_result(EnrichmentRecord(record_id="t", country="US"))
-        result["name1_enriched"] = "Cardinal Research GRP"
+        seed(result, name1_enriched="Cardinal Research GRP")
         _write_registry_name(result, "name1", "   ", "ROR")
         assert result["name1_enriched"] == "Cardinal Research GRP"
         assert not result.get("_registry_name_fields")
@@ -304,7 +305,7 @@ class TestOutputNameExpansion:
         result = _init_result(EnrichmentRecord(
             record_id="t", name1=original, country="US",
         ))
-        result["name1_enriched"] = original
+        seed(result, name1_enriched=original)
         out = finalise(result, time.monotonic())
         assert out["name1_enriched"] == expected
 
@@ -317,7 +318,7 @@ class TestOutputNameExpansion:
     @pytest.mark.parametrize("field", ["name1", "name2", "name3", "name4"])
     def test_expansion_covers_every_output_name_field(self, field):
         result = _init_result(EnrichmentRecord(record_id="t", country="US"))
-        result[f"{field}_enriched"] = "Coastal Analytical Svcs"
+        seed(result, **{f"{field}_enriched": "Coastal Analytical Svcs"})
         out = finalise(result, time.monotonic())
         # name2-4 are packed leftward at the end of finalise, so assert the
         # expanded value survives somewhere rather than pinning the slot.
@@ -330,7 +331,7 @@ class TestOutputNameExpansion:
         the global map may re-open it — not even a token that looks like an
         abbreviation."""
         result = _init_result(EnrichmentRecord(record_id="t", country="US"))
-        result["name1_enriched"] = "Inst Pasteur"
+        seed(result, name1_enriched="Inst Pasteur")
         result["source"] = "ROR"
         result["_registry_name_fields"] = {"name1"}
         out = finalise(result, time.monotonic())
@@ -340,7 +341,7 @@ class TestOutputNameExpansion:
         """Control for the test above — the marker is what makes the
         difference, not the string."""
         result = _init_result(EnrichmentRecord(record_id="t", country="US"))
-        result["name1_enriched"] = "Inst Pasteur"
+        seed(result, name1_enriched="Inst Pasteur")
         out = finalise(result, time.monotonic())
         assert out["name1_enriched"] == "Institute Pasteur"
 

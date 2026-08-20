@@ -36,6 +36,7 @@ from enrichment.classifier import (
 )
 from enrichment.elf_codes import COMMERCIAL_ELF, NON_COMMERCIAL_ELF
 from enrichment.orchestrator import Orchestrator, _init_result, finalise
+from tests.conftest import seed
 from utils.cache import BatchCache
 
 # Real ISO 20275 codes, verified against api.gleif.org.
@@ -278,8 +279,7 @@ def _base_result(**overrides):
         country="US",
     )
     result = _init_result(rec)
-    result["name1_enriched"] = overrides.pop("name1", "Acme")
-    result.update(overrides)
+    seed(result, name1_enriched=overrides.pop("name1", "Acme"), **overrides)
     return result
 
 
@@ -374,13 +374,14 @@ class TestRoutingUnchanged:
             state="FL", zip="32611", country="US", email="registrar@ufl.edu",
         )
         result = _init_result(rec)
-        result.update({
-            "name1_enriched": "University of Florida",
-            "name2_enriched": "Department of Chemistry",
-            "routing_type": "research_institution",
-            "domain": "ufl.edu",
-            "website_url": "https://ufl.edu",
-        })
+        seed(
+            result,
+            name1_enriched="University of Florida",
+            name2_enriched="Department of Chemistry",
+            routing_type="research_institution",
+            domain="ufl.edu",
+            website_url="https://ufl.edu",
+        )
         out = await orch._finalise_and_return(
             result, time.monotonic(), rec, BatchCache())
         assert out.department_domain is not None
@@ -400,12 +401,13 @@ class TestRoutingUnchanged:
         rec = EnrichmentRecord(record_id="Y", name1="Bruker Corporation",
                                country="US")
         result = _init_result(rec)
-        result.update({
-            "name1_enriched": "Bruker Corporation",
-            "name2_enriched": "Department of Chemistry",
-            "routing_type": "company",
-            "domain": "bruker.com",
-        })
+        seed(
+            result,
+            name1_enriched="Bruker Corporation",
+            name2_enriched="Department of Chemistry",
+            routing_type="company",
+            domain="bruker.com",
+        )
         out = await orch._finalise_and_return(
             result, time.monotonic(), rec, BatchCache())
         assert out.department_domain is None
