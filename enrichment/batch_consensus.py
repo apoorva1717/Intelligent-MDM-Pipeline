@@ -17,9 +17,17 @@ name every member already holds.
 
 **What this is not.** It never merges, drops or deduplicates records — Phase 2
 remains the only place entities are merged. It is field propagation within one
-batch: the record count in equals the record count out. It touches no flag, no
-reason and no `flag_for_review`; a record that inherits keeps the flags it
-earned on its own. It never changes `tier_used`.
+batch: the record count in equals the record count out. It never changes
+`tier_used`.
+
+**Flags.** It raises none, and a record that inherits keeps every flag it
+earned on its own — with one exception, which is not a judgement about the
+record but bookkeeping about this pass's own write. A flag is a statement about
+a field's value; replacing the value can make the statement false. Three demo
+rows spelling one company three ways converge on one Name 1, and the row whose
+flag read "left exactly as supplied" was then not left as supplied — two
+identical names, one flagged. So a propagated `name1_enriched` withdraws
+exactly the codes it falsified (`_RETRACTED_BY_NAME1`) and nothing else.
 
 **Ordering.** It runs after every record has been finalised and before
 serialisation (`Orchestrator.enrich_batch`). Propagated values therefore come
@@ -44,6 +52,12 @@ from typing import TYPE_CHECKING, Any, Optional
 from dedup.candidates import strip_legal_suffix
 from dedup.models import DedupRow
 from dedup.signatures import derive_block_id, normalize_key
+from enrichment.flags import (
+    LOW_CONFIDENCE_UNCHANGED,
+    NO_MATCH,
+    UNVERIFIED_INFERENCE,
+    retract as retract_flags,
+)
 from enrichment.provenance import (
     SCOPED_FIELDS,
     inherited_evidence,
@@ -98,6 +112,27 @@ NEVER_PROPAGATED: tuple[str, ...] = (
 # `tier_used` is deliberately left alone — see the module docstring.
 CONSENSUS_SOURCE = "batch_consensus"
 
+# Flag codes a propagated `name1_enriched` falsifies, by consensus mode. This
+# pass still raises no flag and still judges no record; it withdraws the codes
+# its OWN write made untrue, which is the same rule as leaving every other flag
+# alone. Anything not listed here survives propagation untouched.
+#
+# `low-confidence-unchanged` goes in both modes: it means "left exactly as
+# supplied", and the record was not left as supplied once a value replaced it.
+# Three demo rows spelling one company three ways ended with one identical
+# Name 1 and one of them still carrying that reason.
+#
+# The other two go only under `registry`, because only there does something
+# arrive that answers them. `no-match` says no source identified the
+# organisation and a registry identity now has; `unverified-inference` says the
+# value rests on no external evidence and it now rests on the donor's registry
+# match, recorded with the donor's id. Under `name_form` neither is answered —
+# electing the batch's modal spelling introduces no evidence — so both stand.
+_RETRACTED_BY_NAME1: dict[str, tuple[str, ...]] = {
+    "registry": (LOW_CONFIDENCE_UNCHANGED, NO_MATCH, UNVERIFIED_INFERENCE),
+    "name_form": (LOW_CONFIDENCE_UNCHANGED,),
+}
+
 # A record_type of "unknown" asserts nothing (Fix 3), so it is treated as
 # absent here rather than as a value that could conflict.
 _UNKNOWN_TYPE = "unknown"
@@ -105,12 +140,16 @@ _UNKNOWN_TYPE = "unknown"
 
 @dataclass
 class ConsensusTelemetry:
-    """Batch-level counters for the pass. Telemetry only — no flags."""
+    """Batch-level counters for the pass."""
 
     groups: int = 0
     records_updated: int = 0
     conflicts: int = 0
     fields_propagated: dict[str, int] = field(default_factory=dict)
+    # Flag codes withdrawn because this pass replaced the value they described
+    # — see _RETRACTED_BY_NAME1. Counts codes, not records: one record can
+    # shed several.
+    flags_retracted: int = 0
 
 
 @dataclass
@@ -482,6 +521,10 @@ def apply_batch_consensus(
             if not changed:
                 continue
             member.source = CONSENSUS_SOURCE
+            if "name1_enriched" in changed:
+                telemetry.flags_retracted += len(
+                    retract_flags(member, _RETRACTED_BY_NAME1[mode], "name1"),
+                )
             telemetry.records_updated += 1
             for name in changed:
                 telemetry.fields_propagated[name] = (

@@ -15,6 +15,12 @@ Three rules follow from that, and this module exists to enforce them:
    ends with a registry identifier and no Tier 3 reason, because the reason is
    derived from what the record *holds*, not from what ran.
 
+   One pass runs later than "every field has settled" allows for: batch
+   consensus converges a whole finalised batch and can replace
+   ``name1_enriched``, leaving a flag that describes a value no longer on the
+   record. :func:`retract` is its only recourse, and it can only ever
+   withdraw — never raise, never re-judge.
+
 2. **Field-scoped.** ``flagged_fields`` names the output fields the flag
    concerns. A Stanford record with a verified ROR ID and an uncertain
    department scopes to ``name2`` alone, so a reviewer can tell a one-field
@@ -31,12 +37,20 @@ consistent: ``flag_for_review`` is true **iff** ``flag_codes`` is non-empty,
 and ``flag_reason`` is the prose rendering of the same codes. The scope is
 encoded in the reason text as well as in ``flagged_fields``, so a consumer
 that reads only the two pre-Fix-8 columns still learns which field is in
-doubt.
+doubt. :func:`render` builds all three, and is the only thing that does.
+
+``flag_scopes`` and ``flag_details`` are two further fields and are internal
+(``exclude=True``): the code -> fields map the other three are rendered from,
+and the code -> named-value map that puts the rejected domain into the prose.
+Both are kept so a later pass can withdraw one code from one field without
+re-deriving the rest, or re-wording what it keeps. ``flagged_fields`` is the
+union of the scopes and is what ships.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from typing import Any
 
 from enrichment.preprocess import _is_opaque_code
@@ -147,6 +161,20 @@ _REASONS: dict[str, str] = {
     ),
 }
 
+# Prose variants that name the specific value in doubt. A reviewer told to
+# "confirm the website" has to go and find which website was rejected — the
+# pipeline knew, discarded it (that is the point of the guard), and left the
+# reviewer to rediscover it. Where the raising site can supply the value, this
+# template is used instead of `_REASONS` and the value is rendered into
+# `{detail}`. Codes without an entry here, or with no detail supplied, fall
+# back to `_REASONS` unchanged.
+_DETAILED_REASONS: dict[str, str] = {
+    DOMAIN_UNVERIFIED: (
+        "a candidate website ({detail}) was found but nothing tied it to "
+        "this organisation — confirm {detail} before using it"
+    ),
+}
+
 # The `flagged_fields` vocabulary, and how each renders in the reason prose.
 FIELD_LABELS: dict[str, str] = {
     **NAME_SLOT_LABELS,
@@ -249,6 +277,101 @@ def _evidence_free_fields(
     return derived | out_of_scope
 
 
+def render(
+    scopes: dict[str, Iterable[str]],
+    details: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Render a code -> field-scope map into the five output fields.
+
+    The single place the flag columns are built, so a pass that withdraws a
+    code later (:func:`retract`) cannot render them differently from the pass
+    that raised it. A code mapped to an empty scope is record-level and its
+    prose carries no leading scope clause.
+
+    *details* names the specific value a code is about — the rejected domain
+    for ``domain-unverified``. It is kept out of the scope map and returned as
+    its own field because it is not scope: it survives so :func:`retract` can
+    re-render the codes it keeps with the same prose they were raised with,
+    rather than silently dropping back to the generic wording.
+    """
+    ordered = [c for c in _CODE_ORDER if c in scopes]
+    scoped = {c: _sorted_fields(set(scopes[c] or ())) for c in ordered}
+    kept = {
+        c: str(v) for c, v in (details or {}).items()
+        if c in scoped and c in _DETAILED_REASONS and v
+    }
+
+    reasons: list[str] = []
+    flagged: set[str] = set()
+    for code in ordered:
+        fields = scoped[code]
+        flagged.update(fields)
+        prose = (
+            _DETAILED_REASONS[code].format(detail=kept[code])
+            if code in kept
+            else _REASONS[code]
+        )
+        reasons.append(f"{_label(fields)}: {prose}" if fields else prose)
+
+    return {
+        "flag_codes": ordered,
+        "flagged_fields": _sorted_fields(flagged),
+        "flag_for_review": bool(ordered),
+        "flag_reason": "; ".join(reasons) if reasons else None,
+        "flag_scopes": scoped,
+        "flag_details": kept,
+    }
+
+
+def retract(result: Any, codes: Iterable[str], field: str) -> tuple[str, ...]:
+    """Withdraw *codes* from *field*'s scope on an already-flagged result.
+
+    Rule 1 of this module — rebuilt, never appended — assumes every input to
+    the decision has settled by the time ``finalise`` runs. Batch consensus
+    breaks that assumption for one field: it runs after the whole batch is
+    finalised and replaces `name1_enriched` on a record whose flag already
+    described the value it replaced. `low-confidence-unchanged` then reads
+    "left exactly as supplied" on a record that was not left as supplied.
+
+    So the batch pass withdraws exactly the codes its own write falsified, and
+    nothing else. Withdrawal is per field: a code scoped to two fields keeps
+    the other one and is dropped only when its scope empties. A record-level
+    code (empty scope) is never reached, because no field is in its scope.
+
+    Takes and returns *codes* rather than recomputing, because the evidence
+    ``compute_flags`` consumed is gone by now — the caller states what its
+    write invalidated and this renders the consequence. Returns the codes
+    actually withdrawn, empty when nothing changed.
+    """
+    scopes: dict[str, Iterable[str]] = {
+        code: set(fields or ())
+        for code, fields in (getattr(result, "flag_scopes", None) or {}).items()
+    }
+    withdrawn: list[str] = []
+    for code in codes:
+        fields = scopes.get(code)
+        if fields is None or field not in fields:
+            continue
+        withdrawn.append(code)
+        fields.discard(field)
+        if not fields:
+            del scopes[code]
+
+    if not withdrawn:
+        return ()
+    details = dict(getattr(result, "flag_details", None) or {})
+    for key, value in render(scopes, details).items():
+        setattr(result, key, value)
+    logger.info({
+        "record_id": getattr(result, "record_id", None),
+        "step": "flags_retracted",
+        "field": field,
+        "retracted": withdrawn,
+        "flag_codes": getattr(result, "flag_codes", None),
+    })
+    return tuple(withdrawn)
+
+
 def compute_flags(result: dict[str, Any]) -> None:
     """Rebuild ``flag_codes``, ``flagged_fields``, ``flag_for_review`` and
     ``flag_reason`` from *result*'s final state, and drop the evidence keys.
@@ -263,6 +386,9 @@ def compute_flags(result: dict[str, Any]) -> None:
     # record-level (it concerns the record as a whole, not one column).
     scopes: dict[str, set[str]] = {}
     codes: set[str] = set()
+    # code -> the specific value the code is about, when the raising site knows
+    # it (see `_DETAILED_REASONS`).
+    details: dict[str, str] = {}
 
     def raise_flag(code: str, *fields: str) -> None:
         codes.add(code)
@@ -365,8 +491,15 @@ def compute_flags(result: dict[str, Any]) -> None:
         raise_flag(EMAIL_CONFLICT, "email")
 
     # Fix 1's ownership guard rejected the candidate, so nothing was written.
-    if evidence.get("_domain_unverified"):
+    # The evidence carries the rejected domain itself when the guard knew it,
+    # and the reason names it — the reviewer's job is to confirm *that* site,
+    # and nothing else on the record records which one it was. An older
+    # bare-True marker still raises the code, with the generic wording.
+    rejected_domain = evidence.get("_domain_unverified")
+    if rejected_domain:
         raise_flag(DOMAIN_UNVERIFIED, "domain")
+        if isinstance(rejected_domain, str):
+            details[DOMAIN_UNVERIFIED] = rejected_domain
 
     # ── Total miss ────────────────────────────────────────────────────────
     # Only when there is nothing more specific to say. `no-match` means "the
@@ -375,20 +508,8 @@ def compute_flags(result: dict[str, Any]) -> None:
     if not codes and _nothing_was_enriched(result):
         raise_flag(NO_MATCH, "name1")
 
-    ordered = [c for c in _CODE_ORDER if c in codes]
-
-    reasons: list[str] = []
-    flagged: set[str] = set()
-    for code in ordered:
-        fields = _sorted_fields(scopes.get(code, set()))
-        flagged.update(fields)
-        prose = _REASONS[code]
-        reasons.append(f"{_label(fields)}: {prose}" if fields else prose)
-
-    result["flag_codes"] = ordered
-    result["flagged_fields"] = _sorted_fields(flagged)
-    result["flag_for_review"] = bool(ordered)
-    result["flag_reason"] = "; ".join(reasons) if reasons else None
+    result.update(render({c: scopes.get(c, set()) for c in codes}, details))
+    ordered = result["flag_codes"]
 
     if ordered:
         logger.info({

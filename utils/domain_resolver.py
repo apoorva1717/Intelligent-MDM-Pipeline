@@ -463,7 +463,10 @@ def write_domain(
         record.pop("_domain_unverified", None)
     elif decision.rejected:
         record["domain_rejected"] = True
-        record["_domain_unverified"] = True
+        # The rejected candidate itself, not a bare marker: the flag reason
+        # names the domain a reviewer has to go and confirm, and this is the
+        # only place that still knows which one it was.
+        record["_domain_unverified"] = decision.candidate or True
         record.reject(
             "domain", decision.candidate, GUARD_DOMAIN_OWNERSHIP,
             reason=(

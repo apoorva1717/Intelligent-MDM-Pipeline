@@ -6,10 +6,14 @@ isolation and some resolved against a registry while others did not. Fix 2's
 Tier 1 re-lookup catches most of it at source; this pass is the safety net for
 the rest.
 
-The pass is field propagation, never a merge: the record count is unchanged,
-`tier_used` is unchanged, and no flag is written. What it must get right is
-where the boundaries sit — a different address, an incompatible legal form, or
-two conflicting registry identities all mean "propagate nothing".
+The pass is field propagation, never a merge: the record count is unchanged
+and `tier_used` is unchanged. What it must get right is where the boundaries
+sit — a different address, an incompatible legal form, or two conflicting
+registry identities all mean "propagate nothing".
+
+It raises no flag. It withdraws exactly the codes its own write to
+`name1_enriched` falsified, and `TestFlagsFalsifiedByPropagation` pins both
+halves of that: what goes, and — the larger half — what stays.
 """
 
 from __future__ import annotations
@@ -28,6 +32,13 @@ from enrichment.batch_consensus import (
     _address_block_id,
     _name_parts,
     apply_batch_consensus,
+)
+from enrichment.flags import (
+    DOMAIN_UNVERIFIED,
+    LOW_CONFIDENCE_UNCHANGED,
+    NO_MATCH,
+    UNVERIFIED_INFERENCE,
+    render as render_flags,
 )
 
 # The demo batch's Coastal trio address (rows 15-17).
@@ -51,6 +62,12 @@ def _result(record_id: str, name1: str, **kw) -> EnrichmentResult:
     fields = dict(TAMPA)
     fields.update(kw)
     return EnrichmentResult(record_id=record_id, name1_enriched=name1, **fields)
+
+
+def _flagged(record_id: str, name1: str, scopes: dict, **kw) -> EnrichmentResult:
+    """A result carrying real flags — rendered by the flag module itself, so a
+    test states the code/scope map and never hand-writes the four columns."""
+    return _result(record_id, name1, **{**render_flags(scopes), **kw})
 
 
 class TestPropagation:
@@ -347,16 +364,19 @@ class TestInvariants:
 
         assert [r.record_id for r in rows] == ["a", "b", "c"]
 
-    def test_flags_are_untouched_on_an_inheriting_record(self):
+    def test_a_flag_on_a_field_this_pass_did_not_write_is_untouched(self):
+        """Inheriting a name says nothing about the record's domain."""
         rows = [
             _result("a", "Coastal Diagnostics Inc", ror_id="ror.org/01abc"),
-            _result("b", "Coastal Diagnostics", flag_for_review=True,
-                    flag_reason="domain-unverified"),
+            _flagged("b", "Coastal Diagnostics", {DOMAIN_UNVERIFIED: {"domain"}}),
         ]
+        before = rows[1].flag_reason
         apply_batch_consensus(rows)
 
+        assert rows[1].name1_enriched == "Coastal Diagnostics Inc"  # it did inherit
         assert rows[1].flag_for_review is True
-        assert rows[1].flag_reason == "domain-unverified"
+        assert rows[1].flag_codes == [DOMAIN_UNVERIFIED]
+        assert rows[1].flag_reason == before
         assert rows[0].flag_for_review is False
 
     def test_the_grouping_key_never_appears_in_any_output_field(self):
@@ -639,17 +659,18 @@ class TestNameFormConsensus:
         assert rows[0].name1_enriched == "CARDINAL INSTRUMENTS"
         assert rows[1].name1_enriched == "Cardinal Instruments"
 
-    def test_name_form_consensus_keeps_tier_used_and_flags(self):
+    def test_name_form_consensus_keeps_tier_used_and_unrelated_flags(self):
         rows = [
             _result("a", "Coastal Diagnostics, Inc.", tier_used=1),
-            _result("b", "Coastal Diagnostics", tier_used=3,
-                    flag_for_review=True, flag_reason="LLM inference"),
+            _flagged("b", "Coastal Diagnostics",
+                     {UNVERIFIED_INFERENCE: {"name2"}}, tier_used=3),
         ]
         apply_batch_consensus(rows)
 
         assert [r.tier_used for r in rows] == [1, 3]
         assert rows[1].flag_for_review is True
-        assert rows[1].flag_reason == "LLM inference"
+        assert rows[1].flag_codes == [UNVERIFIED_INFERENCE]
+        assert rows[1].flagged_fields == ["name2"]
 
     def test_departments_survive_name_form_consensus(self):
         rows = [
@@ -665,3 +686,155 @@ class TestNameFormConsensus:
         assert [r.department_domain for r in rows] == [
             "rad.harborclinic.com", "cardio.harborclinic.com",
         ]
+
+
+class TestFlagsFalsifiedByPropagation:
+    """The one flag interaction this pass has, and its limits.
+
+    A flag is a statement about a field's value. Propagation replaces the
+    value, so a statement that described the replaced one can end up simply
+    false — `low-confidence-unchanged` reads "left exactly as supplied" on a
+    record that was not left as supplied. The demo batch showed it plainly:
+    rows 15-17 spell one company three ways, converge on one Name 1, and one
+    of the three identical names still carried that reason.
+
+    Withdrawal is bookkeeping about this pass's own write, not a judgement
+    about the record, so it stops where the write stops. Most of the tests
+    below are about where that is.
+    """
+
+    def test_low_confidence_unchanged_goes_when_the_name_is_replaced(self):
+        """The demo's Coastal trio: three spellings, one name, no flag left
+        claiming the value was never touched."""
+        rows = [
+            _result("r15", "Coastal Diagnostics, Inc."),
+            _flagged("r16", "Coastal Diagnostics",
+                     {LOW_CONFIDENCE_UNCHANGED: {"name1"}}),
+            _result("r17", "Coastal Diagnostics, Inc."),
+        ]
+        telemetry = apply_batch_consensus(rows)
+
+        assert {r.name1_enriched for r in rows} == {"Coastal Diagnostics, Inc."}
+        assert all(r.flag_for_review is False for r in rows)
+        assert all(r.flag_codes == [] for r in rows)
+        assert all(r.flag_reason is None for r in rows)
+        assert all(r.flagged_fields == [] for r in rows)
+        assert telemetry.flags_retracted == 1
+
+    def test_it_goes_under_registry_consensus_too(self):
+        rows = [
+            _result("a", "Coastal Diagnostics, Inc.", ror_id="ror.org/01abc"),
+            _flagged("b", "Coastal Diagnostics",
+                     {LOW_CONFIDENCE_UNCHANGED: {"name1"}}),
+        ]
+        apply_batch_consensus(rows)
+
+        assert rows[1].name1_enriched == "Coastal Diagnostics, Inc."
+        assert rows[1].flag_codes == []
+
+    def test_a_name_that_does_not_move_keeps_its_flag(self):
+        """No write, nothing falsified. The group agrees on the spelling the
+        flagged record already holds, so its doubt is untouched."""
+        rows = [
+            _result("a", "Coastal Diagnostics", ror_id="ror.org/01abc"),
+            _flagged("b", "Coastal Diagnostics",
+                     {LOW_CONFIDENCE_UNCHANGED: {"name1"}}),
+        ]
+        telemetry = apply_batch_consensus(rows)
+
+        assert rows[1].name1_enriched == "Coastal Diagnostics"
+        assert rows[1].flag_codes == [LOW_CONFIDENCE_UNCHANGED]
+        assert telemetry.flags_retracted == 0
+
+    def test_the_donor_keeps_its_own_flag(self):
+        rows = [
+            _flagged("a", "Coastal Diagnostics, Inc.",
+                     {LOW_CONFIDENCE_UNCHANGED: {"name1"}},
+                     ror_id="ror.org/01abc"),
+            _result("b", "Coastal Diagnostics"),
+        ]
+        apply_batch_consensus(rows)
+
+        assert rows[0].flag_codes == [LOW_CONFIDENCE_UNCHANGED]
+        assert rows[1].flag_codes == []
+
+    def test_registry_consensus_answers_no_match_and_unverified_inference(self):
+        """A registry identity arrives with the name, so "nothing identified
+        this organisation" and "rests on no external evidence" both stop being
+        true — and the donor's record id is in the receiver's provenance."""
+        rows = [
+            _result("a", "Coastal Diagnostics, Inc.", ror_id="ror.org/01abc"),
+            _flagged("b", "Coastal Diagnostics",
+                     {NO_MATCH: {"name1"}, UNVERIFIED_INFERENCE: {"name1"}}),
+        ]
+        telemetry = apply_batch_consensus(rows)
+
+        assert rows[1].ror_id == "ror.org/01abc"
+        assert rows[1].flag_codes == []
+        assert telemetry.flags_retracted == 2
+
+    def test_name_form_consensus_answers_neither(self):
+        """Electing the batch's modal spelling introduces no evidence, so a
+        doubt about evidence survives it. Only the "unchanged" claim goes."""
+        rows = [
+            _result("a", "Coastal Diagnostics, Inc."),
+            _flagged("b", "Coastal Diagnostics", {
+                NO_MATCH: {"name1"},
+                UNVERIFIED_INFERENCE: {"name1"},
+                LOW_CONFIDENCE_UNCHANGED: {"name1"},
+            }),
+        ]
+        apply_batch_consensus(rows)
+
+        assert rows[1].name1_enriched == "Coastal Diagnostics, Inc."
+        assert rows[1].flag_codes == [NO_MATCH, UNVERIFIED_INFERENCE]
+        assert rows[1].flagged_fields == ["name1"]
+
+    def test_a_code_scoped_to_two_fields_keeps_the_other_one(self):
+        """Withdrawal is per field, not per code: name1's half goes and
+        name2's half stays, because nothing was written to name2."""
+        rows = [
+            _result("a", "Coastal Diagnostics, Inc.", ror_id="ror.org/01abc"),
+            _flagged("b", "Coastal Diagnostics",
+                     {LOW_CONFIDENCE_UNCHANGED: {"name1", "name2"}},
+                     name2_enriched="Radiology"),
+        ]
+        apply_batch_consensus(rows)
+
+        assert rows[1].flag_codes == [LOW_CONFIDENCE_UNCHANGED]
+        assert rows[1].flagged_fields == ["name2"]
+        assert rows[1].flag_reason.startswith("Name 2:")
+
+    def test_a_conflicting_group_withdraws_nothing(self):
+        """Two registry identities means propagate nothing, so no flag can
+        have been falsified."""
+        rows = [
+            _result("a", "Coastal Diagnostics, Inc.", ror_id="ror.org/01abc"),
+            _result("b", "Coastal Diagnostics, Inc.", ror_id="ror.org/09xyz"),
+            _flagged("c", "Coastal Diagnostics",
+                     {LOW_CONFIDENCE_UNCHANGED: {"name1"}}),
+        ]
+        telemetry = apply_batch_consensus(rows)
+
+        assert telemetry.conflicts == 1
+        assert telemetry.flags_retracted == 0
+        assert rows[2].flag_codes == [LOW_CONFIDENCE_UNCHANGED]
+
+    def test_the_three_flag_columns_stay_consistent_after_withdrawal(self):
+        """flag_for_review iff flag_codes, and flag_reason renders the same
+        codes — the contract holds through a retraction as well as a raise."""
+        rows = [
+            _result("a", "Coastal Diagnostics, Inc.", ror_id="ror.org/01abc"),
+            _flagged("b", "Coastal Diagnostics", {
+                LOW_CONFIDENCE_UNCHANGED: {"name1"},
+                DOMAIN_UNVERIFIED: {"domain"},
+            }),
+        ]
+        apply_batch_consensus(rows)
+
+        row = rows[1]
+        assert row.flag_codes == [DOMAIN_UNVERIFIED]
+        assert row.flag_for_review is (len(row.flag_codes) > 0)
+        assert row.flagged_fields == ["domain"]
+        assert row.flag_reason.startswith("Domain:")
+        assert "left exactly as supplied" not in row.flag_reason

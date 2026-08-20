@@ -901,7 +901,7 @@ On a record that inherited at least one field:
 |---|---|
 | **`source`** | set to `"batch_consensus"` |
 | **`tier_used`** | **kept**, never set to 1. Inflating the Tier 1 count would corrupt the tier-distribution figures used in evaluation. |
-| **review fields** | untouched by the pass itself. Consensus runs *after* every record is finalised, so a record keeps the flags it earned on its own; inheriting a field never adds or clears one. |
+| **review fields** | the pass raises no flag, and a record keeps every flag it earned on its own — with one exception, which is bookkeeping about this pass's own write rather than a judgement about the record. See [Flags a propagated name falsifies](#flags-a-propagated-name-falsifies) below. |
 | **`record_type_source`** | untouched, and therefore still names the evidence *that record's own* classification came from. The classification authority is [`classifier`](#record-classification-logic); this stage moves a decided value, it does not decide one. |
 
 A record whose fields already agree with the consensus is not counted as updated and keeps its own `source`. The donor inherits nothing from itself.
@@ -912,9 +912,25 @@ A record whose fields already agree with the consensus is not counted as updated
 - **A synonym is not a spelling variant.** The name key folds accents but translates nothing, so a `Universität Stuttgart` still spelled that way at the end of the pipeline would not group with `University of Stuttgart` — the same conservatism, and the same consequence, that [`normalize_key` carries in Phase 2](#dedupsignaturespy--step-a-signature-collapsing). In practice these rows converge before they reach this stage, because [Stage 5](#stage-5-tier-1-re-lookup-after-canonicalisation) rewrites Name 1 to the registry's official form; that is where a synonym belongs, not in a grouping key.
 - **The address key splits `street` and `house_no`,** so two rows whose house number was pulled out of the street on one and left in it on the other land in different blocks. Both rows go through the same address stage, so identical inputs split identically; a batch that spells one address two ways can still miss.
 
-**Measured on the 50-record demo batch** (live run, after Fixes 1-5): 7 groups, 7 records updated, 0 conflicts, `{ror_id: 4, lei_id: 1, domain: 2, website_url: 2, name1_enriched: 2}`. Registry consensus carries rows 18/20/21, which inherit Lockheed's `ror_id` from row 19, and rows 5 and 24, which exchange the ROR id and the LEI each was missing (row 24 also gains `mit.edu`). Name-form consensus carries rows 15 and 16, which take the trio's modal `Coastal Diagnostics, Inc.` and fill the one domain the group agreed on. Stanford, Yale and both Stuttgart groups were already converged by Fixes 2 and 4 and are left untouched. The tier distribution is identical either side of the pass, no flag moves, and no excluded field moves.
+**Measured on the 50-record demo batch** (live run, after Fixes 1-5): 7 groups, 7 records updated, 0 conflicts, `{ror_id: 4, lei_id: 1, domain: 2, website_url: 2, name1_enriched: 2}`. Registry consensus carries rows 18/20/21, which inherit Lockheed's `ror_id` from row 19, and rows 5 and 24, which exchange the ROR id and the LEI each was missing (row 24 also gains `mit.edu`). Name-form consensus carries rows 15 and 16, which take the trio's modal `Coastal Diagnostics, Inc.` and fill the one domain the group agreed on. Stanford, Yale and both Stuttgart groups were already converged by Fixes 2 and 4 and are left untouched. The tier distribution is identical either side of the pass and no excluded field moves. One flag moves: row 16 sheds `low-confidence-unchanged` when it takes the trio's modal name — see below.
 
-**Telemetry.** `consensus_groups` (groups with 2+ members), `consensus_records_updated` (records that inherited at least one field), `consensus_conflicts` (groups holding conflicting registry identities), and `consensus_fields_propagated` (counts per field) on the batch summary. Per-record `batch_consensus_inherit` and per-group `batch_consensus_conflict` structured log lines carry the detail.
+#### Flags a propagated name falsifies
+
+A flag is a statement about a field's value, so replacing the value can make the statement false. The demo batch showed it plainly. Rows 15-17 are one company spelled three ways at one Tampa address; the LLM canonicaliser rewrites 15 and 17 to `Coastal Diagnostics, Inc.` and declines on 16, which is therefore left as supplied and flagged `low-confidence-unchanged` — *"left exactly as supplied — the canonical form could not be established with enough confidence to rewrite it"*. Name-form consensus then gives row 16 the trio's modal `Coastal Diagnostics, Inc.` The batch ships three identical Name 1 values, one of them still carrying a reason that says it was never touched, and a reviewer is sent to confirm a value two other rows already agree on.
+
+The flag was correct when `compute_flags` ran and stopped being correct afterwards, which is the one thing this pass is in a position to know. So a propagated `name1_enriched` **withdraws** the codes its own write falsified, through [`flags.retract`](#enrichmentflagspy--review-flags) so the four flag columns are re-rendered by the same authority that raised them. Nothing else about the record is re-judged.
+
+| withdrawn on a propagated `name1_enriched` | registry mode | name-form mode |
+|---|---|---|
+| `low-confidence-unchanged` | ✅ | ✅ |
+| `no-match` | ✅ | — |
+| `unverified-inference` | ✅ | — |
+
+`low-confidence-unchanged` goes in both modes because its entire content is *"the value was left as supplied"*, and it no longer was. The other two go only under registry consensus, because only there does something arrive that answers them: `no-match` says no source identified the organisation and a registry identity now has, and `unverified-inference` says the value rests on no external evidence and it now rests on the donor's registry match — with the donor's record id in the receiving record's provenance, so the inherited claim stays auditable. Under name-form consensus neither is answered: electing the batch's modal spelling introduces no evidence, so both stand.
+
+Withdrawal is **per field**, not per code — a code scoped to `name1` and `name2` keeps its `name2` half, because nothing was written to `name2`. A record whose name does not move loses nothing, because nothing was falsified; nor does the donor, nor any member of a conflicting group, which propagates nothing at all.
+
+**Telemetry.** `consensus_groups` (groups with 2+ members), `consensus_records_updated` (records that inherited at least one field), `consensus_conflicts` (groups holding conflicting registry identities), `consensus_fields_propagated` (counts per field), and `consensus_flags_retracted` (codes withdrawn, not records) on the batch summary. Per-record `batch_consensus_inherit`, per-group `batch_consensus_conflict` and per-retraction `flags_retracted` structured log lines carry the detail.
 
 
 ## Use Case Reference Table
@@ -1181,6 +1197,8 @@ The flag answers one question for a reviewer: *is there something here for me to
 1. **Rebuilt, never appended.** `compute_flags` is called **once**, from `finalise`, after every name, domain and contact field has settled. Tiers record *evidence*; they never write a flag. A record that reached Tier 3 and was then rescued by Fix 2's Tier 1 retry ends with a registry identifier and **no** Tier 3 reason, because the reason is derived from what the record *holds*, not from what ran.
 2. **Field-scoped.** `flagged_fields` names the output fields the flag concerns. A record with a verified ROR ID and an uncertain department scopes to `name2` alone — which is what tells a reviewer a one-field check from a full record review.
 3. **`flag_for_review` is true if and only if `flag_codes` is non-empty**, and `flag_reason` is the prose rendering of the same codes.
+
+Property 1 assumes every input to the decision has settled by the time `finalise` runs, and one pass breaks that assumption: [batch consensus](#stage-6-batch-consensus) runs after the whole batch is finalised and can replace `name1_enriched`, leaving a flag that describes a value no longer on the record. It withdraws exactly the codes its own write falsified, through `flags.retract`, and can only ever withdraw — never raise, never re-judge. See [Flags a propagated name falsifies](#flags-a-propagated-name-falsifies).
 
 #### Output fields
 
@@ -2069,7 +2087,9 @@ Derives `enrichment_status` from confidence, match result and tier. Flag rules u
 
 ### `enrichment/flags.py` — Review Flags
 
-The single flag authority. `compute_flags` is called once, from `finalise`, and rebuilds `flag_for_review`, `flag_codes`, `flagged_fields` and `flag_reason` from the record's final state. Tiers record evidence (`_ev_*` transient keys, stripped here) and never write a flag, so no reason can name a tier that ran and no reason can mask another. Holds the code vocabulary, the detection rule for each code, the field-scope vocabulary and the reason prose. Full description in [Flag Rules](#flag-rules). Tests `test_flags.py`.
+The single flag authority. `compute_flags` is called once, from `finalise`, and rebuilds `flag_for_review`, `flag_codes`, `flagged_fields` and `flag_reason` from the record's final state. Tiers record evidence (`_ev_*` transient keys, stripped here) and never write a flag, so no reason can name a tier that ran and no reason can mask another. Holds the code vocabulary, the detection rule for each code, the field-scope vocabulary and the reason prose.
+
+`render` builds the flag columns from a code → field-scope map and is the only place they are built; `compute_flags` publishes the map it rendered from as `flag_scopes` (internal, not a file column — `flagged_fields` is its union and is what ships). `retract` is the one way a code leaves a record after `compute_flags` has run, and exists for a single caller: [batch consensus](#flags-a-propagated-name-falsifies) runs after the whole batch is finalised and replaces `name1_enriched`, which can leave a flag describing a value that is no longer there. The caller states which codes its write falsified and for which field; `retract` narrows or drops them and re-renders. It never re-derives a flag — the evidence `compute_flags` consumed is gone by then — so it can only ever withdraw. Full description in [Flag Rules](#flag-rules). Tests `test_flags.py`.
 
 ### `enrichment/provenance.py` — Per-Field Provenance
 

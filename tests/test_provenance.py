@@ -308,6 +308,9 @@ class TestGuardRejections:
         assert [r.guard for r in rejections] == [GUARD_DOMAIN_OWNERSHIP]
         assert rejections[0].candidate == "delta.com"
         assert rejections[0].field == "domain"
+        # The flag evidence carries the refused domain, not a bare marker:
+        # the reason names the site the reviewer has to confirm.
+        assert record.get("_domain_unverified") == "delta.com"
 
     def test_rejections_are_capped_and_the_overflow_is_counted(self):
         """Never a silent truncation: what was dropped is reported as a

@@ -428,6 +428,18 @@ class EnrichmentResult(BaseModel):
     # Human-readable prose rendering of `flag_codes`, field scope included so
     # the scope survives for a consumer that reads only this column.
     flag_reason: Optional[str] = None
+    # Which fields each code concerns, keyed by code — the scope map the three
+    # columns above are rendered from. Internal: `flagged_fields` is the union
+    # of these and is what ships. It exists because the batch consensus pass
+    # runs after `compute_flags` and must be able to withdraw one code from one
+    # field without re-deriving the rest (see enrichment.flags.retract).
+    flag_scopes: Dict[str, List[str]] = Field(default_factory=dict, exclude=True)
+    # The specific value a code names in its prose, keyed by code — the
+    # rejected domain for `domain-unverified`. Internal for the same reason
+    # `flag_scopes` is: it is already rendered into `flag_reason`, and is kept
+    # only so a later withdrawal can re-render the codes it keeps with the
+    # wording they were raised with.
+    flag_details: Dict[str, str] = Field(default_factory=dict, exclude=True)
     error: Optional[str] = None
     record_type: Literal["research_institution", "company", "unknown"] = "unknown"
     # Registry identifiers — both surface in the JSON (not excluded) so the
@@ -639,6 +651,9 @@ class EnrichmentSummary(BaseModel):
     consensus_records_updated: int = 0
     consensus_conflicts: int = 0
     consensus_fields_propagated: Dict[str, int] = Field(default_factory=dict)
+    # Flag codes the pass withdrew because it replaced the value they
+    # described. Counts codes, not records.
+    consensus_flags_retracted: int = 0
     processing_time_ms: int = 0
 
 

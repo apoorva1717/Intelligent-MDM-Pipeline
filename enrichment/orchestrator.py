@@ -1516,8 +1516,10 @@ class Orchestrator:
             # Fix 6 — batch consensus. Runs AFTER every record has been
             # finalised and BEFORE serialisation (and before the summary, so
             # the counts describe what actually ships). Field propagation
-            # only: no record is merged, dropped or deduplicated here, and no
-            # flag or `tier_used` is touched. See enrichment/batch_consensus.py.
+            # only: no record is merged, dropped or deduplicated here, and
+            # `tier_used` is untouched. It raises no flag; it withdraws only
+            # the codes its own write to `name1_enriched` falsified. See
+            # enrichment/batch_consensus.py.
             consensus = apply_batch_consensus(final_results)
 
             batch_ms = int((time.perf_counter() - batch_start) * 1000)
@@ -1526,6 +1528,7 @@ class Orchestrator:
             summary.consensus_records_updated = consensus.records_updated
             summary.consensus_conflicts = consensus.conflicts
             summary.consensus_fields_propagated = dict(consensus.fields_propagated)
+            summary.consensus_flags_retracted = consensus.flags_retracted
             # Fold in the GLEIF/LEI per-batch telemetry. tier1_lei_count is
             # the number of records resolved by the LEI step (exact + fuzzy).
             summary.lei_attempts = self._lei_counts["attempts"]

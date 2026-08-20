@@ -106,6 +106,17 @@ def _finalised(record_kw: dict[str, Any] | None = None, **overrides: Any) -> dic
 # The invariant
 # ---------------------------------------------------------------------------
 
+class _Flagged:
+    """The attribute surface `flags.retract` needs, and nothing else — the
+    real caller passes an `EnrichmentResult`, which is far more than these
+    tests are about."""
+
+    def __init__(self, rendered: dict[str, Any]) -> None:
+        self.record_id = "t"
+        for key, value in rendered.items():
+            setattr(self, key, value)
+
+
 class TestFlagFieldsStayConsistent:
     """``flag_for_review`` is true if and only if ``flag_codes`` is non-empty."""
 
@@ -118,6 +129,8 @@ class TestFlagFieldsStayConsistent:
         {"name1_enriched": "Acme Labs", "_ev_person_unresolved": True},
         {"name1_enriched": "Acme Labs", "_ev_overflow": True},
         {"name1_enriched": "Acme Labs", "_domain_unverified": True},
+        {"name1_enriched": "Acme Labs",
+         "_domain_unverified": "meridianlabs.ai"},
         {"name1_enriched": "Acme Labs", "_ev_email_conflict": True},
         # Several at once.
         {"name1_enriched": "Acme Labs", "_ev_overflow": True,
@@ -514,3 +527,147 @@ class TestRebuiltFromFinalState:
             _multi_contact=True, _has_dept_signal=False,
         )
         assert not [k for k in out if k.startswith("_")]
+
+
+class TestRenderAndRetract:
+    """`render` is the one place the four flag columns are built, and
+    `retract` is the only way a code leaves a record after `compute_flags`
+    has run — the escape hatch for a batch-level pass that changes a field
+    the per-record decision had already described. Both are pinned here at
+    the module boundary; their one caller is tested in test_batch_consensus.
+    """
+
+    def test_compute_flags_publishes_the_scope_map_it_rendered_from(self):
+        out = _finalised(
+            {"name1": "Acme Labs", "name2": "Chemistry"},
+            name1_enriched="Acme Labs", name2_enriched="Chemistry",
+            _ev_low_conf_unchanged={"name2"}, _domain_unverified=True,
+        )
+        assert out["flag_scopes"] == {
+            flags.LOW_CONFIDENCE_UNCHANGED: ["name2"],
+            flags.DOMAIN_UNVERIFIED: ["domain"],
+        }
+        # The published union is exactly the union of the map.
+        assert out["flagged_fields"] == ["name2", "domain"]
+
+    def test_render_emits_the_four_columns_consistently(self):
+        out = flags.render({flags.DOMAIN_UNVERIFIED: {"domain"}})
+        assert out["flag_codes"] == [flags.DOMAIN_UNVERIFIED]
+        assert out["flag_for_review"] is True
+        assert out["flagged_fields"] == ["domain"]
+        assert out["flag_reason"].startswith("Domain:")
+
+    def test_render_of_nothing_is_the_unflagged_record(self):
+        assert flags.render({}) == {
+            "flag_codes": [], "flagged_fields": [],
+            "flag_for_review": False, "flag_reason": None, "flag_scopes": {},
+            "flag_details": {},
+        }
+
+    def test_render_orders_codes_by_emission_order_not_input_order(self):
+        out = flags.render({
+            flags.DOMAIN_UNVERIFIED: {"domain"},
+            flags.OVERFLOW: {"name1", "name2"},
+        })
+        assert out["flag_codes"] == [flags.OVERFLOW, flags.DOMAIN_UNVERIFIED]
+        assert out["flag_reason"].startswith("Name 1 and Name 2:")
+
+    def test_a_record_level_code_renders_without_a_scope_clause(self):
+        out = flags.render({flags.OVERFLOW: set()})
+        assert out["flagged_fields"] == []
+        assert out["flag_reason"] == flags._REASONS[flags.OVERFLOW]
+
+    def test_retract_drops_the_code_and_re_renders(self):
+        result = _Flagged(flags.render({
+            flags.LOW_CONFIDENCE_UNCHANGED: {"name1"},
+            flags.DOMAIN_UNVERIFIED: {"domain"},
+        }))
+        assert flags.retract(
+            result, [flags.LOW_CONFIDENCE_UNCHANGED], "name1",
+        ) == (flags.LOW_CONFIDENCE_UNCHANGED,)
+        assert result.flag_codes == [flags.DOMAIN_UNVERIFIED]
+        assert result.flagged_fields == ["domain"]
+        assert result.flag_for_review is True
+        assert "left exactly as supplied" not in result.flag_reason
+
+    def test_render_names_the_rejected_domain_in_the_reason(self):
+        """A reviewer told to "confirm the website" would have to rediscover
+        which one; the guard knew, so the prose says it."""
+        out = flags.render(
+            {flags.DOMAIN_UNVERIFIED: {"domain"}},
+            {flags.DOMAIN_UNVERIFIED: "meridianlabs.ai"},
+        )
+        assert out["flag_reason"] == (
+            "Domain: a candidate website (meridianlabs.ai) was found but "
+            "nothing tied it to this organisation — confirm meridianlabs.ai "
+            "before using it"
+        )
+        assert out["flag_details"] == {flags.DOMAIN_UNVERIFIED: "meridianlabs.ai"}
+
+    def test_render_falls_back_to_the_generic_prose_without_a_detail(self):
+        out = flags.render({flags.DOMAIN_UNVERIFIED: {"domain"}})
+        assert out["flag_reason"] == (
+            f"Domain: {flags._REASONS[flags.DOMAIN_UNVERIFIED]}"
+        )
+        assert out["flag_details"] == {}
+
+    def test_render_drops_details_for_codes_it_did_not_render(self):
+        """The detail map is scoped to what shipped, so a stale entry cannot
+        outlive the code it described."""
+        out = flags.render(
+            {flags.NO_MATCH: {"name1"}},
+            {flags.DOMAIN_UNVERIFIED: "meridianlabs.ai"},
+        )
+        assert out["flag_details"] == {}
+
+    def test_retract_keeps_the_wording_of_the_codes_it_keeps(self):
+        rendered = flags.render(
+            {
+                flags.LOW_CONFIDENCE_UNCHANGED: {"name1"},
+                flags.DOMAIN_UNVERIFIED: {"domain"},
+            },
+            {flags.DOMAIN_UNVERIFIED: "meridianlabs.ai"},
+        )
+        result = _Flagged(rendered)
+        flags.retract(result, [flags.LOW_CONFIDENCE_UNCHANGED], "name1")
+        assert result.flag_codes == [flags.DOMAIN_UNVERIFIED]
+        assert "meridianlabs.ai" in result.flag_reason
+
+    def test_retract_narrows_a_multi_field_scope_instead_of_dropping(self):
+        result = _Flagged(flags.render({
+            flags.LOW_CONFIDENCE_UNCHANGED: {"name1", "name2"},
+        }))
+        flags.retract(result, [flags.LOW_CONFIDENCE_UNCHANGED], "name1")
+        assert result.flag_codes == [flags.LOW_CONFIDENCE_UNCHANGED]
+        assert result.flagged_fields == ["name2"]
+        assert result.flag_scopes == {flags.LOW_CONFIDENCE_UNCHANGED: ["name2"]}
+
+    def test_retracting_the_last_code_clears_the_record(self):
+        result = _Flagged(flags.render({flags.NO_MATCH: {"name1"}}))
+        flags.retract(result, [flags.NO_MATCH], "name1")
+        assert result.flag_codes == []
+        assert result.flag_for_review is False
+        assert result.flag_reason is None
+        assert result.flag_scopes == {}
+
+    @pytest.mark.parametrize("codes, field", [
+        ([flags.NO_MATCH], "name1"),          # code not present
+        ([flags.DOMAIN_UNVERIFIED], "name1"),  # present, but on another field
+    ])
+    def test_retract_is_a_no_op_when_nothing_matches(self, codes, field):
+        rendered = flags.render({flags.DOMAIN_UNVERIFIED: {"domain"}})
+        result = _Flagged(rendered)
+        assert flags.retract(result, codes, field) == ()
+        assert result.flag_codes == rendered["flag_codes"]
+        assert result.flag_reason == rendered["flag_reason"]
+
+    def test_retract_on_a_record_with_no_scope_map_does_nothing(self):
+        """A hand-built or legacy result carries no map, so there is nothing
+        to withdraw from — it is left exactly as it is rather than cleared."""
+        result = _Flagged({
+            "flag_codes": [flags.LOW_CONFIDENCE_UNCHANGED],
+            "flag_for_review": True, "flagged_fields": ["name1"],
+            "flag_reason": "Name 1: ...", "flag_scopes": {},
+        })
+        assert flags.retract(result, [flags.LOW_CONFIDENCE_UNCHANGED], "name1") == ()
+        assert result.flag_codes == [flags.LOW_CONFIDENCE_UNCHANGED]
