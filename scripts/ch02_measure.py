@@ -57,6 +57,7 @@ from enrichment.address_processing import (  # noqa: E402
     _SUITE_PATTERNS,
     _UNIVERSITY_CENTRE_RE,
     _extract_mail_code,
+    _extract_sublocations,
     _looks_like_department,
     _looks_like_street,
 )
@@ -70,6 +71,8 @@ from enrichment.issue_detection import (  # noqa: E402
     _norm,
     _street_signature,
     ISSUE_CATALOGUE,
+    _SUBLOCATION_SLOTS,
+    issue_name,
     detect_issues,
 )
 from enrichment.preprocess import (  # noqa: E402
@@ -206,10 +209,13 @@ def locate(record: EnrichmentRecord, present: set[str] | None) -> dict[str, set[
         ):
             add("G1-NAME-001", upper, lower)
             break
-    # G1-NAME-004 — a blank slot with a populated one below it.
-    for upper, lower in NAME_PAIRS:
-        if is_blank(_val(record, upper)) and not is_blank(_val(record, lower)):
-            add("G1-NAME-004", upper, lower)
+    # G1-NAME-004 — a blank slot BETWEEN two populated ones. Catalogue v2
+    # renamed this to "Empty field in between populated name fields": a blank
+    # Name 1 is a missing organisation name (G2-VAL-001), not a gap.
+    populated = [not is_blank(_val(record, f)) for f in NAME_FIELDS]
+    for idx in range(1, len(NAME_FIELDS) - 1):
+        if not populated[idx] and any(populated[:idx]) and any(populated[idx + 1:]):
+            add("G1-NAME-004", NAME_FIELDS[idx])
             break
     # G1-NAME-013 (:312-315)
     for f in NAME_FIELDS:
@@ -220,8 +226,11 @@ def locate(record: EnrichmentRecord, present: set[str] | None) -> dict[str, set[
 
     # --- G2 ---------------------------------------------------------------
     # G2-VAL-* (:330-334)
-    for field_name, code in _REQUIRED_FIELD_CODES:
+    for field_name, code, condition in _REQUIRED_FIELD_CODES:
         if present is not None and field_name not in present:
+            continue
+        # Catalogue v2 gates G2-VAL-004 (Region Missing) on US records only.
+        if condition is not None and not condition(record):
             continue
         if is_blank(getattr(record, field_name)):
             add(code, field_name)
@@ -242,13 +251,9 @@ def locate(record: EnrichmentRecord, present: set[str] | None) -> dict[str, set[
         ):
             add("G2-NAME-009", *DEPT_FIELDS)
             break
-    # G2-CONTACT-008 / -009 (:364-369)
-    if name2_blank and looks_like_university_or_research_institute(record.name_1):
-        if is_blank(record.contact) and is_blank(record.care_of):
-            if "G2-NAME-012" not in hits:
-                add("G2-CONTACT-008", *DEPT_FIELDS, "contact", "care_of")
-        elif not is_blank(record.contact) and not has_multiple_contacts(record.contact):
-            add("G2-CONTACT-009", *DEPT_FIELDS, "contact")
+    # G2-CONTACT-008 / -009 are withdrawn in Catalogue v2 and no longer
+    # emitted. Withdrawing them removed the contact-based (Tier 2A) department
+    # recovery path, which is why G2-NAME-012 now sits in G6.
 
     # --- G3 ---------------------------------------------------------------
     # G3-NAME-003 (:381-384)
@@ -310,6 +315,18 @@ def locate(record: EnrichmentRecord, present: set[str] | None) -> dict[str, set[
         if v and _BARE_MARKER_RE.search(v):
             add("G4-ADDR-008", f)
             break
+    # G4-ADDR-025 — more distinct sub-locations than Street 2..5 can hold.
+    sublocations = set()
+    for f in STREET_FIELDS:
+        v = _val(record, f)
+        if not v:
+            continue
+        _rest, extracted, _bare = _extract_sublocations(v)
+        for kind, value in extracted.items():
+            sublocations.add((kind, value.strip().lower()))
+    if len(sublocations) > _SUBLOCATION_SLOTS:
+        add("G4-ADDR-025", *STREET_FIELDS)
+
     # G4-ADDR-026 (:452-456)
     if not is_blank(record.postal_code):
         iso = country_to_iso_code(record.country_region_key)
@@ -374,7 +391,7 @@ def measure_issues(path: Path) -> None:
     ex = [[c for c in codes if c != UNIVERSAL] for codes in per_row]
     ex_with = sum(1 for codes in ex if codes)
     ex_inst = sum(len(codes) for codes in ex)
-    print(f"--- 3.1b Same totals excluding {UNIVERSAL} ({ISSUE_CATALOGUE[UNIVERSAL]}) ---")
+    print(f"--- 3.1b Same totals excluding {UNIVERSAL} ({issue_name(UNIVERSAL)}) ---")
     print(f"records with >= 1 other issue             : {ex_with}  ({ex_with / total:.1%})")
     print(f"records with no other issue               : {total - ex_with}  ({(total - ex_with) / total:.1%})")
     print(f"issue instances excluding {UNIVERSAL}     : {ex_inst}")
@@ -412,13 +429,13 @@ def measure_issues(path: Path) -> None:
     print(f"{'rank':>4} | {'code':<15} | {'grp':<3} | {'records':>7} | {'% of 500':>9} | name")
     print(f"{'-' * 4}-+-{'-' * 15}-+-{'-' * 3}-+-{'-' * 7}-+-{'-' * 9}-+-{'-' * 44}")
     for rank, (code, n) in enumerate(sorted(freq.items(), key=lambda kv: (-kv[1], kv[0])), start=1):
-        print(f"{rank:>4} | {code:<15} | {code.split('-')[0]:<3} | {n:>7} | {n / total:>8.1%} | {ISSUE_CATALOGUE[code]}")
+        print(f"{rank:>4} | {code:<15} | {code.split('-')[0]:<3} | {n:>7} | {n / total:>8.1%} | {issue_name(code)}")
     silent = [c for c in ISSUE_CATALOGUE if c not in freq]
     print()
     print(f"codes observed in this dataset : {len(freq)} of {len(ISSUE_CATALOGUE)} declared")
     print(f"codes never observed here      : {len(silent)}")
     for code in silent:
-        print(f"    {code:<15} {ISSUE_CATALOGUE[code]}")
+        print(f"    {code:<15} {issue_name(code)}")
     print()
 
     print("--- 3.4 Distinct SAP columns implicated per record ---")

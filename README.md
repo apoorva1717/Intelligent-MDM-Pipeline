@@ -1465,9 +1465,27 @@ Same enrichment as `/enrich`, but accepts an `.xlsx`/`.xlsm` upload (SAP column 
 
 Audits an uploaded `.xlsx` against the deterministic Issue Catalogue (`enrichment/issue_detection.py`) and returns the same sheet with one appended `Issues` column. Pure audit — no enrichment, LLM, or external calls.
 
+The catalogue is aligned to **Issue Catalogue v2**: 38 declared entries, of which 35 can be emitted. Each entry carries an explicit `group` (G1–G7), `name`, `field`, `mandatory`, `origin` and `status`. Three things are worth knowing before consuming the output:
+
+- **The group is an attribute, not the code prefix.** v2's **G6 — Not Resolvable by Enrichment** is a *regrouping* of four codes that keep their original `G2-` identifiers (`G2-VAL-001`, `G2-VAL-003`, `G2-VAL-006`, `G2-NAME-012`). Read `ISSUE_CATALOGUE[code].group`; do not split the code string.
+- **`G7-VERIFY-001` is not a quality issue.** It is raised *by* successful enrichment, so a steward can be assigned the record through DATAshaper's Category dropdown, and it fires only when the uploaded sheet carries a truthy `Flag for Review` cell. A raw input file has no such column and can never receive it. The per-record trigger is in `Flag Reason`, deliberately not split into finer codes.
+- **`origin` records who raises a rule** — `DS` (native DATAshaper rule), `API` (this service), or `BOTH`. All 11 DS-only codes are raised here by default, which duplicates them in DATAshaper; that is deliberate, because `/issues` is also run standalone on a raw workbook. Pass `origins=("API", "BOTH")` to `detect_issues` for a feed that must not duplicate a native DS rule.
+
+The `Issues` column's **shape is unchanged** — one appended column of semicolon-separated bare codes — so the DATAshaper contract is untouched. Only the set of codes that can appear in it changed: `G2-CONTACT-008` and `G2-CONTACT-009` are withdrawn and no longer appear; `G7-VERIFY-001` newly can, on enriched files only.
+
+Run `python3 scripts/issue_catalogue_census.py` for the derived counts and the full per-code table.
+
 ### POST /issues/compare
 
 Takes two uploads (`original`, `enriched`), runs the issue detector over both, joins rows by record id, and returns an `.xlsx` issue-reduction report (summary + per-record + remaining-issues sheets).
+
+The report is **segmented into three blocks**, because a single "issues remaining" total conflates three different things:
+
+| Block | Groups | Meaning |
+|---|---|---|
+| **Reduced** | G1–G5 | Codes with a remediation path. Present before and absent after = work the pipeline did. **The headline reduction % is computed over these groups alone.** |
+| **Expected to persist** | G6 | No automated path exists to supply the value. These are *supposed* to survive to the enriched file and be routed to a steward; their persistence is correct behaviour, not a pipeline failure. Excluded from the reduction %. |
+| **Verification** | G7 | Raised by successful enrichment. Counting it would inflate the post-pipeline total in proportion to how well enrichment performed — inverting the meaning of the delta. Reported separately, never in any reduction figure. |
 
 ### POST /api/dedup/cluster-block
 
@@ -2326,6 +2344,15 @@ The `enrichment_status` field maps to DATAshaper issue severities:
 | `verified` | Info issue (confirmed correct) | Values confirmed, logged for audit |
 | `unresolved` | Warning issue (manual review) | Flagged for data steward review |
 | `failed` | Error issue (process failed) | Requires investigation |
+
+**Issue-code severity** is a separate axis, carried per catalogue code rather than per record. Catalogue v2's `Mandatory` attribute maps onto the same severities and is exposed as `IssueDefinition.severity`, so it is derivable rather than restated:
+
+| Catalogue `Mandatory` | `IssueDefinition.severity` | DATAshaper effect |
+|---|---|---|
+| Yes | `Error` | Blocks the SAP load |
+| No | `Warning` | Loads, flagged for review |
+
+Nine of the 35 emittable codes are mandatory: `G2-VAL-001`, `G2-VAL-002`, `G2-VAL-003`, `G2-VAL-004`, `G2-VAL-006`, `G2-VAL-007`, `G2-VAL-008`, `G4-NAME-015`, `G4-ADDR-027`.
 
 ---
 

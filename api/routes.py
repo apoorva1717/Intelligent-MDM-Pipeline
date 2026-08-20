@@ -41,7 +41,14 @@ from dedup.scoring import (
     load_weights,
 )
 from dedup.scoring_xlsx import ScoringFileError, score_workbook
-from enrichment.issue_detection import ISSUE_CATALOGUE, detect_issues
+from enrichment.issue_detection import (
+    ISSUE_CATALOGUE,
+    PERSISTENT_GROUP,
+    REDUCIBLE_GROUPS,
+    VERIFICATION_GROUP,
+    detect_issues,
+    flag_for_review_is_set,
+)
 from enrichment.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
@@ -156,6 +163,21 @@ def _present_fields(headers: list[str]) -> set[str]:
         if field is not None:
             present.add(field)
     return present
+
+
+def _flag_for_review(row: dict[str, str], headers: list[str]) -> bool | None:
+    """The row's ``Flag for Review`` value, or ``None`` when the file has no
+    such column.
+
+    ``None`` and ``False`` are not interchangeable here: ``None`` means "this
+    is a raw input file, G7 cannot apply", while ``False`` means "this is an
+    enriched file and the pipeline did not flag this record". Both suppress
+    G7-VERIFY-001, but only ``None`` says the question was never asked.
+    """
+    for header in headers:
+        if _norm_header(header) == _norm_header("Flag for Review"):
+            return flag_for_review_is_set(row.get(header))
+    return None
 
 
 def _parse_xlsx(contents: bytes) -> tuple[list[str], list[dict[str, str]]]:
@@ -411,12 +433,17 @@ async def _audit_upload(file: UploadFile) -> dict[str, list[str]]:
 
     issue_map: dict[str, list[str]] = {}
     excluded = 0
-    for record in records:
+    for record, row in zip(records, row_dicts):
         rid = record.record_id
         if not rid:
             excluded += 1
             continue
-        issue_map.setdefault(rid, detect_issues(record, present))
+        issue_map.setdefault(
+            rid,
+            detect_issues(
+                record, present, flag_for_review=_flag_for_review(row, headers),
+            ),
+        )
 
     if excluded:
         logger.info(
@@ -433,12 +460,29 @@ def _build_comparison_xlsx(
 ) -> bytes:
     """Build the before/after issue-reduction report.
 
-    Sheet 1 (Summary): headline totals + a per-code Before/After/Delta table.
+    The report is **segmented by catalogue group**, because a single "issues
+    remaining" total conflates three things that mean different things:
+
+    * **Reduced** (G1-G5) — the actual story. These codes have a remediation
+      path, so a code present before and absent after is work the pipeline did.
+      The headline reduction percentage is computed over these groups alone.
+    * **Expected to persist** (G6) — "Not Resolvable by Enrichment": no
+      automated path exists to supply the value, so these codes are *supposed*
+      to survive to the enriched file and be routed to a steward. Folding them
+      into the reduction total counts the pipeline down for defects it was
+      never able to fix.
+    * **Verification** (G7) — raised *by* successful enrichment, not by a
+      defect. Counting it would inflate the post-pipeline total in proportion
+      to how well enrichment performed, inverting the meaning of the delta. It
+      is reported on its own and never enters any reduction figure.
+
+    Sheet 1 (Summary): the three blocks above + a per-code Before/After/Delta
+    table carrying each code's group and segment.
     Sheet 2 (Per Record): every matched record's before codes, after codes,
     which issues were resolved, and which were newly introduced.
     Sheet 3 (Remaining Issues): for every issue still present after
     enrichment, the customer id of each record that still has it (one row
-    per code/customer pairing).
+    per code/customer pairing), labelled with its segment.
     Comparison is over records present in BOTH files (joined by record id).
     """
     from openpyxl import Workbook
@@ -447,10 +491,23 @@ def _build_comparison_xlsx(
     only_before = [rid for rid in before_map if rid not in after_map]
     only_after = [rid for rid in after_map if rid not in before_map]
 
-    total_before = total_after = total_resolved = total_introduced = 0
+    def segment(code: str) -> str:
+        """Which of the three report blocks *code* belongs to."""
+        group = ISSUE_CATALOGUE[code].group
+        if group == VERIFICATION_GROUP:
+            return "Verification"
+        if group == PERSISTENT_GROUP:
+            return "Expected to persist"
+        return "Reduced"
+
     code_before: Counter = Counter()
     code_after: Counter = Counter()
     per_record_rows: list[list[str]] = []
+    # Per-segment tallies. Only "Reduced" feeds the headline percentage.
+    seg_before: Counter = Counter()
+    seg_after: Counter = Counter()
+    seg_resolved: Counter = Counter()
+    seg_introduced: Counter = Counter()
 
     for rid in matched_ids:
         before = before_map[rid]
@@ -460,10 +517,14 @@ def _build_comparison_xlsx(
         resolved = [c for c in ISSUE_CATALOGUE if c in bset - aset]
         introduced = [c for c in ISSUE_CATALOGUE if c in aset - bset]
 
-        total_before += len(before)
-        total_after += len(after)
-        total_resolved += len(resolved)
-        total_introduced += len(introduced)
+        for code in bset:
+            seg_before[segment(code)] += 1
+        for code in aset:
+            seg_after[segment(code)] += 1
+        for code in resolved:
+            seg_resolved[segment(code)] += 1
+        for code in introduced:
+            seg_introduced[segment(code)] += 1
         code_before.update(bset)
         code_after.update(aset)
 
@@ -475,8 +536,10 @@ def _build_comparison_xlsx(
             "; ".join(introduced),
         ])
 
-    net = total_before - total_after
-    pct = (net / total_before * 100) if total_before else 0.0
+    reduced_before = seg_before["Reduced"]
+    reduced_after = seg_after["Reduced"]
+    net = reduced_before - reduced_after
+    pct = (net / reduced_before * 100) if reduced_before else 0.0
 
     wb = Workbook()
     summary = wb.active
@@ -487,20 +550,59 @@ def _build_comparison_xlsx(
     summary.append(["Records only in original", len(only_before)])
     summary.append(["Records only in enriched", len(only_after)])
     summary.append([])
-    summary.append(["Total issues before", total_before])
-    summary.append(["Total issues after", total_after])
-    summary.append(["Issues resolved", total_resolved])
-    summary.append(["Issues introduced", total_introduced])
-    summary.append(["Net reduction", net])
+
+    # --- Block 1: the reduction metric (G1-G5 only) ---
+    # Labels are block-prefixed and unique across the sheet: three blocks each
+    # carrying a bare "Issues before" would be ambiguous to a reader and would
+    # collide for anything reading the sheet as label -> value pairs.
+    summary.append([f"Reduced — {', '.join(REDUCIBLE_GROUPS)} (the reduction metric)"])
+    summary.append(["Reduced: issues before", reduced_before])
+    summary.append(["Reduced: issues after", reduced_after])
+    summary.append(["Reduced: issues resolved", seg_resolved["Reduced"]])
+    summary.append(["Reduced: issues introduced", seg_introduced["Reduced"]])
+    summary.append(["Reduced: net reduction", net])
     summary.append(["Reduction %", round(pct, 1)])
     summary.append([])
-    summary.append(["Code", "Name", "Before", "After", "Delta"])
-    for code, name in ISSUE_CATALOGUE.items():
+
+    # --- Block 2: G6, where persistence is the correct outcome ---
+    summary.append([
+        f"Expected to persist — {PERSISTENT_GROUP} (Not Resolvable by Enrichment)"
+    ])
+    summary.append([
+        "These codes have no automated remediation path. They are routed to a "
+        "data steward, and their survival to the enriched file is correct "
+        "behaviour — not an unreduced defect. Excluded from the reduction %."
+    ])
+    summary.append(["Expected to persist: issues before", seg_before["Expected to persist"]])
+    summary.append(["Expected to persist: issues after", seg_after["Expected to persist"]])
+    summary.append([
+        "Expected to persist: persisted as expected",
+        seg_before["Expected to persist"] - seg_resolved["Expected to persist"],
+    ])
+    summary.append([
+        "Expected to persist: newly raised after enrichment",
+        seg_introduced["Expected to persist"],
+    ])
+    summary.append([])
+
+    # --- Block 3: G7, never part of any reduction figure ---
+    summary.append([f"Verification — {VERIFICATION_GROUP} (reported separately)"])
+    summary.append([
+        "Raised BY successful enrichment so DATAshaper can assign the record "
+        "to a steward. Not a quality issue and never counted in the reduction "
+        "metric; see the Flag Reason column for the per-record trigger."
+    ])
+    summary.append(["Verification: records requiring verification", seg_after["Verification"]])
+    summary.append([])
+
+    summary.append(["Code", "Name", "Group", "Segment", "Before", "After", "Delta"])
+    for code, entry in ISSUE_CATALOGUE.items():
         before_count = code_before.get(code, 0)
         after_count = code_after.get(code, 0)
         if before_count or after_count:
             summary.append([
-                code, name, before_count, after_count, after_count - before_count,
+                code, entry.name, entry.group, segment(code),
+                before_count, after_count, after_count - before_count,
             ])
 
     per_record = wb.create_sheet("Per Record")
@@ -515,13 +617,15 @@ def _build_comparison_xlsx(
     # One row per (code, customer) so the sheet can be filtered or pivoted
     # by either column. Ordered by catalogue order, then customer id.
     # Covers every record in the enriched file (matched + enriched-only),
-    # so no remaining issue is omitted.
+    # so no remaining issue is omitted. The Segment column separates a real
+    # unreduced defect from an expected-persistence one and from a
+    # verification disposition.
     remaining = wb.create_sheet("Remaining Issues")
-    remaining.append(["Code", "Name", "Customer"])
-    for code, name in ISSUE_CATALOGUE.items():
+    remaining.append(["Code", "Name", "Group", "Segment", "Customer"])
+    for code, entry in ISSUE_CATALOGUE.items():
         ids = sorted(rid for rid, codes in after_map.items() if code in codes)
         for rid in ids:
-            remaining.append([code, name, rid])
+            remaining.append([code, entry.name, entry.group, segment(code), rid])
 
     buffer = io.BytesIO()
     wb.save(buffer)
@@ -616,7 +720,12 @@ async def detect_file_issues(
     headers, row_dicts = _parse_xlsx(contents)
     records = _rows_to_records(row_dicts)
     present = _present_fields(headers)
-    issues_per_row = [detect_issues(record, present) for record in records]
+    issues_per_row = [
+        detect_issues(
+            record, present, flag_for_review=_flag_for_review(row, headers),
+        )
+        for record, row in zip(records, row_dicts)
+    ]
 
     logger.info(
         "Issues file request received: %s, %d records, %d with issues",

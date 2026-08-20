@@ -1,8 +1,8 @@
 """Deterministic data-quality issue detection (Issue Catalogue v2).
 
 This module audits a single :class:`~api.models.EnrichmentRecord` against the
-36-code Issue Catalogue and returns the codes that fire. It is the engine behind
-the ``POST /issues`` endpoint.
+Issue Catalogue and returns the codes that fire. It is the engine behind the
+``POST /issues`` and ``POST /issues/compare`` endpoints.
 
 Design constraints (per product owner):
 
@@ -15,20 +15,45 @@ Design constraints (per product owner):
   …) we import and reuse its compiled patterns so detection stays consistent with
   what the pipeline actually does.
 
-Coverage: 34 of the 36 catalogue codes are emitted, and every one of those 34 is
-reachable — no code has a rule that cannot fire. 2 are intentionally never
-emitted because they genuinely require the pipeline's LLM residual classifier and
-cannot be decided deterministically from raw input; they are reserved in
-``ISSUE_CATALOGUE`` for completeness and documented as ``# LLM-only`` below:
+Catalogue shape
+---------------
+``ISSUE_CATALOGUE`` maps each declared code to an :class:`IssueDefinition`
+carrying ``group``, ``name``, ``field``, ``mandatory``, ``origin``, ``status``
+and ``reason``. Two consequences worth stating outright:
 
-* ``G1-ADDR-009`` Unclassified Residual in Address
-* ``G4-ADDR-025`` Sub-location Overflow Beyond Street 5
+* **The group is an attribute, not a prefix.** Catalogue v2's G6 ("Not
+  Resolvable by Enrichment") is a *regrouping* of four codes that keep their
+  original ``G2-`` identifiers, so ``code.split("-")[0]`` is no longer a group.
+  Read ``ISSUE_CATALOGUE[code].group`` (or ``issue_group(code)``).
+* **``mandatory`` is the DATAshaper severity.** ``True`` blocks the SAP load
+  (*Error*); ``False`` is a *Warning*. See ``IssueDefinition.severity`` and
+  README's integration table.
+
+Counts — all derived from the source below, never asserted
+----------------------------------------------------------
+* **38 declared** catalogue entries.
+* **34 live** — emitted by this detector. 33 of them are quality issues
+  (G1-G6) and one is ``G7-VERIFY-001``.
+* **1 unlisted** — ``G3-ADDR-012``, emitted here but absent from Catalogue v2,
+  left unchanged pending a human decision.
+* **35 deterministically emitted** = the 34 live plus the unlisted one; this is
+  ``EMITTED_CODES``.
+* **2 withdrawn** — ``G2-CONTACT-008``, ``G2-CONTACT-009``. Struck through in
+  Catalogue v2; declared here for the audit trail, never emitted.
+* **1 not deterministically detectable** — ``G1-ADDR-009``. Live in Catalogue v2
+  but no deterministic rule can express it; see the entry's ``reason``.
+
+Origin breakdown of the 33 live quality codes: 11 DS-only, 20 API-only, 2 BOTH
+(Catalogue v2's 21 API figure includes ``G1-ADDR-009``, which is ``ndd`` here).
+``detect_issues`` emits every origin by default — including DS-only codes — for
+the reason documented on that function; pass ``origins=("API", "BOTH")`` for a
+DATAshaper-facing feed that must not duplicate a native DS rule.
 
 These figures are asserted against the source by
-``tests/test_issue_detection.py::test_docstring_counts_match_the_catalogue``,
-so adding or retiring a code fails the suite until this docstring is updated.
-How many of the 34 actually fire on any given batch is a property of that data,
-not of the rule set.
+``tests/test_issue_detection.py::test_docstring_counts_match_the_catalogue``, so
+adding or retiring a code fails the suite until this docstring is updated. How
+many of the 35 actually fire on any given batch is a property of that data, not
+of the rule set.
 
 Several G1-NAME / G2-NAME / G5 rules are inherently semantic; here they are
 detected with conservative deterministic heuristics (documented inline). They err
@@ -38,6 +63,9 @@ toward precision (few false positives) over recall.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from typing import Literal
 
 from api.models import EnrichmentRecord
 
@@ -61,6 +89,7 @@ from enrichment.address_processing import (
     _SUITE_PATTERNS,
     _UNIVERSITY_CENTRE_RE,
     _extract_mail_code,
+    _extract_sublocations,
     _looks_like_department,
     _looks_like_street,
 )
@@ -76,56 +105,197 @@ from utils.text_utils import (
 
 
 # ---------------------------------------------------------------------------
-# Catalogue — code -> human name, in catalogue (G1→G5) order.
-# Output codes are ordered by this mapping's key order.
+# Catalogue — one explicit entry per declared code, in catalogue order.
+#
+# Every attribute Catalogue v2 carries is modelled here rather than inferred:
+#
+# ``group``      G1..G7. **Independent of the code prefix.** v2's G6 ("Not
+#                Resolvable by Enrichment") is a regrouping of four codes that
+#                keep their original ``G2-`` identifiers, so parsing the prefix
+#                to get the group is a bug — read ``.group``.
+# ``mandatory``  True  = blocks the SAP load (DATAshaper severity *Error*)
+#                False = warning. Mirrors README's integration table.
+# ``origin``     "DS"   native DATAshaper rule
+#                "API"  raised by this Enrichment API
+#                "BOTH" either path can raise it
+#                A DS-origin rule raised here produces a *duplicate* issue in
+#                DATAshaper, which sees it from both paths — see ``detect_issues``
+#                and its ``origins`` filter.
+# ``status``     "live"       emitted by this detector
+#                "withdrawn"  struck through in Catalogue v2; declaration kept
+#                             for the audit trail, never emitted
+#                "ndd"        live in the catalogue but *not deterministically
+#                             detectable*; see ``reason``
+#                "unlisted"   emitted here but absent from Catalogue v2, pending
+#                             a human decision; see ``reason``
+# ``reason``     Why a non-"live" code is in that state. Required for every
+#                status except "live" (asserted by the test suite).
 # ---------------------------------------------------------------------------
 
-ISSUE_CATALOGUE: dict[str, str] = {
-    # G1 — Data in Wrong Field
-    "G1-CROSS-001": "Address Content in Name Field",
-    "G1-CROSS-002": "Org Name in Address Field",
-    "G1-CROSS-003": "Contact Information in Wrong Field",
-    "G1-ADDR-001": "House Number Embedded in Street",
-    "G1-ADDR-003": "Sub-location Embedded in Street",
-    "G1-ADDR-004": "PO Box Embedded in Street",
-    "G1-ADDR-006": "Mail Code in Street Field",
-    "G1-ADDR-011": "Department Label in Street Field",
-    "G1-NAME-001": "Name Overflow Across Fields",
-    "G1-NAME-004": "Name Field Empty With a Populated Field Below It",
-    "G1-NAME-013": "SAP Internal Code in Name Field",
-    "G1-ADDR-009": "Unclassified Residual in Address",  # LLM-only — never emitted
-    # G2 — Missing Required Data
-    "G2-VAL-001": "Name 1 Missing",
-    "G2-VAL-002": "Postal Code Missing",
-    "G2-VAL-003": "Tax Jurisdiction Missing",
-    "G2-VAL-004": "Region Missing",
-    "G2-VAL-006": "Language Missing",
-    "G2-VAL-007": "Search Term 1 Missing",
-    "G2-VAL-008": "Country Missing",
-    "G2-NAME-009": "Lab Without Department",
-    "G2-NAME-012": "Research Institution Missing Department",
-    "G2-CONTACT-009": "Department Missing And Enrichable from Contact",
-    # G3 — Duplicate or Conflicting Data
-    "G3-NAME-003": "DBA Pattern in Name Field",
-    "G3-NAME-005": "Duplicate Name Across Fields",
-    "G3-ADDR-005": "Multiple PO Boxes on Record",
-    "G3-ADDR-012": "Duplicate Street Across Fields",
-    "G3-ADDR-013": "Two Distinct Street Addresses on Record",
-    "G3-ADDR-014": "PO Box and Street Both Present",
-    "G3-CONTACT-007": "Multiple Contacts on Record",
-    # G4 — Invalid Format or Length
-    "G4-NAME-015": "Name Overflow Beyond the Name Block",
-    "G4-ADDR-008": "Bare Sub-location Marker Without Value",
-    "G4-ADDR-025": "Sub-location Overflow Beyond Street 5",  # LLM-only — never emitted
-    "G4-ADDR-026": "Postal Code Format Invalid",
-    "G4-ADDR-027": "Country Code Not ISO 2-letter",
-    # G5 — Non-Standard Naming
-    "G5-NAME-001": "Organisation Name Not in Official Form",
-    "G5-NAME-002": "Unit Name Not in Official Form",
-}
+Origin = Literal["DS", "API", "BOTH"]
+Status = Literal["live", "withdrawn", "ndd", "unlisted"]
+
+
+@dataclass(frozen=True)
+class IssueDefinition:
+    """One declared Issue-Catalogue entry."""
+
+    code: str
+    group: str
+    name: str
+    field: str
+    mandatory: bool
+    origin: Origin
+    status: Status = "live"
+    reason: str = ""
+
+    @property
+    def severity(self) -> str:
+        """DATAshaper issue severity, derived from ``mandatory``."""
+        return "Error" if self.mandatory else "Warning"
+
+
+def _d(code, group, name, field, mandatory, origin, status="live", reason="") -> tuple[str, IssueDefinition]:
+    return code, IssueDefinition(
+        code, group, name, field, mandatory, origin, status, reason,
+    )
+
+
+ISSUE_CATALOGUE: dict[str, IssueDefinition] = dict([
+    # -- G1 — Data in Wrong Field ------------------------------------------
+    _d("G1-CROSS-001", "G1", "Address Content in Name Field", "Name 1", False, "API"),
+    _d("G1-CROSS-002", "G1", "Org Name in Address Field", "Street", False, "API"),
+    _d("G1-CROSS-003", "G1", "Contact Information in Wrong Field", "varies", False, "API"),
+    _d("G1-ADDR-001", "G1", "House Number Embedded in Street", "Street", False, "DS"),
+    _d("G1-ADDR-003", "G1", "Sub-location Embedded in Street", "Street 2", False, "API"),
+    _d("G1-ADDR-004", "G1", "PO Box Embedded in Street", "Street", False, "API"),
+    _d("G1-ADDR-006", "G1", "Mail Code in Street Field", "Street 2", False, "API"),
+    _d("G1-ADDR-011", "G1", "Department Label in Street Field", "Street 2", False, "API"),
+    _d("G1-NAME-001", "G1", "Name Overflow Across Fields", "Name 1", False, "API"),
+    # v2 renamed this from "Name 2 Empty With Name 3 Populated"; the rename is
+    # a scope change — any blank slot *between* two populated ones fires it,
+    # not just the Name 2 / Name 3 pair.
+    _d("G1-NAME-004", "G1", "Empty field in between populated name fields", "Name 2", False, "API"),
+    _d("G1-NAME-013", "G1", "SAP Internal Code in Name Field", "Name 2", False, "API"),
+    _d(
+        "G1-ADDR-009", "G1", "Unclassified Residual in Address", "Street 2", False, "API",
+        status="ndd",
+        reason=(
+            "\"Unclassifiable\" is defined as the complement of every classifier the "
+            "pipeline runs, so no positive pattern can express it. Any deterministic "
+            "proxy (\"street text matching no known pattern\") fires on ordinary "
+            "unremarkable address lines and is a false-positive generator. The real "
+            "rule needs the LLM residual classifier, which /issues may not call."
+        ),
+    ),
+    # -- G2 — Missing Required Data ----------------------------------------
+    _d("G2-VAL-002", "G2", "Postal Code Missing", "Postal Code", True, "DS"),
+    _d("G2-VAL-004", "G2", "Region Missing", "Region", True, "DS"),
+    _d("G2-VAL-007", "G2", "Search Term 1 Missing", "Search Term 1", True, "DS"),
+    _d("G2-VAL-008", "G2", "Country Missing", "Country", True, "DS"),
+    _d("G2-NAME-009", "G2", "Lab Without Department", "Name 2", False, "API"),
+    _d(
+        "G2-CONTACT-008", "G2", "No Contact and No Department", "Name 2", False, "API",
+        status="withdrawn",
+        reason=(
+            "Struck through in Catalogue v2. Its gate was identical to G2-NAME-012's, "
+            "so it could never carry information the latter had not already reported."
+        ),
+    ),
+    _d(
+        "G2-CONTACT-009", "G2", "Department Missing And Enrichable from Contact",
+        "Name 2", False, "API",
+        status="withdrawn",
+        reason=(
+            "Struck through in Catalogue v2. Withdrawing it removed the contact-based "
+            "(Tier 2A) department recovery path, which is why G2-NAME-012 now sits in "
+            "G6 — no automated route to a department remains."
+        ),
+    ),
+    # -- G3 — Duplicate or Conflicting Data --------------------------------
+    _d("G3-NAME-003", "G3", "DBA Pattern in Name Field", "Name 1", False, "BOTH"),
+    _d("G3-NAME-005", "G3", "Duplicate Name Across Fields", "Name 2", False, "API"),
+    _d("G3-ADDR-005", "G3", "Multiple PO Boxes on Record", "PO Box", False, "API"),
+    _d(
+        "G3-ADDR-012", "G3", "Duplicate Street Across Fields", "Street", False, "API",
+        status="unlisted",
+        reason=(
+            "Implemented and emitting here, but absent from the Catalogue v2 G3 table. "
+            "Either it was withdrawn and this detector should stop emitting it, or v2 "
+            "omits it and Notion needs the row added. Left emitting, unchanged, "
+            "pending that decision — see docs/thesis/00_OPEN_ITEMS.md."
+        ),
+    ),
+    _d("G3-ADDR-013", "G3", "Two Distinct Street Addresses on Record", "Street", False, "API"),
+    _d("G3-ADDR-014", "G3", "PO Box and Street Both Present", "PO Box", False, "BOTH"),
+    _d("G3-CONTACT-007", "G3", "Multiple Contacts on Record", "Name 2", False, "API"),
+    # -- G4 — Invalid Format or Length -------------------------------------
+    # v2 names this "Name Overflow Beyond Name 4". The name block is five slots
+    # wide as of the five-name-slot change, so the slot-agnostic wording is kept
+    # here and the divergence is reported for a Notion correction.
+    _d("G4-NAME-015", "G4", "Name Overflow Beyond the Name Block", "Name 4", True, "API"),
+    _d("G4-ADDR-008", "G4", "Bare Sub-location Marker Without Value", "Street 2", False, "API"),
+    _d("G4-ADDR-025", "G4", "Sub-location Overflow Beyond Street 5", "Street 5", False, "API"),
+    _d("G4-ADDR-026", "G4", "Postal Code Format Invalid", "Postal Code", False, "DS"),
+    _d("G4-ADDR-027", "G4", "Country Code Not ISO 2-letter", "Country", True, "DS"),
+    # -- G5 — Non-Standard Naming ------------------------------------------
+    _d("G5-NAME-001", "G5", "Organisation Name Not in Official Form", "Name 1", False, "API"),
+    _d("G5-NAME-002", "G5", "Unit Name Not in Official Form", "Name 2-4", False, "API"),
+    # -- G6 — Not Resolvable by Enrichment ---------------------------------
+    # A regrouping, not new codes: these four keep their original G2-
+    # identifiers. Expected to persist from raw to enriched — that persistence
+    # is correct behaviour, not a pipeline failure.
+    _d("G2-VAL-001", "G6", "Name 1 Missing", "Name 1", True, "DS"),
+    _d("G2-VAL-003", "G6", "Tax Jurisdiction Missing", "Tax Jurisdiction", True, "DS"),
+    _d("G2-VAL-006", "G6", "Language Missing", "Language", True, "DS"),
+    _d("G2-NAME-012", "G6", "Research Institution Missing Department", "Name 2", False, "DS"),
+    # -- G7 — Verification Required ----------------------------------------
+    # Not a quality issue: raised *by* successful enrichment so DATAshaper can
+    # route the record to a steward through the Category dropdown. Reported
+    # separately and never counted in the before/after reduction metric.
+    _d("G7-VERIFY-001", "G7", "Enriched Record Requires Verification", "Flag for Review", False, "API"),
+])
+
+# Codes this detector can actually raise.
+EMITTED_CODES: tuple[str, ...] = tuple(
+    code for code, d in ISSUE_CATALOGUE.items() if d.status in ("live", "unlisted")
+)
+
+# Quality-issue groups. G7 is deliberately absent: it is not a quality issue.
+QUALITY_GROUPS: tuple[str, ...] = ("G1", "G2", "G3", "G4", "G5", "G6")
+
+# The groups the before/after reduction percentage is computed over. G6 is
+# excluded because its codes have no automated remediation path and are
+# *expected* to persist; G7 because counting it would inflate the post-pipeline
+# total in proportion to how well enrichment performed.
+REDUCIBLE_GROUPS: tuple[str, ...] = ("G1", "G2", "G3", "G4", "G5")
+
+# Codes whose persistence across the comparison is correct behaviour.
+PERSISTENT_GROUP = "G6"
+VERIFICATION_GROUP = "G7"
+
+
+def issue_name(code: str) -> str:
+    """Human name for *code* (empty string for an unknown code)."""
+    entry = ISSUE_CATALOGUE.get(code)
+    return entry.name if entry else ""
+
+
+def issue_group(code: str) -> str:
+    """Catalogue v2 group for *code*.
+
+    Read this rather than slicing the prefix: G6 holds four ``G2-`` codes.
+    """
+    entry = ISSUE_CATALOGUE.get(code)
+    return entry.group if entry else code.split("-", 1)[0]
+
 
 # SAP name-field length limit (the whole name block combined).
 _SAP_NAME_LIMIT = 140
+
+# Street 2..5 — the slots a sub-location can be packed into once Street 1
+# holds the street proper. Anything beyond this overflows (G4-ADDR-025).
+_SUBLOCATION_SLOTS = 4
 
 # Required-field rules (G2-VAL family): EnrichmentRecord field -> issue code.
 # These are gated on column presence (see ``detect_issues``): a "missing"
@@ -133,15 +303,32 @@ _SAP_NAME_LIMIT = 140
 # column is absent from the file entirely, the rule is skipped — otherwise an
 # enriched export that simply doesn't carry a column (e.g. Postal Code) would
 # be reported as "missing" it.
-_REQUIRED_FIELD_CODES: list[tuple[str, str]] = [
-    ("name_1", "G2-VAL-001"),
-    ("postal_code", "G2-VAL-002"),
-    ("tax_jurisdiction", "G2-VAL-003"),
-    ("region", "G2-VAL-004"),
-    ("language_key", "G2-VAL-006"),
-    ("search_term_1", "G2-VAL-007"),
-    ("country_region_key", "G2-VAL-008"),
+#
+# The third element is an optional *predicate* on the record: the rule fires
+# only when it returns True. Catalogue v2 attaches conditions to individual
+# codes ("G2-VAL-004 Region Missing / only for US"), which a uniform loop
+# cannot express — a blank Region on a German record is not a defect, and
+# emitting it there is a false positive. G2-VAL-004 is the only v2 entry in
+# this table carrying such a condition; the rest are unconditional.
+_REQUIRED_FIELD_CODES: list[tuple[str, str, Callable[[EnrichmentRecord], bool] | None]] = [
+    ("name_1", "G2-VAL-001", None),
+    ("postal_code", "G2-VAL-002", None),
+    ("tax_jurisdiction", "G2-VAL-003", None),
+    ("region", "G2-VAL-004", lambda r: _is_us(r)),
+    ("language_key", "G2-VAL-006", None),
+    ("search_term_1", "G2-VAL-007", None),
+    ("country_region_key", "G2-VAL-008", None),
 ]
+
+
+def _is_us(record: EnrichmentRecord) -> bool:
+    """True only when the record's country resolves to ISO ``US``.
+
+    A blank or unrecognised country is *not* treated as US: Region is only
+    mandatory for US records, so firing on an unknown country would recreate
+    the false positive this predicate exists to remove.
+    """
+    return country_to_iso_code(record.country_region_key) == "US"
 
 # Continuation connectors that suggest Name 2 carries on from Name 1 as one
 # org name (heuristic for G1-NAME-001).
@@ -318,11 +505,19 @@ def _detect_wrong_field(record: EnrichmentRecord, found: set[str]) -> None:
             found.add("G1-NAME-001")
             break
 
-    # G1-NAME-004 — a blank Name field with a populated one below it. The
-    # gap is the defect regardless of which slot it sits in.
-    for upper, lower in ADJACENT_RECORD_NAME_PAIRS:
-        if is_blank(getattr(record, upper, None)) and not is_blank(
-            getattr(record, lower, None)
+    # G1-NAME-004 — "Empty field in between populated name fields". A blank
+    # slot is only a *gap* when something populated sits both above and below
+    # it: Name 1 blank with Name 2 populated is a missing organisation name
+    # (G2-VAL-001), not a gap in the block, and reporting it here double-counts
+    # it. Scanned across the whole block, so Name 3 blank under a populated
+    # Name 2 with Name 4 populated fires exactly as the Name 2 / Name 3 pair
+    # does — the v2 rename widened the scope from one specific pair to any gap.
+    populated = [not is_blank(nm) for nm in names]
+    for idx in range(1, len(names) - 1):
+        if (
+            not populated[idx]
+            and any(populated[:idx])
+            and any(populated[idx + 1:])
         ):
             found.add("G1-NAME-004")
             break
@@ -333,7 +528,9 @@ def _detect_wrong_field(record: EnrichmentRecord, found: set[str]) -> None:
             found.add("G1-NAME-013")
             break
 
-    # G1-ADDR-009 — unclassified residual in address: LLM-only, never emitted.
+    # G1-ADDR-009 — unclassified residual in address. Declared with
+    # ``status="ndd"`` (not deterministically detectable) and never emitted;
+    # the reason is on the catalogue entry.
 
 
 # ---------------------------------------------------------------------------
@@ -346,8 +543,10 @@ def _detect_missing(
     present_fields: set[str] | None,
 ) -> None:
     # Required-field checks — gated on the column being present in the file.
-    for field_name, code in _REQUIRED_FIELD_CODES:
+    for field_name, code, condition in _REQUIRED_FIELD_CODES:
         if present_fields is not None and field_name not in present_fields:
+            continue
+        if condition is not None and not condition(record):
             continue
         if is_blank(getattr(record, field_name)):
             found.add(code)
@@ -378,23 +577,13 @@ def _detect_missing(
             found.add("G2-NAME-009")
             break
 
-    # G2-CONTACT-009 — department missing but enrichable: exactly one contact
-    # is available to look it up from. Only meaningful for universities and
-    # research institutes, where a department is expected: a company with no
-    # Name 2 is normal, not an issue, and clinical orgs routinely carry none.
-    # Gated on the same university-or-research signal as G2-NAME-012 so the
-    # code is not raised across the board.
-    #
-    # The bare "no contact at all" case adds nothing here: it shares
-    # G2-NAME-012's gate exactly, so G2-NAME-012 has already reported the
-    # missing department. Only the enrichable case carries new information.
-    if (
-        no_department
-        and looks_like_university_or_research_institute(record.name_1)
-        and not is_blank(record.contact)
-        and not has_multiple_contacts(record.contact)
-    ):
-        found.add("G2-CONTACT-009")
+    # G2-CONTACT-008 / G2-CONTACT-009 are **withdrawn** in Catalogue v2 and are
+    # deliberately not emitted here. Both are still declared in
+    # ``ISSUE_CATALOGUE`` with ``status="withdrawn"`` so the audit trail records
+    # that they existed and why they went — see their ``reason`` text. The
+    # consequence is recorded in the catalogue: withdrawing them removed the
+    # contact-based (Tier 2A) department recovery path, which is why
+    # G2-NAME-012 now sits in G6 rather than G2.
 
 
 # ---------------------------------------------------------------------------
@@ -492,7 +681,25 @@ def _detect_format(record: EnrichmentRecord, found: set[str]) -> None:
         if iso is None or raw.upper() != iso:
             found.add("G4-ADDR-027")
 
-    # G4-ADDR-025 — sub-location overflow beyond Street 5: LLM-only, never emitted.
+    # G4-ADDR-025 — more sub-locations on the record than Street 2..5 can hold.
+    # Deterministic approximation of "too many sub-locations to fit Street 2-5":
+    # reuse the pipeline's own ``_extract_sublocations`` on every street line
+    # and compare the distinct (kind, value) count against the four slots
+    # available below Street 1. Going through the pipeline extractor rather
+    # than re-walking ``_SUITE_PATTERNS`` matters: it consumes each match as it
+    # goes, so overlapping patterns ("Bldg 4 Floor" matching both the building
+    # and the value-before-marker floor rule) cannot inflate the count.
+    # Counting distinct pairs rather than distinct kinds is what
+    # "sub-locations" means here — two different suites need two slots.
+    sublocations: set[tuple[str, str]] = set()
+    for st in _streets(record):
+        if not st:
+            continue
+        _remaining, extracted, _bare = _extract_sublocations(st)
+        for kind, value in extracted.items():
+            sublocations.add((kind, value.strip().lower()))
+    if len(sublocations) > _SUBLOCATION_SLOTS:
+        found.add("G4-ADDR-025")
 
 
 # ---------------------------------------------------------------------------
@@ -512,12 +719,54 @@ def _detect_naming(record: EnrichmentRecord, found: set[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# G7 — Verification Required (enriched-record path only)
+# ---------------------------------------------------------------------------
+
+# Spreadsheet spellings of a true "Flag for Review" cell. Everything else —
+# including a blank, "FALSE", "N", "0" — is false.
+_TRUTHY = frozenset({"true", "yes", "y", "x", "1"})
+
+
+def flag_for_review_is_set(value: object) -> bool:
+    """Interpret a ``Flag for Review`` cell as a boolean.
+
+    Accepts the real spellings an XLSX round-trip produces: a Python ``bool``
+    from a checkbox cell, ``1``/``0`` from a numeric one, and the string forms
+    openpyxl hands back for text cells.
+    """
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() in _TRUTHY
+
+
+def _detect_verification(found: set[str], flag_for_review: bool | None) -> None:
+    """G7-VERIFY-001 — the one code derived from enrichment *output*.
+
+    Every other code in the catalogue is derived from record content, so it can
+    be computed on a raw input file and on an enriched file alike. This one
+    cannot: it fires when the pipeline set ``flag_for_review`` on the record it
+    produced, which a raw input record has no way to carry. ``flag_for_review``
+    is therefore ``None`` for a raw audit (no such column) and the code can
+    never be raised there.
+    """
+    if flag_for_review:
+        found.add("G7-VERIFY-001")
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
 def detect_issues(
     record: EnrichmentRecord,
     present_fields: set[str] | None = None,
+    *,
+    flag_for_review: bool | None = None,
+    origins: Iterable[str] | None = None,
 ) -> list[str]:
     """Return every Issue-Catalogue code that fires for *record*.
 
@@ -530,6 +779,21 @@ def detect_issues(
     columns absent from the file are skipped rather than reported as missing.
     When ``None`` (the default) every field is assumed present — i.e. the
     record is audited in isolation.
+
+    *flag_for_review* carries the enriched record's ``Flag for Review`` value
+    and drives ``G7-VERIFY-001``. Leave it ``None`` (the default) when auditing
+    raw input: G7 is raised *by* successful enrichment, never by record
+    content, so a raw audit must never produce it.
+
+    *origins* optionally restricts the result to codes with those Catalogue v2
+    origins (``"DS"``, ``"API"``, ``"BOTH"``). The default emits every origin,
+    including the 11 DS-only codes. That is deliberate and is the documented
+    reason required by the catalogue's origin rule: ``/issues`` is also run
+    standalone over a raw workbook with DATAshaper nowhere in the loop, and the
+    before/after reduction narrative is defined over the whole G1-G6 set — of
+    which G6 is entirely DS-origin. Passing ``origins=("API", "BOTH")`` yields
+    exactly the set a DATAshaper-facing feed should carry, so a DS-origin rule
+    is not reported twice once that decision is taken.
     """
     found: set[str] = set()
     _detect_wrong_field(record, found)
@@ -537,4 +801,9 @@ def detect_issues(
     _detect_duplicate(record, found)
     _detect_format(record, found)
     _detect_naming(record, found)
+    _detect_verification(found, flag_for_review)
+
+    if origins is not None:
+        allowed = set(origins)
+        found = {c for c in found if ISSUE_CATALOGUE[c].origin in allowed}
     return [code for code in ISSUE_CATALOGUE if code in found]

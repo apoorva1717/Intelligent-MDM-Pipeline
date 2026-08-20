@@ -1,0 +1,242 @@
+{
+  "_comment": [
+    "Fixture coverage for the deterministic issue detector — one positive and one",
+    "negative case per code the detector can emit (enrichment.issue_detection.EMITTED_CODES).",
+    "Consumed by tests/test_issue_catalogue_coverage.py, which also asserts that no",
+    "emittable code is left uncovered, so adding a code fails the suite until a case",
+    "is written for it.",
+    "",
+    "'baseline' is a record that is clean under every rule. Each case layers its own",
+    "fields on top, so a case only has to state the defect it is about. 'positive'",
+    "must raise the code; 'negative' must not. Examples are taken from Issue",
+    "Catalogue v2 wherever the catalogue gives one.",
+    "",
+    "Items 170 and 171 of 00_OPEN_ITEMS.md are closed by the G1-NAME-001 and",
+    "G3-ADDR-013 entries below: both codes were reachable with no repository record",
+    "satisfying them."
+  ],
+  "baseline": {
+    "Customer": "FIXTURE",
+    "Name 1": "Acme Corporation",
+    "Name 2": "Engineering Department",
+    "Postal Code": "12345",
+    "Tax Jurisdiction": "TX0000000",
+    "Region": "FL",
+    "Language Key": "EN",
+    "Search Term 1": "ACME",
+    "Country/Region Key": "US"
+  },
+  "cases": [
+    {
+      "code": "G1-CROSS-001",
+      "positive": {"Name 2": "10901 Roosevelt Blvd N"},
+      "negative": {"Name 2": "Engineering Department"}
+    },
+    {
+      "code": "G1-CROSS-002",
+      "positive": {"Street 1": "AGILENT TECHNOLOGIES"},
+      "negative": {"Street 1": "10901 Roosevelt Blvd N"}
+    },
+    {
+      "code": "G1-CROSS-003",
+      "positive": {"Name 2": "AP@plasmatherm.com"},
+      "negative": {"Name 2": "Accounts Payable Department"}
+    },
+    {
+      "code": "G1-ADDR-001",
+      "positive": {"Street 1": "10901 ROOSEVELT BLVD N", "House Number": ""},
+      "negative": {"Street 1": "ROOSEVELT BLVD N", "House Number": "10901"}
+    },
+    {
+      "code": "G1-ADDR-003",
+      "positive": {"Street 1": "10901 Roosevelt Blvd N Ste 390"},
+      "negative": {"Street 1": "10901 Roosevelt Blvd N", "Street 2": ""}
+    },
+    {
+      "code": "G1-ADDR-004",
+      "positive": {"Street 1": "PO BOX 115350"},
+      "negative": {"Street 1": "115350 Main St", "PO Box": ""}
+    },
+    {
+      "code": "G1-ADDR-006",
+      "positive": {"Street 2": "SVC1039"},
+      "negative": {"Street 2": ""}
+    },
+    {
+      "code": "G1-ADDR-011",
+      "positive": {"Street 2": "Central Receiving Department"},
+      "negative": {"Street 2": "Innovation Way"}
+    },
+    {
+      "code": "G1-NAME-001",
+      "positive": {
+        "Name 1": "Orlando Health Emergency Room",
+        "Name 2": "and Medical Pavilion - Osceola"
+      },
+      "negative": {
+        "Name 1": "Orlando Health Inc",
+        "Name 2": "Medical Pavilion"
+      }
+    },
+    {
+      "code": "G1-NAME-004",
+      "positive": {"Name 2": "", "Name 3": "Quality Control Dept"},
+      "negative": {"Name 2": "Quality Control Department", "Name 3": ""}
+    },
+    {
+      "code": "G1-NAME-013",
+      "positive": {"Name 2": "B800000345"},
+      "negative": {"Name 2": "Engineering Department"}
+    },
+    {
+      "code": "G2-VAL-001",
+      "positive": {"Name 1": ""},
+      "negative": {"Name 1": "Acme Corporation"}
+    },
+    {
+      "code": "G2-VAL-002",
+      "positive": {"Postal Code": ""},
+      "negative": {"Postal Code": "12345"}
+    },
+    {
+      "code": "G2-VAL-003",
+      "positive": {"Tax Jurisdiction": ""},
+      "negative": {"Tax Jurisdiction": "TX0000000"}
+    },
+    {
+      "code": "G2-VAL-004",
+      "positive": {"Region": "", "Country/Region Key": "US"},
+      "negative": {"Region": "", "Country/Region Key": "DE", "Postal Code": "70174"}
+    },
+    {
+      "code": "G2-VAL-006",
+      "positive": {"Language Key": ""},
+      "negative": {"Language Key": "EN"}
+    },
+    {
+      "code": "G2-VAL-007",
+      "positive": {"Search Term 1": ""},
+      "negative": {"Search Term 1": "ACME"}
+    },
+    {
+      "code": "G2-VAL-008",
+      "positive": {"Country/Region Key": ""},
+      "negative": {"Country/Region Key": "US"}
+    },
+    {
+      "code": "G2-NAME-009",
+      "positive": {"Name 1": "University of Florida", "Name 2": "Smith Lab"},
+      "negative": {
+        "Name 1": "University of Florida",
+        "Name 2": "Department of Chemistry",
+        "Name 3": "Smith Lab"
+      }
+    },
+    {
+      "code": "G2-NAME-012",
+      "positive": {"Name 1": "Florida State University", "Name 2": ""},
+      "negative": {
+        "Name 1": "Florida State University",
+        "Name 2": "Department of Physics"
+      }
+    },
+    {
+      "code": "G3-NAME-003",
+      "positive": {"Name 1": "Coastal Holdings Inc", "Name 2": "d/b/a Coastal Marine"},
+      "negative": {"Name 1": "Coastal Holdings Inc", "Name 2": "Coastal Marine"}
+    },
+    {
+      "code": "G3-NAME-005",
+      "positive": {"Name 1": "Tropical Pharma Inc", "Name 2": "Tropical Pharma Inc"},
+      "negative": {"Name 1": "Tropical Pharma Inc", "Name 2": "Formulation Group"}
+    },
+    {
+      "code": "G3-ADDR-005",
+      "positive": {"Street 1": "PO BOX 4500", "PO Box": "4500", "Street 2": "PO Box 6789"},
+      "negative": {"PO Box": "4500", "Street 1": "", "Street 2": ""}
+    },
+    {
+      "code": "G3-ADDR-012",
+      "positive": {
+        "Street 1": "Innovation Blvd",
+        "House Number": "500",
+        "Street 2": "500 Innovation Blvd"
+      },
+      "negative": {
+        "Street 1": "Innovation Blvd",
+        "House Number": "500",
+        "Street 2": ""
+      }
+    },
+    {
+      "code": "G3-ADDR-013",
+      "positive": {
+        "Street 1": "1200 MAIN ST",
+        "Street 2": "ALSO 250 CENTRAL AVE",
+        "House Number": ""
+      },
+      "negative": {
+        "Street 1": "1200 MAIN ST",
+        "Street 2": "Suite 300",
+        "House Number": ""
+      }
+    },
+    {
+      "code": "G3-ADDR-014",
+      "positive": {"PO Box": "98765", "Street 1": "1200 S BAYSHORE BLVD", "House Number": ""},
+      "negative": {"PO Box": "", "Street 1": "1200 S BAYSHORE BLVD", "House Number": ""}
+    },
+    {
+      "code": "G3-CONTACT-007",
+      "positive": {"Contact": "Dr. Jane Smith; Prof. Bob Lee"},
+      "negative": {"Contact": "Dr. Jane Smith"}
+    },
+    {
+      "code": "G4-NAME-015",
+      "positive": {
+        "Name 1": "The Board of Trustees of the Leland Stanford Junior University",
+        "Name 2": "Department of Electrical Engineering and Computer Science",
+        "Name 3": "Integrated Systems Laboratory Annex Building Reception"
+      },
+      "negative": {"Name 1": "Acme Corporation", "Name 2": "Engineering Department"}
+    },
+    {
+      "code": "G4-ADDR-008",
+      "positive": {"Street 2": "Ste"},
+      "negative": {"Street 2": "Ste 390"}
+    },
+    {
+      "code": "G4-ADDR-025",
+      "positive": {
+        "Street 2": "Bldg 4 Floor 3 Suite 9 Room 5",
+        "Street 3": "Mail Stop 12"
+      },
+      "negative": {"Street 2": "Bldg 4 Floor 3 Suite 9 Room 5"}
+    },
+    {
+      "code": "G4-ADDR-026",
+      "positive": {"Postal Code": "ABC123", "Country/Region Key": "US"},
+      "negative": {"Postal Code": "33607", "Country/Region Key": "US"}
+    },
+    {
+      "code": "G4-ADDR-027",
+      "positive": {"Country/Region Key": "United States"},
+      "negative": {"Country/Region Key": "US"}
+    },
+    {
+      "code": "G5-NAME-001",
+      "positive": {"Name 1": "Univ of Florida", "Name 2": "Department of Chemistry"},
+      "negative": {"Name 1": "University of Florida", "Name 2": "Department of Chemistry"}
+    },
+    {
+      "code": "G5-NAME-002",
+      "positive": {"Name 1": "University of Florida", "Name 3": "Dept of Chem"},
+      "negative": {"Name 1": "University of Florida", "Name 2": "Department of Chemistry"}
+    },
+    {
+      "code": "G7-VERIFY-001",
+      "positive": {"_flag_for_review": true},
+      "negative": {"_flag_for_review": false}
+    }
+  ]
+}

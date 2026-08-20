@@ -13,7 +13,15 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from api.models import EnrichmentRecord
-from enrichment.issue_detection import ISSUE_CATALOGUE, detect_issues
+from enrichment.issue_detection import (
+    EMITTED_CODES,
+    ISSUE_CATALOGUE,
+    QUALITY_GROUPS,
+    REDUCIBLE_GROUPS,
+    detect_issues,
+    issue_group,
+    issue_name,
+)
 
 
 def _record(**fields) -> EnrichmentRecord:
@@ -41,25 +49,88 @@ def _record(**fields) -> EnrichmentRecord:
 # Catalogue integrity
 # ---------------------------------------------------------------------------
 
-def test_catalogue_has_36_codes():
-    assert len(ISSUE_CATALOGUE) == 36
+def test_catalogue_declares_38_entries():
+    assert len(ISSUE_CATALOGUE) == 38
 
 
-def test_retired_codes_are_not_reintroduced():
-    """G2-CONTACT-008 was removed: its gate was G2-NAME-012's, so it could
-    never fire. Re-adding it would reintroduce a permanently dead code."""
-    assert "G2-CONTACT-008" not in ISSUE_CATALOGUE
+def test_status_counts_match_catalogue_v2():
+    """34 live, 2 withdrawn, 1 not-deterministically-detectable, 1 unlisted."""
+    from collections import Counter
+
+    counts = Counter(entry.status for entry in ISSUE_CATALOGUE.values())
+    assert counts == {"live": 34, "withdrawn": 2, "ndd": 1, "unlisted": 1}
+
+
+def test_withdrawn_codes_are_declared_but_never_emitted():
+    """Catalogue v2 strikes both through. They stay declared for the audit
+    trail — retaining them marked withdrawn records that they existed and
+    why — but nothing may emit them."""
+    for code in ("G2-CONTACT-008", "G2-CONTACT-009"):
+        assert ISSUE_CATALOGUE[code].status == "withdrawn"
+        assert code not in EMITTED_CODES
+
+
+def test_group_is_an_attribute_not_a_prefix():
+    """G6 is a regrouping: four codes keep their original G2- identifiers, so
+    slicing the prefix gives the wrong group."""
+    for code in ("G2-VAL-001", "G2-VAL-003", "G2-VAL-006", "G2-NAME-012"):
+        assert issue_group(code) == "G6"
+        assert code.split("-")[0] == "G2"
+
+
+def test_every_entry_has_a_valid_group_origin_and_status():
+    for code, entry in ISSUE_CATALOGUE.items():
+        assert entry.code == code
+        assert entry.group in (*QUALITY_GROUPS, "G7")
+        assert entry.origin in ("DS", "API", "BOTH")
+        assert entry.status in ("live", "withdrawn", "ndd", "unlisted")
+        assert entry.name and entry.field
+        # Anything not plainly live must say why.
+        if entry.status != "live":
+            assert entry.reason, f"{code} needs a reason for status={entry.status}"
+
+
+def test_mandatory_maps_to_datashaper_severity():
+    """Mandatory = Yes blocks the SAP load (Error); No is a Warning."""
+    assert ISSUE_CATALOGUE["G2-VAL-002"].mandatory is True
+    assert ISSUE_CATALOGUE["G2-VAL-002"].severity == "Error"
+    assert ISSUE_CATALOGUE["G1-CROSS-001"].mandatory is False
+    assert ISSUE_CATALOGUE["G1-CROSS-001"].severity == "Warning"
+
+
+def test_origin_breakdown_of_live_quality_codes():
+    """Catalogue v2 records 11 DS-only / 21 API-only / 2 BOTH over its 34 live
+    G1-G6 codes. G1-ADDR-009 is API in v2 but ``ndd`` here, so the API figure
+    is 20 against a live set of 33 — the one-code difference *is* the 9g
+    resolution and must stay visible."""
+    from collections import Counter
+
+    live_quality = [
+        e for e in ISSUE_CATALOGUE.values()
+        if e.status == "live" and e.group in QUALITY_GROUPS
+    ]
+    assert len(live_quality) == 33
+    assert Counter(e.origin for e in live_quality) == {"DS": 11, "API": 20, "BOTH": 2}
+    assert ISSUE_CATALOGUE["G1-ADDR-009"].status == "ndd"
+
+
+def test_reduction_groups_exclude_g6_and_g7():
+    assert "G6" not in REDUCIBLE_GROUPS
+    assert "G7" not in REDUCIBLE_GROUPS
+    assert set(REDUCIBLE_GROUPS) == {"G1", "G2", "G3", "G4", "G5"}
 
 
 def test_docstring_counts_match_the_catalogue():
     """The module docstring quotes catalogue figures; keep them honest.
 
-    Counts are derived from the source here — the catalogue length, and the
-    codes with a real emission site (a ``found.add("...")`` literal, or the
-    ``_REQUIRED_FIELD_CODES`` table) — so a code added or removed without a
-    docstring update fails here rather than silently making the docs wrong.
+    Counts are derived from the source here — the catalogue length, the
+    per-status tallies, and the codes with a real emission site (a
+    ``found.add("...")`` literal, or the ``_REQUIRED_FIELD_CODES`` table) — so
+    a code added or retired without a docstring update fails here rather than
+    silently making the docs wrong.
     """
     import ast
+    from collections import Counter
     from pathlib import Path
 
     import enrichment.issue_detection as module
@@ -67,7 +138,7 @@ def test_docstring_counts_match_the_catalogue():
 
     source = Path(module.__file__).read_text()
 
-    sited = {code for _field, code in _REQUIRED_FIELD_CODES}
+    sited = {code for _field, code, _cond in _REQUIRED_FIELD_CODES}
     for node in ast.walk(ast.parse(source)):
         if (
             isinstance(node, ast.Call)
@@ -83,13 +154,19 @@ def test_docstring_counts_match_the_catalogue():
                     ):
                         sited.add(const.value)
 
-    declared = len(ISSUE_CATALOGUE)
-    reserved = declared - len(sited)
+    # Every code with an emission site is exactly the emittable set, and
+    # nothing withdrawn or ndd has one.
+    assert sited == set(EMITTED_CODES)
+
+    status = Counter(e.status for e in ISSUE_CATALOGUE.values())
     doc = module.__doc__ or ""
 
-    assert f"{declared}-code Issue Catalogue" in doc
-    assert f"{len(sited)} of the {declared} catalogue codes are emitted" in doc
-    assert f"{reserved} are intentionally never" in doc
+    assert f"**{len(ISSUE_CATALOGUE)} declared**" in doc
+    assert f"**{status['live']} live**" in doc
+    assert f"**{status['unlisted']} unlisted**" in doc
+    assert f"**{len(sited)} deterministically emitted**" in doc
+    assert f"**{status['withdrawn']} withdrawn**" in doc
+    assert f"**{status['ndd']} not deterministically detectable**" in doc
 
 
 def test_clean_record_has_no_issues():
@@ -161,14 +238,49 @@ def test_g1_name_004_name2_empty_name3_populated():
     assert "G1-NAME-004" in detect_issues(rec)
 
 
+@pytest.mark.parametrize("fields", [
+    # v2 renamed the rule to "Empty field in between populated name fields",
+    # widening it from the one Name 2 / Name 3 pair to any gap in the block.
+    {"Name 2": "", "Name 3": "Quality Control Dept"},
+    {"Name 2": "Engineering", "Name 3": "", "Name 4": "Room 4"},
+    {"Name 2": "", "Name 3": "", "Name 4": "Room 4"},
+    {"Name 2": "Engineering", "Name 3": "", "Name 4": "", "Name 5": "Annex"},
+])
+def test_g1_name_004_fires_for_a_gap_at_any_slot(fields):
+    assert "G1-NAME-004" in detect_issues(_record(**fields))
+
+
+@pytest.mark.parametrize("fields", [
+    # Trailing blanks are not a gap — nothing populated sits below them.
+    {"Name 2": "Engineering", "Name 3": "", "Name 4": ""},
+    {"Name 2": "", "Name 3": "", "Name 4": ""},
+    # A blank Name 1 is a missing organisation name (G2-VAL-001), not a gap
+    # in the block: nothing populated sits above it. Reporting it here would
+    # double-count the same defect under two codes.
+    {"Name 1": "", "Name 2": "Engineering Department"},
+])
+def test_g1_name_004_not_raised_without_a_populated_field_above_and_below(fields):
+    assert "G1-NAME-004" not in detect_issues(_record(**fields))
+
+
+def test_blank_name_1_is_reported_only_as_the_g6_missing_name_code():
+    issues = detect_issues(_record(**{"Name 1": "", "Name 2": "Engineering"}))
+    assert "G2-VAL-001" in issues
+    assert "G1-NAME-004" not in issues
+
+
 def test_g1_name_013_sap_code_in_name():
     assert "G1-NAME-013" in detect_issues(_record(**{"Name 2": "B800000345"}))
 
 
-def test_g1_addr_009_never_emitted():
-    # LLM-only rule — must never be produced by the deterministic detector.
+def test_g1_addr_009_is_not_deterministically_detectable():
+    """Live in Catalogue v2 but marked ``ndd`` here: "unclassifiable" is the
+    complement of every classifier, so no deterministic rule expresses it.
+    The catalogue must carry the reason rather than silently claim coverage."""
     rec = _record(**{"Street 2": "Loading Dock - East Side"})
     assert "G1-ADDR-009" not in detect_issues(rec)
+    assert ISSUE_CATALOGUE["G1-ADDR-009"].status == "ndd"
+    assert ISSUE_CATALOGUE["G1-ADDR-009"].reason
 
 
 # ---------------------------------------------------------------------------
@@ -179,13 +291,45 @@ def test_g1_addr_009_never_emitted():
     ("Name 1", "G2-VAL-001"),
     ("Postal Code", "G2-VAL-002"),
     ("Tax Jurisdiction", "G2-VAL-003"),
-    ("Region", "G2-VAL-004"),
+    ("Region", "G2-VAL-004"),          # baseline record is US
     ("Language Key", "G2-VAL-006"),
     ("Search Term 1", "G2-VAL-007"),
     ("Country/Region Key", "G2-VAL-008"),
 ])
 def test_g2_missing_required_fields(field, code):
     assert code in detect_issues(_record(**{field: ""}))
+
+
+@pytest.mark.parametrize("country", ["DE", "Germany", "GB", "FR"])
+def test_g2_val_004_not_raised_for_a_non_us_record(country):
+    """Catalogue v2 marks Region Missing "only for US". A blank Region on a
+    German record is not a defect, and the unconditional required-field loop
+    reported every one of them as a false positive."""
+    rec = _record(**{"Region": "", "Country/Region Key": country})
+    assert "G2-VAL-004" not in detect_issues(rec)
+
+
+def test_g2_val_004_raised_for_a_us_record_however_country_is_spelled():
+    for country in ("US", "USA", "United States"):
+        rec = _record(**{"Region": "", "Country/Region Key": country})
+        assert "G2-VAL-004" in detect_issues(rec), country
+
+
+def test_g2_val_004_not_raised_when_country_is_unknown():
+    """An unrecognised or blank country is not assumed to be US — doing so
+    would recreate the false positive the condition removes."""
+    for country in ("", "Freedonia"):
+        rec = _record(**{"Region": "", "Country/Region Key": country})
+        assert "G2-VAL-004" not in detect_issues(rec), country
+
+
+def test_g2_val_004_is_the_only_conditional_required_field_rule():
+    """Catalogue v2 attaches a condition to exactly one entry in this table.
+    If another gains one, the predicate must be added here too."""
+    from enrichment.issue_detection import _REQUIRED_FIELD_CODES
+
+    conditional = [c for _f, c, cond in _REQUIRED_FIELD_CODES if cond is not None]
+    assert conditional == ["G2-VAL-004"]
 
 
 def test_g2_name_012_research_institution_missing_department():
@@ -199,10 +343,11 @@ def test_g2_name_009_lab_without_department():
 
 
 def test_missing_department_without_contact_raises_only_name_012():
-    # A research institution with no department raises G2-NAME-012. With no
-    # contact there is nothing to enrich from, so G2-CONTACT-009 stays silent
-    # and G2-NAME-012 is the whole story. (The retired G2-CONTACT-008 covered
-    # exactly this case and could never fire: its gate was G2-NAME-012's.)
+    # A research institution with no department raises G2-NAME-012, and only
+    # that: both G2-CONTACT-* codes are withdrawn in Catalogue v2, which is
+    # exactly why G2-NAME-012 now sits in G6 — withdrawing them removed the
+    # contact-based recovery path, so no automated route to a department
+    # remains.
     rec = _record(**{
         "Name 1": "Florida State University", "Name 2": "", "Contact": "",
     })
@@ -211,13 +356,19 @@ def test_missing_department_without_contact_raises_only_name_012():
     assert "G2-CONTACT-009" not in issues
 
 
-def test_g2_contact_009_department_enrichable_from_contact():
+def test_g2_contact_009_withdrawn_even_when_its_old_gate_is_satisfied():
+    """The exact record that used to raise it: research org, no department,
+    exactly one contact. Withdrawn in Catalogue v2, so only G2-NAME-012 —
+    now a G6 code — reports the missing department."""
     rec = _record(**{
         "Name 1": "Florida State University", "Name 2": "",
         "Contact": "Dr. Emily Carter",
     })
     issues = detect_issues(rec)
-    assert "G2-CONTACT-009" in issues
+    assert "G2-CONTACT-009" not in issues
+    assert "G2-CONTACT-008" not in issues
+    assert "G2-NAME-012" in issues
+    assert issue_group("G2-NAME-012") == "G6"
 
 
 def test_missing_department_codes_not_raised_for_non_research_company():
@@ -334,8 +485,27 @@ def test_g4_addr_027_iso2_country_is_clean():
     assert "G4-ADDR-027" not in detect_issues(_record(**{"Country/Region Key": "US"}))
 
 
-def test_g4_addr_025_never_emitted():
-    rec = _record(**{"Street 2": "Bldg 4 Floor 3 Wing A Suite 9 Room 5"})
+def test_g4_addr_025_sublocation_overflow_beyond_street_5():
+    """Five distinct sub-locations, four slots (Street 2..5) — one over."""
+    rec = _record(**{
+        "Street 2": "Bldg 4 Floor 3 Suite 9 Room 5",
+        "Street 3": "Mail Stop 12",
+    })
+    assert "G4-ADDR-025" in detect_issues(rec)
+
+
+def test_g4_addr_025_not_raised_when_sublocations_fit():
+    """Four sub-locations fit Street 2..5 exactly and must not overflow."""
+    rec = _record(**{"Street 2": "Bldg 4 Floor 3 Suite 9 Room 5"})
+    assert "G4-ADDR-025" not in detect_issues(rec)
+
+
+def test_g4_addr_025_repeated_sublocation_counts_once():
+    """The same (kind, value) repeated across slots needs one slot, not two."""
+    rec = _record(**{
+        "Street 2": "Suite 400", "Street 3": "Suite 400", "Street 4": "Suite 400",
+        "Street 5": "Suite 400",
+    })
     assert "G4-ADDR-025" not in detect_issues(rec)
 
 
@@ -389,3 +559,82 @@ def test_multiple_issues_all_reported():
     codes = detect_issues(rec)
     for expected in ("G1-ADDR-004", "G2-VAL-002", "G4-ADDR-027", "G5-NAME-001"):
         assert expected in codes
+
+
+# ---------------------------------------------------------------------------
+# G7 — Verification Required (enriched-record path only)
+# ---------------------------------------------------------------------------
+
+def test_g7_fires_when_the_enriched_record_is_flagged():
+    assert "G7-VERIFY-001" in detect_issues(_record(), flag_for_review=True)
+
+
+def test_g7_absent_from_a_raw_input_audit():
+    """G7 is derived from enrichment *output*, not record content. A raw input
+    record has no Flag for Review column, so ``flag_for_review`` is None and
+    the code can never be raised — whatever the record contains."""
+    dirty = _record(**{
+        "Name 1": "", "Name 2": "10901 Roosevelt Blvd N", "Postal Code": "",
+        "Street 1": "PO BOX 115350", "Contact": "Dr. Jane Smith; Prof. Bob Lee",
+    })
+    assert "G7-VERIFY-001" not in detect_issues(dirty)
+    assert "G7-VERIFY-001" not in detect_issues(dirty, flag_for_review=None)
+
+
+def test_g7_not_raised_when_the_enriched_record_is_not_flagged():
+    assert "G7-VERIFY-001" not in detect_issues(_record(), flag_for_review=False)
+
+
+@pytest.mark.parametrize("cell,expected", [
+    (True, True), (False, False), (None, False),
+    ("TRUE", True), ("true", True), ("Yes", True), ("Y", True), ("X", True),
+    ("1", True), (1, True),
+    ("FALSE", False), ("No", False), ("", False), ("0", False), (0, False),
+])
+def test_flag_for_review_cell_spellings(cell, expected):
+    from enrichment.issue_detection import flag_for_review_is_set
+
+    assert flag_for_review_is_set(cell) is expected
+
+
+def test_g7_is_not_a_quality_group():
+    """It must never be swept into a quality-issue total by group iteration."""
+    assert issue_group("G7-VERIFY-001") == "G7"
+    assert "G7" not in QUALITY_GROUPS
+    assert "G7" not in REDUCIBLE_GROUPS
+
+
+# ---------------------------------------------------------------------------
+# Origin filtering (9h)
+# ---------------------------------------------------------------------------
+
+def test_ds_only_codes_are_emitted_by_default_with_a_documented_reason():
+    """The API raises DS-origin codes today. That is deliberate — /issues also
+    runs standalone over a raw workbook — and the reason is on ``detect_issues``
+    so the duplicate-in-DATAshaper consequence is not undocumented."""
+    issues = detect_issues(_record(**{"Postal Code": ""}))
+    assert "G2-VAL-002" in issues
+    assert ISSUE_CATALOGUE["G2-VAL-002"].origin == "DS"
+    assert "standalone" in (detect_issues.__doc__ or "")
+
+
+def test_ds_only_codes_are_suppressed_for_a_datashaper_facing_feed():
+    """``origins=("API", "BOTH")`` yields exactly the set the API should raise
+    when DATAshaper already runs the DS rules itself."""
+    rec = _record(**{"Postal Code": "", "Name 2": "10901 Roosevelt Blvd N"})
+    issues = detect_issues(rec, origins=("API", "BOTH"))
+    assert "G2-VAL-002" not in issues          # DS-only — DATAshaper's own rule
+    assert "G1-CROSS-001" in issues            # API-origin — ours to raise
+    assert all(ISSUE_CATALOGUE[c].origin in ("API", "BOTH") for c in issues)
+
+
+def test_the_eleven_ds_only_live_codes_are_exactly_catalogue_v2s():
+    ds_only = sorted(
+        code for code, e in ISSUE_CATALOGUE.items()
+        if e.origin == "DS" and e.status == "live" and e.group in QUALITY_GROUPS
+    )
+    assert ds_only == [
+        "G1-ADDR-001", "G2-NAME-012", "G2-VAL-001", "G2-VAL-002", "G2-VAL-003",
+        "G2-VAL-004", "G2-VAL-006", "G2-VAL-007", "G2-VAL-008", "G4-ADDR-026",
+        "G4-ADDR-027",
+    ]

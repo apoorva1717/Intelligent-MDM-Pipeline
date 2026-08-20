@@ -22,6 +22,10 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key-for-mocks")
 
 from api.app import app
 
+_XLSX_MIME = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+
 
 @pytest.fixture
 def transport():
@@ -427,9 +431,11 @@ class TestRoutes:
 
         summary = self._summary(wb["Summary"])
         assert summary["Records matched (joined by id)"] == 1
-        assert summary["Total issues before"] > summary["Total issues after"]
-        assert summary["Net reduction"] >= 1
-        assert summary["Issues resolved"] >= 1
+        # Headline figures are the "Reduced" block (G1-G5) — see the segment
+        # tests below for why the old undifferentiated totals are gone.
+        assert summary["Reduced: issues before"] > summary["Reduced: issues after"]
+        assert summary["Reduced: net reduction"] >= 1
+        assert summary["Reduced: issues resolved"] >= 1
 
         per_record = [
             [c.value for c in row] for row in wb["Per Record"].iter_rows(min_row=2)
@@ -441,16 +447,107 @@ class TestRoutes:
         # present after enrichment, naming the customer id every time.
         remaining_ws = wb["Remaining Issues"]
         assert [c.value for c in next(remaining_ws.iter_rows())] == [
-            "Code", "Name", "Customer",
+            "Code", "Name", "Group", "Segment", "Customer",
         ]
         remaining = [
             [c.value for c in row]
             for row in remaining_ws.iter_rows(min_row=2)
         ]
-        # Every data row carries a code and the customer id (R1 is the only
-        # record), and reconciles with the after-issue total in the summary.
-        assert all(row[0] and row[2] == "R1" for row in remaining)
-        assert len(remaining) == summary["Total issues after"]
+        # Every data row carries a code, its segment, and the customer id
+        # (R1 is the only record).
+        assert all(row[0] and row[4] == "R1" for row in remaining)
+        assert all(
+            row[3] in ("Reduced", "Expected to persist", "Verification")
+            for row in remaining
+        )
+        # The "Reduced" rows are exactly the after-count of the reduction block.
+        reduced_rows = [row for row in remaining if row[3] == "Reduced"]
+        assert len(reduced_rows) == summary["Reduced: issues after"]
+
+    @pytest.mark.asyncio
+    async def test_issues_g7_never_raised_on_a_raw_input_audit(self, client):
+        """A raw file has no Flag for Review column, so G7 cannot apply. The
+        record below is deliberately dirty: it must collect quality codes and
+        still no G7."""
+        data = self._xlsx_bytes(
+            ["Customer", "Name 1", "Name 2", "Postal Code", "Country/Region Key"],
+            ["R1", "Acme Corp", "10901 Roosevelt Blvd N", "", "US"],
+        )
+        resp = await client.post("/issues", files=self._xlsx_upload(data))
+        assert resp.status_code == 200
+        ws = load_workbook(io.BytesIO(resp.content)).active
+        cell = [c.value for c in ws[2]][-1] or ""
+        assert "G1-CROSS-001" in cell
+        assert "G7-VERIFY-001" not in cell
+
+    @pytest.mark.asyncio
+    async def test_issues_g7_raised_only_for_flagged_enriched_rows(self, client):
+        data = self._xlsx_bytes(
+            ["Customer", "Name 1", "Flag for Review", "Flag Reason"],
+            ["R1", "Acme Corporation", "TRUE", "LLM canonical form — verify"],
+            ["R2", "Beta Industries", "FALSE", ""],
+        )
+        resp = await client.post("/issues", files=self._xlsx_upload(data))
+        assert resp.status_code == 200
+        ws = load_workbook(io.BytesIO(resp.content)).active
+        flagged = [c.value for c in ws[2]][-1] or ""
+        unflagged = [c.value for c in ws[3]][-1] or ""
+        assert "G7-VERIFY-001" in flagged
+        assert "G7-VERIFY-001" not in unflagged
+
+    @pytest.mark.asyncio
+    async def test_issues_compare_segments_g6_and_g7_out_of_the_metric(self, client):
+        """G6 codes that survive enrichment are expected persistence, not
+        unreduced defects, and a G7 raised by the enrichment must not inflate
+        the post-pipeline total. Neither may touch the reduction figures."""
+        # Before: a G1 defect (address in a name) plus two G6 codes that no
+        # automated path can fix (Tax Jurisdiction, Language).
+        original = self._xlsx_bytes(
+            ["Customer", "Name 1", "Name 2", "Tax Jurisdiction", "Language Key",
+             "Country/Region Key"],
+            ["R1", "Acme Corp", "10901 Roosevelt Blvd N", "", "", "US"],
+        )
+        # After: the G1 defect is fixed, both G6 codes still there (correctly),
+        # and the record is flagged for steward verification.
+        enriched = self._xlsx_bytes(
+            ["record_id", "Name 1", "Name 2", "Tax Jurisdiction", "Language Key",
+             "Country/Region Key", "Flag for Review", "Flag Reason"],
+            ["R1", "Acme Corporation", "Sales Department", "", "", "US",
+             "TRUE", "domain-unverified"],
+        )
+        resp = await client.post(
+            "/issues/compare",
+            files={
+                "original": ("original.xlsx", original, _XLSX_MIME),
+                "enriched": ("enriched.xlsx", enriched, _XLSX_MIME),
+            },
+        )
+        assert resp.status_code == 200
+        wb = load_workbook(io.BytesIO(resp.content))
+        summary = self._summary(wb["Summary"])
+
+        # The reduction block sees only the G1 defect: 1 before, 0 after, 100%.
+        assert summary["Reduced: issues before"] == 1
+        assert summary["Reduced: issues after"] == 0
+        assert summary["Reduction %"] == 100.0
+        # G7 fired, and did not enter the reduction block.
+        assert summary["Verification: records requiring verification"] == 1
+        # Both G6 codes persisted, and are reported as such rather than as
+        # unreduced defects.
+        assert summary["Expected to persist: issues before"] == 2
+        assert summary["Expected to persist: issues after"] == 2
+        assert summary["Expected to persist: persisted as expected"] == 2
+
+        rows = {
+            row[0]: row
+            for row in (
+                [c.value for c in r] for r in wb["Summary"].iter_rows(min_row=2)
+            )
+            if row and isinstance(row[0], str) and row[0].startswith("G")
+        }
+        assert rows["G2-VAL-003"][2:4] == ["G6", "Expected to persist"]
+        assert rows["G7-VERIFY-001"][2:4] == ["G7", "Verification"]
+        assert rows["G1-CROSS-001"][2:4] == ["G1", "Reduced"]
 
     @pytest.mark.asyncio
     async def test_issues_compare_rejects_non_xlsx(self, client):
