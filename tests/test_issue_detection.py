@@ -300,36 +300,39 @@ def test_g2_missing_required_fields(field, code):
     assert code in detect_issues(_record(**{field: ""}))
 
 
-@pytest.mark.parametrize("country", ["DE", "Germany", "GB", "FR"])
-def test_g2_val_004_not_raised_for_a_non_us_record(country):
-    """Catalogue v2 marks Region Missing "only for US". A blank Region on a
-    German record is not a defect, and the unconditional required-field loop
-    reported every one of them as a false positive."""
+@pytest.mark.parametrize(
+    "country", ["US", "USA", "United States", "DE", "Germany", "GB", "FR"],
+)
+def test_g2_val_004_fires_for_a_blank_region_whatever_the_country(country):
+    """Region Missing is a present-and-blank check, with no country condition.
+
+    It previously carried ``lambda r: _is_us(r)``, justified by a "Catalogue v2
+    gates this on US records only" claim that appears in no catalogue extract,
+    Notion row or README table — while 03_ALGORITHMS.md documents the rule as
+    plain "``region`` blank (column-gated)". Because every blank-Region record
+    in the corpus is German, the predicate meant a mandatory DS-origin code
+    could not fire on any file anybody ran, and a permanently dark rule reads
+    exactly like a rule with nothing to report."""
     rec = _record(**{"Region": "", "Country/Region Key": country})
-    assert "G2-VAL-004" not in detect_issues(rec)
+    assert "G2-VAL-004" in detect_issues(rec), country
 
 
-def test_g2_val_004_raised_for_a_us_record_however_country_is_spelled():
-    for country in ("US", "USA", "United States"):
+def test_g2_val_004_fires_when_country_is_blank_or_unrecognised():
+    """The rule does not consult the country at all, so an unknown one cannot
+    suppress it either."""
+    for country in ("", "Freedonia"):
         rec = _record(**{"Region": "", "Country/Region Key": country})
         assert "G2-VAL-004" in detect_issues(rec), country
 
 
-def test_g2_val_004_not_raised_when_country_is_unknown():
-    """An unrecognised or blank country is not assumed to be US — doing so
-    would recreate the false positive the condition removes."""
-    for country in ("", "Freedonia"):
-        rec = _record(**{"Region": "", "Country/Region Key": country})
-        assert "G2-VAL-004" not in detect_issues(rec), country
-
-
-def test_g2_val_004_is_the_only_conditional_required_field_rule():
-    """Catalogue v2 attaches a condition to exactly one entry in this table.
-    If another gains one, the predicate must be added here too."""
+def test_no_required_field_rule_carries_a_condition():
+    """The per-code predicate is an extension point with no current user. A
+    condition added here silently narrows a mandatory rule to nothing on some
+    files, so it needs a catalogue source before it needs code."""
     from enrichment.issue_detection import _REQUIRED_FIELD_CODES
 
     conditional = [c for _f, c, cond in _REQUIRED_FIELD_CODES if cond is not None]
-    assert conditional == ["G2-VAL-004"]
+    assert conditional == []
 
 
 def test_g2_name_012_research_institution_missing_department():
@@ -638,3 +641,211 @@ def test_the_eleven_ds_only_live_codes_are_exactly_catalogue_v2s():
         "G2-VAL-004", "G2-VAL-006", "G2-VAL-007", "G2-VAL-008", "G4-ADDR-026",
         "G4-ADDR-027",
     ]
+
+
+# ---------------------------------------------------------------------------
+# Regression tests — defects found by diffing the detector against a
+# hand-built answer key over the 50-record demo batch. Each test is named
+# after the defect and uses the real value that exposed it.
+# ---------------------------------------------------------------------------
+
+def test_required_field_rules_all_have_a_reachable_column_mapping():
+    """A G2-VAL-* rule keyed on a field EnrichmentRecord does not declare — or
+    declares with no input alias — is skipped on every record and every file
+    and looks exactly like a clean run. The gate is silent by construction, so
+    the mismatch is caught at import instead."""
+    from enrichment.issue_detection import _REQUIRED_FIELD_MAPPING_PROBLEMS
+
+    assert _REQUIRED_FIELD_MAPPING_PROBLEMS == []
+
+
+def test_region_is_reachable_from_the_region_column_header():
+    """G2-VAL-004 firing zero times on a file full of blank Regions was first
+    suspected to be a Region -> EnrichmentRecord mapping gap. It was not: the
+    column maps and the gate passes, which is what localised the fault to the
+    rule's own condition (see
+    test_g2_val_004_fires_for_a_blank_region_whatever_the_country)."""
+    from api.routes import _present_fields
+
+    assert "region" in _present_fields(["Customer", "Name 1", "Region"])
+    # Present-and-blank on a US record: the gate lets it through and it fires.
+    assert "G2-VAL-004" in detect_issues(
+        _record(**{"Region": ""}), {"region", "country_region_key"},
+    )
+
+
+@pytest.mark.parametrize("street", [
+    "SCHELLINGSTR 24",           # 42000004, 42000005, 42000006
+    "KEPLERSTR 7",               # 42000001, 42000002, 42000003
+    "WERNER-VON-SIEMENS-STR 1",  # 40000010
+])
+def test_g1_addr_001_fires_for_a_german_compound_street_type(street):
+    """German street types are a suffix on the street name, not a separate
+    token, so the English standalone-token test could not see them and every
+    German address read as "not a street"."""
+    rec = _record(**{"Street 1": street, "House Number": ""})
+    assert "G1-ADDR-001" in detect_issues(rec)
+
+
+@pytest.mark.parametrize("street", [
+    "1000 MANUFACTURING ROW",   # gerund ending in -ring
+    "500 Engineering Plaza",
+    "12 Spring Valley",
+])
+def test_german_suffix_rule_does_not_fire_on_english_lookalikes(street):
+    """``-ring`` collides with every English gerund. German ring-roads put a
+    consonant before the suffix and the gerunds put a vowel there, which is
+    what separates "Ostring" from "Manufacturing"."""
+    rec = _record(**{"Street 1": street, "House Number": ""})
+    assert "G1-ADDR-001" not in detect_issues(rec)
+
+
+def test_g1_addr_003_fires_for_a_gate_sublocation():
+    """40000008. GATE was missing from the sub-location vocabulary."""
+    rec = _record(**{"Street 1": "4500 SAN PABLO RD S GATE C"})
+    assert "G1-ADDR-003" in detect_issues(rec)
+
+
+def test_g1_addr_003_ignores_a_street_named_after_a_gate():
+    """The marker needs an identifier-like value attached, which is what keeps
+    a street *name* carrying the word out of it."""
+    rec = _record(**{"Street 1": "1 GOLDEN GATE AVE"})
+    assert "G1-ADDR-003" not in detect_issues(rec)
+
+
+@pytest.mark.parametrize("name1", [
+    "APEX CORP",                # 40000019
+    "TROPICAL PHARMA INC",      # 41000005
+    "LOCKHEED MARTIN CORP.",    # 42000009
+    "Coastal Diagnostics, Inc", # 42000019
+])
+def test_g5_name_001_fires_for_an_abbreviated_legal_suffix(name1):
+    """"Co" was in the token set and "Corp"/"Inc" were not, so "Smith Co."
+    fired the rule and "Smith Corp." did not — an inconsistency, not a
+    design choice."""
+    assert "G5-NAME-001" in detect_issues(_record(**{"Name 1": name1}))
+
+
+@pytest.mark.parametrize("name1", [
+    "BRIGHAM & WOMENS HOSP",    # 40000014
+    "MAYO CLINIC FLA",          # 40000008
+    "Cardinal Research GRP",    # 41000008
+    "UNI STUTTGART",            # 42000001
+])
+def test_g5_name_001_fires_for_a_clipped_organisational_word(name1):
+    assert "G5-NAME-001" in detect_issues(_record(**{"Name 1": name1}))
+
+
+def test_g5_name_001_fires_for_a_dotted_acronym():
+    """40000006. Every letter is its own token, so the word-boundary token
+    regex has no multi-character word to anchor on."""
+    assert "G5-NAME-001" in detect_issues(_record(**{"Name 1": "U.C.L.A"}))
+    assert "G5-NAME-001" in detect_issues(_record(**{"Name 1": "U.S.A."}))
+
+
+@pytest.mark.parametrize("name1", [
+    "Acme Corporation",     # the expanded form is what the rule asks for
+    "Smith Incorporated",
+    "University of Florida",
+    "St. Louis Biosciences",  # "St." is two letters, not a dotted acronym
+])
+def test_g5_name_001_does_not_fire_on_an_expanded_name(name1):
+    assert "G5-NAME-001" not in detect_issues(_record(**{"Name 1": name1}))
+
+
+def test_g5_attribution_follows_the_slot_the_abbreviation_sits_in():
+    """40000012. The abbreviation is in Name 2, so this is -002 and not -001;
+    the answer key labels it -001."""
+    rec = _record(**{"Name 1": "ADAMS AIR", "Name 2": "HYDRAULICS INC"})
+    issues = detect_issues(rec)
+    assert "G5-NAME-002" in issues
+    assert "G5-NAME-001" not in issues
+
+
+def test_g2_name_012_fires_when_name_2_is_blank_and_the_department_is_lower():
+    """42000011 Yale University, Name 2 blank, Name 3 "Department of
+    Chemistry". Scanning the whole block for a department suppressed the code
+    exactly when a department sat in the wrong slot — which is the record a
+    steward most needs to see. G1-NAME-004 reports the misplacement; this code
+    reports that Name 2, the slot every downstream consumer reads a department
+    from, is empty. Both are true of the record."""
+    rec = _record(**{
+        "Name 1": "Yale University",
+        "Name 2": "",
+        "Name 3": "Department of Chemistry",
+    })
+    issues = detect_issues(rec)
+    assert "G2-NAME-012" in issues
+    assert "G1-NAME-004" in issues
+
+
+def test_g2_name_012_does_not_fire_on_a_company_named_research():
+    """41000008 "Cardinal Research GRP" is a company. The bare token
+    "Research" matched the university-or-research signal and raised a
+    missing-department code against the org type that has no departments to
+    miss."""
+    rec = _record(**{"Name 1": "Cardinal Research GRP", "Name 2": ""})
+    assert "G2-NAME-012" not in detect_issues(rec)
+
+
+@pytest.mark.parametrize("name1", [
+    "Research Institute of Molecular Pathology",
+    "Delta Research Center",
+    "Fraunhofer Research Laboratory",
+])
+def test_g2_name_012_still_fires_for_research_as_part_of_an_institution_phrase(name1):
+    """Tightening the signal must not cost the real institutions: "Research"
+    qualifies inside the phrases that name one."""
+    assert "G2-NAME-012" in detect_issues(_record(**{"Name 1": name1, "Name 2": ""}))
+
+
+@pytest.mark.parametrize("name1", [
+    "Hochschule fuer Technik Stuttgart",   # 42000005
+    "Fachhochschule Koeln",
+])
+def test_g2_name_012_fires_for_a_german_hochschule(name1):
+    """The previous bare ``Schule`` alternative matched neither "Hochschule"
+    nor its compounds — neither offers a word boundary before it."""
+    assert "G2-NAME-012" in detect_issues(_record(**{"Name 1": name1, "Name 2": ""}))
+
+
+@pytest.mark.parametrize("postal", ["7017", "701744", "D-70174", "70 174"])
+def test_g4_addr_026_fires_for_an_invalid_german_postal_code(postal):
+    """Before the DE format was added, no German postal code could be
+    validated at all — a clean count meant "unchecked", not "correct"."""
+    rec = _record(**{"Postal Code": postal, "Country/Region Key": "DE"})
+    assert "G4-ADDR-026" in detect_issues(rec)
+
+
+@pytest.mark.parametrize("postal", ["70174", "80333"])
+def test_g4_addr_026_accepts_a_valid_german_postal_code(postal):
+    rec = _record(**{"Postal Code": postal, "Country/Region Key": "DE"})
+    assert "G4-ADDR-026" not in detect_issues(rec)
+
+
+def test_postal_validation_is_silent_for_an_uncovered_country():
+    """Coverage is US, CA and DE. Anything else is unchecked, not valid —
+    read a clean G4-ADDR-026 count accordingly."""
+    rec = _record(**{"Postal Code": "not-a-postcode", "Country/Region Key": "FR"})
+    assert "G4-ADDR-026" not in detect_issues(rec)
+
+
+@pytest.mark.parametrize("street", [
+    "500 TECH DR STE 210 MS-4",                              # 40000015
+    "2301 Erwin Rd Mail Stop 100",                           # 40000007
+    "2200 LAKE BLVD STE 300 BLDG 4 WING C RM 412A MS K-12",  # 41000007
+])
+def test_g1_addr_006_fires_for_a_mail_stop_in_a_street_field(street):
+    """The mail-code patterns recognised only the literal words "Mail Code"
+    and two shapes with the digits welded to the letters, so every corpus
+    value — hyphenated or space-separated — read as no mail code at all."""
+    assert "G1-ADDR-006" in detect_issues(_record(**{"Street 1": street}))
+
+
+@pytest.mark.parametrize("street", [
+    "123 Main St MS",           # bare marker — Mississippi, no value
+    "1 Main St, Jackson, MS 39201",   # state + ZIP, not a mail stop
+    "400 Ms Johnson Way",       # honorific, value is not identifier-like
+])
+def test_g1_addr_006_does_not_fire_on_a_mississippi_or_honorific_ms(street):
+    assert "G1-ADDR-006" not in detect_issues(_record(**{"Street 1": street}))

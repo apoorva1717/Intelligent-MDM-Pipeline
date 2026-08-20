@@ -229,7 +229,8 @@ def locate(record: EnrichmentRecord, present: set[str] | None) -> dict[str, set[
     for field_name, code, condition in _REQUIRED_FIELD_CODES:
         if present is not None and field_name not in present:
             continue
-        # Catalogue v2 gates G2-VAL-004 (Region Missing) on US records only.
+        # No code currently carries a condition — G2-VAL-004's US-only gate was
+        # removed as unsourced. The branch stays so this mirrors the detector.
         if condition is not None and not condition(record):
             continue
         if is_blank(getattr(record, field_name)):

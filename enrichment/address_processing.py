@@ -491,6 +491,34 @@ _STREET_TYPE_WORD_RE = re.compile(
     r"Hwy|Highway|Pkwy|Parkway|Ct|Court|Way|Pl|Place|Ter|Terrace)\b\.?",
     re.IGNORECASE,
 )
+# German street types are compounds: the type is a *suffix* on the street name
+# ("Schellingstr", "Werner-von-Siemens-Str", "Kurfürstendamm"), not a separate
+# token, so ``_STREET_TYPE_WORD_RE``'s standalone-token matching cannot see
+# them and every German address reads as "not a street".
+#
+# ``-ring`` is the one suffix that collides with ordinary English: every
+# gerund ends in it ("Engineering", "Manufacturing", "Monitoring"). German
+# ring-roads put a consonant before the suffix ("Ostring", "Nordring") while
+# the English gerunds put a vowel there, so requiring a consonant removes that
+# whole class; the handful of consonant-preceded English words that remain are
+# excluded by name. The other suffixes have no English collisions to guard.
+_STREET_TYPE_SUFFIX_RE = re.compile(
+    r"\b[A-Za-zÄÖÜäöüß-]*(?:stra(?:ss|ß)e|str|weg|allee|platz|gasse|damm)\b\.?"
+    r"|\b(?!(?:spring|string|bring|ring|herring)\b)"
+    r"[A-Za-zÄÖÜäöüß-]*[bcdfgjklmnpqstvwxz]ring\b",
+    re.IGNORECASE,
+)
+
+
+def _has_street_type(value: str) -> bool:
+    """True when *value* carries a street-type word in either supported form:
+    a standalone English token ("Main **St**") or a German compound suffix
+    ("Schelling**str**")."""
+    return bool(
+        _STREET_TYPE_WORD_RE.search(value) or _STREET_TYPE_SUFFIX_RE.search(value)
+    )
+
+
 _HOUSE_NUMBER_RE = re.compile(r"\b\d+\b")
 _ORG_KEYWORD_RE = re.compile(
     r"\b(?:University|Universit[äa]t|Institute|Institut|"
@@ -563,7 +591,7 @@ def _looks_like_street(value: str | None) -> bool:
         return False
     return bool(
         _HOUSE_NUMBER_RE.search(value)
-        and _STREET_TYPE_WORD_RE.search(value)
+        and _has_street_type(value)
     )
 
 

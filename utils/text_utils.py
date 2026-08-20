@@ -611,10 +611,24 @@ def looks_like_research_institution(name: str | None) -> bool:
 # systems) and bare labs/observatories are deliberately excluded: they
 # routinely carry no department and should not raise the missing-department
 # issue codes.
+# ``Research`` is deliberately NOT a bare alternative here. As a standalone
+# token it is an ordinary commercial-name word — "Cardinal Research GRP" is a
+# company, not a research institute — and matching it raised the
+# missing-department codes against exactly the org type that has no departments
+# to miss. It qualifies only inside the phrases that name an institution
+# ("Research Institute", "Research Center", "Research Laboratory").
+#
+# ``Hochschule`` is matched with an optional compound prefix so the German
+# forms that carry it as a suffix ("Fachhochschule", "Musikhochschule") are
+# recognised; the previous bare ``Schule`` alternative matched neither those
+# nor "Hochschule" itself, since neither offers a word boundary before it.
 _UNIVERSITY_OR_RESEARCH_SIGNALS_RE = re.compile(
-    r"\b(?:University|College|College\s+of|Institute|Research|Academy|"
+    r"\b(?:Universit(?:y|ies)|Universit[aä]t|Université|Universidade|"
+    r"[A-Za-zÄÖÜäöüß]*[Hh]ochschule|"
+    r"Institut(?:e|es|s)?|Academy|College|"
     r"Medical\s+School|School\s+of|Faculty\s+of|"
-    r"Schule|Universit[aä]t|Université|Universidade)\b",
+    r"Research\s+(?:Institut(?:e|es)?|Cent(?:er|re)|"
+    r"Laborator(?:y|ies)|Council|Foundation))\b",
     re.IGNORECASE,
 )
 

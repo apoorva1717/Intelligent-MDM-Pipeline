@@ -106,7 +106,7 @@
     {
       "code": "G2-VAL-004",
       "positive": {"Region": "", "Country/Region Key": "US"},
-      "negative": {"Region": "", "Country/Region Key": "DE", "Postal Code": "70174"}
+      "negative": {"Region": "BW", "Country/Region Key": "DE", "Postal Code": "70174"}
     },
     {
       "code": "G2-VAL-006",

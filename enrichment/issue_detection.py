@@ -58,16 +58,37 @@ of the rule set.
 Several G1-NAME / G2-NAME / G5 rules are inherently semantic; here they are
 detected with conservative deterministic heuristics (documented inline). They err
 toward precision (few false positives) over recall.
+
+Declared limits — G5 misspellings
+---------------------------------
+**A misspelled name is out of scope for this module and always will be.**
+"Universiteat Stuttgart" (a transliterated "Universität") is not in official
+form, so G5-NAME-001 is the right code for it, and no regex here will raise it.
+Detecting it means knowing that the string is a corruption of a real name, which
+is recognition against a body of world knowledge, not pattern matching — the
+same reason ``G1-ADDR-009`` is marked ``ndd``. Any deterministic proxy
+(edit-distance to a dictionary, vowel-cluster heuristics, "looks foreign") fires
+on correctly-spelled names and is a false-positive generator. The LLM layer owns
+this class: the enrichment pipeline resolves such a name through ROR/GLEIF and
+rewrites it, and the before/after comparison is where the correction shows up.
+The same applies to a name that is *complete and correctly spelled but not the
+legal one* ("Lockheed Martin" for "Lockheed Martin Corporation") — no mark in
+the string distinguishes it from a name that is already official.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Literal
 
+from pydantic import AliasChoices
+
 from api.models import EnrichmentRecord
+
+logger = logging.getLogger(__name__)
 
 # Reused deterministic detectors from the enrichment pipeline.
 from enrichment.preprocess import (
@@ -90,6 +111,7 @@ from enrichment.address_processing import (
     _UNIVERSITY_CENTRE_RE,
     _extract_mail_code,
     _extract_sublocations,
+    _is_identifier_like,
     _looks_like_department,
     _looks_like_street,
 )
@@ -305,30 +327,91 @@ _SUBLOCATION_SLOTS = 4
 # be reported as "missing" it.
 #
 # The third element is an optional *predicate* on the record: the rule fires
-# only when it returns True. Catalogue v2 attaches conditions to individual
-# codes ("G2-VAL-004 Region Missing / only for US"), which a uniform loop
-# cannot express — a blank Region on a German record is not a defect, and
-# emitting it there is a false positive. G2-VAL-004 is the only v2 entry in
-# this table carrying such a condition; the rest are unconditional.
+# only when it returns True. **No entry currently carries one**, and the
+# mechanism is kept only as the place to put a genuine per-code condition if
+# the catalogue ever states one.
+#
+# G2-VAL-004 used to carry ``lambda r: _is_us(r)``, on the stated grounds that
+# "Catalogue v2 gates Region Missing on US records only". That sentence appears
+# nowhere except the comment that asserted it and the measurement script that
+# copied it — no catalogue extract, no Notion row, no README table states it.
+# What the traceability record does state is the opposite: 03_ALGORITHMS.md
+# §"G2-VAL-004 | G2 | ``region`` blank (column-gated)" documents this table as
+# plain ``(field, code)`` pairs and the loop as unconditional. The predicate and
+# the three tests pinning it landed in a single commit (8d5f5f9), so the tests
+# were a restatement of the change rather than independent evidence for it.
+#
+# Its effect was total: every record with a blank Region in the demo corpus is
+# German, so the code could not fire on any file anybody actually ran, and a
+# mandatory DS-origin rule sat permanently dark while reading as clean. That is
+# the defect — a rule silently conditioned out of existence is indistinguishable
+# from a rule with nothing to report. If Region really is optional outside the
+# US, that belongs in the catalogue first and comes back here as a documented
+# condition with a source.
 _REQUIRED_FIELD_CODES: list[tuple[str, str, Callable[[EnrichmentRecord], bool] | None]] = [
     ("name_1", "G2-VAL-001", None),
     ("postal_code", "G2-VAL-002", None),
     ("tax_jurisdiction", "G2-VAL-003", None),
-    ("region", "G2-VAL-004", lambda r: _is_us(r)),
+    ("region", "G2-VAL-004", None),
     ("language_key", "G2-VAL-006", None),
     ("search_term_1", "G2-VAL-007", None),
     ("country_region_key", "G2-VAL-008", None),
 ]
 
 
-def _is_us(record: EnrichmentRecord) -> bool:
-    """True only when the record's country resolves to ISO ``US``.
+def _input_aliases(field_name: str) -> list[str]:
+    """Every header spelling that routes onto *field_name* on EnrichmentRecord.
 
-    A blank or unrecognised country is *not* treated as US: Region is only
-    mandatory for US records, so firing on an unknown country would recreate
-    the false positive this predicate exists to remove.
+    Mirrors ``api.routes._input_alias_to_field`` without importing it — that
+    module imports this one, so the dependency only runs one way.
     """
-    return country_to_iso_code(record.country_region_key) == "US"
+    field = EnrichmentRecord.model_fields.get(field_name)
+    if field is None:
+        return []
+    alias = field.validation_alias
+    if isinstance(alias, AliasChoices):
+        names = [str(c) for c in alias.choices]
+    elif isinstance(alias, str):
+        names = [alias]
+    else:
+        names = []
+    names.append(field_name)  # populate_by_name is enabled on the model
+    return names
+
+
+def _validate_required_field_mapping() -> list[str]:
+    """Warn about any required-field rule whose column can never be seen.
+
+    ``detect_issues`` gates the G2-VAL-* rules on ``present_fields``, which is
+    built by matching the file's headers against EnrichmentRecord's input
+    aliases. That gate is silent by construction: a rule keyed on a field the
+    model does not declare — or declares with no header alias — is skipped on
+    every record and every file, and looks exactly like a clean run. A rule
+    that never fires because its column was never mapped is worse than one that
+    errors, so the mismatch is reported at import rather than discovered by
+    diffing a detector run against a hand-built key.
+
+    Returns the problem descriptions (also emitted through ``logger.warning``)
+    so a test can assert the table is intact.
+    """
+    problems: list[str] = []
+    for field_name, code, _condition in _REQUIRED_FIELD_CODES:
+        if field_name not in EnrichmentRecord.model_fields:
+            problems.append(
+                f"{code}: '{field_name}' is not a field on EnrichmentRecord — "
+                f"the rule can never fire",
+            )
+        elif not _input_aliases(field_name):
+            problems.append(
+                f"{code}: field '{field_name}' carries no input alias — no "
+                f"column header can map onto it, so the rule can never fire",
+            )
+    for problem in problems:
+        logger.warning("Required-field rule has no column mapping — %s", problem)
+    return problems
+
+
+_REQUIRED_FIELD_MAPPING_PROBLEMS = _validate_required_field_mapping()
 
 # Continuation connectors that suggest Name 2 carries on from Name 1 as one
 # org name (heuristic for G1-NAME-001).
@@ -338,12 +421,46 @@ _NAME_CONTINUATION_RE = re.compile(
 
 # Common abbreviation tokens marking a non-canonical org / unit name
 # (heuristic for G5). Anchored on word boundaries to avoid matching inside
-# longer words ("Univ" not inside "University").
+# longer words ("Univ" not inside "University", "Hosp" not inside "Hospital",
+# "Inc" not inside "Incorporated" — in every case the expanded spelling is the
+# official form the rule is asking for, so it must not match).
+#
+# Abbreviated legal suffixes (Corp, Inc, Ltd) are in the set. They were absent
+# before, while "Co" was present, so "Smith Co." fired the rule and "Smith
+# Corp." did not — an inconsistency rather than a decision. The rule's semantics
+# are "the name is not in official/expanded form", and expanding a legal suffix
+# is exactly what the enrichment layer does downstream (see
+# ``collapse_legal_suffix`` / ``clean_passthrough_org_name``), so the suffix
+# forms belong here. Note the consequence before reading a count: most
+# commercial customers carry a legal suffix, so G5-NAME-001 volume rises
+# substantially on real data. That is the honest reading of the rule as
+# written; if the volume is unwanted the fix is to split legal suffixes into
+# their own code, not to go back to excluding them silently.
+#
+# The clipped organisational words (Hosp, Grp, Fla, Uni) each have a witness in
+# the demo corpus: "BRIGHAM & WOMENS HOSP" (40000014), "Cardinal Research GRP"
+# (41000008), "MAYO CLINIC FLA" (40000008), "UNI STUTTGART" (42000001).
 _ABBREV_TOKEN_RE = re.compile(
-    r"\b(?:Univ|Dept|Dep|Div|Inst|Natl|Nat'l|Intl|Int'l|Assoc|Assn|Ctr|"
-    r"Lab|Labs|Tech|Sch|Mgmt|Engrg|Eng|Sci|Med|Svcs|Svc|Co)\b\.?",
+    r"\b(?:Univ|Uni|Dept|Dep|Div|Inst|Natl|Nat'l|Intl|Int'l|Assoc|Assn|Ctr|"
+    r"Lab|Labs|Tech|Sch|Mgmt|Engrg|Eng|Sci|Med|Svcs|Svc|Co|"
+    r"Corp|Inc|Ltd|Mfg|Hosp|Grp|Fla)\b\.?",
     re.IGNORECASE,
 )
+
+# A dotted acronym — two or more single letters separated by periods, with or
+# without a trailing one ("U.C.L.A", "U.S.A."). The token regex above cannot
+# express this: every letter is its own token, so there is no multi-character
+# word for ``\b...\b`` to anchor on. Single letters are required throughout,
+# which is what keeps "St. Louis" and "Ave. B" out of it.
+_DOTTED_ACRONYM_RE = re.compile(r"\b[A-Za-z](?:\.[A-Za-z]){1,}\.?(?![A-Za-z])")
+
+
+def _is_non_canonical_name(value: str | None) -> bool:
+    """True when *value* carries a mark of a non-official name form: an
+    abbreviation token or a dotted acronym."""
+    if not value:
+        return False
+    return bool(_ABBREV_TOKEN_RE.search(value) or _DOTTED_ACRONYM_RE.search(value))
 
 # Company/organisation words that, when sitting in a Street field with no
 # street-type word, signal an org name in the address (heuristic for
@@ -357,10 +474,119 @@ _ORG_IN_STREET_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Postal-code format checks keyed by ISO country (best-effort, common cases).
+# Site-access sub-locations that ``_SUITE_PATTERNS`` does not carry, because the
+# pipeline routes them by a different mechanism: a trailing "GATE C" is moved to
+# the next street slot by ``_split_location_qualifier`` and a leading "Gate C" is
+# pulled into ``unloading_point`` by ``_extract_logistics``, so neither needs an
+# entry in the suite/building/floor/room/unit extraction table. For G1-ADDR-003
+# ("Sub-location Embedded in Street") the routing is beside the point — the
+# marker is sitting in a Street field either way, which is exactly what the code
+# reports. Detection-only, therefore: extending ``_SUITE_PATTERNS`` itself would
+# change what the enrichment pipeline extracts and into which SAP column.
+#
+# The vocabulary is the set with a witness in the corpus, not a generic list:
+#
+#   Gate  — 40000008 "4500 SAN PABLO RD S GATE C"
+#   Wing  — 41000007 "2200 LAKE BLVD STE 300 BLDG 4 WING C RM 412A MS K-12"
+#
+# Dock / Bay / Annex / Block / Entrance were considered and left out: no record
+# in the corpus carries one, so adding them would be speculation with a false
+# positive cost and no demonstrated recall gain. Mail Stop / MS needs nothing —
+# ``_MAIL_STOP_RE`` already matches all three of its occurrences (40000007,
+# 40000015, 41000007).
+#
+# The value must be identifier-like (``_is_identifier_like``: a digit, or one
+# to two characters) for the same reason the extractor demands it — it is what
+# keeps a street *name* containing the word ("Golden Gate Ave") from reading as
+# a sub-location.
+_DETECTION_ONLY_SUBLOCATION_RE = re.compile(
+    r"\b(?:Gate|Wing)\s+(\w[\w\-]*)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_detection_only_sublocation(value: str) -> bool:
+    """True when *value* carries a site-access sub-location marker with an
+    identifier-like value attached."""
+    return any(
+        _is_identifier_like(m.group(1).strip())
+        for m in _DETECTION_ONLY_SUBLOCATION_RE.finditer(value)
+    )
+
+
+# Mail-stop / mail-code markers, for G1-ADDR-006.
+#
+# The pipeline's ``_extract_mail_code`` recognises only three shapes, and none
+# of them is the form the corpus actually carries:
+#
+#   ``_MAIL_CODE_EXPLICIT_RE``  the literal words "Mail Code" — but the records
+#                               say "MS" or "Mail Stop", never "Mail Code".
+#   ``_MAIL_CODE_COMPLEX_RE``   ``[A-Z]\d-\d{4}`` ("K2-1234") — "MS-4" is two
+#                               letters and one digit, "K-12" is two digits.
+#   ``_MAIL_CODE_BARE_RE``      ``[A-Z]{2,4}\d{1,4}`` with the digits welded to
+#                               the letters ("RD45") — every corpus value has a
+#                               hyphen or a space in between.
+#
+# So "500 TECH DR STE 210 **MS-4**", "2301 Erwin Rd **Mail Stop 100**" and
+# "… RM 412A **MS K-12**" all read as carrying no mail code at all.
+#
+# Detection-only, and deliberately not folded into ``_extract_mail_code``: that
+# function decides which SAP *column* a value lands in, and these values are
+# already routed — ``_MAIL_STOP_RE`` sends them to Mail Stop. Teaching the mail
+# *code* extractor to swallow them would move them into the Mail Code column
+# and empty Mail Stop. Which column they belong in is settled and correct; the
+# only thing missing was the report that the value is sitting in a Street field,
+# which is all G1-ADDR-006 says.
+#
+# A bare "MS" with no value never fires — the marker alone is the postal
+# abbreviation for Mississippi. Two further guards apply to that spelling only,
+# since it is the one that collides with ordinary text:
+#
+#   * a five-digit value is a ZIP, so "Jackson MS 39201" is a state and a
+#     postal code, not a mail stop;
+#   * the value must be identifier-like (``_is_identifier_like`` — a digit, or
+#     one to two characters), which is what separates the mail stop in
+#     "MS K-12" from the honorific in "Ms Johnson Way".
+#
+# The spelled-out markers carry neither ambiguity and are not restricted: if a
+# line says "Mail Stop", the value after it is a mail stop.
+_MAIL_CODE_MARKER_RE = re.compile(
+    r"\b(?P<marker>Mail\s*Stop|Mailstop|Mail\s*Code|M\s*[./]\s*S|MS)\b\.?"
+    r"\s*[:#\-]?\s*(?P<value>[A-Za-z0-9][\w\-]*)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_mail_code(value: str) -> bool:
+    """True when *value* carries a mail-stop / mail-code marker **with a value
+    attached**."""
+    for m in _MAIL_CODE_MARKER_RE.finditer(value):
+        marker = re.sub(r"[^a-z]", "", m.group("marker").lower())
+        value = m.group("value")
+        if marker == "ms" and (
+            re.fullmatch(r"\d{5}", value) or not _is_identifier_like(value)
+        ):
+            continue
+        return True
+    return False
+
+
+# Postal-code format checks keyed by ISO country.
+#
+# **Coverage is US, CA and DE — and nothing else.** G4-ADDR-026 fires only for a
+# country in this table, so a postal code on a record from any other country is
+# not "valid", it is *unchecked*: a French, British or Japanese record can carry
+# any string at all in Postal Code and this rule will stay silent. Read a clean
+# G4-ADDR-026 count as "no defect found in three countries", never as "the
+# postal codes are good". Adding a country here is what converts its rows from
+# unchecked to checked.
 _POSTAL_FORMATS: dict[str, re.Pattern[str]] = {
     "US": re.compile(r"^\d{5}(?:-\d{4})?$"),
     "CA": re.compile(r"^[A-Za-z]\d[A-Za-z] ?\d[A-Za-z]\d$"),
+    # Exactly five digits — no separator, no country prefix. The "D-70174"
+    # form still in circulation is pre-1993 and not the SAP-canonical value,
+    # so it is reported rather than accepted.
+    "DE": re.compile(r"^\d{5}$"),
 }
 
 
@@ -465,7 +691,10 @@ def _detect_wrong_field(record: EnrichmentRecord, found: set[str]) -> None:
 
     # G1-ADDR-003 — sub-location (Suite / Floor / Bldg / Room …) inside Street.
     for st in streets:
-        if st and any(pat.search(st) for pat, _ in _SUITE_PATTERNS):
+        if st and (
+            any(pat.search(st) for pat, _ in _SUITE_PATTERNS)
+            or _has_detection_only_sublocation(st)
+        ):
             found.add("G1-ADDR-003")
             break
 
@@ -477,7 +706,9 @@ def _detect_wrong_field(record: EnrichmentRecord, found: set[str]) -> None:
 
     # G1-ADDR-006 — mail/drop code inside a Street field.
     for st in streets:
-        if st and _extract_mail_code(st, allow_bare=True)[1]:
+        if st and (
+            _extract_mail_code(st, allow_bare=True)[1] or _has_mail_code(st)
+        ):
             found.add("G1-ADDR-006")
             break
 
@@ -543,25 +774,63 @@ def _detect_missing(
     present_fields: set[str] | None,
 ) -> None:
     # Required-field checks — gated on the column being present in the file.
+    #
+    # Every outcome is traced at DEBUG, because a required-field rule has three
+    # separate ways to stay silent and they are indistinguishable in the result:
+    # the column is absent from the file, the code's condition said the field is
+    # not required for this record, or the field is populated and there is
+    # simply no defect. A rule that never fires is only a defect in the first
+    # case; the log is what tells the three apart without a bisect. Enable with
+    # ``logging.getLogger("enrichment.issue_detection").setLevel(logging.DEBUG)``.
     for field_name, code, condition in _REQUIRED_FIELD_CODES:
-        if present_fields is not None and field_name not in present_fields:
-            continue
-        if condition is not None and not condition(record):
-            continue
-        if is_blank(getattr(record, field_name)):
+        column_present = present_fields is None or field_name in present_fields
+        # A rule keyed on a field that is in neither the file nor the model can
+        # never fire on any record, and a silent skip makes that look identical
+        # to a clean result. Warn, naming both the code and the field: this is
+        # the failure mode that let G2-VAL-004 sit dark, and it may hide others.
+        if not column_present and field_name not in EnrichmentRecord.model_fields:
+            logger.warning(
+                "Required-field rule %s can never fire: field %r is absent from "
+                "present_fields AND is not a field on EnrichmentRecord",
+                code, field_name,
+            )
+        if not column_present:
+            verdict = "skipped — column absent from file"
+        elif condition is not None and not condition(record):
+            verdict = "skipped — code condition not met for this record"
+        elif is_blank(getattr(record, field_name)):
             found.add(code)
+            verdict = "FIRED — column present and blank"
+        else:
+            verdict = "no issue — column populated"
+        logger.debug(
+            "[%s] %s (%s): in_present_fields=%s value=%r -> %s",
+            getattr(record, "record_id", "?"), code, field_name,
+            "assumed" if present_fields is None else column_present,
+            getattr(record, field_name, None), verdict,
+        )
 
-    # "No department" means the whole block below Name 1 is empty — a
-    # department sitting in Name 3 with Name 2 blank is still a department
-    # the record carries, so reading Name 2 alone would report it missing.
     dept_values = _names(record)[1:]
-    no_department = all(is_blank(v) for v in dept_values)
 
-    # G2-NAME-012 — university / research institute (Name 1) with no
-    # department anywhere in the block. Gated on the narrower
-    # university-or-research signal so clinical orgs (hospitals, clinics,
-    # medical centres) — which routinely have no department — are not flagged.
-    if looks_like_university_or_research_institute(record.name_1) and no_department:
+    # G2-NAME-012 — university / research institute (Name 1) with **Name 2**
+    # blank. Gated on the narrower university-or-research signal so clinical
+    # orgs (hospitals, clinics, medical centres) — which routinely have no
+    # department — are not flagged.
+    #
+    # Name 2 alone, per the catalogue definition, and not "no department
+    # anywhere in the block": scanning the whole block suppressed the code
+    # whenever a department sat in the wrong slot (Yale University with Name 2
+    # blank and Name 3 "Department of Chemistry"), which is precisely the
+    # record a steward most needs to see. The misplacement is a separate fact
+    # reported by its own code (G1-NAME-004, "Empty field in between populated
+    # name fields"); letting it mask this one loses the report that Name 2 —
+    # the slot SAP and every downstream consumer reads a department from — is
+    # empty. The two codes fire together on such a record, which is correct:
+    # they state two different things about it.
+    if (
+        looks_like_university_or_research_institute(record.name_1)
+        and is_blank(record.name_2)
+    ):
         found.add("G2-NAME-012")
 
     # G2-NAME-009 — a granular research group in any department slot with no
@@ -708,12 +977,15 @@ def _detect_format(record: EnrichmentRecord, found: set[str]) -> None:
 
 def _detect_naming(record: EnrichmentRecord, found: set[str]) -> None:
     # G5-NAME-001 — organisation name (Name 1) abbreviated / non-canonical.
-    if record.name_1 and _ABBREV_TOKEN_RE.search(record.name_1):
+    # Field attribution is by slot and nothing else: an abbreviation in Name 1
+    # is -001, one in Name 2..N is -002, and a record carrying one only below
+    # Name 1 ("ADAMS AIR" / "HYDRAULICS INC") raises -002 alone.
+    if _is_non_canonical_name(record.name_1):
         found.add("G5-NAME-001")
 
     # G5-NAME-002 — a unit-level name (Name 2..N) abbreviated / non-canonical.
     for nm in _names(record)[1:]:
-        if nm and _ABBREV_TOKEN_RE.search(nm):
+        if _is_non_canonical_name(nm):
             found.add("G5-NAME-002")
             break
 
