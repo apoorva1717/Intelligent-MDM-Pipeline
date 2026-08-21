@@ -329,6 +329,80 @@ def smart_title_case(value: str | None) -> str | None:
     return " ".join(out)
 
 
+# ---------------------------------------------------------------------------
+# Bracketed-span removal (every name field, input and output)
+# ---------------------------------------------------------------------------
+#
+# A bracketed span in a name is never part of the name. It is a
+# disambiguator a source system bolted on — a city ("3M (Detroit)",
+# "3M Corporate (Saint Paul)"), a country (ROR's "Pfizer (United States)"),
+# an acronym ("… Institute of Technology (MIT)") or plain noise
+# ("(guest)"). None of those belong in the canonical name, and keeping
+# them splits one organisation across several spellings, so the whole
+# span goes — brackets and contents alike.
+
+# One non-nested bracketed span. Applied repeatedly so nested spans are
+# removed innermost-first: "A (B (C) D) E" -> "A E".
+_BRACKETED_SPAN_RE = re.compile(r"\s*[(\[{][^(){}\[\]]*[)\]}]\s*")
+
+# An opening bracket with no closing partner, to end of string. SAP name
+# columns are 35 characters, so "Bayer (Leverkusen Werk" — a truncated
+# disambiguator — is as common as the closed form.
+_UNCLOSED_BRACKET_RE = re.compile(r"\s*[(\[{][^(){}\[\]]*$")
+
+# Residue left behind once a span is cut out ("Acme, (US)" -> "Acme,").
+# Periods are NOT stripped: they are load-bearing for "Inc.".
+_BRACKET_RESIDUE = " ,;:-/|"
+
+# Cutting a span out mid-string leaves the separators that framed it stranded:
+# "Dept of Physics (Rm 210), Bldg 6" -> "Dept of Physics , Bldg 6" (space before
+# the comma) and "Acme, (US), Ltd" -> "Acme, , Ltd" (two commas in a row).
+_SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([,;:])")
+_REPEATED_PUNCT_RE = re.compile(r"([,;:])\s*(?=[,;:])")
+
+
+def _tidy_bracket_residue(text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", text)
+    cleaned = _SPACE_BEFORE_PUNCT_RE.sub(r"\1", cleaned)
+    cleaned = _REPEATED_PUNCT_RE.sub("", cleaned)
+    return cleaned.strip().strip(_BRACKET_RESIDUE).strip()
+
+
+def strip_parentheticals(value: str | None) -> str | None:
+    """Drop every bracketed span from a name, brackets and contents alike.
+
+    "3M (Detroit)"                -> "3M"
+    "3M Corporate (Saint Paul)"   -> "3M Corporate"
+    "Pfizer (United States)"      -> "Pfizer"
+    "Bayer (Leverkusen Werk"      -> "Bayer"        (unclosed, truncated)
+
+    A value with no bracket is returned byte-identical — the rule must be a
+    no-op on the overwhelming majority of names. A value that is ENTIRELY
+    bracketed ("(Research Division)") is unwrapped rather than emptied: the
+    brackets are still noise, but the text inside them is all the field has.
+    """
+    if value is None:
+        return None
+    text = str(value)
+    if not any(ch in text for ch in "([{"):
+        return value
+
+    cleaned = text
+    while True:
+        collapsed = _BRACKETED_SPAN_RE.sub(" ", cleaned)
+        if collapsed == cleaned:
+            break
+        cleaned = collapsed
+    cleaned = _UNCLOSED_BRACKET_RE.sub(" ", cleaned)
+    cleaned = _tidy_bracket_residue(cleaned)
+
+    if not cleaned:
+        # Nothing survived — keep the payload, lose only the brackets.
+        cleaned = _tidy_bracket_residue(re.sub(r"[(){}\[\]]", " ", text))
+
+    return cleaned or None
+
+
 def clean_passthrough_org_name(name: str | None) -> str | None:
     """Normalise an org name that passed through enrichment uncanonicalised.
 

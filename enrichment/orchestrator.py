@@ -130,6 +130,7 @@ from utils.text_utils import (
     normalise_case,
     smart_title_case,
     strip_address_fragments,
+    strip_parentheticals,
 )
 
 logger = logging.getLogger(__name__)
@@ -864,6 +865,28 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
                     producer="preprocess",
                     evidence_ref={"overrode": result.get(f"{base}_enriched")},
                 ),
+            )
+
+    # Bracketed spans dropped from every OUTPUT name field — the same rule
+    # preprocessing (UC 12) applies to the input, backstopping every value a
+    # tier introduced after that ran. This is where "3M (Detroit)" and
+    # "3M Corporate (Saint Paul)" are caught: ROR and GLEIF append a
+    # disambiguating city or country to distinguish same-named records, and
+    # that suffix is an artefact of THEIR keyspace, not part of the
+    # organisation's name.
+    #
+    # A registry-owned name is NOT skipped here, unlike the abbreviation and
+    # casing passes. Those defer to ROR/GLEIF on spelling; this rule removes a
+    # span that is not spelling at all, and the registries are exactly the
+    # source that adds it.
+    for field in ENRICHED_NAME_FIELDS:
+        val = result.get(field)
+        if not val:
+            continue
+        stripped = strip_parentheticals(str(val))
+        if stripped != val:
+            result.transform(
+                field, stripped, rule_id="uc12:strip-parentheticals",
             )
 
     # Post-tier dedup of the department slots. Preprocess already deduped, but

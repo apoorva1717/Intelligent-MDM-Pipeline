@@ -28,6 +28,7 @@ from utils.text_utils import (
     acronym_matches_name,
     expand_abbreviations,
     extract_domain,
+    strip_parentheticals,
 )
 
 logger = logging.getLogger(__name__)
@@ -197,6 +198,14 @@ _WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*")
 _PUNCT_RE = re.compile(r"[.,]")
 _WS_RE = re.compile(r"\s+")
 
+# Identifier extraction tokenises differently from `_WORD_RE`: a token may
+# START with a digit as long as it contains a letter, so "3M" survives as one
+# token. `_WORD_RE` requires a leading letter and would yield "M" — a
+# single character, below the acronym floor — which made the one token that
+# says WHICH company invisible to the guard below. A pure number ("2020",
+# "3") has no letter and is not an identifier.
+_IDENTIFIER_TOKEN_RE = re.compile(r"[A-Za-z0-9]*[A-Za-z][A-Za-z0-9]*")
+
 # US legal-entity suffixes: long form (and dotted abbreviations, once the
 # dots have been stripped to spaces) \u2192 canonical abbreviation. Applied
 # symmetrically to the query and every ROR name variant so that
@@ -226,9 +235,15 @@ def _extract_identifier_tokens(text: str) -> set[str]:
     heavily and produces ~0.9 similarity, crossing the match
     threshold; treating these acronyms as required tokens catches the
     mismatch. Returned tokens are lowercased.
+
+    A digit-carrying mark ('3M', 'P66') counts too. It is an identifier by
+    exactly the same argument — in "3M Corporate" the only token that says
+    WHICH company is "3M", and without it the query subset-matches any org
+    with "Corporate" in its name (ROR returns "Corporate Executive Board" and
+    "Corporate Communications Group" for it, both at a false 1.0).
     """
     tokens: set[str] = set()
-    for tok in _WORD_RE.findall(text):
+    for tok in _IDENTIFIER_TOKEN_RE.findall(text):
         if 2 <= len(tok) <= 5 and tok.isupper():
             tokens.add(tok.lower())
     return tokens
@@ -725,11 +740,14 @@ def _extract_org_fields(org: dict[str, Any]) -> dict[str, Any]:
     if not display_name and org_names:
         display_name = org_names[0]["value"]
 
-    # ROR sometimes appends a country suffix to disambiguate orgs with
-    # the same name in different countries — e.g. "Pfizer (United
-    # States)". Strip it for downstream consumers; the canonical
-    # company name is cleaner without it.
-    display_name = _strip_ror_country_suffix(display_name)
+    # ROR appends a bracketed qualifier to disambiguate orgs that share a
+    # name — a country ("Pfizer (United States)"), or a city for the sites
+    # of one company ("3M (Detroit)", "3M Corporate (Saint Paul)"). The
+    # qualifier belongs to ROR's keyspace, not to the organisation, so the
+    # whole span goes before the name reaches matching or the output.
+    # `_strip_ror_country_suffix` still runs for the un-bracketed form it
+    # also handles (a trailing ", City, ST, Country" address tail).
+    display_name = strip_parentheticals(_strip_ror_country_suffix(display_name))
 
     # ROR may carry SEVERAL acronym entries, including historical ones ("NBS"
     # for NIST, "PHS" for Mass General Brigham). Take the one whose letters are

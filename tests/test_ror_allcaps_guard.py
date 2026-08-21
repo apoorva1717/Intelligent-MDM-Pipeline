@@ -300,6 +300,42 @@ def test_initialism_extraction_is_not_gated_on_case_contrast() -> None:
     assert _compute_name_score("JAH VA HOSPITAL", jah, set()) == 1.0
 
 
+# ───────────────── a digit-carrying mark is an identifier too ───────────────
+
+
+def test_a_digit_leading_mark_is_extracted_as_an_identifier() -> None:
+    """"3M" must survive tokenisation whole.
+
+    The extractor used `_WORD_RE`, which requires a leading LETTER, so "3M"
+    yielded "M" — one character, below the 2-char acronym floor — and the
+    token that says WHICH company was invisible to the guard.
+    """
+    assert _extract_identifier_tokens("3M Corporate") == {"3m"}
+    assert _guard_identifier_tokens("3M Corporate") == {"3m"}
+    # A token with no letter is a number, not a mark.
+    assert _extract_identifier_tokens("Building 2020") == set()
+
+
+@pytest.mark.parametrize("candidate", [
+    "Corporate Executive Board", "Corporate Communications Group",
+])
+def test_a_generic_shared_token_cannot_carry_the_match(candidate) -> None:
+    """Without the guard, "3M Corporate" subset-matches on "corporate" alone.
+
+    Both of these are live ROR answers for the query "3M Corporate": the only
+    significant (≥4-char) query token is the generic "corporate", so the
+    step-2 subset shortcut returned a false 1.0 for an unrelated company.
+    """
+    names = [{"value": candidate, "types": ["ror_display", "label"]}]
+    assert _compute_name_score("3M Corporate", names, set()) < 0.8
+
+
+def test_the_guard_does_not_block_the_org_that_owns_the_mark() -> None:
+    """The cap only fires when the candidate LACKS the mark."""
+    names = [{"value": "3M Health Care", "types": ["ror_display", "label"]}]
+    assert _compute_name_score("3M Health Care", names, set()) == 1.0
+
+
 # ──────────────────────── the harness itself is honest ──────────────────────
 
 

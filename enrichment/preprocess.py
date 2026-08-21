@@ -43,6 +43,7 @@ from utils.text_utils import (
     is_unit_construction,
     looks_like_research_institution,
     smart_title_case,
+    strip_parentheticals,
 )
 
 logger = logging.getLogger(__name__)
@@ -807,6 +808,38 @@ def _strip_parenthetical_noise(text: str) -> str:
     # for legal suffixes like "Inc." that Case B relies on.
     cleaned = _PARENTHETICAL_NOISE_RE.sub(" ", text)
     return re.sub(r"\s+", " ", cleaned).strip(" ,;:-")
+
+
+# A name field that OPENS with a bracketed span, then carries more text:
+# "(Julius-Maximilians Universität Würzburg) Gieshügeler Str.46".
+_LEADING_BRACKET_RE = re.compile(r"^\s*[(\[{]([^(){}\[\]]*)[)\]}]\s*(.+)$", re.DOTALL)
+
+
+def _leading_bracketed_name(value: str | None) -> tuple[str, str] | None:
+    """Split "(Org) rest" into ``(org, rest)`` when the org is in the brackets.
+
+    UC 12 drops a bracketed span because a TRAILING one is a disambiguator
+    ("3M (Detroit)"). A LEADING one is the opposite shape: the typist opened
+    with the organisation and ran the address on after it, so dropping the
+    span would keep the street and throw the name away.
+
+    Returns None unless the value opens with a closed bracket, has text after
+    it, and the bracketed content reads as name-block content — so
+    "(guest) John Smith" and "(US) Widgets Ltd" fall through to the plain
+    strip. Position alone is not enough; what is inside has to be a name.
+    """
+    if not value:
+        return None
+    m = _LEADING_BRACKET_RE.match(value)
+    if not m:
+        return None
+    inner = re.sub(r"\s+", " ", m.group(1)).strip(" ,;:-/|")
+    rest = re.sub(r"\s+", " ", m.group(2)).strip(" ,;:-/|")
+    if not inner or not rest:
+        return None
+    if not _looks_like_name_content(inner):
+        return None
+    return inner, rest
 
 
 def _is_department_payload(text: str) -> bool:
@@ -1605,6 +1638,48 @@ def preprocess_record(
             setattr(res, slot, addr)
             res.note(9, f"extracted address to {slot} from {field_name}")
         setattr(res, field_name, cleaned or None)
+
+    # ---------------------------------------------------------------
+    # UC 12 — Bracketed spans dropped from every name slot. A "(Detroit)"
+    # / "(United States)" / "(MIT)" tail is a source-system disambiguator,
+    # not part of the name, and keeping it splits one organisation across
+    # several spellings. Runs AFTER UC 8 (email) and UC 9 (address) so a
+    # bracketed email or street is still routed to its own field before
+    # the span is discarded, and BEFORE the slot dedupe below so
+    # "3M (Detroit)" and "3M" in adjacent slots collapse to one value.
+    # ---------------------------------------------------------------
+    for field_name in NAME_SLOTS:
+        val = getattr(res, field_name)
+        if not val:
+            continue
+        # "(Julius-Maximilians Universität Würzburg) Gieshügeler Str.46" — the
+        # brackets LEAD and hold the organisation, so dropping the span would
+        # throw the name away and keep the street. Rescue it first: the
+        # bracketed org becomes the slot value and the trailing remainder is
+        # routed to the block it belongs to.
+        led = _leading_bracketed_name(val)
+        if led:
+            org, rest = led
+            setattr(res, field_name, org)
+            if _looks_like_name_content(rest):
+                target = _first_empty_name_slot(res)
+                block = "name"
+            else:
+                target = _first_empty_street_slot(res)
+                block = "street"
+            if target is None:
+                res.flags.append(f"{block}-slots-full")
+                res.note(12, f"leading bracketed org kept in {field_name}; "
+                             f"remainder has no free {block} slot ({rest!r})")
+            else:
+                setattr(res, target, rest)
+                res.note(12, f"leading bracketed org kept in {field_name} "
+                             f"({org!r}); remainder moved to {target} ({rest!r})")
+            continue
+        stripped = strip_parentheticals(val)
+        if stripped != val:
+            setattr(res, field_name, stripped or None)
+            res.note(12, f"parenthetical dropped from {field_name} (was {val!r})")
 
     # ---------------------------------------------------------------
     # UC 11 — DBA normalisation (rewrite any variant to "DBA")
