@@ -1,0 +1,15 @@
+{
+ "domain": "ascension-publishing.com",
+ "payload": {
+  "status": 200,
+  "blocked": false,
+  "error": null,
+  "url": "https://ascension-publishing.com/",
+  "title": "Ascension Publishing",
+  "h1": "",
+  "text": "Ascension Publishing skip intro",
+  "paths": [
+   "/"
+  ]
+ }
+}

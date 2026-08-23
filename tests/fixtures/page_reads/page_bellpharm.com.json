@@ -1,0 +1,15 @@
+{
+ "domain": "bellpharm.com",
+ "payload": {
+  "status": 200,
+  "blocked": false,
+  "error": null,
+  "url": "https://bellpharm.com/",
+  "title": "Bell Pharmaceuticals",
+  "h1": "",
+  "text": "Bell Pharmaceuticals About Bell Pharmaceuticals Founded in 2001, Bell Pharmaceuticals is a pharmaceutical manufacturing and packaging company. Bell Pharmaceuticals, Inc. is committed to delivering satisfaction to our customers by anticipating their needs and offering value, quality, and reliability that exceeds their expectations. Contact Us 200 West Beaver Street Belle Plaine, MN 56011 United States Phone: (952) 873-2288",
+  "paths": [
+   "/"
+  ]
+ }
+}

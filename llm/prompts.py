@@ -299,6 +299,72 @@ WEBSITE_INFERENCE_USER_PROMPT_TEMPLATE = (
 
 
 # ---------------------------------------------------------------------------
+# Page read — constrained reader over fetched page text (Fix 3)
+# ---------------------------------------------------------------------------
+#
+# The model is a READER here, not a source. It is shown page text and asked
+# what that text states; it is never shown the record, never asked whether the
+# record is right, and never asked to supply anything the page omits. That is
+# the whole design: a page is a witness, and a witness that fills gaps from
+# memory is not a witness. Two failure modes the wording targets specifically:
+#
+#   * A brand logo, a favicon, or a page title that is only a slogan is not a
+#     statement of organisational identity. Returning the site's marketing name
+#     for every page would corroborate every domain, which is worthless.
+#   * A model that knows a company's headquarters will supply the city when the
+#     page does not mention it — and location consistency is one of the two
+#     tests, so a remembered address would decide the very question being
+#     asked. Absent fields must come back null.
+
+PAGE_READ_SYSTEM_PROMPT = (
+    "You read the text of one web page and report ONLY what that page "
+    "states about the organisation that operates it. You are a reader, not "
+    "a source of knowledge: nothing you already know about any company may "
+    "appear in your answer. Return valid JSON only. No markdown."
+)
+
+PAGE_READ_USER_PROMPT_TEMPLATE = (
+    "Page URL: {url}\n"
+    "Page title: {title}\n"
+    "Page heading: {h1}\n"
+    "Page text:\n"
+    "---\n"
+    "{text}\n"
+    "---\n\n"
+    "Return JSON:\n"
+    "{{\n"
+    '  "stated_org_name": "str or null",\n'
+    '  "stated_city": "str or null",\n'
+    '  "stated_region": "str or null",\n'
+    '  "stated_country": "str or null",\n'
+    '  "stated_postal_code": "str or null",\n'
+    '  "legal_form_present": true or false\n'
+    "}}\n"
+    "Rules:\n"
+    "1. Every field must be supported by text on THIS page. If the page "
+    "does not state it, the field is JSON null. Never fill a gap from your "
+    "own knowledge of the organisation.\n"
+    "2. stated_org_name is the name the page gives for the organisation "
+    "that operates the site — from an imprint, a legal notice, a copyright "
+    "line, an about/contact statement, or a clear self-description. A brand "
+    "name in a logo, a slogan, or a product name is NOT a statement of "
+    "organisational identity: return null.\n"
+    "3. If the page states no organisation identity at all — a parked "
+    "domain, a for-sale placeholder, a login wall, an error page, a bare "
+    "landing page — return null for every field and false for "
+    "legal_form_present.\n"
+    "4. stated_city / stated_region / stated_country / stated_postal_code "
+    "come from a postal address, imprint, or registered-office statement on "
+    "this page. A list of many office locations is not a single address: "
+    "return null rather than choosing one.\n"
+    "5. legal_form_present is true only when stated_org_name carries an "
+    "explicit legal form (Inc, LLC, Ltd, GmbH, AG, S.A., B.V., …).\n"
+    "6. Report the name exactly as written on the page. Do not expand, "
+    "abbreviate, translate, or tidy it."
+)
+
+
+# ---------------------------------------------------------------------------
 # Address Stage 1 — residual classification for street_2 / street_3
 # ---------------------------------------------------------------------------
 
@@ -500,4 +566,8 @@ PERSON_AFFILIATION_PROMPT_VERSION = prompt_version(
 TIER2_CANONICAL_PROMPT_VERSION = prompt_version(
     "tier2_canonical", "v1",
     TIER2_CANONICAL_SYSTEM_PROMPT, TIER2_CANONICAL_USER_PROMPT_TEMPLATE,
+)
+PAGE_READ_PROMPT_VERSION = prompt_version(
+    "page_read", "v1",
+    PAGE_READ_SYSTEM_PROMPT, PAGE_READ_USER_PROMPT_TEMPLATE,
 )

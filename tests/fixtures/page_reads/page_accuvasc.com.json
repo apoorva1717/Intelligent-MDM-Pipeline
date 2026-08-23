@@ -1,0 +1,15 @@
+{
+ "domain": "accuvasc.com",
+ "payload": {
+  "status": 200,
+  "blocked": false,
+  "error": null,
+  "url": "https://www.accuvasc.com/",
+  "title": "AccuVasc, LLC",
+  "h1": "AccuVasc, LLC",
+  "text": "AccuVasc, LLC AccuVasc, LLC Early-stage medical device development and commercialization AccuVasc is an independent advisory practice supporting early-stage medical device development and commercialization. Experience is concentrated in Class II devices - particularly intravascular technologies - with hands-on leadership across FDA clearance, first-in-human readiness, and early market entry. Engagements focus on operational execution - translating regulatory and quality requirements into practical development plans and guiding teams from development into commercialization. Patrick McCain Principal Advisor Email Email LinkedIn LinkedIn",
+  "paths": [
+   "/"
+  ]
+ }
+}

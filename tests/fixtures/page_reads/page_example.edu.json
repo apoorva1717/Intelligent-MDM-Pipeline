@@ -1,0 +1,13 @@
+{
+ "domain": "example.edu",
+ "payload": {
+  "status": 404,
+  "blocked": false,
+  "error": null,
+  "url": "https://example.edu/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

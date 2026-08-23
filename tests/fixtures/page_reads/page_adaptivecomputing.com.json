@@ -1,0 +1,16 @@
+{
+ "domain": "adaptivecomputing.com",
+ "payload": {
+  "status": 200,
+  "blocked": false,
+  "error": null,
+  "url": "https://adaptivecomputing.com/",
+  "title": "Adaptive Computing | HPC & AI Solutions",
+  "h1": "",
+  "text": "Adaptive Computing | HPC & AI Solutions [/impressum] Adaptive Computing | HPC & AI Solutions Adaptive Computing | HPC & AI Solutions",
+  "paths": [
+   "/",
+   "/impressum"
+  ]
+ }
+}

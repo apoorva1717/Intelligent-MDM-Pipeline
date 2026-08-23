@@ -1,0 +1,13 @@
+{
+ "domain": "fishersci.com",
+ "payload": {
+  "status": 404,
+  "blocked": false,
+  "error": null,
+  "url": "https://fishersci.com/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

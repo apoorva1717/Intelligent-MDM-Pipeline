@@ -1,0 +1,13 @@
+{
+ "domain": "thebarlowlab.com",
+ "payload": {
+  "status": null,
+  "blocked": false,
+  "error": "SSLError",
+  "url": "https://thebarlowlab.com/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

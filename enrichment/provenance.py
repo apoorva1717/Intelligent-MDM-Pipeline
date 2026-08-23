@@ -130,12 +130,27 @@ REGISTRY_EXACT = "registry_exact"
 #: donor's own confidence and is only as good as the donor's scale, which the
 #: evidence_ref names alongside the donor record id.
 INHERITED = "inherited"
+#: The input value was kept AND independently corroborated — an
+#: ownership-guard-passing domain that ties a site to this Name 1, or a page
+#: read that states this organisation's identity (Fix 3). The value is 1.0 by
+#: construction: the corroborating check either held or it did not, and the
+#: check's own score lives on the event that recorded it (the domain write, the
+#: page-read event). Band: ``verified``.
+INPUT_CORROBORATED = "input_corroborated"
+#: The input value was kept AND an independently generated canonicalisation
+#: proposal reproduced it under ``normalize_key`` — the model, asked what the
+#: organisation is called without being shown a candidate answer, returned the
+#: string the record already held. That is agreement from a second source, not
+#: corroboration by evidence, so it is a scale of its own rather than a band of
+#: :data:`INPUT_CORROBORATED`. Band: ``confirmed``.
+INPUT_SELF_CONSISTENT = "input_self_consistent"
 #: No confidence attaches to this write.
 NO_SCALE = "none"
 
 CONFIDENCE_SCALES: tuple[str, ...] = (
     ROR_LOCAL, FUZZY_RATIO, LLM_SELF_REPORTED,
-    DETERMINISTIC, REGISTRY_EXACT, INHERITED, NO_SCALE,
+    DETERMINISTIC, REGISTRY_EXACT, INHERITED,
+    INPUT_CORROBORATED, INPUT_SELF_CONSISTENT, NO_SCALE,
 )
 
 #: The self-reported label → float rendering. Documented, fixed, and NOT a
@@ -207,6 +222,13 @@ def confidence_band(scale: str | None, value: float | None) -> str:
         return "rule"
     if scale == INHERITED:
         return "inherited"
+    # Fix 2's three unchanged states. `rule` (DETERMINISTIC) remains the third:
+    # the input was kept and nothing came back, which is what `input:1:rule`
+    # already meant and still means.
+    if scale == INPUT_CORROBORATED:
+        return "verified"
+    if scale == INPUT_SELF_CONSISTENT:
+        return "confirmed"
     return "none"
 
 
@@ -349,16 +371,21 @@ class RejectedCandidate:
 
 
 #: The named guards. A rejection logged under any other name is a bug — these
-#: five are the decision-relevant refusals (Step 4).
+#: six are the decision-relevant refusals (Step 4).
 GUARD_ROR_COUNTRY = "ror_country"
 GUARD_DISTINCTIVE_TOKEN = "distinctive_token"
 GUARD_IDENTIFIER_TOKEN = "identifier_token"
 GUARD_DOMAIN_OWNERSHIP = "domain_ownership"
 GUARD_GLEIF_NAME = "gleif_name_verification"
+#: Fix 3 — the candidate site's own page names a different organisation. The
+#: only guard that refuses a domain on evidence read from the domain itself,
+#: and the only one that can refuse a domain the ownership guard already
+#: accepted (johnsoncontrols.com for "AB Controls, Inc.").
+GUARD_PAGE_IDENTITY = "page_identity"
 
 GUARDS: tuple[str, ...] = (
     GUARD_ROR_COUNTRY, GUARD_DISTINCTIVE_TOKEN, GUARD_IDENTIFIER_TOKEN,
-    GUARD_DOMAIN_OWNERSHIP, GUARD_GLEIF_NAME,
+    GUARD_DOMAIN_OWNERSHIP, GUARD_GLEIF_NAME, GUARD_PAGE_IDENTITY,
 )
 
 #: Rejections retained per field per record. Beyond it only the count is kept.

@@ -1,0 +1,13 @@
+{
+ "domain": "bioptimizers.com",
+ "payload": {
+  "status": 403,
+  "blocked": true,
+  "error": null,
+  "url": "https://bioptimizers.com/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

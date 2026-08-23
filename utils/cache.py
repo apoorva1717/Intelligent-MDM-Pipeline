@@ -1,6 +1,6 @@
-"""Caches for ROR and SERP results.
+"""Caches for ROR, SERP and page-read results.
 
-Two scopes:
+Three scopes:
 
 * :class:`BatchCache` — created once per enrichment batch. Holds the ROR
   cache (kept per-batch to avoid stale failures) and the per-batch SERP
@@ -10,6 +10,12 @@ Two scopes:
   overlapping queries reuse a previous SERP result instead of re-hitting
   the search API, for as long as the process is alive. No file I/O — it
   lives entirely in memory.
+* :class:`PageCache` — the same shape for Fix 3's page reads, keyed on the
+  registrable domain, and additionally backed by an on-disk fixture store.
+  A page read is a claim about what a website said on a given day, so unlike
+  a SERP result it has to survive the process: re-running a thesis batch must
+  reproduce the corroboration decisions rather than re-litigate them against
+  whatever the site says today.
 
 Cache keys
 ----------
@@ -45,6 +51,9 @@ Instruments" still collide, which is out of scope here.)
 
 from __future__ import annotations
 
+import json
+import re
+from pathlib import Path
 from typing import Any, Optional, Tuple
 
 from dedup.signatures import normalize_key
@@ -116,6 +125,104 @@ class SerpCache:
     @property
     def size(self) -> int:
         return len(self._store)
+
+
+class PageCache:
+    """Process-level page-read cache keyed on domain, with a disk fixture store.
+
+    Two layers, in this order:
+
+    1. **In memory**, for the life of the orchestrator — the same role
+       :class:`SerpCache` plays, so two records naming the same organisation
+       cost one fetch.
+    2. **On disk**, one JSON file per domain under *fixture_dir* — the layer
+       :class:`SerpCache` does not have. It is what makes a re-run of a thesis
+       batch reproduce its corroboration decisions: the second run reads the
+       page the first run actually saw, not whatever the site serves now.
+       Recording is a pure side effect of a live fetch; nothing is fetched to
+       populate it.
+
+    ``replay_only`` refuses to fetch anything that is not already recorded —
+    the mode a CI run or an offline re-analysis wants, where a missing fixture
+    should surface as ``fetch_unavailable`` rather than as a silent new
+    network call. The caller enforces it; this class only reports a miss.
+
+    Payloads are plain JSON dicts (``{"status", "url", "title", "h1", "text",
+    …}``); this class does not interpret them.
+    """
+
+    def __init__(
+        self,
+        fixture_dir: "str | Path | None" = None,
+        *,
+        replay_only: bool = False,
+    ) -> None:
+        self._store: dict[str, Any] = {}
+        self._dir = Path(fixture_dir) if fixture_dir else None
+        self.replay_only = replay_only
+        self.disk_hits = 0
+        self.memory_hits = 0
+        self.recorded = 0
+
+    @staticmethod
+    def _key(domain: str | None) -> str:
+        return (domain or "").strip().lower().rstrip(".")
+
+    def _path(self, domain: str) -> "Path":
+        # The domain itself, sanitised — a fixture directory a human can read
+        # is worth more here than an opaque digest, and the file records the
+        # domain it was keyed on so a sanitisation collision cannot be missed.
+        safe = re.sub(r"[^a-z0-9._-]", "_", self._key(domain))[:100]
+        return self._dir / f"page_{safe}.json"
+
+    def get(self, domain: str | None) -> Any | None:
+        key = self._key(domain)
+        if not key:
+            return None
+        if key in self._store:
+            self.memory_hits += 1
+            return self._store[key]
+        if self._dir is None:
+            return None
+        path = self._path(key)
+        if not path.is_file():
+            return None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 — a corrupt fixture is a miss
+            return None
+        if raw.get("domain") != key:
+            return None
+        payload = raw.get("payload")
+        self._store[key] = payload
+        self.disk_hits += 1
+        return payload
+
+    def set(self, domain: str | None, payload: Any) -> None:
+        key = self._key(domain)
+        if not key:
+            return
+        self._store[key] = payload
+        if self._dir is None:
+            return
+        try:
+            self._dir.mkdir(parents=True, exist_ok=True)
+            self._path(key).write_text(
+                json.dumps({"domain": key, "payload": payload}, indent=1),
+                encoding="utf-8",
+            )
+            self.recorded += 1
+        except Exception:  # noqa: BLE001 — a fixture we cannot write is not fatal
+            pass
+
+    @property
+    def stats(self) -> dict[str, int]:
+        return {
+            "page_entries": len(self._store),
+            "page_memory_hits": self.memory_hits,
+            "page_disk_hits": self.disk_hits,
+            "page_recorded": self.recorded,
+        }
 
 
 class BatchCache:

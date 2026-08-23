@@ -36,6 +36,14 @@ RESPONSE_COLUMNS: dict[str, str] = {
     "name3_enriched": "Name 3",
     "name4_enriched": "Name 4",
     "name5_enriched": "Name 5",
+    # Fix 3 — the organisation name the candidate website STATES, read from the
+    # page. Additive and never a substitute for "Name 1": a page is a witness,
+    # not an authority, and a site that trades under a brand while the record
+    # holds the legal entity is the normal case. Null unless a page read
+    # returned an identity. Nullable addition to the file schema — see
+    # corroborator_report.md for the SQL/ADF artefacts that need it.
+    "operating_name": "Operating Name",
+    "operating_name_provenance": "Operating Name Provenance",
     # "Domain" and "Website URL" are merged into a single "Domain" column. It
     # carries the registrable ``domain`` (mit.edu) — never a full URL: the
     # homepage ``website_url`` is derived from it (https://mit.edu) and kept

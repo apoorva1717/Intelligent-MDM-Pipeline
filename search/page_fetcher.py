@@ -63,12 +63,83 @@ class PageContent:
         return not any([self.page_title, self.h1, self.breadcrumb, self.body_text])
 
 
+@dataclass
+class PageFetchResult:
+    """One fetch attempt, with the status code kept.
+
+    ``fetch_page_content`` collapses every failure to ``None``, which is the
+    right answer for callers that only want the text. Fix 3's corroborator
+    needs the difference: a 403 or a bot-challenge means *we could not look*,
+    and must never be read as evidence for or against the record, whereas a
+    404 on ``/impressum`` simply means try the next path.
+    """
+    url: str
+    status: int | None = None
+    content: "PageContent | None" = None
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status is not None and 200 <= self.status < 300
+
+    @property
+    def blocked(self) -> bool:
+        """The server answered, and the answer was "not to you"."""
+        return self.status in (401, 403, 429) or self.status == 451
+
+
 class PageFetcher:
     """Fetches a URL and returns structured page content."""
 
     def __init__(self, timeout: int = 10, max_chars: int = 1500) -> None:
         self._timeout = timeout
         self._max_chars = max_chars
+
+    async def fetch_page_result(
+        self, url: str, timeout: int | None = None,
+    ) -> PageFetchResult:
+        """Fetch *url*, keeping the HTTP status alongside the content.
+
+        Never raises: a transport failure comes back as ``status=None`` with
+        ``error`` set, which the corroborator treats as "could not look".
+        """
+        loop = asyncio.get_running_loop()
+        try:
+            return await loop.run_in_executor(
+                None, partial(self._sync_fetch_result, url, timeout),
+            )
+        except Exception as exc:  # noqa: BLE001 — a fetch must never fail a record
+            _log_fetch_failure(url, exc)
+            return PageFetchResult(url=url, error=type(exc).__name__)
+
+    def _sync_fetch_result(
+        self, url: str, timeout: int | None = None,
+    ) -> PageFetchResult:
+        try:
+            resp = requests.get(
+                url,
+                timeout=timeout or self._timeout,
+                headers={"User-Agent": "BrukerMDM-Enrichment/1.0"},
+                allow_redirects=True,
+                # No explicit `verify`: requests then honours REQUESTS_CA_BUNDLE,
+                # which config._sanitize_ssl_env points at the corp CA bundle.
+                # Pinning certifi here (as the probe helpers do, where the
+                # targets are institution hosts) fails every fetch behind the
+                # TLS-inspecting VPN — measured at 47 of 54 domains on the
+                # chemspeed batch, all SSLError. `_sync_fetch_structured` has
+                # always omitted it for the same reason.
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log_fetch_failure(url, exc)
+            return PageFetchResult(url=url, error=type(exc).__name__)
+
+        if not (200 <= resp.status_code < 300):
+            return PageFetchResult(url=resp.url or url, status=resp.status_code)
+        return PageFetchResult(
+            url=resp.url or url,
+            status=resp.status_code,
+            content=self._parse(resp.url or url, resp.text),
+        )
 
     async def fetch_page_text(self, url: str) -> str | None:
         """Legacy API: return a flat body-text string.
@@ -221,8 +292,12 @@ class PageFetcher:
             headers={"User-Agent": "BrukerMDM-Enrichment/1.0"},
         )
         resp.raise_for_status()
+        return self._parse(url, resp.text)
 
-        soup = BeautifulSoup(resp.text, "html.parser")
+    def _parse(self, url: str, html: str) -> PageContent:
+        """Structured slices of one fetched page. The extraction rules live
+        here so both fetch entry points produce identical content."""
+        soup = BeautifulSoup(html, "html.parser")
 
         # Title tag (before decomposing anything)
         title_tag = soup.find("title")

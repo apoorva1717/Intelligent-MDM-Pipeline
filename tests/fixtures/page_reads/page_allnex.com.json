@@ -1,0 +1,16 @@
+{
+ "domain": "allnex.com",
+ "payload": {
+  "status": 200,
+  "blocked": false,
+  "error": null,
+  "url": "https://allnex.com/en",
+  "title": "Allnex | Global Leader In Coating Resins & Additives - allnex",
+  "h1": "for all nex\u203at generations",
+  "text": "Allnex | Global Leader In Coating Resins & Additives - allnex [/contact] Allnex \u2013 The Coating Resins Company - allnex contact us Allnex \u2013 The Coating Resins Company - allnex",
+  "paths": [
+   "/",
+   "/contact"
+  ]
+ }
+}

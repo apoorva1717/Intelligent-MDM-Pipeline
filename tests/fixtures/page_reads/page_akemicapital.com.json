@@ -1,0 +1,13 @@
+{
+ "domain": "akemicapital.com",
+ "payload": {
+  "status": null,
+  "blocked": false,
+  "error": "SSLError",
+  "url": "https://akemicapital.com/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

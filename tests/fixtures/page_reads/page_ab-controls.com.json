@@ -1,0 +1,13 @@
+{
+ "domain": "ab-controls.com",
+ "payload": {
+  "status": 403,
+  "blocked": true,
+  "error": null,
+  "url": "https://ab-controls.com/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

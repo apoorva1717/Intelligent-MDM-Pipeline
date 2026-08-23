@@ -1,0 +1,15 @@
+{
+ "domain": "actega.com",
+ "payload": {
+  "status": 200,
+  "blocked": false,
+  "error": null,
+  "url": "https://www.actega.com/",
+  "title": "ACTEGA",
+  "h1": "",
+  "text": "ACTEGA You will be redirected in a few seconds... You can also switch directly to our international sites: EMEA Asia / Oceania Greater China North America South America Sie werden in wenigen Sekunden weitergeleitet.... Sie k\u00f6nnen auch direkt auf eine unserer internationalen Auftritte wechseln: EMEA Asia / Oceania Greater China North America South America You will be redirected in a few seconds... EMEA Asia / Oceania Greater China North America South America You will be redirected in a few seconds... EMEA Asia / Oceania Greater China North America South America You will be redirected in a few seconds... EMEA Asia / Oceania Greater China North America South America You will be redirected in a few seconds... EMEA Asia / Oceania Greater China North America South America",
+  "paths": [
+   "/"
+  ]
+ }
+}

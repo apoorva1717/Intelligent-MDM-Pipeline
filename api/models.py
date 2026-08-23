@@ -354,6 +354,17 @@ class EnrichmentResult(BaseModel):
     name3_enriched: Optional[str] = None
     name4_enriched: Optional[str] = None
     name5_enriched: Optional[str] = None
+    # Fix 3 — the organisation name the candidate website states about itself,
+    # read from the page by a constrained reader. NEVER written to
+    # `name1_enriched`: a page is a witness, not an authority on what the
+    # customer master should call this customer, and a brand-vs-legal-entity
+    # difference is normal rather than an error to correct. Null unless a page
+    # read returned an identity.
+    operating_name: Optional[str] = None
+    # `web:{domain}:extracted:{date}` — deliberately not the
+    # `producer:tier:band` shape the six scoped fields use. This value came
+    # from a page on a day, and the day is the part that decays.
+    operating_name_provenance: Optional[str] = None
     # Serialised as the "Domain" column: the registrable domain ('mit.edu'),
     # written only through utils.domain_resolver.resolve_domain. Null when the
     # candidate could not be verified as belonging to this organisation (the
@@ -440,6 +451,12 @@ class EnrichmentResult(BaseModel):
     # only so a later withdrawal can re-render the codes it keeps with the
     # wording they were raised with.
     flag_details: Dict[str, str] = Field(default_factory=dict, exclude=True)
+    # One clause appended to a code's prose, keyed by code (Fix 3) — the page
+    # read's finding that a candidate site belongs to a company in a different
+    # city. Internal for the same reason `flag_details` is: it is already
+    # rendered into `flag_reason`, and is kept so a later withdrawal re-renders
+    # the codes it keeps with the wording they were raised with.
+    flag_notes: Dict[str, str] = Field(default_factory=dict, exclude=True)
     error: Optional[str] = None
     record_type: Literal["research_institution", "company", "unknown"] = "unknown"
     # Registry identifiers — both surface in the JSON (not excluded) so the
@@ -529,7 +546,20 @@ class EnrichmentResult(BaseModel):
     # Both excluded from the response body: the exported column set is
     # unchanged.
     tier1_retry_attempted: bool = Field(default=False, exclude=True)
+    # The page-fed entry point (Fix 3, PAGE_EXTRACT_FEEDS_RETRY) spends its own
+    # once-per-record budget, so a spent canonical retry cannot starve it and
+    # vice versa.
+    tier1_page_retry_attempted: bool = Field(default=False, exclude=True)
     tier1_retry_hit: Optional[str] = Field(default=None, exclude=True)
+    # Fix 2 — which of the three unchanged-Name-1 states this record is in, or
+    # None when a tier rewrote Name 1 and none of them apply. Excluded from the
+    # response body: the state already ships, in `name1_provenance`, as the
+    # band of the derived scalar (`input:1:verified` / `input:1:confirmed` /
+    # `input:1:rule`). This field is the same fact in a form the batch summary
+    # and the evaluation scripts can count without parsing a scalar.
+    unchanged_name1_state: Optional[
+        Literal["unchanged-verified", "unchanged-confirmed", "unchanged-unresolved"]
+    ] = Field(default=None, exclude=True)
     # Which evidence source decided `record_type` (enrichment/classifier.py):
     # "ror" | "gleif" | "keyword" | "unresolved". A record_type of "unknown"
     # always reports "unresolved". Excluded from the response body — the
@@ -622,6 +652,28 @@ class EnrichmentSummary(BaseModel):
     tier1_retry_attempts: int = 0
     tier1_retry_hits_ror: int = 0
     tier1_retry_hits_lei: int = 0
+    # Fix 2 — the three states a record whose Name 1 was kept from the input
+    # can be in. They partition that population exactly: their sum is the
+    # number of records that shipped the value they arrived with, and only the
+    # last of the three is flagged.
+    unchanged_verified: int = 0
+    unchanged_confirmed: int = 0
+    unchanged_unresolved: int = 0
+    # Fix 3 — the page-read corroborator. The six outcome counters partition
+    # `page_reads_attempted`; the last two count what the verdicts did.
+    page_reads_attempted: int = 0
+    page_corroborated: int = 0
+    page_contradicted: int = 0
+    page_name_mismatch: int = 0
+    page_fetch_unavailable: int = 0
+    page_no_identity: int = 0
+    page_parked: int = 0
+    page_domains_withdrawn: int = 0
+    page_flags_cleared: int = 0
+    # A page named a different organisation but did not place it in another
+    # state or country, so the accepted domain was reported and kept rather
+    # than withdrawn. Almost always a brand-vs-legal-name variant.
+    page_mismatch_not_withdrawn: int = 0
     # Records whose provisional routing_type disagreed with the record_type the
     # evidence finally supported — i.e. tiers were gated on the wrong type.
     # Surfaced, not corrected: re-running those records is a separate decision.

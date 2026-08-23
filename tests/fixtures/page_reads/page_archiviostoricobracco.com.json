@@ -1,0 +1,13 @@
+{
+ "domain": "archiviostoricobracco.com",
+ "payload": {
+  "status": 404,
+  "blocked": false,
+  "error": null,
+  "url": "https://archiviostoricobracco.com/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

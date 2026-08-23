@@ -1,0 +1,15 @@
+{
+ "domain": "alfieri-mcbee.com",
+ "payload": {
+  "status": 200,
+  "blocked": false,
+  "error": null,
+  "url": "https://alfieri-mcbee.com/",
+  "title": "Home",
+  "h1": "",
+  "text": "\u00ef\u00bb\u00bf Home Products Product Uses Gallery Contact Us About Us Product MSDS",
+  "paths": [
+   "/"
+  ]
+ }
+}

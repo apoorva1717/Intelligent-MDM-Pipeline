@@ -1,0 +1,13 @@
+{
+ "domain": "bayareaallergy.com",
+ "payload": {
+  "status": null,
+  "blocked": false,
+  "error": "SSLError",
+  "url": "https://bayareaallergy.com/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

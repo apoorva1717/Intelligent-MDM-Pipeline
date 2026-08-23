@@ -1,0 +1,13 @@
+{
+ "domain": "energy.gov",
+ "payload": {
+  "status": null,
+  "blocked": false,
+  "error": "SSLError",
+  "url": "https://energy.gov/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

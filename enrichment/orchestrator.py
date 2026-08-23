@@ -13,6 +13,7 @@ relationships list using rapidfuzz, saving a second API call.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -62,6 +63,7 @@ from enrichment.provenance import (
     Evidence,
     FUZZY_RATIO,
     GUARD_GLEIF_NAME,
+    GUARD_PAGE_IDENTITY,
     LLM_SELF_REPORTED,
     ROR_LOCAL,
     ProvenanceLog,
@@ -78,9 +80,28 @@ from enrichment.provenance import (
 )
 from enrichment.tier1_lei import LEIClient, clear_lei_cache, lei_normalised_hits
 from enrichment.tier1_ror import RORClient, clear_ror_cache, ror_normalised_hits
+from enrichment.page_corroborator import (
+    CONTRADICTED,
+    CORROBORATED,
+    FETCH_UNAVAILABLE,
+    NAME_MISMATCH,
+    NO_IDENTITY,
+    PARKED,
+    Corroboration,
+    corroborate,
+    operating_name_provenance,
+)
 from enrichment.tier2_canonical import run_tier2_canonical
 from enrichment.tier2a_contact import Tier2AResult, run_tier2a
 from enrichment.tier3_llm import Tier3Result, run_tier3
+from enrichment.unchanged_state import (
+    UNCHANGED_CONFIRMED,
+    UNCHANGED_UNRESOLVED,
+    UNCHANGED_VERIFIED,
+    enrichment_status_for as unchanged_status,
+    evidence_for as unchanged_evidence,
+    resolve as resolve_unchanged_name1,
+)
 from enrichment.website_resolver import (
     infer_website_via_llm,
     resolve_website_via_serp,
@@ -99,7 +120,7 @@ from search.base import SearchClient
 from search.duckduckgo_client import DuckDuckGoClient
 from search.page_fetcher import PageFetcher
 from search.serpapi_client import SerpAPIClient
-from utils.cache import BatchCache, SerpCache
+from utils.cache import BatchCache, PageCache, SerpCache
 from utils.name_slots import (
     ADJACENT_NAME_PAIRS,
     DEPT_ENRICHED_FIELDS,
@@ -134,6 +155,76 @@ from utils.text_utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Diagnostic-only per-record trace of Stage 5, the Tier 1 re-lookup after
+# canonicalisation (see config.RETRY_TRACE). One JSON line per finalised
+# record, emitted ONLY when the setting is on; with tracing off this logger
+# never fires and nothing about the retry changes. Mirrors the
+# `enrichment.trace.website` pattern.
+retry_trace_logger = logging.getLogger("enrichment.trace.retry")
+
+#: The mutually exclusive reasons Stage 5 did not query a registry for a
+#: record. ``not_called_on_this_path`` is the one that can only mean a wiring
+#: defect: the retry was never reached at all, so no decision was taken.
+RETRY_SKIP_NOT_CALLED = "not_called_on_this_path"
+RETRY_SKIP_ALREADY_ATTEMPTED = "already_attempted"
+RETRY_SKIP_ALREADY_HAS_ID = "already_has_id"
+RETRY_SKIP_NO_TIER1_QUERY = "other:tier1_never_ran"
+RETRY_SKIP_NO_CANONICAL = "other:no_name1"
+RETRY_SKIP_NORMALIZE_KEY_EQUAL = "normalize_key_equal"
+
+
+def _retry_trace_new(record_id: str | None) -> dict[str, Any]:
+    """A fresh Stage 5 trace slot for one record.
+
+    Always allocated (it is a handful of keys on a dict that already exists)
+    so the emission site can distinguish "the retry ran and decided to skip"
+    from "the retry was never reached" — which is precisely the wiring defect
+    the trace exists to detect, and which a flag-gated allocation could not
+    tell apart from tracing being off.
+    """
+    return {
+        "record_id": record_id,
+        "called": False,
+        "skipped_reason": None,
+        "query_original": None,
+        "query_canonical": None,
+        "fired": False,
+        "registries_queried": [],
+        "guard_rejections": [],
+        "hit": None,
+    }
+
+
+def _retry_trace(result: Any, record_id: str | None = None) -> dict[str, Any]:
+    """The record's Stage 5 trace slot, created on first use."""
+    slot = result.get("_retry_trace")
+    if slot is None:
+        slot = _retry_trace_new(record_id or result.get("record_id"))
+        result["_retry_trace"] = slot
+    return slot
+
+
+def _retry_trace_guards(
+    trace: dict[str, Any], registry: str, res: dict[str, Any] | None,
+) -> None:
+    """Copy a registry client's guard rejections into the trace.
+
+    Reads the same ``guard_rejections`` payload ``_log_registry_rejections``
+    writes to the provenance log — the trace is a second projection of it, not
+    a second source, so a guard named here is the guard that actually ran.
+    """
+    if not res or not isinstance(res, dict):
+        return
+    for raw in res.get("guard_rejections") or ():
+        trace["guard_rejections"].append({
+            "registry": registry,
+            "guard": raw.get("guard"),
+            "candidate": raw.get("candidate_name"),
+            "score": raw.get("score"),
+            "threshold": raw.get("threshold"),
+            "detail": raw.get("detail"),
+        })
 
 
 # ── Department-domain probe helpers ───────────────────────────────────────────
@@ -965,6 +1056,12 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
             serp_url=result.get("source_url"),
         )
 
+    # Fix 2 — which of the three unchanged states Name 1 is in, decided once,
+    # from the settled record. Must run AFTER the domain fallback above (the
+    # accepted domain is one of the two corroborating evidence classes) and
+    # BEFORE compute_flags, which is the thing it feeds.
+    _resolve_unchanged_name1(result)
+
     # THE flag decision, taken once, here. Every name, contact and domain
     # field above has settled and the `*_changed` flags are computed, so the
     # codes describe the state the record ended in rather than the tiers that
@@ -1045,6 +1142,9 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     result.pop("_source_h1", None)
     result.pop("_tier1_query_name", None)
     result.pop("_tier1_country_code", None)
+    # Fix 2 / Fix 3 evidence, consumed by `_resolve_unchanged_name1` above.
+    result.pop("_canonical_proposal", None)
+    result.pop("_page_corroboration", None)
     result.pop("_registry_name_fields", None)
     # Registry-vs-record_type disagreement surfaced by a retry hit. Logged at
     # the point of conflict and deliberately left unreconciled — record_type
@@ -1070,6 +1170,57 @@ _GUARD_FIELDS: dict[str, str] = {
     "gleif_country": "lei_id",
     "gleif_name_verification": "lei_id",
 }
+
+
+def _resolve_unchanged_name1(result: Any) -> None:
+    """Decide Fix 2's unchanged-Name-1 state and make it visible.
+
+    Two effects, both of them derived from one decision taken in
+    :mod:`enrichment.unchanged_state`:
+
+    * **Provenance.** A verified or confirmed record gets one further event on
+      ``name1_enriched``, recording the value it already holds together with
+      what allowed it to stand — so the derived scalar reads ``input:1:verified``
+      / ``input:1:confirmed`` instead of ``input:1:rule``.
+    * **Flagging.** ``_ev_low_conf_unchanged`` is set for ``name1`` iff the
+      state is *unresolved*. This is the consistency fix: before it, whether an
+      unchanged Name 1 was flagged depended on whether Tier 3 happened to run,
+      which is why the chemspeed batch had five records with the same evidence
+      class as flagged rows passing silently.
+
+    Records whose Name 1 a tier rewrote are untouched — the three states do not
+    describe them, and the per-slot marker Tier 3 leaves on Name 2..5 is not
+    read here.
+    """
+    outcome = resolve_unchanged_name1(result)
+    if outcome is None:
+        return
+
+    unchanged: set[str] = result.setdefault("_ev_low_conf_unchanged", set())
+    if outcome.flagged:
+        unchanged.add("name1")
+    else:
+        unchanged.discard("name1")
+        evidence = unchanged_evidence(outcome, result["name1_enriched"])
+        if evidence is not None:
+            _write(result, "name1_enriched", result["name1_enriched"], evidence)
+
+    # The status column is DATAshaper's severity input. A record Fix 2 declines
+    # to flag must not still be asking for a manual review — or, as the first
+    # run of this fix showed, reporting a process error because a new
+    # short-circuit returned before any tier set the field.
+    result["enrichment_status"] = unchanged_status(
+        outcome, result.get("enrichment_status"),
+    )
+    result["unchanged_name1_state"] = outcome.state
+    logger.info({
+        "record_id": result.get("record_id"),
+        "step": "unchanged_name1_state",
+        "state": outcome.state,
+        "evidence": outcome.evidence,
+        "evidence_ref": outcome.evidence_ref,
+        "name1": result.get("name1_enriched"),
+    })
 
 
 def _log_registry_rejections(
@@ -1410,8 +1561,17 @@ def _apply_tier3(
     # write leaves the pipeline holding exactly what the record supplied, with
     # nothing having confirmed it — 8f's other half. A field an earlier tier
     # already rewrote is excluded: that value was settled before Tier 3 ran.
+    #
+    # Name 1 is NOT marked here since Fix 2. "Tier 3 declined to rewrite it" is
+    # one of several ways to arrive at a retained Name 1, and marking only the
+    # ones Tier 3 saw is exactly what made two records with the same evidence
+    # get different treatment. The decision moved to finalise, where it is
+    # taken once from the settled record — see enrichment/unchanged_state.py.
+    # The department slots keep this marker: there is no corroborating evidence
+    # class for a unit name, so there is nothing for a three-state split to
+    # read.
     unchanged: set[str] = result.setdefault("_ev_low_conf_unchanged", set())
-    for field in NAME_SLOTS:
+    for field in DEPT_SLOTS:
         if field in written:
             continue
         enriched = result.get(f"{field}_enriched")
@@ -1457,6 +1617,18 @@ class Orchestrator:
         self._lei_counts: dict[str, int] = self._new_lei_counts()
         # Per-batch Tier 1 re-lookup telemetry (reset in enrich_batch).
         self._tier1_retry_counts: dict[str, int] = self._new_tier1_retry_counts()
+        # Per-batch page-read telemetry (reset in enrich_batch).
+        self._page_counts: dict[str, int] = self._new_page_counts()
+
+        # Page reads, keyed on domain and recorded to disk. Process-level like
+        # the SERP cache — two records naming the same organisation cost one
+        # fetch — and additionally fixture-backed, because a page read is a
+        # claim about what a site said on a day and a thesis re-run has to
+        # reproduce it rather than re-ask the live web.
+        self._page_cache = PageCache(
+            (settings.page_fixture_dir or "").strip() or None,
+            replay_only=settings.page_fixture_replay_only,
+        )
 
         # In-memory SERP cache shared by every batch this orchestrator
         # processes, so repeated/overlapping queries reuse a prior result
@@ -1475,6 +1647,17 @@ class Orchestrator:
     def _new_tier1_retry_counts() -> dict[str, int]:
         """Fresh per-batch Tier 1 re-lookup counters."""
         return {"attempts": 0, "hits_ror": 0, "hits_lei": 0}
+
+    @staticmethod
+    def _new_page_counts() -> dict[str, int]:
+        """Fresh per-batch page-read counters. The outcome keys partition the
+        attempts; `flag_cleared` and `withdrawn` count the two consequences."""
+        return {
+            "attempted": 0, "flag_cleared": 0, "withdrawn": 0,
+            "mismatch_not_withdrawn": 0,
+            CORROBORATED: 0, CONTRADICTED: 0, NAME_MISMATCH: 0,
+            FETCH_UNAVAILABLE: 0, NO_IDENTITY: 0, PARKED: 0,
+        }
 
     @staticmethod
     def _build_search_client(settings: Settings) -> SearchClient:
@@ -1503,6 +1686,7 @@ class Orchestrator:
         clear_lei_cache()  # likewise for the GLEIF/LEI cache
         self._lei_counts = self._new_lei_counts()  # reset per-batch telemetry
         self._tier1_retry_counts = self._new_tier1_retry_counts()
+        self._page_counts = self._new_page_counts()
         cache = BatchCache(shared_serp=self._serp_cache)
         semaphore = asyncio.Semaphore(options.max_concurrency)
 
@@ -1566,6 +1750,19 @@ class Orchestrator:
             summary.tier1_retry_attempts = self._tier1_retry_counts["attempts"]
             summary.tier1_retry_hits_ror = self._tier1_retry_counts["hits_ror"]
             summary.tier1_retry_hits_lei = self._tier1_retry_counts["hits_lei"]
+            # Fix 3 — page-read corroborator.
+            summary.page_reads_attempted = self._page_counts["attempted"]
+            summary.page_corroborated = self._page_counts[CORROBORATED]
+            summary.page_contradicted = self._page_counts[CONTRADICTED]
+            summary.page_name_mismatch = self._page_counts[NAME_MISMATCH]
+            summary.page_fetch_unavailable = self._page_counts[FETCH_UNAVAILABLE]
+            summary.page_no_identity = self._page_counts[NO_IDENTITY]
+            summary.page_parked = self._page_counts[PARKED]
+            summary.page_domains_withdrawn = self._page_counts["withdrawn"]
+            summary.page_flags_cleared = self._page_counts["flag_cleared"]
+            summary.page_mismatch_not_withdrawn = (
+                self._page_counts["mismatch_not_withdrawn"]
+            )
             # Lookups the normalised cache key served that the old lowercased
             # key would have missed — i.e. API calls Step 1 saved outright.
             summary.routing_type_mismatch_count = sum(
@@ -2400,6 +2597,7 @@ class Orchestrator:
         self,
         record: EnrichmentRecord,
         result: dict[str, Any],
+        candidate: str | None = None,
     ) -> None:
         """Re-run Tier 1 once, with the canonical name a later tier produced.
 
@@ -2422,26 +2620,51 @@ class Orchestrator:
         view contradicts the value already on the record the contradiction is
         left standing and logged (``tier1_retry_type_conflict``) — reconciling
         it belongs to the record_type fix, not here.
+
+        *candidate* (Fix 3, ``PAGE_EXTRACT_FEEDS_RETRY``, off by default) is a
+        name from somewhere other than ``name1_enriched`` — the legal name a
+        page read extracted. It is queried in place of the canonical name and
+        spends its own once-per-record budget, so the two entry points cannot
+        starve each other. Everything else is identical: same guards, same
+        branch rules, same writes.
         """
-        if result.get("tier1_retry_attempted"):
+        trace = _retry_trace(result, record.record_id)
+        trace["called"] = True
+        # The page-fed entry point has its own budget. Both are once per
+        # record, and neither can consume the other's.
+        attempt_key = (
+            "tier1_page_retry_attempted" if candidate
+            else "tier1_retry_attempted"
+        )
+
+        if result.get(attempt_key):
+            trace["skipped_reason"] = RETRY_SKIP_ALREADY_ATTEMPTED
             return
         # Already carries a registry identity — nothing to recover.
         if result.get("ror_id") or result.get("lei_id"):
+            trace["skipped_reason"] = RETRY_SKIP_ALREADY_HAS_ID
             return
         original = (result.get("_tier1_query_name") or "").strip()
+        trace["query_original"] = original or None
         if not original:
             # Tier 1 never ran for this record (skipped tier / person path);
             # there is no "originally queried with" to compare against.
+            trace["skipped_reason"] = RETRY_SKIP_NO_TIER1_QUERY
             return
-        canonical = (result.get("name1_enriched") or "").strip()
+        canonical = (candidate or result.get("name1_enriched") or "").strip()
+        trace["query_canonical"] = canonical or None
         if not canonical:
+            trace["skipped_reason"] = RETRY_SKIP_NO_CANONICAL
             return
         # Same normalisation the cache uses: a pure punctuation/case/accent
         # difference is not a corrected name and must not buy an API call.
         if normalize_key(canonical) == normalize_key(original):
+            trace["skipped_reason"] = RETRY_SKIP_NORMALIZE_KEY_EQUAL
             return
 
-        result["tier1_retry_attempted"] = True
+        trace["fired"] = True
+        trace["candidate_source"] = "page_read" if candidate else "canonical"
+        result[attempt_key] = True
         self._tier1_retry_counts["attempts"] += 1
         country_code = result.get("_tier1_country_code")
 
@@ -2477,6 +2700,7 @@ class Orchestrator:
                 })
 
         # ── ROR first, exactly as the first pass does ────────────────────
+        trace["registries_queried"].append("ror")
         try:
             ror_res = await self._ror_client.call(
                 canonical,
@@ -2492,8 +2716,10 @@ class Orchestrator:
             )
             ror_res = {"matched": False}
         _log_registry_rejections(result, "ror", ror_res)
+        _retry_trace_guards(trace, "ror", ror_res)
 
         if ror_res.get("matched"):
+            trace["hit"] = "ROR"
             self._tier1_retry_counts["hits_ror"] += 1
             # The retry attaches the identifier, so it must attach the name
             # too. Before Fix 4 this path wrote ror_id and the domain but left
@@ -2556,10 +2782,13 @@ class Orchestrator:
         # ── LEI on the company branch, same rule as the first pass ───────
         # A name that looks like a research institution never reaches GLEIF.
         if looks_like_research_institution(canonical):
+            trace["gleif_skipped"] = "looks_like_research_institution"
             return
 
         if not self._settings.lei_lookup_enabled:
+            trace["gleif_skipped"] = "lei_lookup_disabled"
             return
+        trace["registries_queried"].append("gleif")
         self._lei_counts["attempts"] += 1
         try:
             lei_res = await self._lei_client.call(
@@ -2567,18 +2796,22 @@ class Orchestrator:
             )
         except Exception as exc:  # noqa: BLE001 — GLEIF must never fail a record
             self._lei_counts["errors"] += 1
+            trace["gleif_outcome"] = f"exception:{type(exc).__name__}"
             logger.warning(
                 "[%s] Tier 1 retry LEI raised (non-fatal): %s",
                 record.record_id, exc,
             )
             return
         _log_registry_rejections(result, "gleif", lei_res)
+        _retry_trace_guards(trace, "gleif", lei_res)
 
         if lei_res.get("error"):
             self._lei_counts["errors"] += 1
+            trace["gleif_outcome"] = "error"
             return
         if not lei_res.get("matched"):
             self._lei_counts["misses"] += 1
+            trace["gleif_outcome"] = "miss"
             return
 
         if lei_res.get("strategy") == "exact":
@@ -2586,6 +2819,7 @@ class Orchestrator:
         else:
             self._lei_counts["hits_fuzzy"] += 1
 
+        trace["hit"] = "gleif"
         self._tier1_retry_counts["hits_lei"] += 1
         _write_registry_name(
             result, "name1", lei_res.get("legal_name"), registry="GLEIF",
@@ -2640,10 +2874,299 @@ class Orchestrator:
             _apply_domain(
                 result, result["website_url"], settings=self._settings,
             )
+        # Fix 3 — read the candidate site. After the website paths have
+        # proposed (and the ownership guard has judged) a candidate, so there
+        # IS one to read; before the department probe, so a domain the page
+        # read withdraws is not then mined for department URLs.
+        await self._corroborate_domain(record, result)
         await self._probe_department_url(record.record_id, result, cache)
         await self._run_address_stage(result, record)
         result = finalise(result, start)
+        self._emit_retry_trace(record, result)
         return EnrichmentResult(**result)
+
+    async def _corroborate_domain(
+        self, record: EnrichmentRecord, result: dict[str, Any],
+    ) -> None:
+        """Fix 3 — open the candidate website and see whether it names this
+        organisation.
+
+        Runs for a record that HAS a candidate — accepted, or discarded by the
+        ownership guard and remembered in ``_domain_unverified`` — and is not
+        already registry-resolved: a ROR/GLEIF identity is stronger evidence
+        than a page, and re-reading the site could only weaken it.
+
+        What the verdict is allowed to do, and what it is not:
+
+        * ``corroborated`` — the ``domain-unverified`` flag is withdrawn (the
+          reviewer's question has been answered) and the extracted identity is
+          written to ``operating_name``. The ``domain`` FIELD is deliberately
+          not written for a candidate the ownership guard refused: accepting on
+          a page read would be a fifth ownership condition, and the guard is
+          out of this fix's scope. See corroborator_report.md — it is the one
+          change this fix recommends and does not make.
+        * ``name_mismatch`` — the page names someone else. An accepted domain
+          is **withdrawn** (this is johnsoncontrols.com for "AB Controls,
+          Inc."); an already-unverified one keeps its flag. Either way the
+          reason gains a clause naming what the page said.
+        * ``contradicted`` — the page names this organisation but places it
+          elsewhere. Noted, never acted on: the name matched, so the site is
+          probably right and it is the record's address that is in doubt, which
+          is not what ``domain-unverified`` asks a reviewer to check.
+        * ``fetch_unavailable`` / ``parked`` / ``no_identity`` — nothing
+          changes. We could not look, so we learned nothing, and "learned
+          nothing" must never read as either verdict.
+
+        Never writes ``name1_enriched``.
+        """
+        if not self._settings.page_corroboration_enabled:
+            return
+        if result.get("ror_id") or result.get("lei_id"):
+            return
+
+        accepted = (result.get("domain") or "").strip()
+        rejected = result.get("_domain_unverified")
+        candidate = accepted or (rejected if isinstance(rejected, str) else "")
+        if not candidate:
+            return
+        name1 = _domain_evidence_name1(result)
+        if not name1:
+            return
+
+        self._page_counts["attempted"] += 1
+        corroboration = await corroborate(
+            record_id=record.record_id,
+            domain=candidate,
+            name1=name1,
+            city=record.city,
+            region=record.state,
+            country=record.country,
+            postal_code=record.postal_code,
+            fetcher=self._page_fetcher,
+            cache=self._page_cache,
+            llm_client=self._llm_client,
+            threshold=self._settings.page_name_match_threshold,
+            timeout=self._settings.page_read_timeout_seconds,
+        )
+        self._page_counts[corroboration.outcome] = (
+            self._page_counts.get(corroboration.outcome, 0) + 1
+        )
+        result["_page_corroboration"] = corroboration.as_dict()
+        statement = corroboration.statement
+        stated = statement.stated_org_name if statement else None
+
+        if corroboration.outcome == CORROBORATED:
+            # The reviewer's question — "does this site belong to this
+            # organisation?" — has been answered by the site itself.
+            if result.pop("_domain_unverified", None) is not None:
+                result["domain_rejected"] = False
+                self._page_counts["flag_cleared"] += 1
+            result["operating_name"] = stated
+            result["operating_name_provenance"] = operating_name_provenance(
+                candidate,
+            )
+            await self._maybe_feed_retry_from_page(record, result, corroboration)
+            return
+
+        if corroboration.outcome == NAME_MISMATCH:
+            note = f"its page states {stated!r}"
+            if statement and statement.stated_city:
+                note += f" in {statement.stated_city}"
+            # Withdrawal needs TWO independent disagreements, and the
+            # geographic one at region or country granularity.
+            #
+            # Measured, not assumed. On the chemspeed batch a name score below
+            # the threshold on its own withdrew four correct domains: the page
+            # simply carried the fuller legal name ("AquaPhoenix" for
+            # "AquaPhoenix Scientific, Inc.", "Analytical Sales and Services,
+            # Inc." for "Analytical Sales"). `token_sort_ratio` is
+            # length-sensitive by design — that is what makes it safe as
+            # GLEIF's guard — and a brand-vs-legal-name variant is exactly the
+            # shape it scores low. Requiring the page to ALSO place the
+            # organisation in a different state or country leaves the one true
+            # positive in that batch standing (Apollo Organic Synthesis in NY
+            # against a page for Apollo Olive Oil in Northern California) and
+            # drops all four false ones. City alone is not enough: a plant and
+            # a head office in one state (Houston / Baytown, TX) are one
+            # company.
+            elsewhere = (
+                corroboration.location == "contradicted"
+                and corroboration.location_scope in ("region", "country")
+            )
+            if accepted and elsewhere:
+                self._withdraw_domain(result, accepted, corroboration, name1)
+                self._page_counts["withdrawn"] += 1
+                note += "; the page places it in a different state or country"
+            elif accepted:
+                # Reported, not acted on. The reviewer gets the page's own
+                # words and decides; the pipeline does not destroy a domain on
+                # a name difference alone.
+                self._page_counts["mismatch_not_withdrawn"] += 1
+            result["_domain_page_note"] = note
+            return
+
+        if corroboration.outcome == CONTRADICTED and rejected:
+            detail = corroboration.location_detail or "the page places it elsewhere"
+            result["_domain_page_note"] = (
+                f"its page names this organisation but {detail}"
+            )
+
+    async def _maybe_feed_retry_from_page(
+        self,
+        record: EnrichmentRecord,
+        result: dict[str, Any],
+        corroboration: "Corroboration",
+    ) -> None:
+        """Offer a page-extracted legal name to Stage 5 as a lookup candidate.
+
+        Config-gated on ``PAGE_EXTRACT_FEEDS_RETRY`` and **off by default**.
+        Fix 1's trace showed Stage 5's yield on this population is bounded by
+        GLEIF's coverage of private US SMBs rather than by the supply of
+        candidate names, so this buys API calls before it buys identifiers —
+        it is built, measured and left off rather than assumed useful.
+
+        Two conditions beyond the flag, both from the page statement itself:
+        the name must carry an explicit legal form (a brand without one is not
+        a registry key), and it must differ materially from Name 1 under
+        ``normalize_key`` — the same equality Stage 5 applies to its own
+        candidate, since a punctuation variant cannot resolve where the
+        original did not.
+
+        Every retry guard applies unchanged: ROR's country and
+        distinctive-token guards, GLEIF's name verification, the
+        research-institution branch rule. A candidate a guard refuses is a
+        clean miss.
+        """
+        if not self._settings.page_extract_feeds_retry:
+            return
+        statement = corroboration.statement
+        if statement is None or not statement.legal_form_present:
+            return
+        extracted = (statement.stated_org_name or "").strip()
+        current = (result.get("name1_enriched") or "").strip()
+        if not extracted or normalize_key(extracted) == normalize_key(current):
+            return
+        if result.get("ror_id") or result.get("lei_id"):
+            return
+
+        logger.info({
+            "record_id": record.record_id,
+            "step": "page_extract_feeds_retry",
+            "candidate": extracted,
+            "name1": current,
+            "source_url": corroboration.source_url,
+        })
+        await self._retry_tier1_after_canonicalisation(
+            record, result, candidate=extracted,
+        )
+
+    @staticmethod
+    def _withdraw_domain(
+        result: dict[str, Any],
+        domain: str,
+        corroboration: "Corroboration",
+        name1: str,
+    ) -> None:
+        """Take back a domain the ownership guard accepted and the page read
+        then refuted.
+
+        The only place in the pipeline that removes an accepted ``domain``.
+        Recorded as a guard rejection rather than as a silent blank: the
+        pipeline had an answer, published it, and then found evidence against
+        it, which is the case most worth being able to defend afterwards.
+        """
+        _write(
+            result, "domain", None,
+            Evidence(
+                producer_chain=("page_read",),
+                confidence_scale=FUZZY_RATIO,
+                confidence_value=corroboration.name_score,
+                evidence_ref={
+                    "withdrawn": domain,
+                    "source_url": corroboration.source_url,
+                    "stated_org_name": (
+                        corroboration.statement.stated_org_name
+                        if corroboration.statement else None
+                    ),
+                },
+                rule_id="fix3:page-read-withdraws-domain",
+            ),
+        )
+        result["website_url"] = None
+        result["_website_raw"] = None
+        result["domain_verified_by"] = None
+        result["domain_rejected"] = True
+        # The withdrawn domain, so `domain-unverified`'s reason still names the
+        # site a reviewer has to look at.
+        result["_domain_unverified"] = domain
+        result.reject(
+            "domain", domain, GUARD_PAGE_IDENTITY,
+            reason=(
+                "the site's own page states a different organisation's "
+                "identity"
+            ),
+            evidence=Evidence(
+                producer_chain=("page_read",),
+                confidence_scale=FUZZY_RATIO,
+                confidence_value=corroboration.name_score,
+                evidence_ref={
+                    "claimed_for": name1,
+                    "source_url": corroboration.source_url,
+                    "stated_org_name": (
+                        corroboration.statement.stated_org_name
+                        if corroboration.statement else None
+                    ),
+                },
+                rule_id="page-identity-guard",
+            ),
+        )
+        logger.info({
+            "record_id": result.get("record_id"),
+            "step": "domain_withdrawn_by_page_read",
+            "domain": domain,
+            "claimed_for": name1,
+            "stated_org_name": (
+                corroboration.statement.stated_org_name
+                if corroboration.statement else None
+            ),
+        })
+
+    def _emit_retry_trace(
+        self, record: EnrichmentRecord, result: dict[str, Any],
+    ) -> None:
+        """Emit one Stage 5 trace line, then drop the transient slot.
+
+        Runs after ``finalise`` so eligibility is judged from the state the
+        record actually ships in — the name slots have settled, the registry
+        identifiers are final, and the derived provenance scalar names whoever
+        authored ``name1_enriched`` last. The slot is popped unconditionally,
+        tracing on or off, so it never reaches pydantic validation.
+        """
+        trace = result.pop("_retry_trace", None)
+        if not self._settings.retry_trace:
+            return
+        if trace is None:
+            trace = _retry_trace_new(record.record_id)
+        # A tier — not the input passthrough — authored the final Name 1, and
+        # the record still has no registry identity. That is exactly the
+        # population Stage 5 exists for, judged from the shipped record rather
+        # than from anything the retry itself recorded, so a record the retry
+        # never reached is still counted as eligible.
+        producer = ((result.get("name1_provenance") or "").split(":") or [""])[0]
+        has_id = bool(result.get("ror_id") or result.get("lei_id"))
+        trace["eligible"] = bool(producer) and producer != "input" and not has_id
+        if not trace["called"]:
+            trace["skipped_reason"] = RETRY_SKIP_NOT_CALLED
+        trace.update({
+            "name1_original": record.name1,
+            "name1_final": result.get("name1_enriched"),
+            "name1_provenance": result.get("name1_provenance"),
+            "ror_id": result.get("ror_id"),
+            "lei_id": result.get("lei_id"),
+            "flag_codes": list(result.get("flag_codes") or ()),
+            "country": record.country,
+        })
+        retry_trace_logger.info(json.dumps(trace, default=str))
 
     async def _run_address_stage(
         self,
@@ -3264,9 +3787,12 @@ class Orchestrator:
                         result["tier_used"] = 1
                         result["routing_type"] = "research_institution"
                         result["enrichment_status"] = "unresolved"
-                        result.setdefault(
-                            "_ev_low_conf_unchanged", set(),
-                        ).add("name1")
+                        # No `_ev_low_conf_unchanged` marker here since Fix 2.
+                        # Whether a retained Name 1 is flagged is decided once,
+                        # in finalise, from the evidence the finished record
+                        # holds — see enrichment/unchanged_state.py. Marking it
+                        # at the branch is what made the outcome depend on
+                        # which branch reached the passthrough.
                         institution_domain = None
                         # Short-circuit if no name2/contact to process.
                         if not (pp_name2 and pp_name2.strip()) and not (
@@ -3311,6 +3837,16 @@ class Orchestrator:
                                 street=pp_street1,
                                 postal_code=record.postal_code,
                             )
+                            # Fix 2: the model's independent answer, whatever
+                            # the gates below then do with it. Read in finalise
+                            # to decide `unchanged-confirmed` — the model was
+                            # asked what the organisation is called and was
+                            # never shown the record's answer as a candidate,
+                            # so a proposal that reproduces it is evidence
+                            # rather than assent. Transient; popped in finalise.
+                            result["_canonical_proposal"] = (
+                                company_res.returned_name
+                            )
                             # ── Registry re-verify of a typo'd company name ──
                             # GLEIF's name search is not typo-tolerant, so a
                             # misspelling ("Bayr AG") misses on the raw name
@@ -3349,7 +3885,55 @@ class Orchestrator:
                                             result, start, record, cache,
                                         )
 
-                    if company_res and company_res.success and company_res.name1_enriched:
+                    # Fix 2 — the model agreed with the record. Its answer and
+                    # the record's differ only by punctuation or case under
+                    # `normalize_key`, so there is no corrected name to write:
+                    # rewriting would ship the model's comma instead of the
+                    # record's, which is a change to the value with no claim
+                    # behind it. The record's own string stands and finalise
+                    # labels it `input:1:confirmed`. The same equality Stage 5
+                    # uses to decide a "correction" is not one.
+                    canonical_confirms_input = bool(
+                        company_res
+                        and company_res.success
+                        and company_res.name1_enriched
+                        and normalize_key(company_res.name1_enriched)
+                        == normalize_key(name1_cleaned)
+                    )
+                    if canonical_confirms_input:
+                        _write(
+                            result, "name1_enriched", name1_cleaned,
+                            deterministic_evidence(
+                                "tier2:company-canonical-confirms-input",
+                                producer="input", tier=1,
+                                evidence_ref={
+                                    "queried": name1_cleaned,
+                                    "proposal": company_res.name1_enriched,
+                                },
+                            ),
+                        )
+                        result["source"] = "passthrough"
+                        result["confidence"] = "low"
+                        result["tier_used"] = 1
+                        result["routing_type"] = "company"
+                        # Provisional: finalise settles it once the unchanged
+                        # state is known (`unchanged_state.enrichment_status_for`),
+                        # and Tier 3 overrides it if this record falls through.
+                        # Set here so no path can return with the "failed"
+                        # default standing, which would ship a DATAshaper
+                        # "Error — investigate" severity on a confirmed record.
+                        result["enrichment_status"] = "unresolved"
+                        logger.info({
+                            "record_id": record.record_id,
+                            "step": "company_canonical_confirms_input",
+                            "input": name1_cleaned,
+                            "proposal": company_res.name1_enriched,
+                        })
+                        if not (pp_name2 and pp_name2.strip()):
+                            return await self._finalise_and_return(
+                                result, start, record, cache,
+                            )
+                    elif company_res and company_res.success and company_res.name1_enriched:
                         _write(
                             result, "name1_enriched",
                             company_res.name1_enriched,
@@ -3943,5 +4527,13 @@ class Orchestrator:
                 summary.domain_from_serp += 1
             if r.domain_rejected:
                 summary.domain_rejected_unverified += 1
+
+            # Fix 2 — the three unchanged-Name-1 states.
+            if r.unchanged_name1_state == UNCHANGED_VERIFIED:
+                summary.unchanged_verified += 1
+            elif r.unchanged_name1_state == UNCHANGED_CONFIRMED:
+                summary.unchanged_confirmed += 1
+            elif r.unchanged_name1_state == UNCHANGED_UNRESOLVED:
+                summary.unchanged_unresolved += 1
 
         return summary

@@ -1,0 +1,13 @@
+{
+ "domain": "comettherapeutics.com",
+ "payload": {
+  "status": 404,
+  "blocked": false,
+  "error": null,
+  "url": "https://comettherapeutics.com/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

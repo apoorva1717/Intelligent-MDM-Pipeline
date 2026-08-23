@@ -558,10 +558,13 @@ class TestRenderAndRetract:
         assert out["flag_reason"].startswith("Domain:")
 
     def test_render_of_nothing_is_the_unflagged_record(self):
+        # `flag_notes` joined `flag_details` with Fix 3 — a second internal
+        # map, empty for the same reason: nothing was raised, so nothing was
+        # detailed and nothing was annotated.
         assert flags.render({}) == {
             "flag_codes": [], "flagged_fields": [],
             "flag_for_review": False, "flag_reason": None, "flag_scopes": {},
-            "flag_details": {},
+            "flag_details": {}, "flag_notes": {},
         }
 
     def test_render_orders_codes_by_emission_order_not_input_order(self):

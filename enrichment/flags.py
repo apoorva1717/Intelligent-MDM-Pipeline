@@ -55,6 +55,7 @@ from typing import Any
 
 from enrichment.preprocess import _is_opaque_code
 from enrichment.provenance import SCOPED_FIELDS, FIELD_LABELS as PROV_FIELD_LABELS, weak_fields
+from enrichment.unchanged_state import UNCHANGED_CONFIRMED, UNCHANGED_VERIFIED
 from utils.name_slots import DEPT_SLOTS, NAME_SLOT_LABELS, NAME_SLOTS
 
 logger = logging.getLogger(__name__)
@@ -202,6 +203,7 @@ _EVIDENCE_KEYS: tuple[str, ...] = (
     "_has_dept_signal",
     "_multi_contact",
     "_domain_unverified",
+    "_domain_page_note",
 )
 
 
@@ -231,10 +233,27 @@ def _nothing_was_enriched(result: dict[str, Any]) -> bool:
         return False
     if result.get("ror_id") or result.get("lei_id"):
         return False
+    # Fix 2: a Name 1 the pipeline kept AND corroborated (or that an
+    # independent canonicalisation reproduced) is not "no source could identify
+    # this organisation". The pipeline established something about the record —
+    # that its own value stands, with evidence a reviewer can open — and the
+    # unchanged state records what. Without this, dropping the
+    # `low-confidence-unchanged` code from a verified row would let `no-match`
+    # take its place, which is a worse claim than the one just withdrawn.
+    if result.get("unchanged_name1_state") in (
+        UNCHANGED_CONFIRMED, UNCHANGED_VERIFIED,
+    ):
+        return False
     if (
         result.get("domain")
         or result.get("department_domain")
         or result.get("source_url")
+        # Fix 3: a page read that returned this organisation's stated identity
+        # is a source that identified it — which is the exact claim `no-match`
+        # denies. Measured: `American Art Clay Company` had amaco.com read,
+        # corroborated and written to `operating_name`, and still shipped "no
+        # source could identify this organisation".
+        or result.get("operating_name")
     ):
         return False
     return not any(
@@ -280,6 +299,7 @@ def _evidence_free_fields(
 def render(
     scopes: dict[str, Iterable[str]],
     details: dict[str, str] | None = None,
+    notes: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Render a code -> field-scope map into the five output fields.
 
@@ -293,12 +313,24 @@ def render(
     its own field because it is not scope: it survives so :func:`retract` can
     re-render the codes it keeps with the same prose they were raised with,
     rather than silently dropping back to the generic wording.
+
+    *notes* is Fix 3's addition: one further clause **appended** to a code's
+    prose, for a finding that sharpens an existing doubt without being a new
+    one. A page read that says the candidate site belongs to a company in
+    another city does not change what the reviewer is being asked — confirm
+    this website — it tells them what to expect when they look. Appending
+    keeps the code, the scope and the existing wording untouched, which is the
+    point: the flag vocabulary does not grow every time the pipeline learns
+    something. A code with no note renders byte-identically to before.
     """
     ordered = [c for c in _CODE_ORDER if c in scopes]
     scoped = {c: _sorted_fields(set(scopes[c] or ())) for c in ordered}
     kept = {
         c: str(v) for c, v in (details or {}).items()
         if c in scoped and c in _DETAILED_REASONS and v
+    }
+    kept_notes = {
+        c: str(v) for c, v in (notes or {}).items() if c in scoped and v
     }
 
     reasons: list[str] = []
@@ -311,6 +343,8 @@ def render(
             if code in kept
             else _REASONS[code]
         )
+        if code in kept_notes:
+            prose = f"{prose} — {kept_notes[code]}"
         reasons.append(f"{_label(fields)}: {prose}" if fields else prose)
 
     return {
@@ -320,6 +354,7 @@ def render(
         "flag_reason": "; ".join(reasons) if reasons else None,
         "flag_scopes": scoped,
         "flag_details": kept,
+        "flag_notes": kept_notes,
     }
 
 
@@ -360,7 +395,8 @@ def retract(result: Any, codes: Iterable[str], field: str) -> tuple[str, ...]:
     if not withdrawn:
         return ()
     details = dict(getattr(result, "flag_details", None) or {})
-    for key, value in render(scopes, details).items():
+    notes = dict(getattr(result, "flag_notes", None) or {})
+    for key, value in render(scopes, details, notes).items():
         setattr(result, key, value)
     logger.info({
         "record_id": getattr(result, "record_id", None),
@@ -389,6 +425,8 @@ def compute_flags(result: dict[str, Any]) -> None:
     # code -> the specific value the code is about, when the raising site knows
     # it (see `_DETAILED_REASONS`).
     details: dict[str, str] = {}
+    # code -> one clause appended to that code's prose (Fix 3).
+    notes: dict[str, str] = {}
 
     def raise_flag(code: str, *fields: str) -> None:
         codes.add(code)
@@ -500,6 +538,14 @@ def compute_flags(result: dict[str, Any]) -> None:
         raise_flag(DOMAIN_UNVERIFIED, "domain")
         if isinstance(rejected_domain, str):
             details[DOMAIN_UNVERIFIED] = rejected_domain
+        # Fix 3 — the page read went and looked. Appended to the existing
+        # reason rather than replacing it or raising a code of its own: the
+        # reviewer's task is the same ("confirm this website"), and this tells
+        # them what the page actually said, which is the part they would
+        # otherwise have to discover for themselves.
+        page_note = evidence.get("_domain_page_note")
+        if page_note:
+            notes[DOMAIN_UNVERIFIED] = str(page_note)
 
     # ── Total miss ────────────────────────────────────────────────────────
     # Only when there is nothing more specific to say. `no-match` means "the
@@ -508,7 +554,9 @@ def compute_flags(result: dict[str, Any]) -> None:
     if not codes and _nothing_was_enriched(result):
         raise_flag(NO_MATCH, "name1")
 
-    result.update(render({c: scopes.get(c, set()) for c in codes}, details))
+    result.update(
+        render({c: scopes.get(c, set()) for c in codes}, details, notes),
+    )
     ordered = result["flag_codes"]
 
     if ordered:

@@ -26,11 +26,14 @@ Both phases share the same FastAPI app, configuration system, Azure Functions de
    - [Stage 3: Tier 2 — Multi-Mode Canonicalization](#stage-3-tier-2--multi-mode-canonicalization)
    - [Stage 4: Tier 3 — LLM Inference (Last Resort)](#stage-4-tier-3--llm-inference-last-resort)
    - [Stage 5: Tier 1 re-lookup after canonicalisation](#stage-5-tier-1-re-lookup-after-canonicalisation)
+     - [Stage 5 diagnostics — `RETRY_TRACE`](#stage-5-diagnostics--retry_trace)
+   - [Stage 5b: Page-read corroborator](#stage-5b-page-read-corroborator)
    - [Stage 6: Batch consensus](#stage-6-batch-consensus)
    - [Finalization](#finalization)
      - [Rule 7 — Output casing normalisation](#rule-7--output-casing-normalisation)
      - [Why casing does not set a changed flag](#why-casing-does-not-set-a-changed-flag)
      - [Registry names are authoritative](#registry-names-are-authoritative)
+     - [The three unchanged-Name-1 states](#the-three-unchanged-name-1-states)
    - [Website, Domain, Department-Domain & Search-Term Resolution](#website-domain-department-domain--search-term-resolution)
 6. [Use Case Reference Table](#use-case-reference-table)
 7. [Record Classification Logic](#record-classification-logic)
@@ -799,6 +802,36 @@ Every path that takes a name from a registry writes it through `_write_registry_
 >
 > **Parent substitution is not a risk on this path.** The name1 match is scored directly against Name 1, and the local rescore requires every distinctive/identifier token of Name 1 to be covered before a candidate can reach the threshold — so a parent that drops the child's distinguishing tokens cannot match in the first place. Local child matching writes Name 2–5 only, never Name 1.
 
+#### The three unchanged-Name-1 states
+
+**File:** `enrichment/unchanged_state.py` · **Entry point:** `Orchestrator._resolve_unchanged_name1`, called from `finalise` immediately before `compute_flags`
+
+A record whose Name 1 leaves the pipeline exactly as it arrived used to have one outcome, and it was reached two different ways. Whether it was flagged depended on **which branch happened to get there**: `_apply_tier3` marked every name slot it declined to rewrite, and the ROR-miss research passthrough marked Name 1, but the company branch's "canonicalisation failed, keep the input" path marked nothing. On the chemspeed batch that produced 37 flags and 5 silent passes drawn from the same evidence class — one of the silent ones (`3M Corporate`) holding *less* evidence than several of the flagged rows.
+
+The doubt an unchanged Name 1 carries is not one thing, so one outcome cannot express it:
+
+| State | Condition | Provenance | Flagged? |
+|---|---|---|---|
+| `unchanged-verified` | the input name is corroborated by evidence independent of the record: an ownership-guard-passing domain tied to Name 1, or a [page read](#stage-5b-page-read-corroborator) that states this organisation's identity | `input:1:verified` | No |
+| `unchanged-confirmed` | the company-canonical model, asked what the organisation is called and never shown the record's answer, returned it — `normalize_key(proposal) == normalize_key(input)` | `input:1:confirmed` | No |
+| `unchanged-unresolved` | nothing came back, or what came back was refused by the identity guard and names something materially different | `input:1:rule` (unchanged) | Yes — existing `low-confidence-unchanged` code, existing reason text |
+
+**Decided once, from the settled record.** The same rule as [`compute_flags`](#flag-rules) and for the same reason: which tier ran is not the question. That is also what makes the treatment consistent, because the answer no longer depends on which branch reached the passthrough. The per-branch `_ev_low_conf_unchanged` markers for Name 1 are gone; the department slots keep theirs.
+
+**What counts as corroboration.**
+
+* **Domain** — the accepted domain's ownership condition (`domain_verified_by`) is `name`, `serp` or `registry`. `name` *is* the "registrable stem shares a distinctive token with Name 1" test, evaluated by the [existing ownership guard](#2b--ownership-guard-domain_ownership_guard_enabled-default-on); there is deliberately no second, weaker token matcher. `email` is **excluded**: a non-generic address says which organisation the *record* belongs to, not whether the Name 1 string is that organisation's name. `unguarded` is excluded because nothing was checked.
+* **Page read** — Fix 3's corroboration, which outranks the domain because it is the organisation's own site stating its own identity.
+* **Registry near-match is deliberately NOT implemented.** The only candidate in the batch that would have qualified is `TORAY ADVANCED COMPOSITES USA INC.` at 80.7 against "Advanced Composites Inc" — a different legal entity. A sub-threshold registry candidate is a name that *looks* similar, which is the thing the guard exists to refuse; promoting it to corroboration would launder exactly those refusals. Recorded as an open item in `unchanged_split_report.md`.
+
+**`unchanged-confirmed` is not a confirmation prompt.** Asking a model "is this the canonical name?" measures agreement bias, not the name. Only a *generated* proposal counts — the model is given the record's name, address and country and asked what the organisation is called, exactly as it always was — and only when that proposal reproduces the input under `normalize_key`. `CompanyCanonicalResult.returned_name` carries the model's answer whatever the confidence gate and the identity guard then do with it, because "what did the model say" and "is that good enough to rewrite Name 1" are different questions.
+
+> **The record's own string is what ships.** When the proposal is `normalize_key`-equal, Name 1 is written from the **input**, not from the model. Adopting the model's comma would be a change to the value with no claim behind it, and punctuation is DATAshaper's business, not the pipeline's.
+
+**Status.** A verified or confirmed record's `enrichment_status` becomes `verified` — the "Info: confirmed correct" severity — because a record the pipeline declines to flag must not simultaneously ask a data steward to review it. `enriched` is never downgraded. This is the first path other than Tier 2A Mode B to produce that value.
+
+**Telemetry.** `unchanged_verified`, `unchanged_confirmed`, `unchanged_unresolved` on the batch summary. They partition the retained-Name-1 population exactly.
+
 ---
 
 ### Stage 5: Tier 1 re-lookup after canonicalisation
@@ -828,6 +861,70 @@ Tier 1 runs before the pipeline knows the organisation's real name, so it is que
 > `GA Tech` and `FL State Univ` used to sit in that trap. They no longer reach the retry at all: the [bounded two-letter pattern](#us-state-abbreviation-expansion-ror-local) and the [acronym map](#institution-acronym-expansion) resolve them on the **first** Tier 1 call, which is the cheaper fix and the reason `tier1_retry_attempts` should fall.
 
 **Telemetry.** `tier1_retry_attempts`, `tier1_retry_hits_ror`, `tier1_retry_hits_lei` on the batch summary, alongside `cache_hits_after_normalisation`.
+
+#### Stage 5 diagnostics — `RETRY_TRACE`
+
+**Flag:** `RETRY_TRACE` (default `false`) · **Logger:** `enrichment.trace.retry` · **Emitted from:** `Orchestrator._emit_retry_trace`
+
+Stage 5 can decline to act for six different reasons, and until this existed the batch summary reported only how often it *did* act. A run in which the retry recovered nothing was therefore indistinguishable from one in which it was never reached — which is exactly the question a zero-hit result raises.
+
+With the flag on, one JSON line is emitted per **finalised** record:
+
+| Field | Meaning |
+|---|---|
+| `eligible` | judged from the shipped record: a tier (not the input passthrough) authored `name1_enriched`, and no `ror_id`/`lei_id` is present |
+| `called` | the retry was reached at all. `false` is the only value that can mean a wiring defect |
+| `skipped_reason` | `not_called_on_this_path` · `already_has_id` · `already_attempted` · `normalize_key_equal` · `other:tier1_never_ran` · `other:no_name1` |
+| `fired`, `registries_queried` | whether a registry was queried, and which — `["ror"]` or `["ror","gleif"]` |
+| `guard_rejections` | every guard rejection the registry clients reported during the retry: guard, candidate, score, threshold |
+| `hit` | `"ROR"` \| `"gleif"` \| `null` |
+
+`eligible` is derived at the *emission* site rather than inside the retry, so a record the retry never reached still counts as eligible. A flag-gated counter that lived inside the function could not have detected the defect it exists to detect.
+
+Tracing is inert: with the flag off no line is emitted, and the transient `_retry_trace` slot is popped on every path before pydantic validation. Pinned by `tests/test_retry_trace.py`.
+
+**What the trace found** (100-row chemspeed US SMB batch, `retry_trace_findings.md`): the retry was reached on **100 of 100** records — no wiring defect. Of 25 records whose Name 1 an LLM authored, **18** were skipped because the "corrected" name equals the already-queried name under `normalize_key` (punctuation and casing only — `Allnex USA Inc` → `Allnex USA Inc.`), and **7** fired, queried ROR and GLEIF, and were missed by both. Two further records were rescued and took an LEI. No guard misfired: the highest-scoring rejected candidate in the run is `Air Products and Chemicals Master Trust` at 80.0 against GLEIF's 88 threshold — a pension trust, correctly refused. **No change was made to the retry path**; Stage 5's yield on this population is bounded by GLEIF's coverage of private US SMBs, not by the pipeline.
+
+### Stage 5b: Page-read corroborator
+
+**File:** `enrichment/page_corroborator.py` · **Entry point:** `Orchestrator._corroborate_domain` · **Flag:** `PAGE_CORROBORATION_ENABLED` (default on)
+
+The pipeline finds a candidate domain for most records and then decides whether to keep it **without opening it**. Both halves of that go wrong: 20 records in the chemspeed batch carry `domain-unverified` — a candidate was found, nothing on the record tied it to the organisation, and it was discarded without the one source that could have tied them ever being consulted — while one record kept `johnsoncontrols.com` for "AB Controls, Inc." in Irvine CA, which a single page read refutes.
+
+**Where it runs.** In `_finalise_and_return`, after the website paths have proposed a candidate and the ownership guard has judged it (so there *is* one to read), and before the department probe (so a domain the page read withdraws is not then mined for department URLs).
+
+**When it runs.** The record has a candidate — accepted, or discarded by the ownership guard and remembered in `_domain_unverified` — and is **not** already registry-resolved. A ROR/GLEIF identity is stronger evidence than a page; re-reading the site could only weaken it.
+
+**Three rules.**
+
+> **A page is a witness, never an author.** Nothing in this module writes `name1_enriched`. An extracted identity goes to the new `operating_name` field. A site that trades under a brand while the record holds the legal entity is the normal case, not an error to correct. Asserted as a test: a batch through the corroborator comes out with byte-identical Name 1 values.
+>
+> **Silence is not evidence.** A page that states no address neither corroborates nor contradicts the record's. Only a *stated* address elsewhere is a contradiction. Likewise a 403, a bot challenge, a parked page or a timeout means *we could not look*, and is never scored as either verdict.
+>
+> **No new similarity machinery.** Name comparison reuses `enrichment.tier1_lei._name_match_score` — `token_sort_ratio`, max of the raw score and the legal-form-stripped score — at `PAGE_NAME_MATCH_THRESHOLD`, which inherits `LEI_NAME_MATCH_THRESHOLD`'s derivation because it is the same comparison.
+
+**Fetch.** The domain root; if it answers, the first of `/impressum`, `/legal`, `/about`, `/contact` that returns 2xx, appended to the root's text rather than replacing it (a name in a footer and an address on `/contact` are both needed). Hard timeout `PAGE_READ_TIMEOUT_SECONDS`. Cached on the **domain** in memory *and* on disk under `PAGE_FIXTURE_DIR` — one JSON file per domain, so a batch naming the same organisation twice reads it once and a thesis re-run reproduces its corroboration decisions rather than re-litigating them against today's web. `PAGE_FIXTURE_REPLAY_ONLY` refuses to fetch anything not already recorded.
+
+> ⚠️ **TLS.** The fetch deliberately does **not** pass `verify=certifi.where()`, so `requests` honours `REQUESTS_CA_BUNDLE` (pointed at the corp bundle by `config._sanitize_ssl_env`). Pinning certifi fails every fetch behind the TLS-inspecting corporate VPN — measured at 47 of 54 domains, all `SSLError`, on the first run of this step.
+
+**Extract.** One LLM call, as a constrained *reader*: input is the fetched text only, output is `{stated_org_name, stated_city, stated_region, stated_country, stated_postal_code, legal_form_present}` or nulls. The prompt instructs the model to return null when the page states no organisation identity — a brand logo or a slogan is not a statement — and never to fill a field the page omits from its own knowledge, because a remembered headquarters city would decide the very location test being run.
+
+**Compare and act.**
+
+| Outcome | Condition | Consequence |
+|---|---|---|
+| `corroborated` | name consistent AND location consistent-or-neutral | `domain-unverified` withdrawn; `operating_name` written with provenance `web:{domain}:extracted:{date}`; feeds [`unchanged-verified`](#the-three-unchanged-name-1-states) |
+| `name_mismatch` | the page names a different organisation | an **accepted** domain is withdrawn (`domain`/`website_url` cleared, `domain-unverified` raised, a `page_identity` guard rejection logged); an already-unverified one keeps its flag. Either way the reason gains a clause naming what the page said |
+| `contradicted` | name consistent, stated location differs | noted, never acted on. The name matched, so the site is probably right and it is the record's *address* that is in doubt — not what `domain-unverified` asks a reviewer to check |
+| `fetch_unavailable` / `parked` / `no_identity` | we could not look, or the page says nothing | nothing changes; counted |
+
+The withdrawal is the only place in the pipeline that removes an accepted `domain`, and it is recorded as a guard rejection rather than as a silent blank: the pipeline had an answer, published it, and then found evidence against it.
+
+> **The `domain` field is deliberately NOT written on a corroboration.** Accepting a candidate the ownership guard refused would be a fifth ownership condition, and the guard is out of this fix's scope. The flag is withdrawn (the reviewer's question has been answered) and the field stays as the guard left it. See the open item in `corroborator_report.md`.
+
+**Optional (`PAGE_EXTRACT_FEEDS_RETRY`, default off).** When the extracted name carries a legal form and differs materially from Name 1 under `normalize_key`, it is offered to [Stage 5](#stage-5-tier-1-re-lookup-after-canonicalisation) as a lookup candidate, spending its own once-per-record budget so the two entry points cannot starve each other. Every retry guard applies unchanged. Off by default because Stage 5's trace shows its yield is bounded by registry coverage, not by the supply of candidate names.
+
+**Telemetry.** `page_reads_attempted`, `page_corroborated`, `page_contradicted`, `page_name_mismatch`, `page_fetch_unavailable`, `page_no_identity`, `page_parked`, `page_domains_withdrawn`, `page_flags_cleared`. One JSON line per attempt on `enrichment.trace.page`.
 
 ### Stage 6: Batch consensus
 
@@ -1211,12 +1308,14 @@ Property 1 assumes every input to the decision has settled by the time `finalise
 
 The scope is encoded in the reason text **as well as** in `flagged_fields`, so a consumer reading only the two pre-Fix-8 columns still learns which field is in doubt.
 
+Two further fields are internal (`exclude=True`) and exist only so a later pass can re-render what it keeps with the wording it was raised with: `flag_details` (the specific value a code names — the rejected domain) and `flag_notes` (one clause **appended** to a code's prose). Notes are how the [page read](#stage-5b-page-read-corroborator) reports what a candidate site actually said without growing the code vocabulary: a finding that sharpens an existing doubt is not a new doubt, and a code with no note renders byte-identically to before.
+
 #### The codes
 
 | Code | Raised when | Scope |
 |---|---|---|
 | `no-match` | Every tier failed: no identifier, no domain, no evidence URL, no field changed. Suppressed when any other code applies — it means "nothing to go on at all" | `name1` |
-| `low-confidence-unchanged` | Canonicalisation was attempted, came back below threshold, and the input value was left in place | the field(s) left as supplied |
+| `low-confidence-unchanged` | The input value was left in place and nothing corroborated it. For **Name 1** this is the `unchanged-unresolved` state and only that state — see [the three unchanged-Name-1 states](#the-three-unchanged-name-1-states); for the department slots it is the older per-slot rule (canonicalisation attempted, came back below threshold) | the field(s) left as supplied |
 | `dept-via-lab` | UC 13 fired: Name 2 was a granular unit and the parent department was **inferred from the lab's page**, not read from a stated department | `name2`, `name3` |
 | `name3-not-demoted` | UC 13 fired but every slot below Name 2 was already populated, so the lab name could not be moved down | `name2`…`name5` |
 | `person-unresolved` | A person was detected in Name 1 and their affiliation could not be resolved | `name1` |
@@ -1237,6 +1336,7 @@ The scope is encoded in the reason text **as well as** in `flagged_fields`, so a
 - **Any deterministic normalisation** — casing, abbreviation expansion, unit canonicalisation, legal-suffix collapse, a Name 2 dropped because it duplicated Name 1 (Rule 3).
 - **Batch consensus inheritance** (Fix 6) — see the note in [Batch Consensus](#batch-consensus).
 - **An empty input field that stayed empty.** In particular a blank Name 2 that Finalization Rule 1 leaves blank: nothing was dropped, so nothing is flagged.
+- **A Name 1 the pipeline kept AND corroborated** — the `unchanged-verified` and `unchanged-confirmed` states. A reviewer told to "confirm the value is correct" has nothing to do that the pipeline has not already done. `no-match` is suppressed on those records for the same reason: the pipeline did establish something about them.
 
 ---
 
@@ -1341,7 +1441,7 @@ Two projections of the same data, both in the `/enrich` JSON:
 
 | Column | Example |
 |---|---|
-| `Name 1 Provenance` | `ror:1:exact` |
+| `Name 1 Provenance` | `ror:1:exact`, or `input:1:verified` / `input:1:confirmed` / `input:1:rule` for a [retained Name 1](#the-three-unchanged-name-1-states) |
 | `Name 2 Provenance` | `llm_lab_parent:2:self_high` |
 | `Domain Provenance` | `ror:1:exact` |
 | `Record Type Provenance` | `classifier:-:rule` |
@@ -1401,6 +1501,15 @@ The canonical request body mirrors the SAP customer-master export columns one-to
 The result mirrors every original SAP column (carried through verbatim) plus the enriched name/address fields. The response is intentionally lean: a number of internal fields used by the pipeline (`tier_used`, `confidence`, `source`, `source_url`, `contact_used`, `name2_match_result`, `use_cases_triggered`, `enrichment_status`, `duration_ms`) are marked `exclude=True` in `EnrichmentResult` and therefore **do not appear in the JSON** — they are available only in logs and the batch summary counts.
 
 The two **registry identifiers are deliberately included** in the JSON so the Phase 2 dedup can converge records on a shared id: `ror_id` (institutions, and ROR-matched companies) and `lei_id` (GLEIF-matched companies). A record may carry both if ROR matched it as a company and GLEIF also resolved it.
+
+Two columns are new with [Fix 3](#stage-5b-page-read-corroborator), both nullable and additive:
+
+| Field | Column | Content |
+|---|---|---|
+| `operating_name` | `Operating Name` | the organisation name the candidate website **states about itself**, read from the page |
+| `operating_name_provenance` | `Operating Name Provenance` | `web:{domain}:extracted:{YYYY-MM-DD}` |
+
+> ⚠️ `operating_name` is **not** a second `Name 1` and must never be mapped onto it. A page is a witness, not an authority on what the customer master should call this customer, and a site trading under a brand while the record holds the legal entity is the normal case. Its provenance string is deliberately **not** the `producer:tier:band` shape the six scoped fields use — this value came from a page on a day, and the day is the part that decays.
 
 ```json
 {
@@ -1947,6 +2056,8 @@ enrichment_api/
 │   ├── tier2a_contact.py         # Tier 2A: Contact person lookup (Modes A & B)
 │   ├── tier2b_dept.py            # Tier 2B: Department web search
 │   ├── tier2_canonical.py        # Tier 2 Canonical: LLM-only department normalization
+│   ├── unchanged_state.py        # Fix 2: the three unchanged-Name-1 states
+│   ├── page_corroborator.py      # Fix 3: fetch + read the candidate site, compare with the record
 │   ├── lab_resolver.py           # UC 13: granular unit → parent department resolver
 │   ├── tier3_llm.py              # Tier 3: Pure LLM inference (last resort)
 │   ├── company_canonical.py      # Company name canonicalization via LLM
@@ -1964,12 +2075,12 @@ enrichment_api/
 │   ├── base.py                   # Abstract SearchClient interface + SearchResult dataclass
 │   ├── serpapi_client.py         # SerpAPI implementation (Google Search)
 │   ├── duckduckgo_client.py      # DuckDuckGo fallback (no API key needed)
-│   └── page_fetcher.py           # HTTP fetch + BeautifulSoup structured extraction
+│   └── page_fetcher.py           # HTTP fetch + BeautifulSoup structured extraction (PageFetchResult keeps the status)
 │
 ├── utils/                        # Shared utilities
 │   ├── text_utils.py             # Cleaning, normalization, country codes, domain extraction
 │   ├── domain_resolver.py        # Single write path for `domain` / `website_url` + ownership guard
-│   ├── cache.py                  # Cache-key builders (normalised name + country) + per-batch SERP cache
+│   ├── cache.py                  # Cache-key builders + per-batch SERP cache + PageCache (disk-backed page reads)
 │   └── __init__.py
 │
 ├── tests/                        # Test suite
@@ -2065,6 +2176,8 @@ Last-resort LLM call using all available fields. Always flagged for review. High
 
 Specializes in normalizing company names with geographic context. Used when Tier 1 misses and the record doesn't look like a research institution.
 
+`CompanyCanonicalResult` reports three different things about one call, and they are not interchangeable. `name1_enriched` (with `success`) is a proposal good enough to **rewrite** Name 1 — high confidence, and past the identity guard. `proposed_name` is a high-confidence proposal the identity guard refused, kept because it can buy a GLEIF re-verify for a typo'd name. `returned_name` is simply **what the model said**, whatever either gate then decided: it buys nothing, and exists so [`unchanged-confirmed`](#the-three-unchanged-name-1-states) can ask whether the model's independent answer reproduces the input — a real question even when the model was only medium-confident about the wording.
+
 ### `enrichment/overflow_check.py` — Overflow Detection
 
 LLM-based check for Name1+Name2 being a single split organization name. Early-exit mechanism that prevents mis-enrichment of overflow records.
@@ -2090,6 +2203,14 @@ Derives `enrichment_status` from confidence, match result and tier. Flag rules u
 The single flag authority. `compute_flags` is called once, from `finalise`, and rebuilds `flag_for_review`, `flag_codes`, `flagged_fields` and `flag_reason` from the record's final state. Tiers record evidence (`_ev_*` transient keys, stripped here) and never write a flag, so no reason can name a tier that ran and no reason can mask another. Holds the code vocabulary, the detection rule for each code, the field-scope vocabulary and the reason prose.
 
 `render` builds the flag columns from a code → field-scope map and is the only place they are built; `compute_flags` publishes the map it rendered from as `flag_scopes` (internal, not a file column — `flagged_fields` is its union and is what ships). `retract` is the one way a code leaves a record after `compute_flags` has run, and exists for a single caller: [batch consensus](#flags-a-propagated-name-falsifies) runs after the whole batch is finalised and replaces `name1_enriched`, which can leave a flag describing a value that is no longer there. The caller states which codes its write falsified and for which field; `retract` narrows or drops them and re-renders. It never re-derives a flag — the evidence `compute_flags` consumed is gone by then — so it can only ever withdraw. Full description in [Flag Rules](#flag-rules). Tests `test_flags.py`.
+
+### `enrichment/unchanged_state.py` — The Three Unchanged-Name-1 States
+
+`resolve(result)` returns which of `unchanged-verified` / `unchanged-confirmed` / `unchanged-unresolved` a record's retained Name 1 is in, or `None` when a tier rewrote it or the record never reached Tier 1 (a Stage 0 short-circuit was never asked the question). `evidence_for` builds the provenance event that puts the state into `name1_provenance`, and `enrichment_status_for` maps it onto the status column. `name1_was_kept` reads the provenance log's attributing producer rather than comparing strings, because casing, abbreviation expansion and legal-suffix collapse all run after the tiers and would make several retained names look changed. Full description in [The three unchanged-Name-1 states](#the-three-unchanged-name-1-states). Tests `test_unchanged_state.py`.
+
+### `enrichment/page_corroborator.py` — Page-Read Corroborator
+
+`corroborate()` fetches a candidate domain, has the LLM read what the page *states*, and compares that statement with the record. `fetch_pages` does the root-plus-imprint fetch through `PageCache`; `read_page` runs the constrained reader; `compare` / `compare_location` produce the verdict, with location returning a *scope* (`postal`/`city`/`region`/`country`) because the granularities are not equally strong evidence. Name comparison reuses GLEIF's own `_name_match_score`; region comparison reuses ROR's `_US_POSTAL_CODES` so `CA` and `California` compare equal. Nothing here writes `name1_enriched`. Full description in [Stage 5b](#stage-5b-page-read-corroborator). Tests `test_page_corroborator.py`.
 
 ### `enrichment/provenance.py` — Per-Field Provenance
 
@@ -2165,6 +2286,8 @@ Free search fallback using the `duckduckgo-search` library. No API key required.
 
 HTTP page fetcher with BeautifulSoup parsing. Extracts structured elements: URL path, page title, H1, breadcrumb navigation, and truncated body text. Detects breadcrumbs via `aria-label`, `role="navigation"`, and class patterns. `resolve_final_url()` follows a URL's redirect chain once (HEAD, GET fallback) so the department probe can key off the live host (`dur.ac.uk` → `durham.ac.uk`). User-Agent: "BrukerMDM-Enrichment/1.0".
 
+`fetch_page_result()` is the status-carrying entry point [Fix 3](#stage-5b-page-read-corroborator) uses: it returns a `PageFetchResult` (`status`, `content`, `error`) instead of collapsing every failure to `None`, because a 403 and a 404 mean different things to a corroborator — one is "we could not look", the other is "try the next path". It deliberately does **not** pin `verify=certifi.where()`, so `requests` honours `REQUESTS_CA_BUNDLE`; pinning certifi fails every fetch behind the TLS-inspecting corporate VPN (measured: 47 of 54 domains, all `SSLError`). The HTML extraction rules are shared with `fetch_page_content()` through `_parse()`.
+
 ### `utils/text_utils.py` — Text Utilities
 
 - `country_to_iso_code()`: Maps country names/codes to ISO alpha-2 (60+ countries)
@@ -2187,7 +2310,9 @@ The single point where `domain` and `website_url` are decided; no other module w
 
 ### `utils/cache.py` — Cache Keys & Batch Cache
 
-Home of the **cache-key builders** (`lookup_key`, `serp_key`) and of `BatchCache` / `SerpCache`.
+Home of the **cache-key builders** (`lookup_key`, `serp_key`) and of `BatchCache` / `SerpCache` / `PageCache`.
+
+`PageCache` is [Fix 3](#stage-5b-page-read-corroborator)'s store, keyed on the registrable **domain**. It is the only cache here with a disk layer: a page read is a claim about what a site said on a given day, so re-running a thesis batch has to reproduce its corroboration decisions rather than re-litigate them against today's web. One JSON file per domain under `PAGE_FIXTURE_DIR`, recorded as a side effect of a live fetch; `replay_only` refuses to fetch anything not already recorded, so a missing fixture surfaces as `fetch_unavailable` instead of a silent network call.
 
 `BatchCache` holds the SERP and resolved-host namespaces (`get/set_resolved_host` caches the department probe's redirect-resolved base so it costs one request per institution). It is created fresh for each `/enrich` request; an optional process-level `SerpCache` lets overlapping SERP queries reuse results across batches. There is **no ROR namespace here** — `get_ror`/`set_ror` existed but had no callers anywhere in the codebase, and were removed rather than left implying a layer that never ran. ROR and LEI lookups consult the module-level `_ror_cache` / `_lei_cache` in `enrichment/tier1_ror.py` and `enrichment/tier1_lei.py`.
 
@@ -2256,6 +2381,13 @@ Copy `.env.example` to `.env` and configure:
 | `SERPAPI_KEY` | *(none)* | SerpAPI key; if absent, DuckDuckGo is used |
 | `DEPT_PROBE_CROSS_DOMAIN` | `false` | Department probe stage 3 (unrestricted cross-domain SERP). Off by default — one SERP call per unresolved department. Enable for split-domain academic medical centres (e.g. `hopkinsmedicine.org`) at the cost of a second SERP call and off-domain-result risk |
 | `WEBSITE_TRACE` | `false` | Diagnostic-only: emit a per-candidate JSON trace of Path B / Path C website resolution on the `enrichment.trace.website` logger. No behaviour change |
+| `RETRY_TRACE` | `false` | Diagnostic-only: emit one JSON line per finalised record on `enrichment.trace.retry` describing what [Stage 5](#stage-5-diagnostics--retry_trace) did and why. No behaviour change |
+| `PAGE_CORROBORATION_ENABLED` | `true` | [Stage 5b](#stage-5b-page-read-corroborator) page-read corroborator on/off. When off no page is fetched and nothing downstream changes |
+| `PAGE_NAME_MATCH_THRESHOLD` | `88` | rapidfuzz `token_sort_ratio` (0-100) an extracted page name must reach against Name 1. Uses GLEIF's own scorer (`tier1_lei._name_match_score`) and inherits `LEI_NAME_MATCH_THRESHOLD`'s derivation — same comparison, same default, separate knob so retuning one does not silently retune the other |
+| `PAGE_READ_TIMEOUT_SECONDS` | `8` | Hard per-request timeout for a corroboration fetch. Shorter than `PAGE_FETCH_TIMEOUT_SECONDS`: this is optional evidence on a path that already has an answer, and up to five requests may be issued per domain |
+| `PAGE_FIXTURE_DIR` | `tests/fixtures/page_reads` | Where page reads are recorded, one JSON file per domain, so a re-run reproduces its corroboration decisions. Empty string disables the disk layer (memory-only) |
+| `PAGE_FIXTURE_REPLAY_ONLY` | `false` | Refuse to fetch anything not already recorded — a missing fixture surfaces as `fetch_unavailable` rather than a silent network call. For CI and offline re-analysis |
+| `PAGE_EXTRACT_FEEDS_RETRY` | `false` | Offer a page-extracted legal name to the Stage 5 retry as a lookup candidate, spending its own once-per-record budget. Off by default: Stage 5's trace shows its yield is bounded by GLEIF's coverage of private US SMBs, not by the supply of candidate names |
 | `MOCK_EXTERNAL_CALLS` | `false` | Use mock clients (no real API calls) |
 | `ENV` | `production` | Set to `local` for development (enables dotenv loading) |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
@@ -2402,7 +2534,30 @@ pytest tests/test_scoring.py tests/test_candidates.py tests/test_dedup_eval.py -
 
 # Stage 6 batch consensus (grouping boundaries, propagation, invariants)
 pytest tests/test_batch_consensus.py -v
+
+# Stage 5 diagnostics, the three unchanged states, the page-read corroborator
+pytest tests/test_retry_trace.py tests/test_unchanged_state.py tests/test_page_corroborator.py -v
 ```
+
+> **Known pre-existing failures.** Five tests fail on `main` and are unrelated to the fixes above (verified against a clean checkout):
+> `test_name_slot_parity.py::test_department_in_a_lower_slot_is_not_reported_missing`,
+> `test_orchestrator.py::test_tier1_full_resolution`,
+> `test_orchestrator.py::test_web_search_fallback_for_name1`,
+> `test_orchestrator.py::test_web_search_determines_record_type`,
+> `test_routes.py::test_issues_compare_segments_g6_and_g7_out_of_the_metric`.
+
+### Offline batch runs
+
+`scripts/run_batch.py` runs an XLSX batch through the real orchestrator without standing up the API — the same `_parse_xlsx` / `_rows_to_records` / `_build_output_xlsx` helpers `POST /enrich/file` uses. It emits the enriched workbook, a JSON dump of every result **plus the provenance events** (so reports can be rebuilt without paying for the run twice), and the raw diagnostic trace lines:
+
+```bash
+python scripts/run_batch.py docs/thesis/chemspeed_us_100.xlsx     --out logs/runs/run.xlsx --json logs/runs/run.json     --retry-trace --trace-out logs/runs/trace.jsonl --concurrency 5
+
+python scripts/retry_trace_report.py logs/runs/trace.jsonl --md table.md
+python scripts/fix_reports.py --before before.json --after after.json     --page-trace logs/runs/trace.jsonl --input docs/thesis/chemspeed_us_100.xlsx
+```
+
+Set `PAGE_FIXTURE_REPLAY_ONLY=true` to re-run against the recorded page reads only, with no page fetches.
 
 ### Phase 2 Dedup Test Coverage
 
@@ -2493,6 +2648,22 @@ SAP Source  →  DATAshaper Stored Procedure (extract batch)
 
 Phase 2 runs **after** Phase 1 and the address gates: enrichment first canonicalizes each record's names, DATAshaper then groups records by shared address, and the dedup adjudicator decides which of the same-address records are true duplicates. The orchestrator handles the file ↔ JSON conversion on both sides; the dedup endpoint is JSON in / JSON out.
 
+#### Schema additions pending on the SQL / ADF side
+
+[Fix 3](#stage-5b-page-read-corroborator) adds two **nullable, additive** columns to the response and the file schema. Both are done in this repository (`api/models.py`, `api/output_columns.py`); the write-back side is not, and is deliberately left to Bernd/Bert:
+
+| Column | Type | Content |
+|---|---|---|
+| `Operating Name` | `NVARCHAR(255)` NULL | the organisation name the candidate website states about itself |
+| `Operating Name Provenance` | `NVARCHAR(255)` NULL | `web:{domain}:extracted:{YYYY-MM-DD}` |
+
+1. `dp_legacy.test_77.Legacy` — add both columns as nullable.
+2. `sql/usp_merge_legacy_enriched.sql` — add both to the `OPENJSON … WITH` list and to `WHEN MATCHED THEN UPDATE SET`. `Operating Name` should follow the `COALESCE(NULLIF(…),'')` pattern the name columns use; the provenance column can be assigned directly, as `[Record Type]` and `[ROR ID]` are.
+3. The DATAshaper mapping — `Operating Name` is a **reference** column. It is not a substitute for `Name 1` and must not be mapped onto it; recommend display-only with no validation rule.
+4. ADF's column allow-list, if the copy activity enumerates columns explicitly.
+
+Nothing breaks if these are not done: both columns are additive and nullable, and a consumer that ignores them sees the schema it saw before.
+
 ### Status-to-Severity Mapping
 
 The `enrichment_status` field maps to DATAshaper issue severities:
@@ -2503,6 +2674,8 @@ The `enrichment_status` field maps to DATAshaper issue severities:
 | `verified` | Info issue (confirmed correct) | Values confirmed, logged for audit |
 | `unresolved` | Warning issue (manual review) | Flagged for data steward review |
 | `failed` | Error issue (process failed) | Requires investigation |
+
+`verified` used to be produced by exactly one path (Tier 2A Mode B). [Fix 2](#the-three-unchanged-name-1-states) adds a second: a record whose Name 1 the pipeline kept **and** corroborated reports `verified`, because a record it declines to flag must not simultaneously ask a steward to review it. On the chemspeed batch that moves 30 records from `unresolved` (Warning) to `verified` (Info) — a **severity change a DATAshaper rule may be keyed on**, and the one item in these three fixes worth confirming with Bernd/Bert before rollout.
 
 **Issue-code severity** is a separate axis, carried per catalogue code rather than per record. Catalogue v2's `Mandatory` attribute maps onto the same severities and is exposed as `IssueDefinition.severity`, so it is derivable rather than restated:
 
@@ -2629,7 +2802,21 @@ RETURN EnrichmentResponse (JSON)
 
 ## Changelog
 
-### Per-field provenance and admissibility (newest)
+### Stage 5 diagnostics, the three unchanged states, and the page-read corroborator (newest)
+
+Three changes worked in order against the 100-row chemspeed US SMB batch. Full write-ups in `retry_trace_findings.md`, `unchanged_split_report.md`, `corroborator_report.md`; combined before/after in `combined_delta.md`.
+
+**Fix 1 — Stage 5 traced, and deliberately not repaired.** [`RETRY_TRACE`](#stage-5-diagnostics--retry_trace) emits one JSON line per finalised record: eligibility judged from the shipped record, the skip reason, the registries queried, the guards that refused, the hit. On the batch the retry was reached on **100 of 100** records, so the zero-hit result was never a wiring defect. Of 25 records whose Name 1 an LLM authored, 18 were skipped because the "corrected" name equals the already-queried name under `normalize_key` — punctuation and casing only, including both names cited as plausible LEI holders — and 7 fired, queried ROR and GLEIF, and were missed by both; 2 further records were rescued and took an LEI. No guard misfired: the highest-scoring rejected candidate in the run is a pension trust at 80.0 against an 88 threshold, correctly refused. **The instrumentation is the entire code delta.** Stage 5's yield on this population is bounded by GLEIF's coverage of private US SMBs, not by the pipeline. Residual finding, logged as an open item: GLEIF's fulltext search returns the same ten unrelated names for almost every query, which suggests it is matching on the legal-suffix token.
+
+**Fix 2 — one unchanged-Name-1 outcome became [three](#the-three-unchanged-name-1-states).** Whether a retained Name 1 was flagged used to depend on which branch reached the passthrough: Tier 3 and the ROR-miss research path left a marker, the company branch's failed-canonicalisation path left none. That produced 37 flags and 5 silent passes drawn from the same evidence class. The decision moved into `finalise`, taken once from the settled record, and split into `unchanged-verified` (corroborated by an ownership-guard-passing domain or a page read → `input:1:verified`), `unchanged-confirmed` (the company-canonical model's *generated* proposal reproduces the input under `normalize_key` → `input:1:confirmed`) and `unchanged-unresolved` (`input:1:rule`, flagged, reason text byte-identical). `low-confidence-unchanged` **36 → 18**; records carrying any flag **54 → 34**. Registry near-match was deliberately **not** implemented as corroboration — the only candidate in the batch that would have qualified is a different legal entity at 80.7 — and `email` evidence is excluded because it identifies the record, not the name. Verified and confirmed records now report `enrichment_status = verified` ("Info — confirmed correct"), the first path other than Tier 2A Mode B to produce that value.
+
+**Fix 3 — the candidate website is [read](#stage-5b-page-read-corroborator) before it is judged.** A record with a candidate domain and no registry identity has its site fetched (root, then the first of `/impressum`, `/legal`, `/about`, `/contact` that answers) and an LLM reads what the page *states*, with instructions to return null rather than fill a gap from memory. 47 reads on the batch: 16 corroborated, 19 stated no identity, 6 named a different organisation, 3 contradicted the location, 3 unavailable. 16 `operating_name` values written — **never** `name1_enriched`, asserted by test. Page reads are cached on the domain and recorded to disk, so a thesis re-run reproduces its corroboration decisions instead of re-asking today's web. Two new nullable columns, `Operating Name` and `Operating Name Provenance` (`web:{domain}:extracted:{date}`); the SQL/ADF artefacts that need them are listed in `corroborator_report.md`.
+
+**Three defects the runs exposed, and fixed.** (1) A Fix 2 short-circuit returned before any tier set `enrichment_status`, leaving 12 records at the `failed` default — a DATAshaper "Error" severity on records the pipeline had just confirmed. (2) The new fetch pinned `verify=certifi.where()` and failed on **47 of 54** domains behind the TLS-inspecting corporate VPN; it now honours `REQUESTS_CA_BUNDLE`, as the pre-existing fetch path always has. (3) Withdrawing an accepted domain on a below-threshold name score alone destroyed four correct domains — `AquaPhoenix` for "AquaPhoenix Scientific, Inc.", `Analytical Sales and Services, Inc.` for "Analytical Sales" — because `token_sort_ratio` is length-sensitive by design and a brand-vs-legal-name variant is exactly the shape it scores low. Withdrawal now requires the page to name a different organisation **and** place it in a different state or country, which separates the batch's one true wrong-entity domain from all four false ones.
+
+New: `enrichment/unchanged_state.py`, `enrichment/page_corroborator.py`, `utils.cache.PageCache`, `search.page_fetcher.PageFetchResult`, `scripts/run_batch.py`, `scripts/retry_trace_report.py`, `scripts/fix_reports.py`. Tests `test_retry_trace.py` (11), `test_unchanged_state.py` (17), `test_page_corroborator.py` (40). Flag codes are unchanged — the page read reports through an appended `flag_notes` clause rather than a new code.
+
+### Per-field provenance and admissibility
 
 The response carried one `tier_used` / `source` / `confidence` triple per record. Row 5 has Name 1 from ROR, Name 2 from a SERP → fetch → LLM chain and a department domain from the probe — one label collapses all three — and no record-level label can represent a field written twice, which is exactly what [Fix 2's retry](#stage-5-tier-1-re-lookup-after-canonicalisation) does to `name1`. Row 4's symptom, a verified ROR ID shipping next to an LLM-uncertainty flag, was that sequence going unrecorded. Full description in [Per-Field Provenance and Admissibility](#per-field-provenance-and-admissibility).
 

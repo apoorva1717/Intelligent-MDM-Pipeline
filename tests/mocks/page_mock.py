@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 
-from search.page_fetcher import PageContent, PageFetcher
+from search.page_fetcher import PageContent, PageFetcher, PageFetchResult
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,18 @@ class MockPageFetcher(PageFetcher):
         """No redirect resolution in tests — return the URL unchanged so the
         department probe's base stays deterministic (no network)."""
         return url
+
+    async def fetch_page_result(self, url: str, timeout: int | None = None):
+        """Fix 3's status-carrying entry point, over the same mock corpus.
+
+        A URL with no mock is a 404 rather than an exception, so a test that
+        does not care about page reads gets `fetch_unavailable` — the outcome
+        that changes nothing — instead of a crash inside the corroborator.
+        """
+        content = await self.fetch_page_content(url)
+        if content is None:
+            return PageFetchResult(url=url, status=404)
+        return PageFetchResult(url=url, status=200, content=content)
 
     async def fetch_page_text(self, url: str) -> str | None:
         """Return mock page text matched by URL substring."""

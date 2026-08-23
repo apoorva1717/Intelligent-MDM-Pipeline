@@ -110,6 +110,13 @@ OPTIONAL_VARS_WITH_DEFAULTS = {
     "TOKEN_CANDIDATE_THRESHOLD": "0.6",
     "MAX_CANDIDATES_PER_BLOCK": "50",
     "PAGE_FETCH_TIMEOUT_SECONDS": "10",
+    # Fix 3 — page-read corroborator.
+    "PAGE_CORROBORATION_ENABLED": "true",
+    "PAGE_NAME_MATCH_THRESHOLD": "88",
+    "PAGE_READ_TIMEOUT_SECONDS": "8",
+    "PAGE_FIXTURE_DIR": "tests/fixtures/page_reads",
+    "PAGE_FIXTURE_REPLAY_ONLY": "false",
+    "PAGE_EXTRACT_FEEDS_RETRY": "false",
     "MOCK_EXTERNAL_CALLS": "false",
     "ENV": "production",
     "LOG_LEVEL": "INFO",
@@ -118,6 +125,12 @@ OPTIONAL_VARS_WITH_DEFAULTS = {
     # structured per-candidate JSON trace on the `enrichment.trace.website`
     # logger. Purely additive — resolution behaviour is unchanged. Default off.
     "WEBSITE_TRACE": "false",
+    # Diagnostic-only: when true, the Tier 1 re-lookup after canonicalisation
+    # emits one structured JSON line per finalised record on the
+    # `enrichment.trace.retry` logger — whether the retry was reached, why it
+    # was skipped, which registries it queried, which guards rejected what.
+    # Purely additive — retry behaviour is unchanged. Default off.
+    "RETRY_TRACE": "false",
 }
 
 
@@ -235,6 +248,66 @@ class Settings:
         default_factory=lambda: int(os.getenv("PAGE_FETCH_TIMEOUT_SECONDS", "10"))
     )
 
+    # ── Fix 3 — page-read corroborator (enrichment/page_corroborator.py) ──
+    # Feature flag, following LEI_LOOKUP_ENABLED / DOMAIN_OWNERSHIP_GUARD_ENABLED.
+    # When off the step does not run and no page is fetched.
+    page_corroboration_enabled: bool = field(
+        default_factory=lambda: _bool(
+            os.getenv("PAGE_CORROBORATION_ENABLED"), default=True,
+        )
+    )
+    # rapidfuzz token_sort_ratio (0-100) an extracted page name must reach
+    # against Name 1 before the page counts as naming this organisation.
+    #
+    # DERIVATION: this is a supplied-name-vs-stated-legal-name comparison — the
+    # same shape as GLEIF's name-verification guard, and it reuses that guard's
+    # scorer verbatim (`enrichment.tier1_lei._name_match_score`: token_sort_ratio,
+    # max of raw and legal-form-stripped). It therefore inherits that guard's
+    # threshold and its derivation (LEI_NAME_MATCH_THRESHOLD = 88, tuned so
+    # "Personalvorsorgestiftung der Pfizer AG" does not verify as "Pfizer AG").
+    # It is a SEPARATE knob rather than a reference so that retuning the
+    # registry guard does not silently retune what counts as a corroborating
+    # page, and vice versa; the default is deliberately identical.
+    page_name_match_threshold: float = field(
+        default_factory=lambda: float(os.getenv("PAGE_NAME_MATCH_THRESHOLD", "88"))
+    )
+    # Hard per-request timeout for a corroboration fetch. Shorter than
+    # PAGE_FETCH_TIMEOUT_SECONDS because this step is optional evidence on a
+    # path that already has an answer: up to five requests may be issued per
+    # domain (root plus the imprint probe), and a slow host must not dominate
+    # the record's latency.
+    page_read_timeout_seconds: int = field(
+        default_factory=lambda: int(os.getenv("PAGE_READ_TIMEOUT_SECONDS", "8"))
+    )
+    # Where page reads are recorded, one JSON file per domain. A page read is a
+    # claim about what a site said on a given day, so it is kept on disk and
+    # not only in memory: re-running a thesis batch must reproduce its
+    # corroboration decisions rather than re-litigate them against today's web.
+    # Set to "" to disable the fixture store (memory-only).
+    page_fixture_dir: str = field(
+        default_factory=lambda: os.getenv(
+            "PAGE_FIXTURE_DIR", "tests/fixtures/page_reads",
+        )
+    )
+    # Refuse to fetch anything not already recorded. A missing fixture then
+    # surfaces as `fetch_unavailable` instead of a silent new network call —
+    # what an offline re-analysis or a CI run wants.
+    page_fixture_replay_only: bool = field(
+        default_factory=lambda: _bool(
+            os.getenv("PAGE_FIXTURE_REPLAY_ONLY"), default=False,
+        )
+    )
+    # Optional: offer a page-extracted legal name to the Stage 5 Tier 1 retry
+    # as a lookup candidate. OFF by default and deliberately so — Fix 1's trace
+    # shows Stage 5's yield is bounded by GLEIF's coverage of private US SMBs,
+    # not by the supply of candidate names, so this buys API calls before it
+    # buys identifiers. Every retry guard still applies when it is on.
+    page_extract_feeds_retry: bool = field(
+        default_factory=lambda: _bool(
+            os.getenv("PAGE_EXTRACT_FEEDS_RETRY"), default=False,
+        )
+    )
+
     # Concurrency
     default_max_concurrency: int = field(
         default_factory=lambda: int(os.getenv("DEFAULT_MAX_CONCURRENCY", "5"))
@@ -269,6 +342,13 @@ class Settings:
     # Off by default; enabling it only adds logging, never changes resolution.
     website_trace: bool = field(
         default_factory=lambda: _bool(os.getenv("WEBSITE_TRACE"), default=False)
+    )
+    # Diagnostic-only per-record trace of the Tier 1 re-lookup after
+    # canonicalisation (Stage 5). Off by default; enabling it only adds a JSON
+    # line per finalised record on `enrichment.trace.retry` and never changes
+    # whether a retry fires, which registry it queries, or what it writes.
+    retry_trace: bool = field(
+        default_factory=lambda: _bool(os.getenv("RETRY_TRACE"), default=False)
     )
     # Log file path. None => configure_logging uses its default
     # (logs/enrichment_api.log); set LOG_FILE="" to disable file logging.

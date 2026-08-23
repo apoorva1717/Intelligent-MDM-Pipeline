@@ -1,0 +1,13 @@
+{
+ "domain": "avomeen.com",
+ "payload": {
+  "status": null,
+  "blocked": false,
+  "error": "ReadTimeout",
+  "url": "https://avomeen.com/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

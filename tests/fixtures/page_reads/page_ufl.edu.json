@@ -1,0 +1,13 @@
+{
+ "domain": "ufl.edu",
+ "payload": {
+  "status": 404,
+  "blocked": false,
+  "error": null,
+  "url": "https://ufl.edu/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

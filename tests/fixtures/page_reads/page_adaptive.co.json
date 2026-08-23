@@ -1,0 +1,15 @@
+{
+ "domain": "adaptive.co",
+ "payload": {
+  "status": 200,
+  "blocked": false,
+  "error": null,
+  "url": "https://www.adaptive.co/",
+  "title": "Adaptive Innovations",
+  "h1": "Unlocking Healthcare Abundance",
+  "text": "Adaptive Innovations Healthcare \u00b7 AI Unlocking Healthcare Abundance Adaptive is the AI-native healthcare provider rebuilding the way care is delivered in America, starting with home health. Join Our Team Healthcare's last mile The AI operating system for physical care We combine AI-native operations with clinicians in the home, so every patient gets the care they need. The care scarcity crisis 40 % of home health patients never receive care Unserved \u2014 turned away by admin burden $140B industry size 40% spent on admin By the numbers Already one of the largest home health providers in Texas 100,000+ patient visits delivered 500+ referring healthcare organizations 4.9% rehospitalization rate vs. 12.9% national average ~80% less time spent on clinician documentation Our team A world-class team, choosing to spend their time on something worth building We're hiring exceptional people who want to change healthcare. Join Our Team",
+  "paths": [
+   "/"
+  ]
+ }
+}

@@ -29,6 +29,15 @@ class CompanyCanonicalResult:
     # orchestrator may re-verify this against GLEIF to recover a typo'd
     # company name ("Bayr AG" → "Bayer AG") the guard blocks. None otherwise.
     proposed_name: str | None = None
+    # EVERY usable name the model returned, whatever its stated confidence and
+    # whatever the identity guard then decided (Fix 2). `proposed_name` is a
+    # narrower thing — a high-confidence proposal the guard refused — and is
+    # gated that way because it can buy a GLEIF call. This one buys nothing: it
+    # exists so `unchanged-confirmed` can ask whether the model's independent
+    # best answer reproduces the input, which is a real question even when the
+    # model was only medium-confident about the wording it chose.
+    returned_name: str | None = None
+    returned_confidence: str = "none"
 
 
 async def run_company_canonical(
@@ -70,6 +79,13 @@ async def run_company_canonical(
     cleaned = str(official_name).strip()
     if cleaned.lower() in {"null", "none", "n/a", "na"}:
         return result
+
+    # Recorded before either gate below. What the model returned is a fact
+    # about the call; whether it is good enough to REWRITE Name 1 is a separate
+    # decision, and both gates below are about the rewrite.
+    result.returned_name = cleaned
+    result.returned_confidence = confidence
+
     if confidence != "high":
         logger.info(
             "[%s] Company canonical: rejecting '%s' (confidence=%s)",
