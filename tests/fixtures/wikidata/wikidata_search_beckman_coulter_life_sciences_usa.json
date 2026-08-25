@@ -1,0 +1,10 @@
+{
+ "domain": "search:beckman coulter life sciences usa",
+ "payload": {
+  "searchinfo": {
+   "search": "Beckman Coulter Life Sciences USA"
+  },
+  "search": [],
+  "success": 1
+ }
+}

@@ -1,0 +1,11 @@
+{
+ "domain": "search:analytical sales",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Analytical Sales"
+  },
+  "search": [],
+  "success": 1
+ }
+}

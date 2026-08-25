@@ -1,0 +1,10 @@
+{
+ "domain": "search:bcm inks usa inc",
+ "payload": {
+  "searchinfo": {
+   "search": "BCM Inks USA, Inc"
+  },
+  "search": [],
+  "success": 1
+ }
+}

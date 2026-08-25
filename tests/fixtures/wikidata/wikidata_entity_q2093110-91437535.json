@@ -1,0 +1,137 @@
+{
+ "domain": "entity:q2093110",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q2093110",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "University of Texas at El Paso"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "UTEP"
+    },
+    {
+     "language": "en",
+     "value": "Texas Western University"
+    },
+    {
+     "language": "en",
+     "value": "Texas Western College of the University of Texas"
+    },
+    {
+     "language": "en",
+     "value": "College of Mines and Metallurgy of the University of Texas"
+    },
+    {
+     "language": "en",
+     "value": "State School of Mines and Metallurgy"
+    },
+    {
+     "language": "en",
+     "value": "The University of Texas at El Paso"
+    },
+    {
+     "language": "en",
+     "value": "utep.edu"
+    },
+    {
+     "language": "en",
+     "value": "University of Texas El Paso"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 62078547,
+        "id": "Q62078547"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 23002039,
+        "id": "Q23002039"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P159": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 16562,
+        "id": "Q16562"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.utep.edu",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P6782": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P6782",
+      "datavalue": {
+       "value": "04d5vba33",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

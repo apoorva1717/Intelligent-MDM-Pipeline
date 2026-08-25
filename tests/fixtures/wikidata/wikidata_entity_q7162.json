@@ -1,0 +1,82 @@
+{
+ "domain": "entity:q7162",
+ "payload": {
+  "id": "Q7162",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "genetics"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "genetic science"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 336,
+        "id": "Q336"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 28598684,
+        "id": "Q28598684"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 11862829,
+        "id": "Q11862829"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P279": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 420,
+        "id": "Q420"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

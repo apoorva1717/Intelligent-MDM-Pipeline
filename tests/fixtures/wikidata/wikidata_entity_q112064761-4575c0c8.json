@@ -1,0 +1,39 @@
+{
+ "domain": "entity:q112064761",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q112064761",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "ADMIXTOOLS"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "AdmixTools"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 7397,
+        "id": "Q7397"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

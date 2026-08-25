@@ -1,0 +1,95 @@
+{
+ "domain": "entity:q138338",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q138338",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "New Brunswick"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "New Brunswick, New Jersey"
+    },
+    {
+     "language": "en",
+     "value": "New Brunswick, NJ"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 2974552,
+        "id": "Q2974552"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 62049,
+        "id": "Q62049"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://thecityofnewbrunswick.org/",
+       "type": "string"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.newbrunswick.com/",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

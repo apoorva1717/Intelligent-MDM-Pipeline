@@ -1,0 +1,47 @@
+{
+ "domain": "entity:q6268163",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q6268163",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Johnson & Johnson Pharmaceutical Research and Development"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Janssen Research & Development"
+    },
+    {
+     "language": "en",
+     "value": "Johnson & Johnson Pharmaceutical Research & Development"
+    },
+    {
+     "language": "en",
+     "value": "Johnson & Johnson Pharmaceutical Research & Development, L.L.C."
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 4830453,
+        "id": "Q4830453"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

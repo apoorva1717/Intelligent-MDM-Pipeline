@@ -1,0 +1,73 @@
+{
+ "domain": "entity:q113366042",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q113366042",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "3-oxopimeloyl-[acyl-carrier-protein] synthase"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "BioZ"
+    },
+    {
+     "language": "en",
+     "value": "IPR046403"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 417841,
+        "id": "Q417841"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P279": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 8054,
+        "id": "Q8054"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 2900019,
+        "id": "Q2900019"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

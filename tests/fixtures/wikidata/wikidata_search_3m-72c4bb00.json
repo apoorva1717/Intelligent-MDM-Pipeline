@@ -1,0 +1,144 @@
+{
+ "domain": "search:3m",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "3M"
+  },
+  "search": [
+   {
+    "id": "Q159433",
+    "title": "Q159433",
+    "pageid": 160363,
+    "concepturi": "http://www.wikidata.org/entity/Q159433",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q159433",
+    "display": {
+     "label": {
+      "value": "3M",
+      "language": "en"
+     },
+     "description": {
+      "value": "American multinational corporation",
+      "language": "en"
+     }
+    },
+    "label": "3M",
+    "description": "American multinational corporation",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "3M"
+    }
+   },
+   {
+    "id": "Q2945375",
+    "title": "Q2945375",
+    "pageid": 2817178,
+    "concepturi": "http://www.wikidata.org/entity/Q2945375",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q2945375",
+    "display": {
+     "label": {
+      "value": "3M",
+      "language": "en"
+     },
+     "description": {
+      "value": "Belgian cycling team (2013-2016)",
+      "language": "en"
+     }
+    },
+    "label": "3M",
+    "description": "Belgian cycling team (2013-2016)",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "3M"
+    }
+   },
+   {
+    "id": "Q61662138",
+    "title": "Q61662138",
+    "pageid": 61511156,
+    "concepturi": "http://www.wikidata.org/entity/Q61662138",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q61662138",
+    "display": {
+     "label": {
+      "value": "Faculty of Mechanical Engineering",
+      "language": "en"
+     },
+     "description": {
+      "value": "faculty of Delft University of Technology, the Netherlands",
+      "language": "en"
+     }
+    },
+    "label": "Faculty of Mechanical Engineering",
+    "description": "faculty of Delft University of Technology, the Netherlands",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "3mE"
+    },
+    "aliases": [
+     "3mE"
+    ]
+   },
+   {
+    "id": "Q13362468",
+    "title": "Q13362468",
+    "pageid": 15043562,
+    "concepturi": "http://www.wikidata.org/entity/Q13362468",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q13362468",
+    "display": {
+     "label": {
+      "value": "ditrigonal pyramidal",
+      "language": "en"
+     },
+     "description": {
+      "value": "point group",
+      "language": "en"
+     }
+    },
+    "label": "ditrigonal pyramidal",
+    "description": "point group",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "3m"
+    },
+    "aliases": [
+     "3m"
+    ]
+   },
+   {
+    "id": "Q29413411",
+    "title": "Q29413411",
+    "pageid": 31060481,
+    "concepturi": "http://www.wikidata.org/entity/Q29413411",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q29413411",
+    "display": {
+     "label": {
+      "value": "3M22 Zircon",
+      "language": "en"
+     },
+     "description": {
+      "value": "Russian hypersonic missile",
+      "language": "en"
+     }
+    },
+    "label": "3M22 Zircon",
+    "description": "Russian hypersonic missile",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "3M22 Zircon"
+    }
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

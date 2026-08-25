@@ -1,0 +1,40 @@
+{
+ "domain": "search:bic corp",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Bic Corp"
+  },
+  "search": [
+   {
+    "id": "Q795981",
+    "title": "Q795981",
+    "pageid": 748962,
+    "concepturi": "http://www.wikidata.org/entity/Q795981",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q795981",
+    "display": {
+     "label": {
+      "value": "Bic",
+      "language": "en"
+     },
+     "description": {
+      "value": "French manufacturing company",
+      "language": "en"
+     }
+    },
+    "label": "Bic",
+    "description": "French manufacturing company",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "Bic Corporation"
+    },
+    "aliases": [
+     "Bic Corporation"
+    ]
+   }
+  ],
+  "success": 1
+ }
+}

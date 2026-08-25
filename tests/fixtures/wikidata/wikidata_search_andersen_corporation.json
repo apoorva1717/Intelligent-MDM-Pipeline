@@ -1,0 +1,36 @@
+{
+ "domain": "search:andersen corporation",
+ "payload": {
+  "searchinfo": {
+   "search": "Andersen Corporation"
+  },
+  "search": [
+   {
+    "id": "Q4753960",
+    "title": "Q4753960",
+    "pageid": 4542684,
+    "concepturi": "http://www.wikidata.org/entity/Q4753960",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q4753960",
+    "display": {
+     "label": {
+      "value": "Andersen Corporation",
+      "language": "en"
+     },
+     "description": {
+      "value": "American window and door company",
+      "language": "en"
+     }
+    },
+    "label": "Andersen Corporation",
+    "description": "American window and door company",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Andersen Corporation"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

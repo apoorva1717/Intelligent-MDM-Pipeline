@@ -1,0 +1,17 @@
+{
+ "domain": "collegeboard.org",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "status": 200,
+  "blocked": false,
+  "error": null,
+  "url": "https://www.collegeboard.org/",
+  "title": "College Board - SAT, AP, College Search and Admission Tools",
+  "h1": "",
+  "text": "College Board - SAT, AP, College Search and Admission Tools SAT PSAT/NMSQT PSAT 10 PSAT 8/9 Student Score Reports AP AP Students AP Central Pre-AP Springboard Big Future BigFuture School College Search BigFuture Scholarships Career Quiz ACCUPLACER CLEP Higher Ed Search CSS Profile PowerFAIDS Find the right college for you About Us We\u2019re a mission-driven not-for-profit organization that connects students to college success. Membership More than 6,000 member institutions and organizations drive the College Board\u2019s mission. Newsroom Read press releases and announcements to see what\u2019s new at the College Board. Research Our world-class research informs ongoing innovation in our programs. Events Our events provide professional learning and networking opportunities for educators. Careers Explore career opportunities at the College Board and join our team. Important Note About Unsolicited Calls We never make unsolicited calls trying to sell anything or asking for personal data. Read more about our security policy. [/about] About Our Organization | College Board We're the College Board About Our Organization | College Board We're the College Board Clearing a path for all students to own their future. College Board reaches more than 7 million students a year, helping them navigate the path from high school to college and career. Our not-for-profit membership organization was founded more than 120 years ago. We pioneered programs like the SAT\u00ae and AP\u00ae to expand opportunities for students and help them develop the skills they need. Our BigFuture\u00ae program helps students plan for college, pay for college, and explore careers. Learn More About Us Our Leadership Team Meet the people who help students navigate their path to success. Meet Our Leadership Our National and Regional Offices Learn about our offices and the conferences, forums, and institutions we sponsor. Our National and Regional Offices How We're Governed Understand our structure and learn about our Board of Trustees and Assembly Councils. How We're Governed Make a Difference Join the College Board\u2019s diverse team of talented professionals dedicated to making college dreams come true. Learn About Careers",
+  "paths": [
+   "/",
+   "/about"
+  ]
+ }
+}

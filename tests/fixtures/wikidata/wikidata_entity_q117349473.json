@@ -1,0 +1,88 @@
+{
+ "domain": "entity:q117349473",
+ "payload": {
+  "id": "Q117349473",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "artificial intelligence model"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "artificially intelligent model"
+    },
+    {
+     "language": "en",
+     "value": "AI model"
+    },
+    {
+     "language": "en",
+     "value": "artificial intelligence"
+    },
+    {
+     "language": "en",
+     "value": "AI"
+    },
+    {
+     "language": "en",
+     "value": "individual artificial intelligence"
+    },
+    {
+     "language": "en",
+     "value": "artificial intelligence software"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 112057532,
+        "id": "Q112057532"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P279": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 192776,
+        "id": "Q192776"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 7397,
+        "id": "Q7397"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,47 @@
+{
+ "domain": "entity:q139970047",
+ "payload": {
+  "id": "Q139970047",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "APRECIA PHARMACEUTICALS LLC"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 4830453,
+        "id": "Q4830453"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P159": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 885619,
+        "id": "Q885619"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

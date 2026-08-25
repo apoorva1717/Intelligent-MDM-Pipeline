@@ -1,0 +1,86 @@
+{
+ "domain": "entity:q1261",
+ "payload": {
+  "id": "Q1261",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Colorado"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "CO"
+    },
+    {
+     "language": "en",
+     "value": "State of Colorado"
+    },
+    {
+     "language": "en",
+     "value": "Colo."
+    },
+    {
+     "language": "en",
+     "value": "Colorado, United States"
+    },
+    {
+     "language": "en",
+     "value": "Centennial State"
+    },
+    {
+     "language": "en",
+     "value": "US-CO"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 35657,
+        "id": "Q35657"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.colorado.gov/",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

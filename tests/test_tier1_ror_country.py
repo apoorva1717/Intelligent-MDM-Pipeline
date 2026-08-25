@@ -21,18 +21,26 @@ from enrichment import tier1_ror
 from enrichment.tier1_ror import call_ror, clear_ror_cache
 
 
-def _org(ror_id: str, name: str, country_code: str, country_name: str) -> dict:
-    """Minimal ROR v2 organisation dict."""
+def _org(
+    ror_id: str, name: str, country_code: str, country_name: str,
+    city: str | None = None,
+) -> dict:
+    """Minimal ROR v2 organisation dict.
+
+    *city* is the registered locality. "BASF" is a four-character acronym, so
+    Fix C(3) requires a second signal before a registry name match on it is
+    accepted; the tests that expect an ACCEPT supply the city that corroborates
+    it. That leaves the country guard — what this module is actually about —
+    as the only thing under test.
+    """
+    geo = {"country_code": country_code, "country_name": country_name}
+    if city:
+        geo["name"] = city
     return {
         "id": ror_id,
         "names": [{"value": name, "types": ["ror_display"]}],
         "types": ["company"],
-        "locations": [{
-            "geonames_details": {
-                "country_code": country_code,
-                "country_name": country_name,
-            }
-        }],
+        "locations": [{"geonames_details": geo}],
         "relationships": [],
         "links": [],
     }
@@ -85,12 +93,16 @@ async def test_affiliation_right_country_accepted(monkeypatch):
         if "affiliation" in request.url.params:
             return httpx.Response(200, json={"items": [
                 {"chosen": True, "score": 1.0,
-                 "organization": _org(DE_BASF, "BASF", "DE", "Germany")},
+                 "organization": _org(
+                     DE_BASF, "BASF", "DE", "Germany", city="Ludwigshafen",
+                 )},
             ]})
         return httpx.Response(200, json={"items": []})
 
     _patch_ror(monkeypatch, handler)
-    res = await call_ror("BASF", country_code="DE", country="Germany")
+    res = await call_ror(
+        "BASF", country_code="DE", country="Germany", city="Ludwigshafen",
+    )
     assert res["matched"] is True
     assert res["ror_id"] == DE_BASF
     assert res["country_code"] == "DE"
@@ -125,11 +137,14 @@ async def test_no_country_code_keeps_match(monkeypatch):
         if "affiliation" in request.url.params:
             return httpx.Response(200, json={"items": [
                 {"chosen": True, "score": 1.0,
-                 "organization": _org(US_BASF, "BASF", "US", "United States")},
+                 "organization": _org(
+                     US_BASF, "BASF", "US", "United States",
+                     city="Florham Park",
+                 )},
             ]})
         return httpx.Response(200, json={"items": []})
 
     _patch_ror(monkeypatch, handler)
-    res = await call_ror("BASF", country_code=None)
+    res = await call_ror("BASF", country_code=None, city="Florham Park")
     assert res["matched"] is True
     assert res["ror_id"] == US_BASF

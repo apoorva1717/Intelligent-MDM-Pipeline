@@ -1,0 +1,185 @@
+{
+ "domain": "entity:q159433",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q159433",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "3M"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Minnesota Mining and Manufacturing"
+    },
+    {
+     "language": "en",
+     "value": "Minnesota Mining & Mfg. Co."
+    },
+    {
+     "language": "en",
+     "value": "3M corporation"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 778575,
+        "id": "Q778575"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 891723,
+        "id": "Q891723"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 4830453,
+        "id": "Q4830453"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P159": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 990856,
+        "id": "Q990856"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 80107,
+        "id": "Q80107"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 993483,
+        "id": "Q993483"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 28848,
+        "id": "Q28848"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.3m.com/",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P6782": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P6782",
+      "datavalue": {
+       "value": "00mgss748",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P1278": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P1278",
+      "datavalue": {
+       "value": "LUZQVYP4VS22CLWDAR65",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

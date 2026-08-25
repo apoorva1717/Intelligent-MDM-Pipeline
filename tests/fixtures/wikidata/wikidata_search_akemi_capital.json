@@ -1,0 +1,10 @@
+{
+ "domain": "search:akemi capital",
+ "payload": {
+  "searchinfo": {
+   "search": "Akemi Capital"
+  },
+  "search": [],
+  "success": 1
+ }
+}

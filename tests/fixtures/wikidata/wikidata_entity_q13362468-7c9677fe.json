@@ -1,0 +1,53 @@
+{
+ "domain": "entity:q13362468",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q13362468",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "ditrigonal pyramidal"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "3m"
+    }
+   ]
+  },
+  "claims": {
+   "P279": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 588274,
+        "id": "Q588274"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 899720,
+        "id": "Q899720"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

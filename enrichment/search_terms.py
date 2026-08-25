@@ -549,21 +549,65 @@ def _subdomain_acronym(
     return prefix.upper()
 
 
+def _acronym_names_the_record(acronym: str | None, name1: str) -> bool:
+    """True when *acronym* is an acronym OF *name1* (or there is no name).
+
+    Fix D(3). ``_ror_acronym`` is an acronym of whatever ROR record supplied
+    it, and until this check existed nothing tied that record to the name the
+    output actually ships. On the BIC Corp row ROR matched Centene on one run
+    and Balchem on the next; GLEIF wrote the correct "BIC CORPORATION" into
+    Name 1, and Search Term 1 was derived from the ROR candidate that had
+    already been contradicted.
+
+    ``acronym_matches_name`` is the same test ``tier1_ror`` already applies
+    when it chooses which of several ROR acronyms is the current one — no new
+    machinery, and no threshold at all.
+
+    A blank Name 1 passes: there is nothing for the acronym to disagree WITH,
+    and "absence is not conflict" is the rule this codebase applies everywhere
+    else it compares two sources (the locality comparator, the cross-source
+    gate). A record with an acronym and no Name 1 keeps the handle it had.
+    """
+    acronym = (acronym or "").strip()
+    if not acronym:
+        return False
+    return not name1 or acronym_matches_name(acronym, name1)
+
+
 def _derive_search_term_1(result: dict[str, Any]) -> str | None:
-    """search_term_1 chain: ROR acronym (currency-checked upstream) → TLD-
-    stripped domain → a handle derived from the enriched Name 1 → None.
+    """search_term_1 chain: ROR acronym → TLD-stripped domain → a handle
+    derived from the enriched Name 1 → None — with every link in the chain
+    required to name the SAME organisation the record ships.
 
     Every input is a post-enrichment value. The pre-enrichment SAP Search
     Term 1 is deliberately NOT in this chain: it is customer-maintained free
     text, and once enrichment has produced an official name, a domain or a
     registry acronym, echoing the input would ship a stale handle for a
     record whose name we just corrected.
+
+    Fix D(3) adds the missing condition. The first two links are handles for
+    whichever source supplied them, and the record's Name 1 may by now have
+    come from a different source — or the consistency gate may have removed
+    the source that supplied them. So each is used only if it is a handle for
+    ``name1_enriched``; otherwise the chain falls through to Name 1 itself,
+    which is by construction the identity that survived every gate.
     """
+    name1 = (result.get("name1_enriched") or "").strip()
     ror_acronym = (result.get("_ror_acronym") or "").strip() or None
-    if ror_acronym:
+    if ror_acronym and _acronym_names_the_record(ror_acronym, name1):
         return ror_acronym
     domain = (result.get("domain") or "").strip() or None
     if domain:
+        # No second name check on the domain, deliberately. The domain a
+        # losing registry supplied is already GONE by the time this runs —
+        # `enrichment.consistency` nulls it with the identifier, which is the
+        # right place for that decision because it is the place that knows
+        # which source lost. Re-asking the name question here instead would
+        # reject domains the ownership guard legitimately accepted on
+        # registry provenance or on email evidence rather than on name
+        # similarity (`uni-tuebingen.de` for "University of Tübingen" scores
+        # below the guard's own threshold and is still the university's
+        # domain).
         return strip_tld(domain)
     # Rule 3 — a handle derived from the ENRICHED Name 1, and only from it.
     # `name1_enriched` IS the Name 1 column of the response: finalise has
@@ -578,7 +622,6 @@ def _derive_search_term_1(result: dict[str, Any]) -> str | None:
     # This also subsumes the UC 7 person guard: a person lifted out of Name 1
     # leaves `name1_enriched` blank → None, while a Stage-2b-resolved
     # affiliation puts a real institution there → a handle is derived from it.
-    name1 = (result.get("name1_enriched") or "").strip()
     if not name1:
         return None
     return _name1_text_handle(name1) or name1

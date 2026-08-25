@@ -1,0 +1,10 @@
+{
+ "domain": "search:botanical concepts",
+ "payload": {
+  "searchinfo": {
+   "search": "Botanical Concepts"
+  },
+  "search": [],
+  "success": 1
+ }
+}

@@ -1,0 +1,10 @@
+{
+ "domain": "search:alfieri mcbee corp",
+ "payload": {
+  "searchinfo": {
+   "search": "Alfieri - McBee Corp"
+  },
+  "search": [],
+  "success": 1
+ }
+}

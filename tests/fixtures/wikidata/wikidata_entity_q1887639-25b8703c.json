@@ -1,0 +1,46 @@
+{
+ "domain": "entity:q1887639",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q1887639",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "admixture"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P279": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 3300034,
+        "id": "Q3300034"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 350176,
+        "id": "Q350176"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,10 @@
+{
+ "domain": "search:baril corp",
+ "payload": {
+  "searchinfo": {
+   "search": "Baril Corp"
+  },
+  "search": [],
+  "success": 1
+ }
+}

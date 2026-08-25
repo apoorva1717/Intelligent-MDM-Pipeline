@@ -1,0 +1,10 @@
+{
+ "domain": "search:afb international",
+ "payload": {
+  "searchinfo": {
+   "search": "AFB International"
+  },
+  "search": [],
+  "success": 1
+ }
+}

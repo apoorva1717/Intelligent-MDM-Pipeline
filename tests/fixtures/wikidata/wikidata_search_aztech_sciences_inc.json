@@ -1,0 +1,10 @@
+{
+ "domain": "search:aztech sciences inc",
+ "payload": {
+  "searchinfo": {
+   "search": "Aztech Sciences Inc"
+  },
+  "search": [],
+  "success": 1
+ }
+}

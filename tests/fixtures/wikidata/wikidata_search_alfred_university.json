@@ -1,0 +1,117 @@
+{
+ "domain": "search:alfred university",
+ "payload": {
+  "searchinfo": {
+   "search": "Alfred University"
+  },
+  "search": [
+   {
+    "id": "Q3446091",
+    "title": "Q3446091",
+    "pageid": 3282879,
+    "concepturi": "http://www.wikidata.org/entity/Q3446091",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q3446091",
+    "display": {
+     "label": {
+      "value": "Alfred University",
+      "language": "en"
+     },
+     "description": {
+      "value": "private university in Alfred, New York",
+      "language": "en"
+     }
+    },
+    "label": "Alfred University",
+    "description": "private university in Alfred, New York",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Alfred University"
+    }
+   },
+   {
+    "id": "Q107877610",
+    "title": "Q107877610",
+    "pageid": 103157239,
+    "concepturi": "http://www.wikidata.org/entity/Q107877610",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q107877610",
+    "display": {
+     "label": {
+      "value": "Alfred Saxons football",
+      "language": "en"
+     },
+     "description": {
+      "value": "football team of Alfred University",
+      "language": "en"
+     }
+    },
+    "label": "Alfred Saxons football",
+    "description": "football team of Alfred University",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "Alfred University Football"
+    },
+    "aliases": [
+     "Alfred University Football"
+    ]
+   },
+   {
+    "id": "Q48697863",
+    "title": "Q48697863",
+    "pageid": 49719998,
+    "concepturi": "http://www.wikidata.org/entity/Q48697863",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q48697863",
+    "display": {
+     "label": {
+      "value": "Alfred Saxons",
+      "language": "en"
+     },
+     "description": {
+      "value": "athletics programs of Alfred University",
+      "language": "en"
+     }
+    },
+    "label": "Alfred Saxons",
+    "description": "athletics programs of Alfred University",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "Alfred University athletics"
+    },
+    "aliases": [
+     "Alfred University athletics"
+    ]
+   },
+   {
+    "id": "Q68169260",
+    "title": "Q68169260",
+    "pageid": 67842348,
+    "concepturi": "http://www.wikidata.org/entity/Q68169260",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q68169260",
+    "display": {
+     "label": {
+      "value": "Alfred University Research and Archives",
+      "language": "en"
+     },
+     "description": {
+      "value": "repository",
+      "language": "en"
+     }
+    },
+    "label": "Alfred University Research and Archives",
+    "description": "repository",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Alfred University Research and Archives"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

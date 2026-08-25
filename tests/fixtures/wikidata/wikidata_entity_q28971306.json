@@ -1,0 +1,87 @@
+{
+ "domain": "entity:q28971306",
+ "payload": {
+  "id": "Q28971306",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "AkzoNobel (Germany)"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 4830453,
+        "id": "Q4830453"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 183,
+        "id": "Q183"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P159": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 1055,
+        "id": "Q1055"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.akzonobel.com/de/",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P6782": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P6782",
+      "datavalue": {
+       "value": "04achrx04",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,10 @@
+{
+ "domain": "search:aurora biosciences corp",
+ "payload": {
+  "searchinfo": {
+   "search": "Aurora Biosciences Corp"
+  },
+  "search": [],
+  "success": 1
+ }
+}

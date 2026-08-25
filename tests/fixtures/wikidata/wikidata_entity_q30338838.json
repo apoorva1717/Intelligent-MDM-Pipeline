@@ -1,0 +1,75 @@
+{
+ "domain": "entity:q30338838",
+ "payload": {
+  "id": "Q30338838",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "AkzoNobel (United Kingdom)"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 4830453,
+        "id": "Q4830453"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 145,
+        "id": "Q145"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P159": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 84,
+        "id": "Q84"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P6782": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P6782",
+      "datavalue": {
+       "value": "05br4cc69",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

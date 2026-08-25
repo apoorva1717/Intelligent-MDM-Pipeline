@@ -1,0 +1,32 @@
+{
+ "domain": "search:owens corning sales llc",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Owens Corning Sales LLC"
+  },
+  "search": [
+   {
+    "id": "Q131645848",
+    "title": "Q131645848",
+    "pageid": 125552891,
+    "concepturi": "http://www.wikidata.org/entity/Q131645848",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q131645848",
+    "display": {
+     "label": {
+      "value": "Owens Corning Sales Llc",
+      "language": "fr"
+     }
+    },
+    "label": "Owens Corning Sales Llc",
+    "match": {
+     "type": "label",
+     "language": "fr",
+     "text": "Owens Corning Sales Llc"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

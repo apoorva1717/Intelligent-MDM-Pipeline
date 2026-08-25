@@ -53,8 +53,15 @@ import logging
 from collections.abc import Iterable
 from typing import Any
 
+from enrichment.confidence import LOW, parse as parse_provenance
 from enrichment.preprocess import _is_opaque_code
-from enrichment.provenance import SCOPED_FIELDS, FIELD_LABELS as PROV_FIELD_LABELS, weak_fields
+from enrichment.provenance import (
+    SCOPED_FIELDS,
+    FIELD_LABELS as PROV_FIELD_LABELS,
+    derived_scalar,
+    log_from_dicts,
+    weak_fields,
+)
 from enrichment.unchanged_state import UNCHANGED_CONFIRMED, UNCHANGED_VERIFIED
 from utils.name_slots import DEPT_SLOTS, NAME_SLOT_LABELS, NAME_SLOTS
 
@@ -68,6 +75,17 @@ logger = logging.getLogger(__name__)
 # prose template in `_REASONS`.
 
 NO_MATCH = "no-match"
+#: RETIRED by the provenance migration, and kept for exactly two jobs: its
+#: prose (`_REASONS`) is still what the derived flag says, and its slot in
+#: `_CODE_ORDER` is still where that prose appears in a multi-part reason. It
+#: is NOT in `ALL_CODES` and can never appear in `flag_codes` again.
+#:
+#: It said "left exactly as supplied — the canonical form could not be
+#: established with enough confidence to rewrite it". That is the definition of
+#: `input:low` on the field, which the record now carries in its provenance, so
+#: the code was a second recording of a fact the column already stated — and
+#: the two could disagree, because one was raised by a tier remembering to
+#: leave a marker and the other is derived from the write history.
 LOW_CONFIDENCE_UNCHANGED = "low-confidence-unchanged"
 DEPT_VIA_LAB = "dept-via-lab"
 PERSON_UNRESOLVED = "person-unresolved"
@@ -78,10 +96,35 @@ EMAIL_CONFLICT = "email-conflict"
 NAME3_NOT_DEMOTED = "name3-not-demoted"
 MULTIPLE_CONTACTS = "multiple-contacts"
 UNVERIFIED_INFERENCE = "unverified-inference"
+#: The organisation the record names has been dissolved (Wikidata ``P576``) or
+#: replaced by another entity (``P1366``). The pipeline deliberately does NOT
+#: rewrite the name to the successor: which legal entity a customer record
+#: should point at after a merger is a business decision, not a data-quality
+#: correction, and it depends on contracts and open orders this service cannot
+#: see. The flag hands the reviewer the successor's name and QID and stops.
+ENTITY_SUPERSEDED = "entity-superseded"
+#: Fix D(1). Two sources named this organisation and they named different
+#: organisations — a GLEIF legal name against a ROR official name, or a
+#: registry against what the candidate website states. The lower-priority
+#: source's fields have been removed; the reason names both entities so the
+#: reviewer can see which identity was dropped and why, rather than finding a
+#: silently blank column. Raised only when the pipeline ACTED, so it is never
+#: a report of a disagreement that made no difference.
+SOURCE_CONFLICT = "source-conflict"
+#: Fix D(2). A ROR or GLEIF match whose registered locality contradicts the
+#: record's city/state. The match is KEPT — a company relocating within one
+#: country is ordinary, and a moved address is not evidence that the registry
+#: identified the wrong entity — but the two places are named so a reviewer
+#: checking the address knows the registry disagrees with it. (A locality
+#: contradiction on a name too short to identify an entity on its own is a
+#: different case entirely and never gets this far: Fix C(3) refuses that
+#: match in the registry client.)
+REGISTRY_LOCATION_MISMATCH = "registry-location-mismatch"
 
+#: Every code that can appear in `flag_codes`. `LOW_CONFIDENCE_UNCHANGED` is
+#: deliberately absent — see its definition above.
 ALL_CODES: tuple[str, ...] = (
     NO_MATCH,
-    LOW_CONFIDENCE_UNCHANGED,
     DEPT_VIA_LAB,
     PERSON_UNRESOLVED,
     OVERFLOW,
@@ -91,6 +134,9 @@ ALL_CODES: tuple[str, ...] = (
     NAME3_NOT_DEMOTED,
     MULTIPLE_CONTACTS,
     UNVERIFIED_INFERENCE,
+    ENTITY_SUPERSEDED,
+    SOURCE_CONFLICT,
+    REGISTRY_LOCATION_MISMATCH,
 )
 
 # Emission order — most structural first, so the leading clause of a
@@ -99,9 +145,18 @@ _CODE_ORDER: tuple[str, ...] = (
     OVERFLOW,
     OPAQUE_CODE,
     PERSON_UNRESOLVED,
+    # Before `no-match`: "this organisation no longer exists" is a bigger
+    # change to what a reviewer does than "we could not identify it".
+    ENTITY_SUPERSEDED,
+    # Before `no-match` and before the inference codes: "two sources named two
+    # different organisations" changes what a reviewer does more than any
+    # doubt about a single value does — it says the record's identity itself
+    # is contested.
+    SOURCE_CONFLICT,
     NO_MATCH,
     UNVERIFIED_INFERENCE,
     LOW_CONFIDENCE_UNCHANGED,
+    REGISTRY_LOCATION_MISMATCH,
     DEPT_VIA_LAB,
     NAME3_NOT_DEMOTED,
     MULTIPLE_CONTACTS,
@@ -160,6 +215,20 @@ _REASONS: dict[str, str] = {
         "inferred without external evidence — confirm against an "
         "authoritative source"
     ),
+    ENTITY_SUPERSEDED: (
+        "names an organisation that no longer exists as a separate entity — "
+        "decide which entity this record should point to"
+    ),
+    SOURCE_CONFLICT: (
+        "two sources identified this as different organisations — the "
+        "lower-priority source's fields were removed; confirm which identity "
+        "is correct"
+    ),
+    REGISTRY_LOCATION_MISMATCH: (
+        "the registry record matched to this organisation is registered at a "
+        "different address — confirm the address, or that the organisation "
+        "has moved"
+    ),
 }
 
 # Prose variants that name the specific value in doubt. A reviewer told to
@@ -173,6 +242,26 @@ _DETAILED_REASONS: dict[str, str] = {
     DOMAIN_UNVERIFIED: (
         "a candidate website ({detail}) was found but nothing tied it to "
         "this organisation — confirm {detail} before using it"
+    ),
+    # The successor's name and QID, or the dissolution date. Without it the
+    # reviewer is told an entity is gone and left to find out what replaced it
+    # — which the pipeline already knows and has deliberately declined to act
+    # on. Naming it is the whole value of the flag.
+    ENTITY_SUPERSEDED: (
+        "names an organisation that no longer exists as a separate entity "
+        "({detail}) — decide which entity this record should point to"
+    ),
+    # Both entities by name. A reviewer told only "two sources disagreed" has
+    # to go and find out which two and about what — which the pipeline knew
+    # and has already acted on.
+    SOURCE_CONFLICT: (
+        "two sources identified this as different organisations — {detail}; "
+        "confirm which identity is correct"
+    ),
+    REGISTRY_LOCATION_MISMATCH: (
+        "the registry record matched to this organisation is registered at a "
+        "different address ({detail}) — confirm the address, or that the "
+        "organisation has moved"
     ),
 }
 
@@ -204,6 +293,11 @@ _EVIDENCE_KEYS: tuple[str, ...] = (
     "_multi_contact",
     "_domain_unverified",
     "_domain_page_note",
+    "_ev_entity_superseded",
+    # Fix D — left by `enrichment.consistency`, which runs just before this.
+    "_ev_source_conflict",
+    "_ev_source_conflict_fields",
+    "_ev_registry_location_mismatch",
 )
 
 
@@ -296,10 +390,69 @@ def _evidence_free_fields(
     return derived | out_of_scope
 
 
+#: The fields whose confidence derives the flag.
+#:
+#: Name 1 and Name 2 only. ``domain`` and ``record_type`` carry provenance
+#: like every other scoped field, and their confidence is exported — but they
+#: do not raise the review flag. The reason is what the flag is FOR: it asks a
+#: human to check a name. A record whose type could not be settled, or which
+#: has no website, is not a record with a wrong name in it, and routing those
+#: into the review queue would have moved this batch from 55 flagged rows to
+#: 96 — restoring exactly the "flag on 47 of 50 records" failure Fix 8 exists
+#: to have fixed.
+CORE_PROVENANCE_FIELDS: tuple[str, ...] = ("name1_enriched", "name2_enriched")
+
+
+def low_confidence_core_fields(result: Any) -> list[str]:
+    """Core field labels whose derived provenance confidence is ``low``.
+
+    The retirement of ``low-confidence-unchanged`` in one function. That code
+    was raised by a tier leaving an ``_ev_low_conf_unchanged`` marker behind;
+    it is now READ OFF the provenance the record already carries, because
+    "the canonical form could not be established" and ``input:low`` are the
+    same statement and there is no longer any reason to record it twice.
+
+    The three guards the old rule needed are subsumed rather than reimplemented
+    — which is the evidence that the derivation is the same decision, not a
+    lookalike. A field a registry wrote is ``ror:verified``, not ``input:low``;
+    a field Tier 3 wrote is ``llm:provisional``; a field batch consensus
+    replaced re-derives the moment it is written. None of them can be ``low``,
+    so none of them needs excluding.
+
+    Derived from the log rather than from the ``*_provenance`` columns because
+    ``compute_flags`` runs before those columns are projected — and because a
+    flag that read a column it also helps produce could drift from it.
+    """
+    log = getattr(result, "provenance", None)
+    if log is None:
+        return []
+    if isinstance(log, list):
+        log = log_from_dicts(log)
+
+    def _value(field: str) -> Any:
+        if hasattr(result, "get"):
+            return result.get(field)
+        return getattr(result, field, None)
+
+    low: list[str] = []
+    for field in CORE_PROVENANCE_FIELDS:
+        # An empty field has no value to doubt. Rule 3 of this module:
+        # absence of data is not a defect.
+        if not _value(field):
+            continue
+        scalar = derived_scalar(log, field, result)
+        if not scalar:
+            continue
+        if parse_provenance(scalar)[1] == LOW:
+            low.append(PROV_FIELD_LABELS[field])
+    return low
+
+
 def render(
     scopes: dict[str, Iterable[str]],
     details: dict[str, str] | None = None,
     notes: dict[str, str] | None = None,
+    low_confidence: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Render a code -> field-scope map into the five output fields.
 
@@ -323,6 +476,16 @@ def render(
     point: the flag vocabulary does not grow every time the pipeline learns
     something. A code with no note renders byte-identically to before.
     """
+    if LOW_CONFIDENCE_UNCHANGED in scopes:
+        # Raised rather than dropped. The code is retired, so a caller that
+        # still passes it is a caller that has not been migrated — and
+        # silently discarding its scope would lose a real doubt about a real
+        # field, which is the one outcome worse than failing here.
+        raise ValueError(
+            f"{LOW_CONFIDENCE_UNCHANGED!r} is retired and cannot be raised as "
+            "a code; pass its fields as `low_confidence=` instead, or let "
+            "`low_confidence_core_fields` derive them from the provenance",
+        )
     ordered = [c for c in _CODE_ORDER if c in scopes]
     scoped = {c: _sorted_fields(set(scopes[c] or ())) for c in ordered}
     kept = {
@@ -332,10 +495,25 @@ def render(
     kept_notes = {
         c: str(v) for c, v in (notes or {}).items() if c in scoped and v
     }
+    low = _sorted_fields(set(low_confidence or ()))
 
     reasons: list[str] = []
     flagged: set[str] = set()
-    for code in ordered:
+    # `_CODE_ORDER` still holds `LOW_CONFIDENCE_UNCHANGED`, and it is never in
+    # `scopes` any more — the slot is walked so the derived clause appears at
+    # the position the retired code occupied. A reviewer reading a multi-part
+    # reason sees the same clause in the same place as before the migration;
+    # only `flag_codes` lost the token.
+    for code in _CODE_ORDER:
+        if code == LOW_CONFIDENCE_UNCHANGED:
+            if low:
+                flagged.update(low)
+                reasons.append(
+                    f"{_label(low)}: {_REASONS[LOW_CONFIDENCE_UNCHANGED]}",
+                )
+            continue
+        if code not in scoped:
+            continue
         fields = scoped[code]
         flagged.update(fields)
         prose = (
@@ -350,11 +528,16 @@ def render(
     return {
         "flag_codes": ordered,
         "flagged_fields": _sorted_fields(flagged),
-        "flag_for_review": bool(ordered),
+        # DERIVED, not "true iff there is a code". A core field at `low`
+        # raises the flag with no code attached, which is the whole of the
+        # authorised taxonomy change: `low-confidence-unchanged` was a code
+        # that existed only to say what the confidence already says.
+        "flag_for_review": bool(ordered) or bool(low),
         "flag_reason": "; ".join(reasons) if reasons else None,
         "flag_scopes": scoped,
         "flag_details": kept,
         "flag_notes": kept_notes,
+        "flag_low_confidence": low,
     }
 
 
@@ -392,11 +575,35 @@ def retract(result: Any, codes: Iterable[str], field: str) -> tuple[str, ...]:
         if not fields:
             del scopes[code]
 
-    if not withdrawn:
+    # The derived half of the flag is RE-DERIVED rather than withdrawn. Batch
+    # consensus reaches here having just written `name1_enriched` through
+    # `EnrichmentResult.write`, which regenerated that field's provenance from
+    # the new event — so a record that was `input:low` because its own value
+    # stood is no longer `input:low` once a donor's value replaced it, and the
+    # flag drops out on its own. That is why `low-confidence-unchanged` is no
+    # longer in `_RETRACTED_BY_NAME1`: there is no code left to withdraw, and
+    # the state it described withdraws itself.
+    # Strictly a WITHDRAWAL, exactly like the codes above: if *field* was in
+    # the derived low and its freshly re-derived provenance no longer says
+    # `low`, it drops out. Nothing else in the set is re-judged — a Name 2
+    # doubt raised from the department marker is not this pass's business,
+    # and re-deriving the whole set here would silently discard it, because
+    # the marker was consumed by `compute_flags` and is gone.
+    low_before = list(getattr(result, "flag_low_confidence", None) or ())
+    low_now = list(low_before)
+    if field in low_now and field not in low_confidence_core_fields(result):
+        low_now.remove(field)
+        # Reported under the retired code's name. It is not being emitted —
+        # `flag_codes` cannot contain it and `ALL_CODES` does not list it —
+        # but the STATEMENT withdrawn is the one that code used to make, its
+        # prose is what was rendered, and a telemetry line or a log entry
+        # saying anything else would be describing a different withdrawal.
+        withdrawn.append(LOW_CONFIDENCE_UNCHANGED)
+    if not withdrawn and low_now == low_before:
         return ()
     details = dict(getattr(result, "flag_details", None) or {})
     notes = dict(getattr(result, "flag_notes", None) or {})
-    for key, value in render(scopes, details, notes).items():
+    for key, value in render(scopes, details, notes, low_now).items():
         setattr(result, key, value)
     logger.info({
         "record_id": getattr(result, "record_id", None),
@@ -460,6 +667,37 @@ def compute_flags(result: dict[str, Any]) -> None:
     if evidence.get("_ev_person_unresolved"):
         raise_flag(PERSON_UNRESOLVED, "name1")
 
+    # The Wikidata crosswalk lane found the matched item dissolved (`P576`) or
+    # replaced (`P1366`). Scoped to Name 1 because that is the field whose
+    # value the finding is about: the string is not wrong, the entity behind it
+    # is gone. Raised whatever else the lane did — a dissolved entity's LEI
+    # record is still informative and is still followed, and the flag stands
+    # regardless of whether that crosswalk resolved.
+    superseded = evidence.get("_ev_entity_superseded")
+    if superseded:
+        raise_flag(ENTITY_SUPERSEDED, "name1")
+        if isinstance(superseded, str):
+            details[ENTITY_SUPERSEDED] = superseded
+
+    # ── Fix D — cross-source consistency ──────────────────────────────────
+    # The gate has already acted: the losing source's fields are gone. This
+    # renders the consequence. Raised only when something WAS removed, so the
+    # code always describes a change the reviewer can see in the record.
+    conflict = evidence.get("_ev_source_conflict")
+    if conflict:
+        raise_flag(
+            SOURCE_CONFLICT,
+            *(evidence.get("_ev_source_conflict_fields") or ("name1",)),
+        )
+        details[SOURCE_CONFLICT] = str(conflict)
+
+    # The registry match STANDS; only its address is in doubt, so the flag is
+    # scoped to the address and not to the name or the identifier.
+    location_mismatch = evidence.get("_ev_registry_location_mismatch")
+    if location_mismatch:
+        raise_flag(REGISTRY_LOCATION_MISMATCH, "address")
+        details[REGISTRY_LOCATION_MISMATCH] = str(location_mismatch)
+
     # ── Field-level uncertainty ───────────────────────────────────────────
     # A value Tier 3 wrote rests on the LLM's training data and nothing else.
     # Flagged regardless of the model's confidence: a confident unverifiable
@@ -493,20 +731,34 @@ def compute_flags(result: dict[str, Any]) -> None:
         inferred.add(field)
         raise_flag(UNVERIFIED_INFERENCE, field)
 
-    # Canonicalisation was attempted, came back below threshold, and the input
-    # value was left in place. Per field, because that is how the doubt is
-    # actually shaped. Deliberately NOT conditioned on `*_changed`: the value
-    # may still have been title-cased or had an abbreviation expanded on the
-    # way out, and neither settles the question the low confidence raised.
-    # What does settle it is a later authority writing the field — the
-    # registry, or Tier 3, whose own code then describes it.
+    # `low-confidence-unchanged` was raised here as a CODE. Retired: the state
+    # it named is `input:low` on the field, the provenance says so, and
+    # `render` attaches this code's own prose to the derived flag — so the
+    # reviewer's sentence is unchanged and only the machine-readable token is
+    # gone.
+    #
+    # The marker is still READ, for one reason. `_ev_low_conf_unchanged` is
+    # set for the DEPARTMENT slots as well as for Name 1 (see
+    # `_mark_unchanged_departments` — "there is no corroborating evidence
+    # class for a unit name, so there is nothing for a three-state split to
+    # read"), and Name 3..5 are not in Fix 10's Phase 1 provenance scope at
+    # all. They have no attributing event, so they can carry no confidence,
+    # so a purely provenance-derived rule would drop their doubt silently.
+    # The 100-row chemspeed batch would not have caught it: every one of its
+    # twenty low-confidence rows is Name 1.
+    #
+    # So the derived low is the UNION of the two — what the provenance says
+    # for the fields provenance covers, and what the marker says for the
+    # fields it does not yet reach. When Name 3..5 enter provenance scope,
+    # this half deletes itself and nothing else changes.
+    marker_low: set[str] = set()
     for field in sorted(evidence.get("_ev_low_conf_unchanged") or ()):
         if field in registry_named or field in inferred:
             continue
         if not result.get(f"{field}_enriched"):
             # An empty input field that stayed empty. Nothing to review.
             continue
-        raise_flag(LOW_CONFIDENCE_UNCHANGED, field)
+        marker_low.add(field)
 
     # ── UC 13 ─────────────────────────────────────────────────────────────
     # The lab name normally lands in Name 3, but a full Name 3 sends it
@@ -551,18 +803,34 @@ def compute_flags(result: dict[str, Any]) -> None:
     # Only when there is nothing more specific to say. `no-match` means "the
     # pipeline has nothing to offer"; if any other code fired, that code is
     # the actionable one and this would only add noise.
-    if not codes and _nothing_was_enriched(result):
+    #
+    # The derived low counts as something more specific, and has to. Before
+    # the provenance migration this was guarded by `low-confidence-unchanged`
+    # being IN `codes`; retiring that code without moving the guard with it
+    # silently promoted eleven rows of the chemspeed batch from "confirm this
+    # value is correct" to "no source could identify this organisation" —
+    # measured, not hypothesised. The two statements are not interchangeable:
+    # the pipeline established that the record's own value stands, and
+    # `no-match` denies that anything was established at all.
+    low_confidence = _sorted_fields(
+        set(low_confidence_core_fields(result)) | marker_low,
+    )
+    if not codes and not low_confidence and _nothing_was_enriched(result):
         raise_flag(NO_MATCH, "name1")
 
     result.update(
-        render({c: scopes.get(c, set()) for c in codes}, details, notes),
+        render(
+            {c: scopes.get(c, set()) for c in codes},
+            details, notes, low_confidence,
+        ),
     )
     ordered = result["flag_codes"]
 
-    if ordered:
+    if ordered or low_confidence:
         logger.info({
             "record_id": result.get("record_id"),
             "step": "flags_computed",
             "flag_codes": ordered,
             "flagged_fields": result["flagged_fields"],
+            "low_confidence_fields": low_confidence,
         })

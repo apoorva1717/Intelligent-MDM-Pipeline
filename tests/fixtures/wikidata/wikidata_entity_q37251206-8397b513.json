@@ -1,0 +1,32 @@
+{
+ "domain": "entity:q37251206",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q37251206",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Tesla"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 101352,
+        "id": "Q101352"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

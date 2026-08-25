@@ -1,0 +1,32 @@
+{
+ "domain": "search:anresco laboratories",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Anresco Laboratories"
+  },
+  "search": [
+   {
+    "id": "Q124545355",
+    "title": "Q124545355",
+    "pageid": 118724932,
+    "concepturi": "http://www.wikidata.org/entity/Q124545355",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q124545355",
+    "display": {
+     "label": {
+      "value": "Anresco Laboratories",
+      "language": "de"
+     }
+    },
+    "label": "Anresco Laboratories",
+    "match": {
+     "type": "label",
+     "language": "de",
+     "text": "Anresco Laboratories"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

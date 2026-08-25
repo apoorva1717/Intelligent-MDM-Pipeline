@@ -1,0 +1,11 @@
+{
+ "domain": "search:benefuel",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Benefuel"
+  },
+  "search": [],
+  "success": 1
+ }
+}

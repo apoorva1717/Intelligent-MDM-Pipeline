@@ -20,11 +20,31 @@ import json
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
+import sys
 
-STATE_BY_BAND = {
-    "verified": "unchanged-verified",
-    "confirmed": "unchanged-confirmed",
-    "rule": "unchanged-unresolved",
+sys.path.insert(0, str(_ROOT))
+
+from enrichment.confidence import (  # noqa: E402
+    SOURCE_INPUT,
+    ProvenanceGrammarError,
+    parse as parse_provenance,
+)
+
+#: Fix 2's three unchanged states, keyed by the ``(confidence, witness)`` pair
+#: Provenance Scheme B renders them as. The old scheme put the state in a
+#: `band` slot (`input:1:verified` / `:confirmed` / `:rule`), which read as
+#: three confidences and was in fact one confidence and three evidence
+#: situations — the reason the scheme was replaced.
+STATE_BY_PROVENANCE = {
+    # Corroborated by an independent source; the witness names which.
+    ("verified", "web"): "unchanged-verified",
+    ("verified", "wikidata"): "unchanged-verified",
+    ("verified", "registry"): "unchanged-verified",
+    ("verified", "domain"): "unchanged-verified",
+    # A canonicalisation proposal reproduced the record's own value.
+    ("provisional", "llm"): "unchanged-confirmed",
+    # Nothing came back; the input stood.
+    ("low", None): "unchanged-unresolved",
 }
 
 
@@ -50,9 +70,15 @@ def _state(result: dict) -> str | None:
     actually sees, so a report built from it is a report on what shipped.
     """
     scalar = result.get("name1_provenance") or ""
-    if not scalar.startswith("input:"):
+    try:
+        source, confidence, witness = parse_provenance(scalar)
+    except ProvenanceGrammarError:
+        # Includes the empty string, and an old-grammar artefact. Both mean
+        # "this report cannot say", and neither is worth guessing at.
         return None
-    return STATE_BY_BAND.get(scalar.rsplit(":", 1)[-1])
+    if source != SOURCE_INPUT:
+        return None
+    return STATE_BY_PROVENANCE.get((confidence, witness))
 
 
 def _evidence(result: dict) -> str:

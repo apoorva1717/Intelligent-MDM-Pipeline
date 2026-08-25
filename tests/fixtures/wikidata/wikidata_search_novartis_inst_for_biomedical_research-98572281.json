@@ -1,0 +1,11 @@
+{
+ "domain": "search:novartis inst for biomedical research",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Novartis Inst for Biomedical Research"
+  },
+  "search": [],
+  "success": 1
+ }
+}

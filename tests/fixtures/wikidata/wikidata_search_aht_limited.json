@@ -1,0 +1,10 @@
+{
+ "domain": "search:aht limited",
+ "payload": {
+  "searchinfo": {
+   "search": "AHT Limited"
+  },
+  "search": [],
+  "success": 1
+ }
+}

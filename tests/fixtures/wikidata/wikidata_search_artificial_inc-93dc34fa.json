@@ -1,0 +1,11 @@
+{
+ "domain": "search:artificial inc",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Artificial, Inc"
+  },
+  "search": [],
+  "success": 1
+ }
+}

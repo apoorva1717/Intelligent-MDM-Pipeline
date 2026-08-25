@@ -99,7 +99,7 @@ class TestTheThreeStates:
 
         out = _run(record)
         assert LOW_CONFIDENCE_UNCHANGED not in out["flag_codes"]
-        assert out["name1_provenance"] == "input:1:verified"
+        assert out["name1_provenance"] == "input:verified+web"
 
     def test_on_domain_search_evidence_also_verifies(self):
         """`Aixelo Inc` cleared the guard on condition 4, not on name
@@ -114,7 +114,7 @@ class TestTheThreeStates:
         record["domain_verified_by"] = "serp"
 
         assert resolve(record).state == UNCHANGED_VERIFIED
-        assert _run(record)["name1_provenance"] == "input:1:verified"
+        assert _run(record)["name1_provenance"] == "input:verified+web"
 
     def test_email_verified_domain_does_not_corroborate_the_name(self):
         """A non-generic address says which organisation the RECORD belongs
@@ -147,14 +147,20 @@ class TestTheThreeStates:
 
         out = _run(record)
         assert LOW_CONFIDENCE_UNCHANGED not in out["flag_codes"]
-        assert out["name1_provenance"] == "input:1:confirmed"
+        assert out["name1_provenance"] == "input:provisional+llm"
 
     def test_nothing_came_back_is_unresolved_and_flagged(self):
         record = _kept("Apollo Organic Synthesis")
         assert resolve(record).state == UNCHANGED_UNRESOLVED
 
         out = _run(record)
-        assert LOW_CONFIDENCE_UNCHANGED in out["flag_codes"]
+        # The code is retired; the doubt is not. `unchanged-unresolved` IS
+        # `input:low` on Name 1, and the flag is derived from that — so this
+        # asserts the state through the column that now carries it, and
+        # through the flag it still raises.
+        assert out["name1_provenance"] == "input:low"
+        assert out["flag_for_review"] is True
+        assert LOW_CONFIDENCE_UNCHANGED not in out["flag_codes"]
         assert "name1" in out["flagged_fields"]
 
     def test_evidence_outranks_a_second_opinion(self):
@@ -179,6 +185,8 @@ class TestNothingElseMoves:
     def test_flag_reason_for_unresolved_is_byte_identical(self):
         out = _run(_kept("Apollo Organic Synthesis"))
         assert out["flag_reason"] == UNRESOLVED_REASON
+        # The prose is what a reviewer reads, and it is unchanged: the
+        # migration retired the machine-readable token and kept the sentence.
         assert _REASONS[LOW_CONFIDENCE_UNCHANGED] in out["flag_reason"]
 
     @pytest.mark.parametrize(
@@ -213,7 +221,7 @@ class TestNothingElseMoves:
         )
         record["_tier1_query_name"] = "ABGENT"
         assert resolve(record) is None
-        assert _run(record)["name1_provenance"].startswith("llm_company_canonical")
+        assert _run(record)["name1_provenance"] == "llm:provisional"
 
     def test_a_stage0_short_circuit_is_not_classified(self):
         """UC 0 returns before Tier 1 is queried. "Nothing came back" would be
@@ -234,7 +242,8 @@ class TestNothingElseMoves:
         record["_ev_low_conf_unchanged"] = {"name2"}
 
         out = _run(record)
-        assert LOW_CONFIDENCE_UNCHANGED in out["flag_codes"]
+        assert out["flag_for_review"] is True
+        assert out["name1_provenance"] == "input:low"
         assert set(out["flagged_fields"]) >= {"name1", "name2"}
 
     def test_verified_row_does_not_fall_through_to_no_match(self):
@@ -258,11 +267,19 @@ class TestNothingElseMoves:
 # ---------------------------------------------------------------------------
 
 class TestProvenance:
-    def test_the_state_ships_as_the_band_of_the_derived_scalar(self):
+    def test_the_state_ships_as_the_derived_scalar(self):
+        """Fix 2's three unchanged states, as Provenance Scheme B renders them.
+
+        The old scheme put all three in the `band` slot — `verified`,
+        `confirmed`, `rule` — which read as three confidences and was in fact
+        one question ("did anything corroborate the value the record already
+        held?") with three answers. Scheme B separates them correctly: two
+        confidences, and a witness that names WHAT agreed.
+        """
         cases = {
-            "input:1:verified": ("domain_verified_by", "name"),
-            "input:1:confirmed": ("_canonical_proposal", "AIXELO, INC"),
-            "input:1:rule": (None, None),
+            "input:verified+web": ("domain_verified_by", "name"),
+            "input:provisional+llm": ("_canonical_proposal", "AIXELO, INC"),
+            "input:low": (None, None),
         }
         for expected, (key, value) in cases.items():
             record = _kept("Aixelo Inc")

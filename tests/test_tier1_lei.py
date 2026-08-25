@@ -87,7 +87,7 @@ class TestVerificationGuard:
                  "Personalvorsorgestiftung der Pfizer AG in Liquidation", "CH"),
             _rec(PFIZER_AG_LEI, "PFIZER AG", "CH"),
         ]
-        fields, score = _best_verified_candidate("Pfizer AG", records, 88.0)
+        fields, score, _refusal = _best_verified_candidate("Pfizer AG", records, 88.0)
         assert fields is not None
         assert fields["lei_id"] == PFIZER_AG_LEI
         assert score == 100.0
@@ -103,7 +103,7 @@ class TestVerificationGuard:
             _rec("WRONGLEI000000000001",
                  "Personalvorsorgestiftung der Pfizer AG in Liquidation", "CH"),
         ]
-        fields, score = _best_verified_candidate("Pfizer AG", records, 88.0)
+        fields, score, _refusal = _best_verified_candidate("Pfizer AG", records, 88.0)
         assert fields is None
         assert score < 88.0
 
@@ -130,7 +130,7 @@ class TestVerificationGuard:
             _rec("INACTIVE000000000001", "PFIZER AG", "CH", status="INACTIVE"),
             _rec(PFIZER_AG_LEI, "PFIZER AG", "CH", status="ACTIVE"),
         ]
-        fields, _ = _best_verified_candidate("Pfizer AG", records, 88.0)
+        fields, _, _refusal = _best_verified_candidate("Pfizer AG", records, 88.0)
         assert fields is not None
         assert fields["lei_id"] == PFIZER_AG_LEI
 
@@ -139,7 +139,7 @@ class TestVerificationGuard:
         records = [
             _rec("USWRONG0000000000001", "PFIZER AG", "US"),
         ]
-        fields, _ = _best_verified_candidate(
+        fields, _, _refusal = _best_verified_candidate(
             "Pfizer AG", records, 88.0, country_code="CH",
         )
         assert fields is None
@@ -150,7 +150,7 @@ class TestVerificationGuard:
             _rec("USWRONG0000000000001", "PFIZER AG", "US"),
             _rec(PFIZER_AG_LEI, "PFIZER AG", "CH"),
         ]
-        fields, _ = _best_verified_candidate(
+        fields, _, _refusal = _best_verified_candidate(
             "Pfizer AG", records, 88.0, country_code="CH",
         )
         assert fields is not None
@@ -160,14 +160,14 @@ class TestVerificationGuard:
     def test_no_country_filter_keeps_all(self) -> None:
         """When no country is given, the guard does not filter on country."""
         records = [_rec("USONLY00000000000001", "PFIZER AG", "US")]
-        fields, _ = _best_verified_candidate("Pfizer AG", records, 88.0)
+        fields, _, _refusal = _best_verified_candidate("Pfizer AG", records, 88.0)
         assert fields is not None
         assert fields["lei_id"] == "USONLY00000000000001"
 
     def test_country_match_is_case_insensitive(self) -> None:
         """Requested country compares case-insensitively against GLEIF's value."""
         records = [_rec(PFIZER_AG_LEI, "PFIZER AG", "CH")]
-        fields, _ = _best_verified_candidate(
+        fields, _, _refusal = _best_verified_candidate(
             "Pfizer AG", records, 88.0, country_code="ch",
         )
         assert fields is not None

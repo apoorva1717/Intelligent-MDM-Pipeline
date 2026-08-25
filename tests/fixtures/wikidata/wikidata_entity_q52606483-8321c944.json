@@ -1,0 +1,97 @@
+{
+ "domain": "entity:q52606483",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q52606483",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "BIOVISION: Vision biologique : mod\u00e8les int\u00e9gratifs et syst\u00e8mes d'aide \u00e0 la vision pour les d\u00e9ficients visuels"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "BIOVISION"
+    },
+    {
+     "language": "en",
+     "value": "BIOVISION: Biologically plausible Integrative mOdels of the Visual system : towards synergIstic Solutions for visually-Impaired people and artificial visiON"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 483242,
+        "id": "Q483242"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 13226383,
+        "id": "Q13226383"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 142,
+        "id": "Q142"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.inria.fr/equipes/biovision",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P6782": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P6782",
+      "datavalue": {
+       "value": "02gap9590",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,10 @@
+{
+ "domain": "search:aesir technologies",
+ "payload": {
+  "searchinfo": {
+   "search": "Aesir Technologies"
+  },
+  "search": [],
+  "success": 1
+ }
+}

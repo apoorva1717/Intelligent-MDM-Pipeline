@@ -1,0 +1,161 @@
+{
+ "domain": "entity:q795981",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q795981",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Bic"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Soci\u00e9t\u00e9 BIC"
+    },
+    {
+     "language": "en",
+     "value": "Societe Bic"
+    },
+    {
+     "language": "en",
+     "value": "Bic Corporation"
+    },
+    {
+     "language": "en",
+     "value": "Bic pen company"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 13235160,
+        "id": "Q13235160"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 4830453,
+        "id": "Q4830453"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 142,
+        "id": "Q142"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P159": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 201982,
+        "id": "Q201982"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 90,
+        "id": "Q90"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 201982,
+        "id": "Q201982"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://bic.com/",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P6782": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P6782",
+      "datavalue": {
+       "value": "051mth390",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P1278": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P1278",
+      "datavalue": {
+       "value": "969500UR00DF63I0VH67",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

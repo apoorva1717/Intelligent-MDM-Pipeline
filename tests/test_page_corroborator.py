@@ -381,7 +381,7 @@ class TestConsequences:
         assert "_domain_unverified" not in result
         assert result["domain_rejected"] is False
         assert result["operating_name"] == "Acme, Inc."
-        assert result["operating_name_provenance"].startswith("web:acme.com:extracted:")
+        assert result["operating_name_provenance"] == "web:acme.com:provisional"
 
     @pytest.mark.asyncio
     async def test_an_accepted_wrong_entity_domain_is_withdrawn(self):
@@ -572,7 +572,25 @@ class TestNameOneIsNeverTouched:
 
 
 class TestProvenanceString:
-    def test_the_shape_is_web_domain_extracted_date(self):
-        assert operating_name_provenance("acme.com", date(2026, 8, 22)) == (
-            "web:acme.com:extracted:2026-08-22"
+    def test_the_shape_is_web_domain_provisional(self):
+        """Provenance Scheme B: `source:confidence`, and the source of a name
+        read off a page is the page's domain.
+
+        `extracted` was a METHOD in a slot that a reader takes for a
+        confidence, and the date decayed. `provisional` is the substantive
+        claim, and it is deliberately not `verified`: the page and the domain
+        it was served from are ONE evidence system (hard rule 4), so a site
+        naming itself corroborates nothing independent.
+        """
+        assert operating_name_provenance("acme.com") == (
+            "web:acme.com:provisional"
         )
+
+    def test_it_is_in_the_grammar(self):
+        """This column is written directly rather than derived from a
+        provenance event, so it is the one that could drift out of the scheme
+        without anything noticing. The finalisation assertion covers it — see
+        `enrichment.orchestrator.PROVENANCE_COLUMNS` — and so does this."""
+        from enrichment.confidence import validate
+
+        validate(operating_name_provenance("acme.com"))

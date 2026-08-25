@@ -1,0 +1,48 @@
+{
+ "domain": "entity:q1149065",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q1149065",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Avon"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 484170,
+        "id": "Q484170"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 142,
+        "id": "Q142"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

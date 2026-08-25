@@ -1,0 +1,55 @@
+{
+ "domain": "entity:q11437496",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q11437496",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Ofuka-cho"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Oofuka-cho"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 65948724,
+        "id": "Q65948724"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 17,
+        "id": "Q17"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

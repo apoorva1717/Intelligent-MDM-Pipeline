@@ -60,7 +60,7 @@ class _StubROR:
         self.queries: list[str] = []
 
     async def call(self, name, country_code=None, country=None,
-                   city=None, state=None) -> dict[str, Any]:
+                   city=None, state=None, **_ctx) -> dict[str, Any]:
         self.queries.append(name)
         hit = self.matches.get(name.strip().lower())
         if hit is None:
@@ -138,9 +138,16 @@ class TestFlagFieldsStayConsistent:
         # Nothing at all — the total miss.
         {"name1_enriched": "Acme Labs"},
     ])
-    def test_boolean_matches_the_codes(self, overrides):
+    def test_boolean_matches_the_codes_and_the_derived_low(self, overrides):
+        """The authorised contract change. Before the provenance migration
+        `flag_for_review` was true iff `flag_codes` was non-empty; now a core
+        field at `low` raises it with no code attached, because
+        `low-confidence-unchanged` was a code that existed only to restate
+        what the field's confidence already said."""
         out = _finalised(**overrides)
-        assert out["flag_for_review"] is bool(out["flag_codes"])
+        assert out["flag_for_review"] is (
+            bool(out["flag_codes"]) or bool(out["flag_low_confidence"])
+        )
 
     @pytest.mark.asyncio
     async def test_invariant_holds_across_a_batch(self):
@@ -156,12 +163,15 @@ class TestFlagFieldsStayConsistent:
             records, EnrichmentOptions(max_concurrency=1),
         )
         for r in resp.results:
-            assert r.flag_for_review is bool(r.flag_codes)
+            raised = bool(r.flag_codes) or bool(r.flag_low_confidence)
+            assert r.flag_for_review is raised
             # Every code is part of the published vocabulary, and every
             # flagged field is one a reviewer can open.
             assert set(r.flag_codes) <= set(flags.ALL_CODES)
             assert set(r.flagged_fields) <= set(flags.FIELD_LABELS)
-            assert bool(r.flag_reason) is bool(r.flag_codes)
+            assert bool(r.flag_reason) is raised
+            # The retired token can never come back as a code.
+            assert flags.LOW_CONFIDENCE_UNCHANGED not in r.flag_codes
 
     def test_codes_are_deduplicated_and_ordered(self):
         """Two conditions touching the same field yield two codes, once each,
@@ -359,7 +369,13 @@ class TestFlaggedConditions:
             _registry_name_fields={"name1"},
             _ev_low_conf_unchanged={"name2"},
         )
-        assert out["flag_codes"] == ["low-confidence-unchanged"]
+        # Name 2 is a department slot, and the marker is the only thing that
+        # can speak for it: there is no corroborating evidence class for a
+        # unit name. The code is retired, so the doubt arrives as the derived
+        # low instead — same field, same prose, no token.
+        assert out["flag_codes"] == []
+        assert out["flag_low_confidence"] == ["name2"]
+        assert out["flag_for_review"] is True
         assert out["flagged_fields"] == ["name2"]
 
     def test_an_uncorroborated_tier3_department_is_still_flagged(self):
@@ -387,16 +403,21 @@ class TestFlaggedConditions:
             _ev_low_conf_unchanged={"name1"},
         )
         assert "unverified-inference" not in out["flag_codes"]
-        assert out["flag_codes"] == ["low-confidence-unchanged"]
+        assert out["flag_codes"] == []
+        assert out["flag_low_confidence"] == ["name1"]
+        assert out["flag_for_review"] is True
 
-    def test_low_confidence_unchanged_is_scoped_per_field(self):
+    def test_the_derived_low_is_scoped_per_field(self):
+        """Per field, because that is how the doubt is actually shaped: the
+        institute name is not in question, the department spelling is."""
         out = _finalised(
             {"name1": "Some Unknown Institute", "name2": "Chemistry Bits"},
             name1_enriched="Some Unknown Institute",
             name2_enriched="Chemistry Bits",
             _ev_low_conf_unchanged={"name2"},
         )
-        assert out["flag_codes"] == ["low-confidence-unchanged"]
+        assert out["flag_codes"] == []
+        assert out["flag_low_confidence"] == ["name2"]
         assert out["flagged_fields"] == ["name2"]
 
     def test_opaque_code_in_name1(self):
@@ -543,11 +564,12 @@ class TestRenderAndRetract:
             name1_enriched="Acme Labs", name2_enriched="Chemistry",
             _ev_low_conf_unchanged={"name2"}, _domain_unverified=True,
         )
-        assert out["flag_scopes"] == {
-            flags.LOW_CONFIDENCE_UNCHANGED: ["name2"],
-            flags.DOMAIN_UNVERIFIED: ["domain"],
-        }
-        # The published union is exactly the union of the map.
+        # The retired code is not in the scope map, because it is not a code.
+        # The field it concerned is in `flag_low_confidence`, and
+        # `flagged_fields` is still the union of both halves — which is what a
+        # consumer of that column actually reads.
+        assert out["flag_scopes"] == {flags.DOMAIN_UNVERIFIED: ["domain"]}
+        assert out["flag_low_confidence"] == ["name2"]
         assert out["flagged_fields"] == ["name2", "domain"]
 
     def test_render_emits_the_four_columns_consistently(self):
@@ -561,10 +583,13 @@ class TestRenderAndRetract:
         # `flag_notes` joined `flag_details` with Fix 3 — a second internal
         # map, empty for the same reason: nothing was raised, so nothing was
         # detailed and nothing was annotated.
+        # `flag_low_confidence` joined them with the provenance migration — a
+        # third internal list, empty for the same reason: nothing was raised,
+        # so no field is in doubt and none is named.
         assert flags.render({}) == {
             "flag_codes": [], "flagged_fields": [],
             "flag_for_review": False, "flag_reason": None, "flag_scopes": {},
-            "flag_details": {}, "flag_notes": {},
+            "flag_details": {}, "flag_notes": {}, "flag_low_confidence": [],
         }
 
     def test_render_orders_codes_by_emission_order_not_input_order(self):
@@ -580,16 +605,22 @@ class TestRenderAndRetract:
         assert out["flagged_fields"] == []
         assert out["flag_reason"] == flags._REASONS[flags.OVERFLOW]
 
-    def test_retract_drops_the_code_and_re_renders(self):
-        result = _Flagged(flags.render({
-            flags.LOW_CONFIDENCE_UNCHANGED: {"name1"},
-            flags.DOMAIN_UNVERIFIED: {"domain"},
-        }))
-        assert flags.retract(
-            result, [flags.LOW_CONFIDENCE_UNCHANGED], "name1",
-        ) == (flags.LOW_CONFIDENCE_UNCHANGED,)
+    def test_retract_drops_the_derived_low_and_re_renders(self):
+        """The derived low is withdrawn the way a code is, and reported under
+        the retired code's name — the STATEMENT withdrawn is the one that code
+        used to make, and its prose is what was rendered, so a telemetry line
+        saying anything else would describe a different withdrawal."""
+        result = _Flagged(flags.render(
+            {flags.DOMAIN_UNVERIFIED: {"domain"}},
+            low_confidence=["name1"],
+        ))
+        assert "left exactly as supplied" in result.flag_reason
+        assert flags.retract(result, [], "name1") == (
+            flags.LOW_CONFIDENCE_UNCHANGED,
+        )
         assert result.flag_codes == [flags.DOMAIN_UNVERIFIED]
         assert result.flagged_fields == ["domain"]
+        assert result.flag_low_confidence == []
         assert result.flag_for_review is True
         assert "left exactly as supplied" not in result.flag_reason
 
@@ -625,25 +656,31 @@ class TestRenderAndRetract:
 
     def test_retract_keeps_the_wording_of_the_codes_it_keeps(self):
         rendered = flags.render(
-            {
-                flags.LOW_CONFIDENCE_UNCHANGED: {"name1"},
-                flags.DOMAIN_UNVERIFIED: {"domain"},
-            },
+            {flags.NO_MATCH: {"name1"}, flags.DOMAIN_UNVERIFIED: {"domain"}},
             {flags.DOMAIN_UNVERIFIED: "meridianlabs.ai"},
         )
         result = _Flagged(rendered)
-        flags.retract(result, [flags.LOW_CONFIDENCE_UNCHANGED], "name1")
+        flags.retract(result, [flags.NO_MATCH], "name1")
         assert result.flag_codes == [flags.DOMAIN_UNVERIFIED]
         assert "meridianlabs.ai" in result.flag_reason
 
     def test_retract_narrows_a_multi_field_scope_instead_of_dropping(self):
+        """`multiple-contacts` stands in for what
+        `low-confidence-unchanged` used to demonstrate here: withdrawal is per
+        field, so a code scoped to two keeps the one that was not written."""
         result = _Flagged(flags.render({
-            flags.LOW_CONFIDENCE_UNCHANGED: {"name1", "name2"},
+            flags.MULTIPLE_CONTACTS: {"contact", "name2"},
         }))
-        flags.retract(result, [flags.LOW_CONFIDENCE_UNCHANGED], "name1")
-        assert result.flag_codes == [flags.LOW_CONFIDENCE_UNCHANGED]
+        flags.retract(result, [flags.MULTIPLE_CONTACTS], "contact")
+        assert result.flag_codes == [flags.MULTIPLE_CONTACTS]
         assert result.flagged_fields == ["name2"]
-        assert result.flag_scopes == {flags.LOW_CONFIDENCE_UNCHANGED: ["name2"]}
+        assert result.flag_scopes == {flags.MULTIPLE_CONTACTS: ["name2"]}
+
+    def test_the_retired_code_cannot_be_raised_as_a_code(self):
+        """A caller that has not been migrated fails loudly. Silently
+        discarding its scope would lose a real doubt about a real field."""
+        with pytest.raises(ValueError, match="retired"):
+            flags.render({flags.LOW_CONFIDENCE_UNCHANGED: {"name1"}})
 
     def test_retracting_the_last_code_clears_the_record(self):
         result = _Flagged(flags.render({flags.NO_MATCH: {"name1"}}))

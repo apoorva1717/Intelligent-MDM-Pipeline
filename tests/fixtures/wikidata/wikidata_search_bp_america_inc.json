@@ -1,0 +1,10 @@
+{
+ "domain": "search:bp america inc",
+ "payload": {
+  "searchinfo": {
+   "search": "BP America Inc"
+  },
+  "search": [],
+  "success": 1
+ }
+}

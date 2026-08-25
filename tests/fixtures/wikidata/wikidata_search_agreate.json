@@ -1,0 +1,10 @@
+{
+ "domain": "search:agreate",
+ "payload": {
+  "searchinfo": {
+   "search": "AGreatE"
+  },
+  "search": [],
+  "success": 1
+ }
+}

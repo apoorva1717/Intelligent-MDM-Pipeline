@@ -1,0 +1,40 @@
+{
+ "domain": "search:alza corp",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "ALZA Corp"
+  },
+  "search": [
+   {
+    "id": "Q4738813",
+    "title": "Q4738813",
+    "pageid": 4528231,
+    "concepturi": "http://www.wikidata.org/entity/Q4738813",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q4738813",
+    "display": {
+     "label": {
+      "value": "Alza",
+      "language": "en"
+     },
+     "description": {
+      "value": "former pharmaceutical and medical systems company",
+      "language": "en"
+     }
+    },
+    "label": "Alza",
+    "description": "former pharmaceutical and medical systems company",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "ALZA Corporation"
+    },
+    "aliases": [
+     "ALZA Corporation"
+    ]
+   }
+  ],
+  "success": 1
+ }
+}

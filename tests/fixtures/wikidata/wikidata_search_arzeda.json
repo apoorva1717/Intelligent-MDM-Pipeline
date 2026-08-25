@@ -1,0 +1,61 @@
+{
+ "domain": "search:arzeda",
+ "payload": {
+  "searchinfo": {
+   "search": "Arzeda"
+  },
+  "search": [
+   {
+    "id": "Q30284000",
+    "title": "Q30284000",
+    "pageid": 31896605,
+    "concepturi": "http://www.wikidata.org/entity/Q30284000",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q30284000",
+    "display": {
+     "label": {
+      "value": "Arzeda (United States)",
+      "language": "en"
+     },
+     "description": {
+      "value": "company in Seattle, United States",
+      "language": "en"
+     }
+    },
+    "label": "Arzeda (United States)",
+    "description": "company in Seattle, United States",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Arzeda (United States)"
+    }
+   },
+   {
+    "id": "Q129121667",
+    "title": "Q129121667",
+    "pageid": 123094837,
+    "concepturi": "http://www.wikidata.org/entity/Q129121667",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q129121667",
+    "display": {
+     "label": {
+      "value": "Arzeda links with BP, DNA synthesis firms",
+      "language": "en"
+     },
+     "description": {
+      "value": "scholarly article",
+      "language": "en"
+     }
+    },
+    "label": "Arzeda links with BP, DNA synthesis firms",
+    "description": "scholarly article",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Arzeda links with BP, DNA synthesis firms"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

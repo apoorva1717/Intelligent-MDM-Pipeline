@@ -1,0 +1,124 @@
+{
+ "domain": "entity:q43668",
+ "payload": {
+  "id": "Q43668",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Louisville"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Louisville, Kentucky"
+    },
+    {
+     "language": "en",
+     "value": "Louisville, KY"
+    },
+    {
+     "language": "en",
+     "value": "Derby City"
+    },
+    {
+     "language": "en",
+     "value": "Mouth of Beargrass"
+    },
+    {
+     "language": "en",
+     "value": "Louisville, Jefferson County, Kentucky"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 1093829,
+        "id": "Q1093829"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 1549591,
+        "id": "Q1549591"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 62049,
+        "id": "Q62049"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 3301053,
+        "id": "Q3301053"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://louisvilleky.gov/",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

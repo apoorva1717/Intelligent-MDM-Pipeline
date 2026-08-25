@@ -1,0 +1,138 @@
+{
+ "domain": "search:johnson johnson",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Johnson & Johnson"
+  },
+  "search": [
+   {
+    "id": "Q333718",
+    "title": "Q333718",
+    "pageid": 319846,
+    "concepturi": "http://www.wikidata.org/entity/Q333718",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q333718",
+    "display": {
+     "label": {
+      "value": "Johnson & Johnson",
+      "language": "en"
+     },
+     "description": {
+      "value": "U.S multinational medical devices, pharmaceutical and consumer packaged goods manufacturer",
+      "language": "en"
+     }
+    },
+    "label": "Johnson & Johnson",
+    "description": "U.S multinational medical devices, pharmaceutical and consumer packaged goods manufacturer",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Johnson & Johnson"
+    }
+   },
+   {
+    "id": "Q67200977",
+    "title": "Q67200977",
+    "pageid": 66797878,
+    "concepturi": "http://www.wikidata.org/entity/Q67200977",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q67200977",
+    "display": {
+     "label": {
+      "value": "Johnson & Johnson",
+      "language": "en"
+     },
+     "description": {
+      "value": "episode of Black-ish (S2 E20)",
+      "language": "en"
+     }
+    },
+    "label": "Johnson & Johnson",
+    "description": "episode of Black-ish (S2 E20)",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Johnson & Johnson"
+    }
+   },
+   {
+    "id": "Q102543513",
+    "title": "Q102543513",
+    "pageid": 99222569,
+    "concepturi": "http://www.wikidata.org/entity/Q102543513",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q102543513",
+    "display": {
+     "label": {
+      "value": "Johnson & Johnson",
+      "language": "en"
+     },
+     "description": {
+      "value": "Slovak company",
+      "language": "en"
+     }
+    },
+    "label": "Johnson & Johnson",
+    "description": "Slovak company",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Johnson & Johnson"
+    }
+   },
+   {
+    "id": "Q58196345",
+    "title": "Q58196345",
+    "pageid": 58110410,
+    "concepturi": "http://www.wikidata.org/entity/Q58196345",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q58196345",
+    "display": {
+     "label": {
+      "value": "Johnson\u00a0& Johnson",
+      "language": "en"
+     },
+     "description": {
+      "value": "Czech company",
+      "language": "en"
+     }
+    },
+    "label": "Johnson\u00a0& Johnson",
+    "description": "Czech company",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Johnson\u00a0& Johnson"
+    }
+   },
+   {
+    "id": "Q6268163",
+    "title": "Q6268163",
+    "pageid": 6072518,
+    "concepturi": "http://www.wikidata.org/entity/Q6268163",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q6268163",
+    "display": {
+     "label": {
+      "value": "Johnson & Johnson Pharmaceutical Research and Development",
+      "language": "en"
+     },
+     "description": {
+      "value": "business",
+      "language": "en"
+     }
+    },
+    "label": "Johnson & Johnson Pharmaceutical Research and Development",
+    "description": "business",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Johnson & Johnson Pharmaceutical Research and Development"
+    }
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

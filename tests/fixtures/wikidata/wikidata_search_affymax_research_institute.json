@@ -1,0 +1,10 @@
+{
+ "domain": "search:affymax research institute",
+ "payload": {
+  "searchinfo": {
+   "search": "Affymax Research Institute"
+  },
+  "search": [],
+  "success": 1
+ }
+}

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from typing import Any
@@ -57,6 +58,11 @@ from enrichment.preprocess import (
 from dedup.signatures import normalize_key
 from enrichment.classifier import TypeEvidence, classify
 from enrichment.flags import compute_flags
+from enrichment.confidence import (
+    SOURCE_INPUT,
+    ProvenanceGrammarError,
+    parse as parse_provenance,
+)
 from enrichment.provenance import (
     DERIVED_SCALAR_FIELDS,
     EnrichedRecord,
@@ -70,13 +76,22 @@ from enrichment.provenance import (
     UNATTRIBUTED_CODE,
     UNATTRIBUTED_REASON,
     deterministic_evidence,
-    derived_scalars,
+    derived_scalar,
+    validate_provenance_strings,
     enforce_admissibility,
     inherited_evidence,
     llm_evidence,
     registry_evidence,
     self_reported_value,
     web_evidence,
+)
+from enrichment.consistency import (
+    SOURCE_KEYS,
+    apply_cross_source_gate,
+    apply_registry_location_check,
+    record_registry_identity,
+    registry_location_unconfirmed_count,
+    reset_consistency_counters,
 )
 from enrichment.tier1_lei import LEIClient, clear_lei_cache, lei_normalised_hits
 from enrichment.tier1_ror import RORClient, clear_ror_cache, ror_normalised_hits
@@ -90,6 +105,17 @@ from enrichment.page_corroborator import (
     Corroboration,
     corroborate,
     operating_name_provenance,
+)
+from enrichment.wikidata import (
+    AMBIGUOUS as WIKIDATA_AMBIGUOUS,
+    COUNTRY_REJECTED as WIKIDATA_COUNTRY_REJECTED,
+    TYPE_REJECTED as WIKIDATA_TYPE_REJECTED,
+    UNAVAILABLE as WIKIDATA_UNAVAILABLE,
+    WITNESS_PROVENANCE as WIKIDATA_WITNESS_PROVENANCE,
+    WikidataClient,
+    WikidataOutcome,
+    resolve as resolve_wikidata,
+    website_agrees as wikidata_website_agrees,
 )
 from enrichment.tier2_canonical import run_tier2_canonical
 from enrichment.tier2a_contact import Tier2AResult, run_tier2a
@@ -106,7 +132,13 @@ from enrichment.website_resolver import (
     infer_website_via_llm,
     resolve_website_via_serp,
 )
-from llm.openai_client import OpenAIClient, install_httpx_aclose_noise_filter
+from llm.openai_client import (
+    LLM_SEED,
+    LLM_TEMPERATURE,
+    OpenAIClient,
+    install_httpx_aclose_noise_filter,
+    seed_supported,
+)
 from llm.prompts import (
     COMPANY_CANONICAL_PROMPT_VERSION,
     LAB_PARENT_PROMPT_VERSION,
@@ -120,7 +152,13 @@ from search.base import SearchClient
 from search.duckduckgo_client import DuckDuckGoClient
 from search.page_fetcher import PageFetcher
 from search.serpapi_client import SerpAPIClient
-from utils.cache import BatchCache, PageCache, SerpCache
+from utils.cache import (
+    BatchCache,
+    SerpCache,
+    build_evidence_cache,
+    cached_serp,
+    current_record_id,
+)
 from utils.name_slots import (
     ADJACENT_NAME_PAIRS,
     DEPT_ENRICHED_FIELDS,
@@ -162,6 +200,9 @@ logger = logging.getLogger(__name__)
 # never fires and nothing about the retry changes. Mirrors the
 # `enrichment.trace.website` pattern.
 retry_trace_logger = logging.getLogger("enrichment.trace.retry")
+#: The page lane's trace, shared with `enrichment.page_corroborator` so a
+#: reader sees one stream per lane rather than one per module.
+page_trace_logger = logging.getLogger("enrichment.trace.page")
 
 #: The mutually exclusive reasons Stage 5 did not query a registry for a
 #: record. ``not_called_on_this_path`` is the one that can only mean a wiring
@@ -557,6 +598,32 @@ def _init_result(record: EnrichmentRecord) -> EnrichedRecord:
     })
 
 
+def _record_domain_hint(result: dict[str, Any], record: Any = None) -> str | None:
+    """The domain the RECORD itself already carries, for Fix C(3).
+
+    One of the two signals allowed to corroborate a collision-prone registry
+    name match. Two places it can come from, in order of how much they claim:
+    a domain the pipeline has already accepted through the ownership guard,
+    and the host of an email address the record supplied. An email host is
+    weak evidence of a website but strong evidence of *which organisation this
+    record is about*, which is the only question being asked here.
+    """
+    accepted = (result.get("domain") or "").strip()
+    if accepted:
+        return accepted
+    email = (
+        result.get("email_enriched")
+        or result.get("email_original")
+        or getattr(record, "email", None)
+        or ""
+    )
+    email = str(email).strip()
+    if "@" not in email:
+        return None
+    host = email.rsplit("@", 1)[-1].strip().lower().rstrip(".")
+    return host or None
+
+
 def _write_registry_name(
     result: dict[str, Any],
     field: str,
@@ -679,21 +746,33 @@ def normalise_output_fields(result: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+#: Every column that carries a Provenance Scheme B string. The six derived
+#: scalars plus `operating_name_provenance`, which is written directly by the
+#: page corroborator and the Wikidata witness path rather than derived from a
+#: provenance event — and which is in the grammar's scope exactly like the
+#: rest of them.
+PROVENANCE_COLUMNS: tuple[str, ...] = (
+    *DERIVED_SCALAR_FIELDS.values(),
+    "operating_name_provenance",
+)
+
+
 def _scoped_scalars(result: Any) -> dict[str, str | None]:
     """The six derived scalar columns for *result*, regenerated from its log.
 
-    Format ``producer:tier:confidence_band`` — ``ror:1:exact``,
-    ``llm_tier3:3:self_high``. A null field carries a null scalar: there is no
-    value to attribute. Bands are namespaced by scale (``self_high``, never a
-    bare ``high``) so two scalars can never be read as comparable just because
-    both say "high" — see :mod:`enrichment.provenance` Step 3.
+    Provenance Scheme B — ``source:confidence[+witness]``: ``ror:verified``,
+    ``input:verified+web``, ``llm:provisional``, ``web:acme.com:provisional``.
+    A null field carries a null scalar: there is no value to attribute. The
+    grammar and the one confidence decision are in
+    :mod:`enrichment.confidence`; the adapter that maps a recorded event onto
+    it is :func:`enrichment.provenance.situation_for`.
     """
     log = result.provenance
     scalars: dict[str, str | None] = {}
     for field, column in DERIVED_SCALAR_FIELDS.items():
         value = result.get(field)
         scalars[column] = (
-            derived_scalars(log)[column]
+            derived_scalar(log, field, result)
             if value not in (None, "")
             else None
         )
@@ -1062,6 +1141,24 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # BEFORE compute_flags, which is the thing it feeds.
     _resolve_unchanged_name1(result)
 
+    # ── Fix D — the cross-source consistency gate ─────────────────────────
+    # Before the flag decision, because the flag has to describe what this
+    # did; before the search-term derivation, because Fix D(3) requires the
+    # terms to come from the identity that SURVIVED rather than from a
+    # registry entity that lost. After everything that can write an identity,
+    # including the Stage 5 retry and the page read.
+    #
+    # No record ships two contradictory identities. See
+    # enrichment/consistency.py.
+    # The same threshold GLEIF's own name-verification guard uses, read the
+    # way `tier1_ror` reads ROR_CONFIDENCE_THRESHOLD — `finalise` is a module
+    # function with no Settings in hand, and a NEW threshold for this
+    # comparison is exactly what the fix forbids.
+    apply_cross_source_gate(
+        result, float(os.getenv("LEI_NAME_MATCH_THRESHOLD", "88")),
+    )
+    apply_registry_location_check(result)
+
     # THE flag decision, taken once, here. Every name, contact and domain
     # field above has settled and the `*_changed` flags are computed, so the
     # codes describe the state the record ended in rather than the tiers that
@@ -1128,6 +1225,18 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     )
     result.update(_scoped_scalars(result))
 
+    # ── The grammar assertion (Provenance Scheme B) ──────────────────────
+    # Every provenance string this record ships must parse, and must satisfy
+    # hard rules 1-2 (`llm` never reaches `verified`; a witness-less
+    # `verified` is a registry's alone). An invalid string is raised, not
+    # logged: a provenance column that does not parse is worse than an empty
+    # one, because a consumer reads it as an attribution. `operating_name`
+    # is in scope even though it is not one of the six write-locked fields —
+    # the grammar is a property of the COLUMN, not of the write path.
+    validate_provenance_strings(
+        result.get(column) for column in PROVENANCE_COLUMNS
+    )
+
     result["duration_ms"] = int((time.monotonic() - start) * 1000)
     # Strip transient non-schema keys before pydantic validation.
     result.pop("_preprocess_cleared", None)
@@ -1145,7 +1254,16 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # Fix 2 / Fix 3 evidence, consumed by `_resolve_unchanged_name1` above.
     result.pop("_canonical_proposal", None)
     result.pop("_page_corroboration", None)
+    # Wikidata lane evidence: the corroboration marker `_resolve_unchanged_name1`
+    # read above, the matched QID, and the P856 the deferred domain check
+    # already consumed (popped here too, for the paths that never reached it).
+    result.pop("_wikidata_corroboration", None)
+    result.pop("_wikidata_qid", None)
+    result.pop("_wikidata_website", None)
     result.pop("_registry_name_fields", None)
+    # Fix D — the per-source identity claims the gate above consumed.
+    for _src_key in SOURCE_KEYS:
+        result.pop(_src_key, None)
     # Registry-vs-record_type disagreement surfaced by a retry hit. Logged at
     # the point of conflict and deliberately left unreconciled — record_type
     # assignment is out of scope here.
@@ -1180,8 +1298,9 @@ def _resolve_unchanged_name1(result: Any) -> None:
 
     * **Provenance.** A verified or confirmed record gets one further event on
       ``name1_enriched``, recording the value it already holds together with
-      what allowed it to stand — so the derived scalar reads ``input:1:verified``
-      / ``input:1:confirmed`` instead of ``input:1:rule``.
+      what allowed it to stand — so the derived scalar reads
+      ``input:verified+web`` / ``input:provisional+llm`` instead of
+      ``input:low``.
     * **Flagging.** ``_ev_low_conf_unchanged`` is set for ``name1`` iff the
       state is *unresolved*. This is the consistency fix: before it, whether an
       unchanged Name 1 was flagged depended on whether Tier 3 happened to run,
@@ -1593,23 +1712,48 @@ class Orchestrator:
         self._settings = settings
         self._mock_clients = mock_clients
 
+        # Fix B — ONE evidence cache for this process: SERP, page reads,
+        # Wikidata, ROR and GLEIF, all under `EVIDENCE_CACHE_DIR` and all
+        # governed by one `CACHE_FROZEN` switch. Registered process-wide so the
+        # module-level registry clients (`tier1_ror`, `tier1_lei`) reach the
+        # disk layer without eight new parameters. Built first because the
+        # Wikidata client takes its namespace.
+        self._evidence_cache = build_evidence_cache(settings)
+
+        # Wikidata crosswalk lane. Its own namespace, under its own filename
+        # prefix, so a search/entity recording sits beside the page reads
+        # rather than inside them.
+        self._wikidata_cache = self._evidence_cache.namespace(
+            "wikidata",
+            directory=settings.wikidata_fixture_dir,
+            replay_only=settings.wikidata_fixture_replay_only,
+        )
+
         if mock_clients:
             self._ror_client: RORClient = mock_clients.get("ror", RORClient(settings))
             self._lei_client: LEIClient = mock_clients.get("lei", LEIClient(settings))
+            self._wikidata_client: WikidataClient = mock_clients.get(
+                "wikidata", WikidataClient(settings, cache=self._wikidata_cache),
+            )
             self._search_client: SearchClient = mock_clients.get(
                 "search", self._build_search_client(settings))
             self._page_fetcher: PageFetcher = mock_clients.get("page_fetcher", PageFetcher(
                 timeout=settings.page_fetch_timeout_seconds,
                 max_chars=settings.max_page_content_chars,
+                store=self._evidence_cache.namespace("fetch"),
             ))
             self._llm_client: OpenAIClient = mock_clients.get("llm", OpenAIClient(settings))
         else:
             self._ror_client = RORClient(settings)
             self._lei_client = LEIClient(settings)
+            self._wikidata_client = WikidataClient(
+                settings, cache=self._wikidata_cache,
+            )
             self._search_client = self._build_search_client(settings)
             self._page_fetcher = PageFetcher(
                 timeout=settings.page_fetch_timeout_seconds,
                 max_chars=settings.max_page_content_chars,
+                store=self._evidence_cache.namespace("fetch"),
             )
             self._llm_client = OpenAIClient(settings)
 
@@ -1619,21 +1763,28 @@ class Orchestrator:
         self._tier1_retry_counts: dict[str, int] = self._new_tier1_retry_counts()
         # Per-batch page-read telemetry (reset in enrich_batch).
         self._page_counts: dict[str, int] = self._new_page_counts()
+        # Per-batch Wikidata crosswalk telemetry (reset in enrich_batch).
+        self._wikidata_counts: dict[str, int] = self._new_wikidata_counts()
 
         # Page reads, keyed on domain and recorded to disk. Process-level like
         # the SERP cache — two records naming the same organisation cost one
         # fetch — and additionally fixture-backed, because a page read is a
         # claim about what a site said on a day and a thesis re-run has to
         # reproduce it rather than re-ask the live web.
-        self._page_cache = PageCache(
-            (settings.page_fixture_dir or "").strip() or None,
+        self._page_cache = self._evidence_cache.namespace(
+            "page",
+            directory=settings.page_fixture_dir,
             replay_only=settings.page_fixture_replay_only,
         )
 
-        # In-memory SERP cache shared by every batch this orchestrator
-        # processes, so repeated/overlapping queries reuse a prior result
-        # instead of re-hitting the search API for the life of the process.
-        self._serp_cache = SerpCache()
+        # SERP cache shared by every batch this orchestrator processes — and,
+        # since Fix B, by every RUN, because it now has a disk layer behind the
+        # in-memory one. Without that, a second run of a batch re-issued every
+        # search it had already paid for and could be handed a different
+        # result set for the identical query.
+        self._serp_cache = SerpCache(
+            disk=self._evidence_cache.namespace("serp"),
+        )
 
     @staticmethod
     def _new_lei_counts() -> dict[str, int]:
@@ -1657,6 +1808,31 @@ class Orchestrator:
             "mismatch_not_withdrawn": 0,
             CORROBORATED: 0, CONTRADICTED: 0, NAME_MISMATCH: 0,
             FETCH_UNAVAILABLE: 0, NO_IDENTITY: 0, PARKED: 0,
+        }
+
+    @staticmethod
+    def _new_wikidata_counts() -> dict[str, int]:
+        """Fresh per-batch Wikidata crosswalk counters.
+
+        Four of them — ``matched``, ``no_match``, ``ambiguous``,
+        ``unavailable`` — **partition** ``queried``: every lane invocation ends
+        in exactly one. ``type_rejected`` and ``country_rejected`` are
+        deliberately NOT part of that partition: they count records where at
+        least one *candidate* was refused by that gauntlet step, so a record
+        whose only candidate was a film increments both ``type_rejected`` and
+        ``no_match``. Both statements are true, and the second is the one that
+        describes what the pipeline did with the record.
+
+        The rest count consequences: what the crosswalk followed, what it
+        recovered, and what the witness path did.
+        """
+        return {
+            "queried": 0, "matched": 0, "no_match": 0, "ambiguous": 0,
+            "unavailable": 0, "type_rejected": 0, "country_rejected": 0,
+            "crosswalk_ror": 0, "crosswalk_lei": 0,
+            "crosswalk_registry_hit": 0, "superseded_flagged": 0,
+            "witness_only": 0, "domain_corroborated": 0,
+            "domain_disagree": 0,
         }
 
     @staticmethod
@@ -1684,9 +1860,13 @@ class Orchestrator:
         install_httpx_aclose_noise_filter()
         clear_ror_cache()  # fresh cache per batch to avoid stale failures
         clear_lei_cache()  # likewise for the GLEIF/LEI cache
+        reset_consistency_counters()  # and the Fix D(2) batch counter
         self._lei_counts = self._new_lei_counts()  # reset per-batch telemetry
         self._tier1_retry_counts = self._new_tier1_retry_counts()
         self._page_counts = self._new_page_counts()
+        self._wikidata_counts = self._new_wikidata_counts()
+        self._evidence_cache.network_calls = 0
+        self._evidence_cache.network_calls_by_namespace.clear()
         cache = BatchCache(shared_serp=self._serp_cache)
         semaphore = asyncio.Semaphore(options.max_concurrency)
 
@@ -1763,6 +1943,12 @@ class Orchestrator:
             summary.page_mismatch_not_withdrawn = (
                 self._page_counts["mismatch_not_withdrawn"]
             )
+            # Wikidata crosswalk lane. Maintained unconditionally, like the
+            # page-read counters: WIKIDATA_TRACE gates the per-record JSON
+            # line, not the aggregates, so a measurement run cannot end up
+            # with silently-zero numbers because a flag was forgotten.
+            for _key, _value in self._wikidata_counts.items():
+                setattr(summary, f"wikidata_{_key}", _value)
             # Lookups the normalised cache key served that the old lowercased
             # key would have missed — i.e. API calls Step 1 saved outright.
             summary.routing_type_mismatch_count = sum(
@@ -1772,6 +1958,20 @@ class Orchestrator:
                 ror_normalised_hits()
                 + lei_normalised_hits()
                 + cache.normalised_hits
+            )
+            # Fix B — what this run had to go and get, and what a frozen run
+            # went without. `evidence_network_calls == 0` on a warm second run
+            # is the reproducibility gate's precondition: a run that called out
+            # is not comparing the same evidence the first run saw.
+            summary.evidence_cache_frozen = self._evidence_cache.frozen
+            summary.evidence_network_calls = self._evidence_cache.network_calls
+            summary.evidence_frozen_misses = self._evidence_cache.frozen_misses
+            summary.evidence_cache_hits = self._evidence_cache.hits
+            summary.registry_location_unconfirmed = (
+                registry_location_unconfirmed_count()
+            )
+            summary.evidence_network_calls_by_namespace = dict(
+                sorted(self._evidence_cache.network_calls_by_namespace.items())
             )
 
             logger.info(
@@ -2128,7 +2328,10 @@ class Orchestrator:
             if score > 0:
                 scored.append((score, host))
                 seen_hosts.add(host)
-        scored.sort(reverse=True)
+        # Fix C(1) — (score DESC, canonical id ASC). `sort(reverse=True)` on
+        # the raw tuple ordered hosts DESCENDING within a score tier, which is
+        # deterministic but arbitrary; the rule is ascending canonical id.
+        scored.sort(key=lambda t: (-t[0], t[1]))
         for score, host in scored[:5]:
             if await self._verify_candidate_host(
                 host, cleaned, tokens, acronym,
@@ -2146,22 +2349,17 @@ class Orchestrator:
         # substring in ``eecs``). Top scorer must verify before win.
         query = f"{cleaned} site:{base}"
         probe_country = result.get("country_region_key") or result.get("country")
-        cached = cache.get_serp(query, probe_country)
-        if cached is not None:
-            serp_results = cached
-        else:
-            try:
-                serp_results = await self._search_client.search(
-                    query, num_results=5,
-                )
-            except Exception as exc:
-                logger.info(
-                    "[%s] dept domain probe: SERP failed: %s",
-                    record_id, exc,
-                )
-                serp_results = []
-            else:
-                cache.set_serp(query, serp_results, probe_country)
+        try:
+            serp_results = await cached_serp(
+                cache, self._search_client, query,
+                num_results=5, country=probe_country,
+            )
+        except Exception as exc:
+            logger.info(
+                "[%s] dept domain probe: SERP failed: %s",
+                record_id, exc,
+            )
+            serp_results = []
 
         scored = []
         seen_hosts = set()
@@ -2179,7 +2377,8 @@ class Orchestrator:
             if score > 0:
                 scored.append((score, host))
                 seen_hosts.add(host)
-        scored.sort(reverse=True)
+        # Fix C(1) — same total order as the homepage scan above.
+        scored.sort(key=lambda t: (-t[0], t[1]))
         for score, host in scored[:5]:
             if await self._verify_candidate_host(
                 host, cleaned, tokens, acronym,
@@ -2206,7 +2405,7 @@ class Orchestrator:
         # non-department content (news/events/archive), and rank by canonicality
         # (a shallow department landing page beats a deep dated sub-page) before
         # verifying — so an archived event URL no longer ties a landing page.
-        path_candidates: list[tuple[int, int, str]] = []
+        path_candidates: list[tuple[int, str, int]] = []
         for idx, sr in enumerate(serp_results):
             try:
                 parsed = urlparse(sr.url)
@@ -2227,10 +2426,13 @@ class Orchestrator:
             hay = re.sub(r"[/\-_]+", " ", path).lower() + " " + (sr.title or "").lower()
             if not any(n in hay for n in needles):
                 continue
-            # Sort key: lowest canonicality penalty first, then SERP order.
-            path_candidates.append((_path_canonicality_penalty(path), idx, sr.url))
-        path_candidates.sort()
-        for _penalty, _idx, cand_url in path_candidates:
+            # Fix C(1) — lowest canonicality penalty first, then the URL as
+            # the canonical id. The SERP index used to be the tiebreak, which
+            # made the winner depend on the order the search API returned
+            # equally-canonical paths in.
+            path_candidates.append((_path_canonicality_penalty(path), sr.url, idx))
+        path_candidates.sort(key=lambda t: (t[0], t[1]))
+        for _penalty, cand_url, _idx in path_candidates:
             if await self._verify_candidate_url(cand_url, cleaned, tokens, acronym):
                 result["department_domain"] = cand_url
                 logger.info(
@@ -2262,22 +2464,16 @@ class Orchestrator:
             query2 = f"{cleaned} {name1}"
         else:
             query2 = cleaned
-        cached = cache.get_serp(query2)
-        if cached is not None:
-            serp_results2 = cached
-        else:
-            try:
-                serp_results2 = await self._search_client.search(
-                    query2, num_results=5,
-                )
-            except Exception as exc:
-                logger.info(
-                    "[%s] dept domain probe: no-site SERP failed: %s",
-                    record_id, exc,
-                )
-                serp_results2 = []
-            else:
-                cache.set_serp(query2, serp_results2)
+        try:
+            serp_results2 = await cached_serp(
+                cache, self._search_client, query2, num_results=5,
+            )
+        except Exception as exc:
+            logger.info(
+                "[%s] dept domain probe: no-site SERP failed: %s",
+                record_id, exc,
+            )
+            serp_results2 = []
 
         for sr in serp_results2:
             host = _host_of(sr.url)
@@ -2415,6 +2611,7 @@ class Orchestrator:
             search_client=self._search_client,
             llm_client=self._llm_client,
             settings=self._settings,
+            cache=cache,
         )
 
         confirmed = None
@@ -2455,7 +2652,11 @@ class Orchestrator:
                         "llm_confidence": affil.confidence,
                         "prompt_version": PERSON_AFFILIATION_PROMPT_VERSION,
                         "deployment": self._settings.openai_model,
-                        "temperature": 0.0,
+                        # The constant, not a literal — a provenance record
+                        # that can disagree with the request it describes is
+                        # worse than no record.
+                        "temperature": LLM_TEMPERATURE,
+                        "seed": LLM_SEED if seed_supported() else None,
                     },
                     rule_id="person-affiliation:ror-confirmed",
                 ),
@@ -2708,6 +2909,7 @@ class Orchestrator:
                 country=record.country,
                 city=record.city,
                 state=record.state,
+                record_domain=_record_domain_hint(result, record),
             )
         except Exception as exc:  # noqa: BLE001 — a retry must never fail a record
             logger.warning(
@@ -2732,6 +2934,9 @@ class Orchestrator:
                 result, "name1", ror_res.get("official_name"), registry="ROR",
                 identifier=ror_res["ror_id"],
                 rule_id="fix2:tier1-retry-after-canonicalisation",
+            )
+            record_registry_identity(
+                result, "ROR", ror_res, name=ror_res.get("official_name"),
             )
             # The SECOND event on name1 for a record the retry rescues. The
             # first came from whichever tier produced the corrected name, and
@@ -2793,6 +2998,8 @@ class Orchestrator:
         try:
             lei_res = await self._lei_client.call(
                 canonical, country_code=country_code,
+                city=record.city, state=record.state,
+                record_domain=_record_domain_hint(result, record),
             )
         except Exception as exc:  # noqa: BLE001 — GLEIF must never fail a record
             self._lei_counts["errors"] += 1
@@ -2826,6 +3033,9 @@ class Orchestrator:
             identifier=lei_res.get("lei_id"),
             rule_id="fix2:tier1-retry-after-canonicalisation",
         )
+        record_registry_identity(
+            result, "GLEIF", lei_res, name=lei_res.get("legal_name"),
+        )
         _write(
             result, "lei_id", lei_res.get("lei_id"),
             registry_evidence(
@@ -2851,6 +3061,365 @@ class Orchestrator:
             "query": canonical,
         })
 
+    # ── Wikidata crosswalk lane ──────────────────────────────────────────
+
+    async def _wikidata_crosswalk(
+        self,
+        record: EnrichmentRecord,
+        result: dict[str, Any],
+        name: str,
+        country_code: str | None,
+    ) -> bool:
+        """Ask Wikidata for a pointer, and follow it if there is one.
+
+        Runs on a record ROR missed, GLEIF missed (or never reached, on the
+        research branch) and that therefore holds no registry identifier —
+        between the registry miss and the web-evidence step. See
+        :mod:`enrichment.wikidata` for the gauntlet and for why Wikidata is
+        never the authority for a written value.
+
+        Returns ``True`` **only** when a registry pointer resolved and the
+        registry wrote the identity, so the caller can skip the LLM
+        canonicalisation exactly as it does after a direct GLEIF hit. Every
+        other outcome — witness, no match, ambiguity, unavailable — returns
+        ``False`` and leaves the record to continue down the waterfall
+        unchanged.
+
+        Nothing on any path raises: a lane failure must never fail a record.
+        """
+        if not self._settings.wikidata_enabled:
+            return False
+        # The lane's precondition, re-checked here rather than trusted from the
+        # call site: a registry identity is stronger than anything a wiki can
+        # offer, and a record that has one has nothing to gain.
+        if result.get("ror_id") or result.get("lei_id"):
+            return False
+        if not (name and name.strip()):
+            return False
+
+        counts = self._wikidata_counts
+        counts["queried"] += 1
+        try:
+            outcome = await resolve_wikidata(
+                record_id=record.record_id,
+                name=name,
+                city=record.city,
+                region=record.state,
+                client=self._wikidata_client,
+                # No new threshold. This is the same supplied-name-vs-official-
+                # name comparison GLEIF's verification guard makes, so it is
+                # that guard's scorer at that guard's threshold.
+                threshold=self._settings.lei_name_match_threshold,
+                trace=self._settings.wikidata_trace,
+            )
+        except Exception as exc:  # noqa: BLE001 — the lane must never fail a record
+            counts["unavailable"] += 1
+            logger.warning(
+                "[%s] Wikidata lane raised (non-fatal): %s",
+                record.record_id, exc,
+            )
+            return False
+
+        # Diagnostics first, so a rejected candidate is counted whatever the
+        # record's final outcome turns out to be.
+        if WIKIDATA_TYPE_REJECTED in outcome.reasons:
+            counts["type_rejected"] += 1
+        if WIKIDATA_COUNTRY_REJECTED in outcome.reasons:
+            counts["country_rejected"] += 1
+
+        if outcome.outcome == WIKIDATA_UNAVAILABLE:
+            counts["unavailable"] += 1
+            return False
+        if outcome.outcome == WIKIDATA_AMBIGUOUS:
+            counts["ambiguous"] += 1
+            return False
+        if not outcome.matched or outcome.item is None:
+            counts["no_match"] += 1
+            return False
+
+        counts["matched"] += 1
+        item = outcome.item
+        result["_wikidata_qid"] = item.qid
+
+        # ── Supersession, before anything else and independent of it ──────
+        # A dissolved entity's registry record is still informative, so the
+        # crosswalk below still runs; the flag stands whatever it finds.
+        detail = outcome.supersession_detail()
+        if detail:
+            result["_ev_entity_superseded"] = detail
+            counts["superseded_flagged"] += 1
+            logger.info({
+                "record_id": record.record_id,
+                "step": "wikidata_entity_superseded",
+                "qid": item.qid,
+                "detail": detail,
+                "name1": result.get("name1_enriched") or name,
+            })
+
+        # P856, stashed for the deferred domain check: at this point in the
+        # waterfall the website paths have not run, so there is no candidate
+        # domain to compare against yet. See
+        # `_corroborate_domain_from_wikidata`.
+        if item.website:
+            result["_wikidata_website"] = item.website
+
+        # ── Follow the pointer ────────────────────────────────────────────
+        if item.ror_id:
+            counts["crosswalk_ror"] += 1
+            if await self._crosswalk_to_ror(record, result, item, country_code):
+                counts["crosswalk_registry_hit"] += 1
+                return True
+        if item.lei_id:
+            counts["crosswalk_lei"] += 1
+            if await self._crosswalk_to_gleif(
+                record, result, item, name, country_code,
+            ):
+                counts["crosswalk_registry_hit"] += 1
+                return True
+
+        # ── No pointer: a single witness, and treated as one ──────────────
+        # An item that DID carry a pointer the registry then refused is not
+        # promoted to a witness. The refusal is the registry's verdict on this
+        # identity, and taking the wiki's word after the authority declined it
+        # would invert the whole ordering this lane is built on.
+        if item.ror_id or item.lei_id:
+            return False
+
+        counts["witness_only"] += 1
+        self._write_wikidata_witness(result, outcome)
+        return False
+
+    async def _crosswalk_to_ror(
+        self,
+        record: EnrichmentRecord,
+        result: dict[str, Any],
+        item: Any,
+        country_code: str | None,
+    ) -> bool:
+        """Re-query ROR by the item's ``P6782`` and let ROR write the identity.
+
+        Every write below is the first-pass Tier 1 ROR block's, verbatim: the
+        official name, the ``ror_id``, the tier/source/confidence triple, the
+        research flag, and the registry-provenance domain. The provenance is
+        ``ror``, not ``wikidata`` — because ROR is what produced these values.
+        The crosswalk is recorded in the trace and the counters and nowhere in
+        the record, which is the point.
+        """
+        try:
+            ror_res = await self._ror_client.call_by_id(
+                item.ror_id, country_code=country_code,
+                # Fix D(2) — the crosswalk lane compares its registered
+                # locality like every other lane. It is the one route that
+                # picks an organisation without reading its name, so it is
+                # the last route that should skip the address check.
+                country=record.country, city=record.city, state=record.state,
+            )
+        except Exception as exc:  # noqa: BLE001 — never fail a record
+            logger.warning(
+                "[%s] Wikidata→ROR crosswalk raised (non-fatal): %s",
+                record.record_id, exc,
+            )
+            return False
+        _log_registry_rejections(result, "ror", ror_res)
+        if not ror_res.get("matched"):
+            logger.info({
+                "record_id": record.record_id,
+                "step": "wikidata_crosswalk_ror_miss",
+                "qid": item.qid,
+                "ror_id": item.ror_id,
+            })
+            return False
+
+        _write_registry_name(
+            result, "name1", ror_res.get("official_name"), registry="ROR",
+            identifier=ror_res["ror_id"],
+            rule_id="wikidata:crosswalk-ror",
+        )
+        _write(
+            result, "ror_id", ror_res["ror_id"],
+            registry_evidence(
+                "ror", ror_res["ror_id"], score=ror_res.get("score"),
+                rule_id="wikidata:crosswalk-ror",
+            ),
+        )
+        acronym = (ror_res.get("acronym") or "").strip()
+        if acronym:
+            result["_ror_acronym"] = acronym
+        result["tier_used"] = 1
+        result["source"] = "ROR"
+        result["confidence"] = "high"
+        result["enrichment_status"] = "enriched"
+        result["_ror_is_research"] = bool(ror_res.get("is_research_institution"))
+        result["routing_type"] = (
+            "research_institution"
+            if ror_res.get("is_research_institution")
+            else "company"
+        )
+        _apply_domain(
+            result, ror_res.get("website"), registry="ROR",
+            settings=self._settings,
+        )
+        for uc in (2, 3):
+            if uc not in result["use_cases_triggered"]:
+                result["use_cases_triggered"].append(uc)
+        logger.info({
+            "record_id": record.record_id,
+            "step": "wikidata_crosswalk_hit",
+            "registry": "ROR",
+            "qid": item.qid,
+            "ror_id": result["ror_id"],
+            "official_name": result.get("name1_enriched"),
+        })
+        return True
+
+    async def _crosswalk_to_gleif(
+        self,
+        record: EnrichmentRecord,
+        result: dict[str, Any],
+        item: Any,
+        name: str,
+        country_code: str | None,
+    ) -> bool:
+        """Re-query GLEIF by the item's ``P1278`` and let GLEIF write the identity.
+
+        The record's own Name 1 is what GLEIF's name-verification guard scores
+        the returned ``legalName`` against — unchanged, at
+        ``LEI_NAME_MATCH_THRESHOLD``. A pointer to a record whose legal name
+        does not verify is refused exactly as a searched-for candidate would
+        be, which is what keeps a stale or vandalised wiki link from writing
+        another company's name into the customer master.
+
+        The GLEIF *name-lookup* counters (`lei_attempts` and friends) are
+        deliberately not touched: they measure the Tier 1 search step, and
+        folding a by-identifier fetch into `lei_hits_fuzzy` would misreport it.
+        This lane's own counters carry it.
+        """
+        try:
+            lei_res = await self._lei_client.call_by_id(
+                item.lei_id, name, country_code=country_code,
+                city=record.city, state=record.state,
+            )
+        except Exception as exc:  # noqa: BLE001 — never fail a record
+            logger.warning(
+                "[%s] Wikidata→GLEIF crosswalk raised (non-fatal): %s",
+                record.record_id, exc,
+            )
+            return False
+        _log_registry_rejections(result, "gleif", lei_res)
+        if lei_res.get("error") or not lei_res.get("matched"):
+            logger.info({
+                "record_id": record.record_id,
+                "step": "wikidata_crosswalk_lei_miss",
+                "qid": item.qid,
+                "lei_id": item.lei_id,
+                "score": lei_res.get("score"),
+                "error": bool(lei_res.get("error")),
+            })
+            return False
+
+        _write_registry_name(
+            result, "name1", lei_res.get("legal_name"), registry="GLEIF",
+            identifier=lei_res.get("lei_id"),
+            rule_id="wikidata:crosswalk-lei",
+        )
+        _write(
+            result, "lei_id", lei_res.get("lei_id"),
+            registry_evidence(
+                "gleif", lei_res.get("lei_id"),
+                rule_id="wikidata:crosswalk-lei",
+            ),
+        )
+        _record_gleif_evidence(result, lei_res)
+        result["tier_used"] = 1
+        result["source"] = "gleif"
+        result["confidence"] = lei_res.get("confidence", "high")
+        result["enrichment_status"] = "enriched"
+        for uc in (2, 3):
+            if uc not in result["use_cases_triggered"]:
+                result["use_cases_triggered"].append(uc)
+        logger.info({
+            "record_id": record.record_id,
+            "step": "wikidata_crosswalk_hit",
+            "registry": "GLEIF",
+            "qid": item.qid,
+            "lei_id": result["lei_id"],
+            "legal_name": result.get("name1_enriched"),
+        })
+        return True
+
+    @staticmethod
+    def _write_wikidata_witness(
+        result: dict[str, Any], outcome: WikidataOutcome,
+    ) -> None:
+        """The most a registry-pointerless match is allowed to do.
+
+        ``operating_name`` — the field :mod:`enrichment.page_corroborator`
+        already uses for "what another source calls this organisation" — and a
+        marker that lets :mod:`enrichment.unchanged_state` count this as the
+        one independent source ``unchanged-verified`` requires.
+
+        ``name1_enriched`` is not written, and cannot be: a crowd-edited label
+        is not a customer master's source of truth for a legal name. An
+        ``operating_name`` a page read already established is not overwritten
+        either — the site itself is the better witness of the two, and the
+        field holds one value.
+        """
+        item = outcome.item
+        if item is None:
+            return
+        if item.label and not (result.get("operating_name") or "").strip():
+            result["operating_name"] = item.label
+            result["operating_name_provenance"] = WIKIDATA_WITNESS_PROVENANCE
+        result["_wikidata_corroboration"] = {
+            "qid": item.qid,
+            "label": item.label,
+            "name_score": outcome.name_score,
+            "website": item.website,
+            "corroborated": True,
+            "domain_corroborated": False,
+        }
+
+    def _corroborate_domain_from_wikidata(self, result: dict[str, Any]) -> None:
+        """Compare the item's ``P856`` with the record's candidate domain.
+
+        Deferred to :meth:`_finalise_and_return` rather than run inside the
+        lane, because when the lane runs the website paths have not proposed a
+        candidate yet — there is nothing to compare against. The item's
+        official website is stashed on the record at match time and settled
+        here, after ``_maybe_resolve_website_bc`` and before the page read.
+
+        Agreement counts as one corroborating source for the domain and feeds
+        the same ``unchanged-verified`` marker the name match feeds.
+        Disagreement is counted and **nothing else**: ``P856`` can be years
+        stale, and a wiki field is not grounds to withdraw a domain the
+        ownership guard accepted.
+        """
+        stated = result.pop("_wikidata_website", None)
+        if not stated:
+            return
+        accepted = (result.get("domain") or "").strip()
+        rejected = result.get("_domain_unverified")
+        candidate = accepted or (rejected if isinstance(rejected, str) else "")
+        if not candidate:
+            return
+        agrees = wikidata_website_agrees(stated, candidate)
+        if agrees is None:
+            return
+        corroboration = result.get("_wikidata_corroboration")
+        if agrees:
+            self._wikidata_counts["domain_corroborated"] += 1
+            if isinstance(corroboration, dict):
+                corroboration["domain_corroborated"] = True
+        else:
+            self._wikidata_counts["domain_disagree"] += 1
+        logger.info({
+            "record_id": result.get("record_id"),
+            "step": "wikidata_domain_check",
+            "stated": stated,
+            "candidate": candidate,
+            "agrees": agrees,
+        })
+
     async def _finalise_and_return(
         self,
         result: dict[str, Any],
@@ -2874,6 +3443,10 @@ class Orchestrator:
             _apply_domain(
                 result, result["website_url"], settings=self._settings,
             )
+        # Wikidata's P856, settled now that there IS a candidate domain to
+        # compare it against. Counts only, plus the corroboration marker —
+        # never a withdrawal. No-ops on every record the lane did not match.
+        self._corroborate_domain_from_wikidata(result)
         # Fix 3 — read the candidate site. After the website paths have
         # proposed (and the ownership guard has judged) a candidate, so there
         # IS one to read; before the department probe, so a domain the page
@@ -2961,10 +3534,36 @@ class Orchestrator:
             if result.pop("_domain_unverified", None) is not None:
                 result["domain_rejected"] = False
                 self._page_counts["flag_cleared"] += 1
+            # Fix D — the web's claim about this organisation's identity,
+            # for the cross-source gate. `operating_name` itself is the
+            # witness field; this is the same value under the name the gate
+            # looks for.
+            result["_src_name_web"] = stated
             result["operating_name"] = stated
             result["operating_name_provenance"] = operating_name_provenance(
                 candidate,
             )
+            # The extraction date is no longer in the provenance column (it
+            # was a decaying token in a field read as a claim). It is not
+            # lost: it is on the cache entry the string was always taken
+            # from, and on this trace line.
+            #
+            # Emitted on `enrichment.trace.page` and NOT on this module's
+            # logger, which is the difference between a trace and a hope: a
+            # batch run attaches its capture handler to the `enrichment.trace.*`
+            # loggers by name (`scripts/run_batch.py`), so a line on the module
+            # logger reaches no trace file and the date would have been
+            # deleted from the export path into nothing. Measured — the first
+            # version of this line was on `logger` and produced zero rows in
+            # the batch trace.
+            page_trace_logger.info(json.dumps({
+                "record_id": result.get("record_id"),
+                "step": "operating_name_extracted",
+                "domain": candidate,
+                "fetched_at": corroboration.fetched_at,
+                "stated_org_name": stated,
+                "provenance": result["operating_name_provenance"],
+            }, default=str))
             await self._maybe_feed_retry_from_page(record, result, corroboration)
             return
 
@@ -3152,9 +3751,19 @@ class Orchestrator:
         # population Stage 5 exists for, judged from the shipped record rather
         # than from anything the retry itself recorded, so a record the retry
         # never reached is still counted as eligible.
-        producer = ((result.get("name1_provenance") or "").split(":") or [""])[0]
+        # Through the grammar's own parser, never `split(":")`: a
+        # `web:{domain}:provisional` scalar carries two colons and the naive
+        # split puts the domain in the confidence slot. Here it happens to
+        # give the same answer, which is exactly why the naive form is worth
+        # removing while it is still harmless.
+        try:
+            source, _, _ = parse_provenance(result.get("name1_provenance") or "")
+        except ProvenanceGrammarError:
+            source = ""
         has_id = bool(result.get("ror_id") or result.get("lei_id"))
-        trace["eligible"] = bool(producer) and producer != "input" and not has_id
+        trace["eligible"] = (
+            bool(source) and source != SOURCE_INPUT and not has_id
+        )
         if not trace["called"]:
             trace["skipped_reason"] = RETRY_SKIP_NOT_CALLED
         trace.update({
@@ -3245,7 +3854,11 @@ class Orchestrator:
 
         self._lei_counts["attempts"] += 1
         try:
-            lei_res = await self._lei_client.call(name, country_code=country_code)
+            lei_res = await self._lei_client.call(
+                name, country_code=country_code,
+                city=record.city, state=record.state,
+                record_domain=_record_domain_hint(result, record),
+            )
         except Exception as exc:  # noqa: BLE001 — GLEIF must never fail a record
             self._lei_counts["errors"] += 1
             logger.warning(
@@ -3287,6 +3900,11 @@ class Orchestrator:
             identifier=lei_res.get("lei_id"),
             rule_id="tier1-lei:name-verified",
         )
+        # Fix D — GLEIF's claim about this organisation's identity and
+        # registered address, for the cross-source gate in finalise.
+        record_registry_identity(
+            result, "GLEIF", lei_res, name=lei_res.get("legal_name"),
+        )
         _write(
             result, "lei_id", lei_res.get("lei_id"),
             registry_evidence(
@@ -3317,6 +3935,11 @@ class Orchestrator:
         """Run the full tier-escalation pipeline for one record."""
         result = _init_result(record)
         start = time.monotonic()
+        # Fix B — so a frozen-cache miss five frames down can name the record
+        # it left short of evidence. asyncio gives each concurrently-enriched
+        # record its own value; the token is not reset because the task ends
+        # with this call.
+        current_record_id.set(record.record_id)
 
         try:
             # ── UC 0: name overflow check ────────────────────────────
@@ -3592,6 +4215,7 @@ class Orchestrator:
                     country=record.country,
                     city=record.city,
                     state=record.state,
+                    record_domain=_record_domain_hint(result, record),
                 )
 
                 _log_registry_rejections(result, "ror", ror_parent)
@@ -3646,6 +4270,13 @@ class Orchestrator:
                         registry="ROR",
                         identifier=ror_parent["ror_id"],
                         rule_id="tier1-ror:parent-match",
+                    )
+                    # Fix D — what ROR says this organisation is called, and
+                    # where it is registered. Recorded, not acted on; the gate
+                    # at the end of finalise compares it with GLEIF's answer.
+                    record_registry_identity(
+                        result, "ROR", ror_parent,
+                        name=ror_parent.get("official_name"),
                     )
 
                     # Carry the ROR acronym (when present) for the
@@ -3766,34 +4397,56 @@ class Orchestrator:
                     })
 
                     if looks_research:
-                        # Nothing identified this organisation, so the SAP
-                        # input stands. The input IS the producer — recording
-                        # that is what separates a retained value from a
-                        # confirmed one.
-                        _write(
-                            result, "name1_enriched", name1_cleaned,
-                            deterministic_evidence(
-                                "tier1-ror-miss:research-passthrough",
-                                producer="input", tier=1,
-                                evidence_ref={
-                                    "queried": name1_cleaned,
-                                    "registry": "ROR",
-                                    "matched": False,
-                                },
-                            ),
+                        # ── Wikidata crosswalk lane ──────────────────
+                        # ROR missed and GLEIF never runs on the research
+                        # branch, so this record carries no registry
+                        # identifier: the lane's precondition holds. It
+                        # returns True only when a registry pointer
+                        # resolved and ROR/GLEIF wrote the identity, in
+                        # which case the passthrough below must not
+                        # overwrite it. Config-gated — with
+                        # WIKIDATA_ENABLED off this is a no-op and the
+                        # branch behaves exactly as it did before.
+                        wd_registry_hit = await self._wikidata_crosswalk(
+                            record, result, name1_cleaned, country_code,
                         )
-                        result["source"] = "passthrough"
-                        result["confidence"] = "low"
-                        result["tier_used"] = 1
-                        result["routing_type"] = "research_institution"
-                        result["enrichment_status"] = "unresolved"
-                        # No `_ev_low_conf_unchanged` marker here since Fix 2.
-                        # Whether a retained Name 1 is flagged is decided once,
-                        # in finalise, from the evidence the finished record
-                        # holds — see enrichment/unchanged_state.py. Marking it
-                        # at the branch is what made the outcome depend on
-                        # which branch reached the passthrough.
-                        institution_domain = None
+                        if wd_registry_hit:
+                            # The registry authored the name and the id, and
+                            # `_apply_domain` attached its website. Keep the
+                            # branch's own type verdict where the registry did
+                            # not supply one (the GLEIF path, mirroring
+                            # `_run_lei_lookup`, deliberately does not).
+                            if result.get("routing_type") in (None, "unknown"):
+                                result["routing_type"] = "research_institution"
+                        else:
+                            # Nothing identified this organisation, so the SAP
+                            # input stands. The input IS the producer —
+                            # recording that is what separates a retained value
+                            # from a confirmed one.
+                            _write(
+                                result, "name1_enriched", name1_cleaned,
+                                deterministic_evidence(
+                                    "tier1-ror-miss:research-passthrough",
+                                    producer="input", tier=1,
+                                    evidence_ref={
+                                        "queried": name1_cleaned,
+                                        "registry": "ROR",
+                                        "matched": False,
+                                    },
+                                ),
+                            )
+                            result["source"] = "passthrough"
+                            result["confidence"] = "low"
+                            result["tier_used"] = 1
+                            result["routing_type"] = "research_institution"
+                            result["enrichment_status"] = "unresolved"
+                            # No `_ev_low_conf_unchanged` marker here since
+                            # Fix 2. Whether a retained Name 1 is flagged is
+                            # decided once, in finalise, from the evidence the
+                            # finished record holds — see
+                            # enrichment/unchanged_state.py. Marking it at the
+                            # branch is what made the outcome depend on which
+                            # branch reached the passthrough.
                         # Short-circuit if no name2/contact to process.
                         if not (pp_name2 and pp_name2.strip()) and not (
                             pp_contact and pp_contact.strip()
@@ -3813,7 +4466,23 @@ class Orchestrator:
                         lei_matched = await self._run_lei_lookup(
                             record, result, name1_cleaned, country_code,
                         )
-                        if lei_matched:
+                        # ── Wikidata crosswalk lane ──────────────────
+                        # ROR missed AND GLEIF missed, so the record holds
+                        # no registry identifier. This is the position the
+                        # lane occupies: after the registry miss, before
+                        # the web-evidence step and before the LLM. A
+                        # registry pointer that resolves here is handled
+                        # exactly as `lei_matched` is — the LLM
+                        # canonicalisation is skipped, because a verified
+                        # registry name must not be re-litigated by a
+                        # model. Config-gated; a no-op when off.
+                        wd_registry_hit = (
+                            False if lei_matched
+                            else await self._wikidata_crosswalk(
+                                record, result, name1_cleaned, country_code,
+                            )
+                        )
+                        if lei_matched or wd_registry_hit:
                             company_res = None
                             # If no name2, Tier 1 LEI is the final answer —
                             # return now so Tier 3 can't overwrite it.
@@ -3891,7 +4560,7 @@ class Orchestrator:
                     # rewriting would ship the model's comma instead of the
                     # record's, which is a change to the value with no claim
                     # behind it. The record's own string stands and finalise
-                    # labels it `input:1:confirmed`. The same equality Stage 5
+                    # labels it `input:provisional+llm`. The same equality Stage 5
                     # uses to decide a "correction" is not one.
                     canonical_confirms_input = bool(
                         company_res
@@ -3983,7 +4652,17 @@ class Orchestrator:
                         result["routing_type"] = "unknown"
                     # else: research-institution passthrough already set above
 
-                    institution_domain = None
+                    # The ROR-miss default. A registry step INSIDE this block
+                    # may nonetheless have attached a domain — the Wikidata
+                    # crosswalk following a `P6782` pointer writes ROR's
+                    # website through `_apply_domain` — and discarding it here
+                    # would leave the department paths without the base they
+                    # need on exactly the records the crosswalk just resolved.
+                    # `None` when nothing wrote one, which is every path that
+                    # existed before the crosswalk: the LEI step never writes a
+                    # domain (GLEIF has no website field) and the website
+                    # resolver has not run yet.
+                    institution_domain = result.get("domain") or None
 
             name2_already_filled = any(
                 (getattr(pre, slot, None) or "").strip() for slot in DEPT_SLOTS

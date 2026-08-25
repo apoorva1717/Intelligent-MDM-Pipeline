@@ -15,10 +15,12 @@ express it:
 
 ``unchanged-verified``
     Something independent of the record says this name belongs to this
-    organisation: a domain the ownership guard tied to Name 1, or a page read
-    that states the organisation's identity (Fix 3). Provenance
-    ``input:1:verified``. Not flagged — a reviewer asked to "confirm the value
-    is correct" has nothing to do that the pipeline has not already done.
+    organisation: a domain the ownership guard tied to Name 1, a page read that
+    states the organisation's identity (Fix 3), or a Wikidata item that passed
+    the crosswalk lane's full type / country / name / headquarters gauntlet
+    without carrying a registry pointer. Provenance ``input:1:verified``. Not
+    flagged — a reviewer asked to "confirm the value is correct" has nothing to
+    do that the pipeline has not already done.
 
 ``unchanged-confirmed``
     The company-canonical model, asked what the organisation is called and
@@ -171,6 +173,26 @@ def resolve(result: Any) -> UnchangedOutcome | None:
     if result.get("domain") and verified_by in NAME_TYING_OWNERSHIP_CONDITIONS:
         return UnchangedOutcome(
             UNCHANGED_VERIFIED, f"domain:{verified_by}", result["domain"],
+        )
+
+    # The Wikidata crosswalk lane matched an item — through the type, country,
+    # name and headquarters gauntlet — that carried no registry pointer. That
+    # is a single independent source saying this name belongs to an
+    # organisation of this kind in this place, which is exactly what
+    # `unchanged-verified` asserts and no more. It is placed BELOW the domain
+    # check on purpose: an owned domain and a page read are things a reviewer
+    # can open and see for themselves, and a wiki item is weaker than either,
+    # so it settles the state only where neither of them did.
+    #
+    # It can never do more than this. Nothing in the witness path writes
+    # `name1_enriched` — the value here is the record's own, and this event
+    # only records why it was allowed to stand unflagged.
+    wikidata = result.get("_wikidata_corroboration")
+    if wikidata and wikidata.get("corroborated"):
+        qid = wikidata.get("qid")
+        return UnchangedOutcome(
+            UNCHANGED_VERIFIED, f"wikidata:{qid}",
+            f"https://www.wikidata.org/wiki/{qid}" if qid else None,
         )
 
     # ── unchanged-confirmed ───────────────────────────────────────────────

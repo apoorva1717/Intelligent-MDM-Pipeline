@@ -1,0 +1,32 @@
+{
+ "domain": "search:advanced solutions life sciences",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Advanced Solutions Life Sciences"
+  },
+  "search": [
+   {
+    "id": "Q139902601",
+    "title": "Q139902601",
+    "pageid": 133353292,
+    "concepturi": "http://www.wikidata.org/entity/Q139902601",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q139902601",
+    "display": {
+     "label": {
+      "value": "ADVANCED SOLUTIONS LIFE SCIENCES, LLC",
+      "language": "en"
+     }
+    },
+    "label": "ADVANCED SOLUTIONS LIFE SCIENCES, LLC",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "ADVANCED SOLUTIONS LIFE SCIENCES, LLC"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

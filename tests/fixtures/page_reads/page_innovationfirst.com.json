@@ -1,0 +1,16 @@
+{
+ "domain": "innovationfirst.com",
+ "payload": {
+  "status": 200,
+  "blocked": false,
+  "error": null,
+  "url": "https://www.innovationfirst.com/",
+  "title": "Innovation First International, Inc.",
+  "h1": "",
+  "text": "Innovation First International, Inc. Our Brands: [/legal] Innovation First International, Inc. Innovation First International, Inc. Our Brands:",
+  "paths": [
+   "/",
+   "/legal"
+  ]
+ }
+}

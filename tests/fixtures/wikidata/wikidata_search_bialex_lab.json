@@ -1,0 +1,10 @@
+{
+ "domain": "search:bialex lab",
+ "payload": {
+  "searchinfo": {
+   "search": "Bialex Lab"
+  },
+  "search": [],
+  "success": 1
+ }
+}

@@ -1,0 +1,144 @@
+{
+ "domain": "search:artificially intelligent",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Artificially Intelligent"
+  },
+  "search": [
+   {
+    "id": "Q11660",
+    "title": "Q11660",
+    "pageid": 13192,
+    "concepturi": "http://www.wikidata.org/entity/Q11660",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q11660",
+    "display": {
+     "label": {
+      "value": "artificial intelligence",
+      "language": "en"
+     },
+     "description": {
+      "value": "field that develops and studies software enabling machines to exhibit intelligent behavior",
+      "language": "en"
+     }
+    },
+    "label": "artificial intelligence",
+    "description": "field that develops and studies software enabling machines to exhibit intelligent behavior",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "artificially intelligent"
+    },
+    "aliases": [
+     "artificially intelligent"
+    ]
+   },
+   {
+    "id": "Q107307291",
+    "title": "Q107307291",
+    "pageid": 102561708,
+    "concepturi": "http://www.wikidata.org/entity/Q107307291",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q107307291",
+    "display": {
+     "label": {
+      "value": "artificially intelligent entity",
+      "language": "en"
+     },
+     "description": {
+      "value": "intelligent actor with unnatural origin",
+      "language": "en"
+     }
+    },
+    "label": "artificially intelligent entity",
+    "description": "intelligent actor with unnatural origin",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "artificially intelligent entity"
+    }
+   },
+   {
+    "id": "Q117349473",
+    "title": "Q117349473",
+    "pageid": 112134925,
+    "concepturi": "http://www.wikidata.org/entity/Q117349473",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q117349473",
+    "display": {
+     "label": {
+      "value": "artificial intelligence model",
+      "language": "en"
+     },
+     "description": {
+      "value": "individual artificial neural network considered intelligent",
+      "language": "en"
+     }
+    },
+    "label": "artificial intelligence model",
+    "description": "individual artificial neural network considered intelligent",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "artificially intelligent model"
+    },
+    "aliases": [
+     "artificially intelligent model"
+    ]
+   },
+   {
+    "id": "Q140871354",
+    "title": "Q140871354",
+    "pageid": 134310448,
+    "concepturi": "http://www.wikidata.org/entity/Q140871354",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q140871354",
+    "display": {
+     "label": {
+      "value": "Artificially intelligent irrigation system",
+      "language": "en"
+     },
+     "description": {
+      "value": "US patent 11432485",
+      "language": "en"
+     }
+    },
+    "label": "Artificially intelligent irrigation system",
+    "description": "US patent 11432485",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Artificially intelligent irrigation system"
+    }
+   },
+   {
+    "id": "Q117715416",
+    "title": "Q117715416",
+    "pageid": 112474561,
+    "concepturi": "http://www.wikidata.org/entity/Q117715416",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q117715416",
+    "display": {
+     "label": {
+      "value": "Artificially intelligent interaction agent",
+      "language": "en"
+     },
+     "description": {
+      "value": "US patent 11429869",
+      "language": "en"
+     }
+    },
+    "label": "Artificially intelligent interaction agent",
+    "description": "US patent 11429869",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Artificially intelligent interaction agent"
+    }
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

@@ -1,0 +1,32 @@
+{
+ "domain": "entity:q105859258",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q105859258",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Biovision Action data"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 235557,
+        "id": "Q235557"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

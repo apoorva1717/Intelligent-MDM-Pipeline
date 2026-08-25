@@ -1,0 +1,11 @@
+{
+ "domain": "search:bostik inc",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Bostik Inc"
+  },
+  "search": [],
+  "success": 1
+ }
+}

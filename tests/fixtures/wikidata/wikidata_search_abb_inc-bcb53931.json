@@ -1,0 +1,37 @@
+{
+ "domain": "search:abb inc",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "ABB Inc"
+  },
+  "search": [
+   {
+    "id": "Q125276170",
+    "title": "Q125276170",
+    "pageid": 119409402,
+    "concepturi": "http://www.wikidata.org/entity/Q125276170",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q125276170",
+    "display": {
+     "label": {
+      "value": "ABB Inc. v. Domtar Inc.",
+      "language": "en"
+     },
+     "description": {
+      "value": "case from the Supreme Court of Canada",
+      "language": "en"
+     }
+    },
+    "label": "ABB Inc. v. Domtar Inc.",
+    "description": "case from the Supreme Court of Canada",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "ABB Inc. v. Domtar Inc."
+    }
+   }
+  ],
+  "success": 1
+ }
+}

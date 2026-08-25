@@ -1,0 +1,11 @@
+{
+ "domain": "search:university of california losangeles",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "University of California LosAngeles"
+  },
+  "search": [],
+  "success": 1
+ }
+}

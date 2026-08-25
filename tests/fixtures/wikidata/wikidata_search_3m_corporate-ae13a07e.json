@@ -1,0 +1,11 @@
+{
+ "domain": "search:3m corporate",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "3M Corporate"
+  },
+  "search": [],
+  "success": 1
+ }
+}

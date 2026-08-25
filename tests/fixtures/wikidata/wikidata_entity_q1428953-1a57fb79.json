@@ -1,0 +1,44 @@
+{
+ "domain": "entity:q1428953",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q1428953",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Tesla"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 215380,
+        "id": "Q215380"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.teslatheband.com/",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

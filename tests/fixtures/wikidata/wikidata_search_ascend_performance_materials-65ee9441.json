@@ -1,0 +1,112 @@
+{
+ "domain": "search:ascend performance materials",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Ascend Performance Materials"
+  },
+  "search": [
+   {
+    "id": "Q130296807",
+    "title": "Q130296807",
+    "pageid": 124261747,
+    "concepturi": "http://www.wikidata.org/entity/Q130296807",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q130296807",
+    "display": {
+     "label": {
+      "value": "Ascend Performance Materials",
+      "language": "en"
+     },
+     "description": {
+      "value": "multinational energy company based in Houston, Texas, United States",
+      "language": "en"
+     }
+    },
+    "label": "Ascend Performance Materials",
+    "description": "multinational energy company based in Houston, Texas, United States",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Ascend Performance Materials"
+    }
+   },
+   {
+    "id": "Q116714079",
+    "title": "Q116714079",
+    "pageid": 111478728,
+    "concepturi": "http://www.wikidata.org/entity/Q116714079",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q116714079",
+    "display": {
+     "label": {
+      "value": "Ascend Performance Materials Texas Inc.",
+      "language": "en"
+     },
+     "description": {
+      "value": "power station with capacity >1MW in Brazoria County, Texas",
+      "language": "en"
+     }
+    },
+    "label": "Ascend Performance Materials Texas Inc.",
+    "description": "power station with capacity >1MW in Brazoria County, Texas",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Ascend Performance Materials Texas Inc."
+    }
+   },
+   {
+    "id": "Q130124116",
+    "title": "Q130124116",
+    "pageid": 124090660,
+    "concepturi": "http://www.wikidata.org/entity/Q130124116",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q130124116",
+    "display": {
+     "label": {
+      "value": "Ascend Performance Materials Operations LLC",
+      "language": "en"
+     },
+     "description": {
+      "value": "subsidiary of Ascend Performance Materials",
+      "language": "en"
+     }
+    },
+    "label": "Ascend Performance Materials Operations LLC",
+    "description": "subsidiary of Ascend Performance Materials",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Ascend Performance Materials Operations LLC"
+    }
+   },
+   {
+    "id": "Q126874637",
+    "title": "Q126874637",
+    "pageid": 120883776,
+    "concepturi": "http://www.wikidata.org/entity/Q126874637",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q126874637",
+    "display": {
+     "label": {
+      "value": "Ascend Performance Materials France",
+      "language": "en"
+     },
+     "description": {
+      "value": "French subsidiary of Ascend Performance Materials",
+      "language": "en"
+     }
+    },
+    "label": "Ascend Performance Materials France",
+    "description": "French subsidiary of Ascend Performance Materials",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Ascend Performance Materials France"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

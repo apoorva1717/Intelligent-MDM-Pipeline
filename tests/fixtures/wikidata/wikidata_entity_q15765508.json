@@ -1,0 +1,97 @@
+{
+ "domain": "entity:q15765508",
+ "payload": {
+  "id": "Q15765508",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Genetics in Medicine"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 5633421,
+        "id": "Q5633421"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 16024164,
+        "id": "Q16024164"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.nature.com/gim/archive/index.html",
+       "type": "string"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.geneticsinmedicine.org/",
+       "type": "string"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.nature.com/gim/index.html",
+       "type": "string"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://ovidsp.ovid.com/ovidweb.cgi?T=JS&NEWS=n&CSC=Y&PAGE=toc&D=yrovft&AN=00125817-000000000-00000",
+       "type": "string"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.sciencedirect.com/journal/genetics-in-medicine",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

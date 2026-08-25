@@ -1,0 +1,10 @@
+{
+ "domain": "search:analytical sales",
+ "payload": {
+  "searchinfo": {
+   "search": "Analytical Sales"
+  },
+  "search": [],
+  "success": 1
+ }
+}

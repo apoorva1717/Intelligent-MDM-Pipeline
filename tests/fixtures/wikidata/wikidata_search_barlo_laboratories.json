@@ -1,0 +1,10 @@
+{
+ "domain": "search:barlo laboratories",
+ "payload": {
+  "searchinfo": {
+   "search": "Barlo Laboratories"
+  },
+  "search": [],
+  "success": 1
+ }
+}

@@ -1,0 +1,31 @@
+{
+ "domain": "search:aprecia pharmaceuticals llc",
+ "payload": {
+  "searchinfo": {
+   "search": "Aprecia Pharmaceuticals LLC"
+  },
+  "search": [
+   {
+    "id": "Q139970047",
+    "title": "Q139970047",
+    "pageid": 133418321,
+    "concepturi": "http://www.wikidata.org/entity/Q139970047",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q139970047",
+    "display": {
+     "label": {
+      "value": "APRECIA PHARMACEUTICALS LLC",
+      "language": "en"
+     }
+    },
+    "label": "APRECIA PHARMACEUTICALS LLC",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "APRECIA PHARMACEUTICALS LLC"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

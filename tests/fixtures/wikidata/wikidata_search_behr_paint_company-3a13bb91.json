@@ -1,0 +1,11 @@
+{
+ "domain": "search:behr paint company",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Behr Paint Company"
+  },
+  "search": [],
+  "success": 1
+ }
+}

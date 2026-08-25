@@ -1,0 +1,11 @@
+{
+ "domain": "search:bet pharm veterinary pharmacy",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "BET Pharm Veterinary Pharmacy"
+  },
+  "search": [],
+  "success": 1
+ }
+}

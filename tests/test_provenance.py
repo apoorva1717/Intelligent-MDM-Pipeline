@@ -137,7 +137,7 @@ class TestTheWriteIsLocked:
             registry_evidence("ror", "https://ror.org/fake"),
         )
         assert result.ror_id == "https://ror.org/fake"
-        assert result.ror_id_provenance == "ror:1:exact"
+        assert result.ror_id_provenance == "ror:verified"
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +420,7 @@ class TestDerivedScalars:
             "ror_id", "https://ror.org/042nb2s44",
             registry_evidence("ror", "https://ror.org/042nb2s44"),
         )
-        assert derived_scalar(record.provenance, "ror_id") == "ror:1:exact"
+        assert derived_scalar(record.provenance, "ror_id") == "ror:verified"
 
     def test_a_scalar_regenerates_identically_from_the_events(self):
         """Regenerated, never maintained separately — so the column and the
@@ -442,13 +442,13 @@ class TestDerivedScalars:
         record = _record(name1="MIT")
         record.write("name1_enriched", "Mass. Inst. of Tech", tier3_evidence())
         assert derived_scalar(
-            record.provenance, "name1_enriched") == "llm_tier3:3:self_high"
+            record.provenance, "name1_enriched") == "llm:provisional"
         record.write(
             "name1_enriched", "Massachusetts Institute of Technology",
             registry_evidence("ror", "https://ror.org/042nb2s44"),
         )
         assert derived_scalar(
-            record.provenance, "name1_enriched") == "ror:1:exact"
+            record.provenance, "name1_enriched") == "ror:verified"
 
     def test_a_transform_never_becomes_the_attribution(self):
         """Output casing did not decide the name; ROR did."""
@@ -463,7 +463,7 @@ class TestDerivedScalars:
         )
         assert len(record.provenance.events_for("name1_enriched")) == 2
         assert derived_scalar(
-            record.provenance, "name1_enriched") == "ror:1:exact"
+            record.provenance, "name1_enriched") == "ror:verified"
 
     def test_a_null_field_carries_a_null_scalar(self):
         record = _record(name1="Acme")
@@ -535,7 +535,13 @@ class TestEarlierFixes:
         event = log_from_dicts(receiver.provenance).attributing_event("ror_id")
         assert event.producer_chain == ("batch_consensus",)
         assert event.evidence_ref["donor_record_id"] == "DONOR"
-        assert receiver.ror_id_provenance == "batch_consensus:-:inherited"
+        # Provenance Scheme B has no `batch_consensus` source and no
+        # `inherited` confidence: the grammar names WHO said it and HOW MUCH
+        # weight it carries, and "a sibling record in this batch" is neither.
+        # ROR authored the identifier — but THIS record never looked it up, so
+        # it is `provisional` here and `verified` only on the donor. The donor
+        # record id is on the event, which is what a reviewer opens.
+        assert receiver.ror_id_provenance == "ror:provisional"
 
     def test_fix6_never_names_the_receiving_record_as_its_own_donor(self):
         """A record cannot be its own donor — an inheritance pointing back at

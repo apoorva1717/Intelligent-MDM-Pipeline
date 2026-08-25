@@ -1,0 +1,36 @@
+{
+ "domain": "search:american coatings association",
+ "payload": {
+  "searchinfo": {
+   "search": "American Coatings Association"
+  },
+  "search": [
+   {
+    "id": "Q132572991",
+    "title": "Q132572991",
+    "pageid": 126432586,
+    "concepturi": "http://www.wikidata.org/entity/Q132572991",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q132572991",
+    "display": {
+     "label": {
+      "value": "American Coatings Association",
+      "language": "en"
+     },
+     "description": {
+      "value": "non-profit trade association",
+      "language": "en"
+     }
+    },
+    "label": "American Coatings Association",
+    "description": "non-profit trade association",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "American Coatings Association"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

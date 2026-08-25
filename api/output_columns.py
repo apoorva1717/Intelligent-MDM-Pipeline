@@ -101,9 +101,11 @@ RESPONSE_COLUMNS: dict[str, str] = {
     "ror_id": "ROR ID",
     "lei_id": "LEI ID",
     # ── Per-field provenance, derived scalars (Fix 10) ───────────────
-    # One per Phase 1 scoped field, format `producer:tier:confidence_band`
-    # ("ror:1:exact", "llm_tier3:3:self_high"). Regenerated from the record's
-    # provenance events on every write — see enrichment/provenance.py.
+    # One per Phase 1 scoped field, in Provenance Scheme B —
+    # `source:confidence[+witness]` ("ror:verified", "input:verified+web",
+    # "web:acme.com:provisional"). Regenerated from the record's provenance
+    # events on every write — see enrichment/provenance.py for the projection
+    # and enrichment/confidence.py for the grammar.
     #
     # The full event array is deliberately NOT a column: it is nested and
     # unbounded, and this mapping is the file schema as well as the JSON key

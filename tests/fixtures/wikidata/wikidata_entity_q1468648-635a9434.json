@@ -1,0 +1,75 @@
+{
+ "domain": "entity:q1468648",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q1468648",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Georgetown"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Georgetown Historic District"
+    },
+    {
+     "language": "en",
+     "value": "Georgetown, Washington, D.C."
+    },
+    {
+     "language": "en",
+     "value": "George Town"
+    },
+    {
+     "language": "en",
+     "value": "George-Town"
+    },
+    {
+     "language": "en",
+     "value": "Town of George"
+    },
+    {
+     "language": "en",
+     "value": "West Washington"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 12063697,
+        "id": "Q12063697"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

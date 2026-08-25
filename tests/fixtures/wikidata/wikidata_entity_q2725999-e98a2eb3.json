@@ -1,0 +1,209 @@
+{
+ "domain": "entity:q2725999",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q2725999",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "University of Texas Southwestern Medical Center"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "UT Southwestern"
+    },
+    {
+     "language": "en",
+     "value": "UT Southwestern Medical School"
+    },
+    {
+     "language": "en",
+     "value": "UT Southwestern Graduate School of Biomedical Sciences"
+    },
+    {
+     "language": "en",
+     "value": "UT Southwestern Allied Health Sciences School"
+    },
+    {
+     "language": "en",
+     "value": "UTSW Medical School"
+    },
+    {
+     "language": "en",
+     "value": "UTSW Graduate School"
+    },
+    {
+     "language": "en",
+     "value": "UTSW Allied Health School"
+    },
+    {
+     "language": "en",
+     "value": "UTSWMC"
+    },
+    {
+     "language": "en",
+     "value": "UTSWMC Medical School"
+    },
+    {
+     "language": "en",
+     "value": "UTSWMC Graduate School"
+    },
+    {
+     "language": "en",
+     "value": "UTSWMC Allied Health School"
+    },
+    {
+     "language": "en",
+     "value": "University of Texas Southwestern Medical School"
+    },
+    {
+     "language": "en",
+     "value": "University of Texas Southwestern Graduate School of Biomedical Sciences"
+    },
+    {
+     "language": "en",
+     "value": "University of Texas Southwestern Allied Health Sciences School"
+    },
+    {
+     "language": "en",
+     "value": "University of Texas Southwestern School of Health Professions"
+    },
+    {
+     "language": "en",
+     "value": "UT Southwestern Medical Center"
+    },
+    {
+     "language": "en",
+     "value": "The University of Texas Southwestern Medical Center"
+    },
+    {
+     "language": "en",
+     "value": "Southwestern Medical Center"
+    },
+    {
+     "language": "en",
+     "value": "UTSW"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 494230,
+        "id": "Q494230"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 23002039,
+        "id": "Q23002039"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 4287745,
+        "id": "Q4287745"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.utsouthwestern.edu",
+       "type": "string"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://utswmed.org/",
+       "type": "string"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.utswmedicine.org/",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P6782": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P6782",
+      "datavalue": {
+       "value": "05byvp690",
+       "type": "string"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P6782",
+      "datavalue": {
+       "value": "00t9vx427",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

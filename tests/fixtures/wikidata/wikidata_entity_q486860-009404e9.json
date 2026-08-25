@@ -1,0 +1,85 @@
+{
+ "domain": "entity:q486860",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q486860",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Mountain View"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Mountain View, California"
+    },
+    {
+     "language": "en",
+     "value": "Mountain View, CA"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 13218357,
+        "id": "Q13218357"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 13218391,
+        "id": "Q13218391"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.mountainview.gov",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

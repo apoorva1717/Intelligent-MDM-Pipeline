@@ -1,0 +1,43 @@
+{
+ "domain": "entity:q68169260",
+ "payload": {
+  "id": "Q68169260",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Alfred University Research and Archives"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 1235234,
+        "id": "Q1235234"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://aura.alfred.edu/",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

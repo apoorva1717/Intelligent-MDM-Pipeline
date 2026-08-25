@@ -1,0 +1,158 @@
+{
+ "domain": "entity:q49218",
+ "payload": {
+  "id": "Q49218",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Rochester"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Rochester, New York"
+    },
+    {
+     "language": "en",
+     "value": "City of Rochester"
+    },
+    {
+     "language": "en",
+     "value": "Rochester, NY"
+    },
+    {
+     "language": "en",
+     "value": "Rochester, USA"
+    },
+    {
+     "language": "en",
+     "value": "ROC"
+    },
+    {
+     "language": "en",
+     "value": "Roc City"
+    },
+    {
+     "language": "en",
+     "value": "Flower City"
+    },
+    {
+     "language": "en",
+     "value": "Flour City"
+    },
+    {
+     "language": "en",
+     "value": "The World's Image Centre"
+    },
+    {
+     "language": "en",
+     "value": "Young Lion of the West"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 1093829,
+        "id": "Q1093829"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 1549591,
+        "id": "Q1549591"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 15063611,
+        "id": "Q15063611"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 62049,
+        "id": "Q62049"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 515,
+        "id": "Q515"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.cityofrochester.gov/",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

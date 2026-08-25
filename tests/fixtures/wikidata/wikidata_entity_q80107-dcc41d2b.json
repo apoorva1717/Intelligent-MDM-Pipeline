@@ -1,0 +1,63 @@
+{
+ "domain": "entity:q80107",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q80107",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "St. Paul"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Saint Paul"
+    },
+    {
+     "language": "en",
+     "value": "St. Paul, Alaska"
+    },
+    {
+     "language": "en",
+     "value": "St. Paul, AK"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 1093829,
+        "id": "Q1093829"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

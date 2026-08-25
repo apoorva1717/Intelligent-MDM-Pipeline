@@ -1,0 +1,10 @@
+{
+ "domain": "search:ab controls inc",
+ "payload": {
+  "searchinfo": {
+   "search": "AB Controls, Inc"
+  },
+  "search": [],
+  "success": 1
+ }
+}

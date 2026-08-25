@@ -1,0 +1,11 @@
+{
+ "domain": "search:dallas college el centro campus",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Dallas College El Centro Campus"
+  },
+  "search": [],
+  "success": 1
+ }
+}

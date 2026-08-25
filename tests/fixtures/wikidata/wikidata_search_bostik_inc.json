@@ -1,0 +1,10 @@
+{
+ "domain": "search:bostik inc",
+ "payload": {
+  "searchinfo": {
+   "search": "Bostik Inc"
+  },
+  "search": [],
+  "success": 1
+ }
+}

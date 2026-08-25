@@ -1,0 +1,16 @@
+{
+ "domain": "owenscorning.com",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "status": 200,
+  "blocked": false,
+  "error": null,
+  "url": "https://www.owenscorning.com/en-us",
+  "title": "Roofing, Insulation, and Doors | Owens Corning",
+  "h1": "",
+  "text": "Roofing, Insulation, and Doors | Owens Corning",
+  "paths": [
+   "/"
+  ]
+ }
+}

@@ -1,0 +1,14 @@
+{
+ "domain": "unilever.be",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "status": 403,
+  "blocked": true,
+  "error": null,
+  "url": "https://www.unilever.be/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

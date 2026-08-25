@@ -1,0 +1,11 @@
+{
+ "domain": "search:aesculatech",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "AesculaTech"
+  },
+  "search": [],
+  "success": 1
+ }
+}

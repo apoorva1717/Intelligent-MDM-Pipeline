@@ -1,0 +1,10 @@
+{
+ "domain": "search:allied automation",
+ "payload": {
+  "searchinfo": {
+   "search": "Allied Automation"
+  },
+  "search": [],
+  "success": 1
+ }
+}

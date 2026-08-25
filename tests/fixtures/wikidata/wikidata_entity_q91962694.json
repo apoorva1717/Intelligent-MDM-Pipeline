@@ -1,0 +1,31 @@
+{
+ "domain": "entity:q91962694",
+ "payload": {
+  "id": "Q91962694",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Binary Solutions of Hyaluronan and Lactose-Modified Chitosan: The Influence of Experimental Variables in Assembling Complex Coacervates"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 13442814,
+        "id": "Q13442814"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

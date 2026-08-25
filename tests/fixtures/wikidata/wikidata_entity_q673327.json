@@ -1,0 +1,99 @@
+{
+ "domain": "entity:q673327",
+ "payload": {
+  "id": "Q673327",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Arkema"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 43229,
+        "id": "Q43229"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 142,
+        "id": "Q142"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P159": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 174002,
+        "id": "Q174002"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.arkema.com",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P6782": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P6782",
+      "datavalue": {
+       "value": "05cv56b48",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P1278": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P1278",
+      "datavalue": {
+       "value": "9695000EHMS84KKP2785",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

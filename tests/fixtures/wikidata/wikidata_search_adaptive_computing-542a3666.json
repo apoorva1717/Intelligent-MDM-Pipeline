@@ -1,0 +1,128 @@
+{
+ "domain": "search:adaptive computing",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Adaptive Computing"
+  },
+  "search": [
+   {
+    "id": "Q352432",
+    "title": "Q352432",
+    "pageid": 336514,
+    "concepturi": "http://www.wikidata.org/entity/Q352432",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q352432",
+    "display": {
+     "label": {
+      "value": "adaptive computing",
+      "language": "en"
+     }
+    },
+    "label": "adaptive computing",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "adaptive computing"
+    }
+   },
+   {
+    "id": "Q121765273",
+    "title": "Q121765273",
+    "pageid": 116103018,
+    "concepturi": "http://www.wikidata.org/entity/Q121765273",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q121765273",
+    "display": {
+     "label": {
+      "value": "Adaptive computing resource allocation approach for virtual network functions",
+      "language": "en"
+     },
+     "description": {
+      "value": "US patent 11221880",
+      "language": "en"
+     }
+    },
+    "label": "Adaptive computing resource allocation approach for virtual network functions",
+    "description": "US patent 11221880",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Adaptive computing resource allocation approach for virtual network functions"
+    }
+   },
+   {
+    "id": "Q58805281",
+    "title": "Q58805281",
+    "pageid": 58717585,
+    "concepturi": "http://www.wikidata.org/entity/Q58805281",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q58805281",
+    "display": {
+     "label": {
+      "value": "Adaptive Computing Optimization in Software-Defined Network-Based Industrial Internet of Things with Fog Computing",
+      "language": "en"
+     },
+     "description": {
+      "value": "scholarly article by Juan Wang & Di Li published 1 August 2018 in Sensors",
+      "language": "en"
+     }
+    },
+    "label": "Adaptive Computing Optimization in Software-Defined Network-Based Industrial Internet of Things with Fog Computing",
+    "description": "scholarly article by Juan Wang & Di Li published 1 August 2018 in Sensors",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Adaptive Computing Optimization in Software-Defined Network-Based Industrial Internet of Things with Fog Computing"
+    }
+   },
+   {
+    "id": "Q57918435",
+    "title": "Q57918435",
+    "pageid": 57832979,
+    "concepturi": "http://www.wikidata.org/entity/Q57918435",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q57918435",
+    "display": {
+     "label": {
+      "value": "Adaptive Computing in Design and Manufacture V",
+      "language": "en"
+     }
+    },
+    "label": "Adaptive Computing in Design and Manufacture V",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Adaptive Computing in Design and Manufacture V"
+    }
+   },
+   {
+    "id": "Q128874277",
+    "title": "Q128874277",
+    "pageid": 122849560,
+    "concepturi": "http://www.wikidata.org/entity/Q128874277",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q128874277",
+    "display": {
+     "label": {
+      "value": "Adaptive computing-based biometric security for intelligent medical applications",
+      "language": "en"
+     },
+     "description": {
+      "value": "scholarly article",
+      "language": "en"
+     }
+    },
+    "label": "Adaptive computing-based biometric security for intelligent medical applications",
+    "description": "scholarly article",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Adaptive computing-based biometric security for intelligent medical applications"
+    }
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

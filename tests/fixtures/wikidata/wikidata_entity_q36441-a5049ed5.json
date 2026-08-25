@@ -1,0 +1,79 @@
+{
+ "domain": "entity:q36441",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q36441",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Aurora Snow"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Rebecca Claire Kensington"
+    },
+    {
+     "language": "en",
+     "value": "Angel"
+    },
+    {
+     "language": "en",
+     "value": "Aurora"
+    },
+    {
+     "language": "en",
+     "value": "Kim"
+    },
+    {
+     "language": "en",
+     "value": "Rebecca Kensington"
+    },
+    {
+     "language": "en",
+     "value": "Victoria"
+    },
+    {
+     "language": "en",
+     "value": "Amber"
+    },
+    {
+     "language": "en",
+     "value": "Aurora Kim"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 5,
+        "id": "Q5"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.aurorasnow.com",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

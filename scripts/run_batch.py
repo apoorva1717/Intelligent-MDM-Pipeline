@@ -69,6 +69,16 @@ async def _main() -> None:
                     help="Force RETRY_TRACE=true for this run.")
     ap.add_argument("--website-trace", action="store_true",
                     help="Force WEBSITE_TRACE=true for this run.")
+    ap.add_argument("--wikidata-trace", action="store_true",
+                    help="Force WIKIDATA_TRACE=true for this run.")
+    ap.add_argument("--no-wikidata", action="store_true",
+                    help="Force WIKIDATA_ENABLED=false (the A/B baseline).")
+    ap.add_argument("--frozen", action="store_true",
+                    help="Force CACHE_FROZEN=true — a cache miss is recorded "
+                         "as evidence-unavailable-frozen instead of going to "
+                         "the network. The evaluation freeze switch.")
+    ap.add_argument("--cache-dir", default=None,
+                    help="Override EVIDENCE_CACHE_DIR for this run.")
     ap.add_argument("--concurrency", type=int, default=5)
     ap.add_argument("--limit", type=int, default=None,
                     help="Only enrich the first N rows (smoke runs).")
@@ -79,6 +89,14 @@ async def _main() -> None:
         os.environ["RETRY_TRACE"] = "true"
     if args.website_trace:
         os.environ["WEBSITE_TRACE"] = "true"
+    if args.wikidata_trace:
+        os.environ["WIKIDATA_TRACE"] = "true"
+    if args.no_wikidata:
+        os.environ["WIKIDATA_ENABLED"] = "false"
+    if args.frozen:
+        os.environ["CACHE_FROZEN"] = "true"
+    if args.cache_dir:
+        os.environ["EVIDENCE_CACHE_DIR"] = args.cache_dir
 
     from api.models import EnrichmentOptions  # noqa: E402
     from api.routes import (  # noqa: E402
@@ -97,6 +115,13 @@ async def _main() -> None:
         "enrichment.trace.retry",
         "enrichment.trace.website",
         "enrichment.trace.page",
+        "enrichment.trace.wikidata",
+        # Fix B — `evidence-unavailable-frozen`, one line per record that a
+        # CACHE_FROZEN run left short of a piece of evidence.
+        "enrichment.trace.cache",
+        # Fix D — `source-conflict` / `registry-location-mismatch`, one line
+        # per record the cross-source gate acted on.
+        "enrichment.trace.consistency",
     ):
         trace_log = logging.getLogger(name)
         trace_log.setLevel(logging.INFO)
@@ -140,6 +165,23 @@ async def _main() -> None:
             json.dumps(
                 {
                     "summary": response.summary.model_dump(),
+                    # The INPUT side of every row, in input order. The
+                    # `*_original` fields are `exclude=True` on
+                    # `EnrichmentResult` (they are working state, not output),
+                    # so without this the artefact carries no input-side name
+                    # at all — and `tools/run_diff.py` needs one, because the
+                    # only alternative is joining two runs on a column the
+                    # pipeline itself writes. Parallel to `results` by
+                    # construction: `enrich_batch` returns results in input
+                    # order.
+                    "inputs": [
+                        {
+                            "record_id": r.record_id,
+                            "name1": r.name1,
+                            "city": r.city,
+                        }
+                        for r in records
+                    ],
                     "results": [
                         r.model_dump(by_alias=False) for r in response.results
                     ],

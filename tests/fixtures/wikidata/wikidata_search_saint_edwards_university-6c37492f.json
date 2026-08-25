@@ -1,0 +1,112 @@
+{
+ "domain": "search:saint edwards university",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Saint Edwards University"
+  },
+  "search": [
+   {
+    "id": "Q49555695",
+    "title": "Q49555695",
+    "pageid": 50558115,
+    "concepturi": "http://www.wikidata.org/entity/Q49555695",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q49555695",
+    "display": {
+     "label": {
+      "value": "Saint Edwards University Baseball Field",
+      "language": "en"
+     },
+     "description": {
+      "value": "park in the United States of America",
+      "language": "en"
+     }
+    },
+    "label": "Saint Edwards University Baseball Field",
+    "description": "park in the United States of America",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Saint Edwards University Baseball Field"
+    }
+   },
+   {
+    "id": "Q49555699",
+    "title": "Q49555699",
+    "pageid": 50558119,
+    "concepturi": "http://www.wikidata.org/entity/Q49555699",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q49555699",
+    "display": {
+     "label": {
+      "value": "Saint Edwards University Soccer Field",
+      "language": "en"
+     },
+     "description": {
+      "value": "park in Travis County, Texas, United States of America",
+      "language": "en"
+     }
+    },
+    "label": "Saint Edwards University Soccer Field",
+    "description": "park in Travis County, Texas, United States of America",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Saint Edwards University Soccer Field"
+    }
+   },
+   {
+    "id": "Q49555702",
+    "title": "Q49555702",
+    "pageid": 50558122,
+    "concepturi": "http://www.wikidata.org/entity/Q49555702",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q49555702",
+    "display": {
+     "label": {
+      "value": "Saint Edwards University Track Field",
+      "language": "en"
+     },
+     "description": {
+      "value": "park in the United States of America",
+      "language": "en"
+     }
+    },
+    "label": "Saint Edwards University Track Field",
+    "description": "park in the United States of America",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Saint Edwards University Track Field"
+    }
+   },
+   {
+    "id": "Q101014850",
+    "title": "Q101014850",
+    "pageid": 98492742,
+    "concepturi": "http://www.wikidata.org/entity/Q101014850",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q101014850",
+    "display": {
+     "label": {
+      "value": "Saint Edwards University School of Humanities",
+      "language": "en"
+     },
+     "description": {
+      "value": "academic department",
+      "language": "en"
+     }
+    },
+    "label": "Saint Edwards University School of Humanities",
+    "description": "academic department",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Saint Edwards University School of Humanities"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

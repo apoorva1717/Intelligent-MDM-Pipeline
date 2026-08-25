@@ -1,0 +1,31 @@
+{
+ "domain": "entity:q41405273",
+ "payload": {
+  "id": "Q41405273",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Bioserotypes and virulence markers of Yersinia enterocolitica strains isolated from mallards (Anas platyrhynchos) and Pheasants (Phasianus colchicus)."
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 13442814,
+        "id": "Q13442814"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

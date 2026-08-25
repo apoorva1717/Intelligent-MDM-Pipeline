@@ -1,0 +1,10 @@
+{
+ "domain": "search:bayer pharmaceuticals corp",
+ "payload": {
+  "searchinfo": {
+   "search": "Bayer Pharmaceuticals Corp"
+  },
+  "search": [],
+  "success": 1
+ }
+}

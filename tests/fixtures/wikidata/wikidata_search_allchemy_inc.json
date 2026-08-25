@@ -1,0 +1,10 @@
+{
+ "domain": "search:allchemy inc",
+ "payload": {
+  "searchinfo": {
+   "search": "ALLCHEMY INC"
+  },
+  "search": [],
+  "success": 1
+ }
+}

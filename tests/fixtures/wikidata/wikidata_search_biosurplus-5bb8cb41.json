@@ -1,0 +1,11 @@
+{
+ "domain": "search:biosurplus",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "BioSurplus"
+  },
+  "search": [],
+  "success": 1
+ }
+}

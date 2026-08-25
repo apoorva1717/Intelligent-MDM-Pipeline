@@ -1,0 +1,11 @@
+{
+ "domain": "search:bayer pharmaceuticals corp",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Bayer Pharmaceuticals Corp"
+  },
+  "search": [],
+  "success": 1
+ }
+}

@@ -1,0 +1,70 @@
+{
+ "domain": "entity:q139407595",
+ "payload": {
+  "id": "Q139407595",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Arkema K.K. (Japan)"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Arkema"
+    },
+    {
+     "language": "en",
+     "value": "Arkema K.K."
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 4830453,
+        "id": "Q4830453"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 17,
+        "id": "Q17"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P6782": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P6782",
+      "datavalue": {
+       "value": "02vvrz717",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

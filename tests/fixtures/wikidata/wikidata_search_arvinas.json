@@ -1,0 +1,106 @@
+{
+ "domain": "search:arvinas",
+ "payload": {
+  "searchinfo": {
+   "search": "Arvinas"
+  },
+  "search": [
+   {
+    "id": "Q61934485",
+    "title": "Q61934485",
+    "pageid": 61765127,
+    "concepturi": "http://www.wikidata.org/entity/Q61934485",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q61934485",
+    "display": {
+     "label": {
+      "value": "Arvinas (United States)",
+      "language": "en"
+     },
+     "description": {
+      "value": "company in New Haven, United States",
+      "language": "en"
+     }
+    },
+    "label": "Arvinas (United States)",
+    "description": "company in New Haven, United States",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Arvinas (United States)"
+    }
+   },
+   {
+    "id": "Q139578800",
+    "title": "Q139578800",
+    "pageid": 133033938,
+    "concepturi": "http://www.wikidata.org/entity/Q139578800",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q139578800",
+    "display": {
+     "label": {
+      "value": "Arvinas Operations, Inc.",
+      "language": "en"
+     }
+    },
+    "label": "Arvinas Operations, Inc.",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Arvinas Operations, Inc."
+    }
+   },
+   {
+    "id": "Q87809802",
+    "title": "Q87809802",
+    "pageid": 87043222,
+    "concepturi": "http://www.wikidata.org/entity/Q87809802",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q87809802",
+    "display": {
+     "label": {
+      "value": "Arvinas, Pfizer Team Up on PROTACs",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific article published on 16 February 2018",
+      "language": "en"
+     }
+    },
+    "label": "Arvinas, Pfizer Team Up on PROTACs",
+    "description": "scientific article published on 16 February 2018",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Arvinas, Pfizer Team Up on PROTACs"
+    }
+   },
+   {
+    "id": "Q91526992",
+    "title": "Q91526992",
+    "pageid": 90708854,
+    "concepturi": "http://www.wikidata.org/entity/Q91526992",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q91526992",
+    "display": {
+     "label": {
+      "value": "Arvinas's PROTACs pass first safety and PK analysis",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific article published on 01 November 2019",
+      "language": "en"
+     }
+    },
+    "label": "Arvinas's PROTACs pass first safety and PK analysis",
+    "description": "scientific article published on 01 November 2019",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Arvinas's PROTACs pass first safety and PK analysis"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

@@ -1,0 +1,31 @@
+{
+ "domain": "entity:q101410362",
+ "payload": {
+  "id": "Q101410362",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Adaptive innovations to provide services to children with developmental disabilities during the COVID-19 pandemic"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 13442814,
+        "id": "Q13442814"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

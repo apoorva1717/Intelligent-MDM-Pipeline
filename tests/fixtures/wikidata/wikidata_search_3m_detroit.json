@@ -1,0 +1,10 @@
+{
+ "domain": "search:3m detroit",
+ "payload": {
+  "searchinfo": {
+   "search": "3M (Detroit)"
+  },
+  "search": [],
+  "success": 1
+ }
+}

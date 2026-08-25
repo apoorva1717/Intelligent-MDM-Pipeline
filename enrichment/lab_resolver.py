@@ -31,7 +31,7 @@ from llm.prompts import (
 )
 from search.base import SearchClient, SearchResult
 from search.page_fetcher import PageFetcher
-from utils.cache import BatchCache
+from utils.cache import BatchCache, cached_serp
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +76,9 @@ async def run_lab_resolver(
         # still useful when the institution name is distinctive.
         query = f'"{institution}" "{lab_name}" department'
 
-    cached = cache.get_serp(query)
-    if cached is not None:
-        results: list[SearchResult] = cached
-    else:
-        results = await search_client.search(query, num_results=5)
-        cache.set_serp(query, results)
+    results: list[SearchResult] = await cached_serp(
+        cache, search_client, query, num_results=5,
+    )
 
     if domain:
         candidates = [r for r in results if domain in r.url.lower()]

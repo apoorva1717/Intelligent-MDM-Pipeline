@@ -1,0 +1,10 @@
+{
+ "domain": "search:aimatx",
+ "payload": {
+  "searchinfo": {
+   "search": "Aimatx"
+  },
+  "search": [],
+  "success": 1
+ }
+}

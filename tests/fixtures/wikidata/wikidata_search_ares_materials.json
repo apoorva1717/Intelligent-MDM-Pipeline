@@ -1,0 +1,36 @@
+{
+ "domain": "search:ares materials",
+ "payload": {
+  "searchinfo": {
+   "search": "Ares Materials"
+  },
+  "search": [
+   {
+    "id": "Q118301114",
+    "title": "Q118301114",
+    "pageid": 112810520,
+    "concepturi": "http://www.wikidata.org/entity/Q118301114",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q118301114",
+    "display": {
+     "label": {
+      "value": "Ares Materials",
+      "language": "en"
+     },
+     "description": {
+      "value": "American semiconductor company",
+      "language": "en"
+     }
+    },
+    "label": "Ares Materials",
+    "description": "American semiconductor company",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Ares Materials"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

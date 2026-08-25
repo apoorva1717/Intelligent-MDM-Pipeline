@@ -1,0 +1,48 @@
+{
+ "domain": "entity:q13433895",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q13433895",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Baker & McKenzie House"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 41176,
+        "id": "Q41176"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 55,
+        "id": "Q55"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

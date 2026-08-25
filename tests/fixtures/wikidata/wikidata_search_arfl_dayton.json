@@ -1,0 +1,10 @@
+{
+ "domain": "search:arfl dayton",
+ "payload": {
+  "searchinfo": {
+   "search": "ARFL - Dayton"
+  },
+  "search": [],
+  "success": 1
+ }
+}

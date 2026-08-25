@@ -1,0 +1,10 @@
+{
+ "domain": "search:austarpharma",
+ "payload": {
+  "searchinfo": {
+   "search": "Austarpharma"
+  },
+  "search": [],
+  "success": 1
+ }
+}

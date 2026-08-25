@@ -1,0 +1,16 @@
+{
+ "domain": "akaalorganics.com",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "status": 200,
+  "blocked": false,
+  "error": null,
+  "url": "https://akaalorganics.com/",
+  "title": "Akaal Organics, Innovative Fine Chemicals Designs",
+  "h1": "",
+  "text": "Akaal Organics, Innovative Fine Chemicals Designs",
+  "paths": [
+   "/"
+  ]
+ }
+}

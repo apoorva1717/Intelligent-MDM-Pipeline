@@ -1,0 +1,89 @@
+{
+ "domain": "search:baker mckenzie",
+ "payload": {
+  "searchinfo": {
+   "search": "Baker & McKenzie"
+  },
+  "search": [
+   {
+    "id": "Q804340",
+    "title": "Q804340",
+    "pageid": 757247,
+    "concepturi": "http://www.wikidata.org/entity/Q804340",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q804340",
+    "display": {
+     "label": {
+      "value": "Baker McKenzie",
+      "language": "en"
+     },
+     "description": {
+      "value": "multinational law firm",
+      "language": "en"
+     }
+    },
+    "label": "Baker McKenzie",
+    "description": "multinational law firm",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "Baker & McKenzie"
+    },
+    "aliases": [
+     "Baker & McKenzie"
+    ]
+   },
+   {
+    "id": "Q106512566",
+    "title": "Q106512566",
+    "pageid": 101803759,
+    "concepturi": "http://www.wikidata.org/entity/Q106512566",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q106512566",
+    "display": {
+     "label": {
+      "value": "Baker & McKenzie",
+      "language": "en"
+     },
+     "description": {
+      "value": "Czech law firm",
+      "language": "en"
+     }
+    },
+    "label": "Baker & McKenzie",
+    "description": "Czech law firm",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Baker & McKenzie"
+    }
+   },
+   {
+    "id": "Q13433895",
+    "title": "Q13433895",
+    "pageid": 15112471,
+    "concepturi": "http://www.wikidata.org/entity/Q13433895",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q13433895",
+    "display": {
+     "label": {
+      "value": "Baker & McKenzie House",
+      "language": "en"
+     },
+     "description": {
+      "value": "office building in Amsterdam",
+      "language": "en"
+     }
+    },
+    "label": "Baker & McKenzie House",
+    "description": "office building in Amsterdam",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Baker & McKenzie House"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

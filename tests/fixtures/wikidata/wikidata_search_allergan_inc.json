@@ -1,0 +1,36 @@
+{
+ "domain": "search:allergan inc",
+ "payload": {
+  "searchinfo": {
+   "search": "Allergan, Inc"
+  },
+  "search": [
+   {
+    "id": "Q505866",
+    "title": "Q505866",
+    "pageid": 475667,
+    "concepturi": "http://www.wikidata.org/entity/Q505866",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q505866",
+    "display": {
+     "label": {
+      "value": "Allergan, Inc.",
+      "language": "en"
+     },
+     "description": {
+      "value": "U.S. subsidary of Allergan plc",
+      "language": "en"
+     }
+    },
+    "label": "Allergan, Inc.",
+    "description": "U.S. subsidary of Allergan plc",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Allergan, Inc."
+    }
+   }
+  ],
+  "success": 1
+ }
+}

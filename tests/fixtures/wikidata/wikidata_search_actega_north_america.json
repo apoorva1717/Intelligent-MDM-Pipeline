@@ -1,0 +1,10 @@
+{
+ "domain": "search:actega north america",
+ "payload": {
+  "searchinfo": {
+   "search": "ACTEGA NORTH AMERICA"
+  },
+  "search": [],
+  "success": 1
+ }
+}

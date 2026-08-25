@@ -1,0 +1,67 @@
+{
+ "domain": "entity:q7359784",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q7359784",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Rohm and Haas Corporate Headquarters"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Rohm and Haas Building"
+    },
+    {
+     "language": "en",
+     "value": "Dow Chemical Company building"
+    },
+    {
+     "language": "en",
+     "value": "Macquarie Building"
+    },
+    {
+     "language": "en",
+     "value": "100 South Independence Mall West\\"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 1021645,
+        "id": "Q1021645"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

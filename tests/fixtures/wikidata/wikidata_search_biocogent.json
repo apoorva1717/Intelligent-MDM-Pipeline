@@ -1,0 +1,10 @@
+{
+ "domain": "search:biocogent",
+ "payload": {
+  "searchinfo": {
+   "search": "Biocogent"
+  },
+  "search": [],
+  "success": 1
+ }
+}

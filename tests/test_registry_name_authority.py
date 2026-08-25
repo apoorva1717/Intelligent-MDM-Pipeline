@@ -88,7 +88,7 @@ class _StubROR:
         self.queries: list[str] = []
 
     async def call(self, name, country_code=None, country=None,
-                   city=None, state=None) -> dict[str, Any]:
+                   city=None, state=None, **_ctx) -> dict[str, Any]:
         self.queries.append(name)
         hit = self.matches.get(name.strip().lower())
         if hit is None:

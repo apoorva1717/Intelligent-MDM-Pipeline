@@ -1,0 +1,138 @@
+{
+ "domain": "search:avon",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Avon"
+  },
+  "search": [
+   {
+    "id": "Q791277",
+    "title": "Q791277",
+    "pageid": 744291,
+    "concepturi": "http://www.wikidata.org/entity/Q791277",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q791277",
+    "display": {
+     "label": {
+      "value": "Avon",
+      "language": "en"
+     },
+     "description": {
+      "value": "commune in Seine-et-Marne, France",
+      "language": "en"
+     }
+    },
+    "label": "Avon",
+    "description": "commune in Seine-et-Marne, France",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Avon"
+    }
+   },
+   {
+    "id": "Q791265",
+    "title": "Q791265",
+    "pageid": 744279,
+    "concepturi": "http://www.wikidata.org/entity/Q791265",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q791265",
+    "display": {
+     "label": {
+      "value": "Avon",
+      "language": "en"
+     },
+     "description": {
+      "value": "town in Connecticut, United States",
+      "language": "en"
+     }
+    },
+    "label": "Avon",
+    "description": "town in Connecticut, United States",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Avon"
+    }
+   },
+   {
+    "id": "Q1149065",
+    "title": "Q1149065",
+    "pageid": 1095545,
+    "concepturi": "http://www.wikidata.org/entity/Q1149065",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q1149065",
+    "display": {
+     "label": {
+      "value": "Avon",
+      "language": "en"
+     },
+     "description": {
+      "value": "commune in Deux-S\u00e8vres, France",
+      "language": "en"
+     }
+    },
+    "label": "Avon",
+    "description": "commune in Deux-S\u00e8vres, France",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Avon"
+    }
+   },
+   {
+    "id": "Q1069583",
+    "title": "Q1069583",
+    "pageid": 1018127,
+    "concepturi": "http://www.wikidata.org/entity/Q1069583",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q1069583",
+    "display": {
+     "label": {
+      "value": "Avon-les-Roches",
+      "language": "en"
+     },
+     "description": {
+      "value": "commune in Indre-et-Loire, France",
+      "language": "en"
+     }
+    },
+    "label": "Avon-les-Roches",
+    "description": "commune in Indre-et-Loire, France",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Avon-les-Roches"
+    }
+   },
+   {
+    "id": "Q1085472",
+    "title": "Q1085472",
+    "pageid": 1033466,
+    "concepturi": "http://www.wikidata.org/entity/Q1085472",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q1085472",
+    "display": {
+     "label": {
+      "value": "Avon-la-P\u00e8ze",
+      "language": "en"
+     },
+     "description": {
+      "value": "commune in Aube, France",
+      "language": "en"
+     }
+    },
+    "label": "Avon-la-P\u00e8ze",
+    "description": "commune in Aube, France",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Avon-la-P\u00e8ze"
+    }
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

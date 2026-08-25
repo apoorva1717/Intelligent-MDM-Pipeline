@@ -1,0 +1,10 @@
+{
+ "domain": "search:aldrich apl",
+ "payload": {
+  "searchinfo": {
+   "search": "Aldrich APL"
+  },
+  "search": [],
+  "success": 1
+ }
+}

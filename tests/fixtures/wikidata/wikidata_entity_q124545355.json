@@ -1,0 +1,38 @@
+{
+ "domain": "entity:q124545355",
+ "payload": {
+  "id": "Q124545355",
+  "labels": {},
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 6881511,
+        "id": "Q6881511"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://anresco.com/",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

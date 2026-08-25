@@ -239,6 +239,10 @@ class MockRORClient(RORClient):
         country: str | None = None,
         city: str | None = None,
         state: str | None = None,
+        *,
+        # Fix C(3) record context. Accepted and unused: a mock stands in for
+        # the registry, not for the client-side guards that read it.
+        record_domain: str | None = None,
     ) -> dict[str, Any]:
         """Return mock ROR data based on name matching.
 
@@ -303,3 +307,48 @@ class MockRORClient(RORClient):
             name[:40], result["matched"], score, result["official_name"],
         )
         return result
+
+    async def call_by_id(
+        self,
+        ror_id: str,
+        country_code: str | None = None,
+        *,
+        country: str | None = None,
+        city: str | None = None,
+        state: str | None = None,
+        record_domain: str | None = None,
+    ) -> dict[str, Any]:
+        """Resolve a known ROR ID against the curated data.
+
+        The by-identifier path the [Wikidata crosswalk
+        lane](`enrichment.wikidata`) follows. Matched on the bare id so both
+        ``https://ror.org/02y3ad647`` and ``02y3ad647`` resolve, and never
+        scored — an identifier names one record, so there is no candidate set
+        to rank. Unknown ids are a clean miss, which is what a stale pointer
+        must produce.
+        """
+        bare = (ror_id or "").strip().rstrip("/").rsplit("/", 1)[-1].lower()
+        if not bare:
+            return {"matched": False, "score": 0.0, "guard_rejections": []}
+        for data in _MOCK_DATA.values():
+            if data["ror_id"].rsplit("/", 1)[-1].lower() != bare:
+                continue
+            logger.info("[MOCK] ROR by-id: %s → '%s'", bare, data["official_name"])
+            return {
+                "matched": True,
+                "score": 1.0,
+                "strategy": "by_id",
+                "guard_rejections": [],
+                "ror_id": data["ror_id"],
+                "official_name": data["official_name"],
+                "org_types": data["org_types"],
+                "is_research_institution": data["is_research_institution"],
+                "domain": data["domain"],
+                "website": data.get("website"),
+                "children": data.get("children", []),
+                "country": data.get("country"),
+                "query_used": bare,
+                "country_filter": country_code,
+            }
+        logger.info("[MOCK] ROR by-id: %s not found", bare)
+        return {"matched": False, "score": 0.0, "guard_rejections": []}

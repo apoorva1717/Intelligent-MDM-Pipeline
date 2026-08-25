@@ -1,0 +1,10 @@
+{
+ "domain": "search:abcam eugene",
+ "payload": {
+  "searchinfo": {
+   "search": "Abcam (Eugene)"
+  },
+  "search": [],
+  "success": 1
+ }
+}

@@ -8,7 +8,7 @@ from functools import partial
 
 from duckduckgo_search import DDGS
 
-from search.base import SearchClient, SearchResult
+from search.base import SearchClient, SearchResult, SearchUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +24,13 @@ class DuckDuckGoClient(SearchClient):
                 None,
                 partial(self._sync_search, query, num_results),
             )
-        except Exception:
-            logger.exception("DuckDuckGo search failed for query: %s", query[:100])
-            return []
+        except Exception as exc:
+            # See `SearchUnavailable`: a transport failure must not be
+            # recorded as "this query has no results".
+            logger.warning(
+                "DuckDuckGo search failed for query %r: %s", query[:100], exc,
+            )
+            raise SearchUnavailable(str(exc)) from exc
 
     def _sync_search(self, query: str, num_results: int) -> list[SearchResult]:
         results: list[SearchResult] = []

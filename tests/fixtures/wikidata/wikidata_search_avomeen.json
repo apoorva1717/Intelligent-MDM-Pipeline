@@ -1,0 +1,10 @@
+{
+ "domain": "search:avomeen",
+ "payload": {
+  "searchinfo": {
+   "search": "Avomeen"
+  },
+  "search": [],
+  "success": 1
+ }
+}

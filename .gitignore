@@ -24,3 +24,20 @@ local.settings.json
 # Thesis exemplar anonymisation mapping (placeholder -> original customer identifiers)
 docs/thesis/exemplar_id_map.local.md
 .python_packages/
+
+# ── Fix B — the shared evidence cache (utils/cache.py) ───────────────────
+# EVIDENCE_CACHE_DIR defaults to tests/fixtures. Two of its namespaces are
+# committed on purpose — a page read and a Wikidata item are claims about what
+# a source said on a day, and a thesis re-run has to reproduce the decisions
+# they drove. The other four are derived and cheap to re-gather, so they are
+# ignored here by default. Un-ignore them to commit a frozen evaluation set —
+# the runs behind determinism_findings.md were measured against exactly that,
+# and `llm/` in particular is what makes a re-run reproduce the model's
+# answers rather than re-ask for them.
+tests/fixtures/serp/
+tests/fixtures/registry/
+tests/fixtures/fetch/
+tests/fixtures/llm/
+
+# Dated backups of moved evidence-cache namespaces (see utils/cache.py).
+_cache_backup_*/

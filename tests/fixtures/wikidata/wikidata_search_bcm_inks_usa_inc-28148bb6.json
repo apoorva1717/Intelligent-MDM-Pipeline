@@ -1,0 +1,11 @@
+{
+ "domain": "search:bcm inks usa inc",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "BCM Inks USA, Inc"
+  },
+  "search": [],
+  "success": 1
+ }
+}

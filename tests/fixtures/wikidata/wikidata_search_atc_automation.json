@@ -1,0 +1,10 @@
+{
+ "domain": "search:atc automation",
+ "payload": {
+  "searchinfo": {
+   "search": "ATC Automation"
+  },
+  "search": [],
+  "success": 1
+ }
+}

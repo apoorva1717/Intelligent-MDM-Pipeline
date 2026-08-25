@@ -1,0 +1,32 @@
+{
+ "domain": "entity:q120922510",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q120922510",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "admixture mapping"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P279": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 715789,
+        "id": "Q715789"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

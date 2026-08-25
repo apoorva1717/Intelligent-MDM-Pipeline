@@ -1,0 +1,138 @@
+{
+ "domain": "search:tesla",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "TESLA"
+  },
+  "search": [
+   {
+    "id": "Q478214",
+    "title": "Q478214",
+    "pageid": 450737,
+    "concepturi": "http://www.wikidata.org/entity/Q478214",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q478214",
+    "display": {
+     "label": {
+      "value": "Tesla",
+      "language": "en"
+     },
+     "description": {
+      "value": "American automotive, energy storage and solar power company",
+      "language": "en"
+     }
+    },
+    "label": "Tesla",
+    "description": "American automotive, energy storage and solar power company",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Tesla"
+    }
+   },
+   {
+    "id": "Q163343",
+    "title": "Q163343",
+    "pageid": 164124,
+    "concepturi": "http://www.wikidata.org/entity/Q163343",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q163343",
+    "display": {
+     "label": {
+      "value": "tesla",
+      "language": "en"
+     },
+     "description": {
+      "value": "SI unit of magnetic flux density",
+      "language": "en"
+     }
+    },
+    "label": "tesla",
+    "description": "SI unit of magnetic flux density",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "tesla"
+    }
+   },
+   {
+    "id": "Q1428953",
+    "title": "Q1428953",
+    "pageid": 1367495,
+    "concepturi": "http://www.wikidata.org/entity/Q1428953",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q1428953",
+    "display": {
+     "label": {
+      "value": "Tesla",
+      "language": "en"
+     },
+     "description": {
+      "value": "American musical group; hard rock band",
+      "language": "en"
+     }
+    },
+    "label": "Tesla",
+    "description": "American musical group; hard rock band",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Tesla"
+    }
+   },
+   {
+    "id": "Q1548225",
+    "title": "Q1548225",
+    "pageid": 1484682,
+    "concepturi": "http://www.wikidata.org/entity/Q1548225",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q1548225",
+    "display": {
+     "label": {
+      "value": "Tesla",
+      "language": "en"
+     },
+     "description": {
+      "value": "Czech manufacturer of electronical and electrical equipment (est.1991)",
+      "language": "en"
+     }
+    },
+    "label": "Tesla",
+    "description": "Czech manufacturer of electronical and electrical equipment (est.1991)",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Tesla"
+    }
+   },
+   {
+    "id": "Q37251206",
+    "title": "Q37251206",
+    "pageid": 38628584,
+    "concepturi": "http://www.wikidata.org/entity/Q37251206",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q37251206",
+    "display": {
+     "label": {
+      "value": "Tesla",
+      "language": "en"
+     },
+     "description": {
+      "value": "family name",
+      "language": "en"
+     }
+    },
+    "label": "Tesla",
+    "description": "family name",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Tesla"
+    }
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

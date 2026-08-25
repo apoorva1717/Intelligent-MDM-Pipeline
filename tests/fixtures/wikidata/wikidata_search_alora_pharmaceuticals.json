@@ -1,0 +1,10 @@
+{
+ "domain": "search:alora pharmaceuticals",
+ "payload": {
+  "searchinfo": {
+   "search": "Alora Pharmaceuticals"
+  },
+  "search": [],
+  "success": 1
+ }
+}

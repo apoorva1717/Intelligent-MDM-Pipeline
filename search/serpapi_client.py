@@ -8,7 +8,7 @@ from functools import partial
 
 from serpapi import GoogleSearch
 
-from search.base import SearchClient, SearchResult
+from search.base import SearchClient, SearchResult, SearchUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -26,14 +26,18 @@ class SerpAPIClient(SearchClient):
         """
         loop = asyncio.get_running_loop()
         try:
-            raw = await loop.run_in_executor(
+            return await loop.run_in_executor(
                 None,
                 partial(self._sync_search, query, num_results),
             )
-            return raw
-        except Exception:
-            logger.exception("SerpAPI search failed for query: %s", query[:100])
-            return []
+        except Exception as exc:
+            # A dropped connection is not "no results". Raising lets
+            # `cached_serp` decline to RECORD the failure; the caller still
+            # sees an empty list and behaves exactly as it did before.
+            logger.warning(
+                "SerpAPI search failed for query %r: %s", query[:100], exc,
+            )
+            raise SearchUnavailable(str(exc)) from exc
 
     def _sync_search(self, query: str, num_results: int) -> list[SearchResult]:
         params = {

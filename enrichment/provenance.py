@@ -44,6 +44,22 @@ from dataclasses import dataclass, field as dc_field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
+from enrichment.confidence import (
+    EvidenceSituation,
+    SOURCE_GLEIF,
+    SOURCE_INPUT,
+    SOURCE_LLM,
+    SOURCE_ROR,
+    WITNESS_DOMAIN,
+    WITNESS_REGISTRY,
+    WITNESS_WEB,
+    WITNESS_WIKIDATA,
+    compute_confidence,
+    render as confidence_render,
+    validate_all as validate_provenance_strings,
+    web_source as confidence_web_source,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -182,12 +198,24 @@ def comparable(a: str | None, b: str | None) -> bool:
 
 # ── Confidence bands, per scale ───────────────────────────────────────────────
 #
-# The band is the third component of the derived scalar. Bands are namespaced
-# by scale ("self_high", never a bare "high") so a scalar can never be read as
-# comparable across producers just because two records both say "high".
+# NO LONGER ON THE EXPORT PATH. The band used to be the third component of the
+# derived scalar; Provenance Scheme B replaced it, because a slot holding
+# "self_high" for one producer and "exact" for another is not a confidence, it
+# is three vocabularies sharing a column. What a reader needs is in
+# `enrichment.confidence`; what an auditor needs — the scale, the raw value and
+# the rule id — is on every event and in the trace, which is strictly more than
+# the band ever carried.
+#
+# Retained as a human-readable rendering of one (scale, value) pair for
+# diagnostics and for the tests that pin the banding thresholds. Nothing in the
+# pipeline calls it, and nothing should call it to decide anything.
 
 def confidence_band(scale: str | None, value: float | None) -> str:
-    """The scale-namespaced band for one (scale, value) pair."""
+    """The scale-namespaced band for one (scale, value) pair.
+
+    Diagnostic only — see the note above. This is not what any provenance
+    column contains.
+    """
     if scale == REGISTRY_EXACT:
         return "exact"
     if scale == ROR_LOCAL:
@@ -657,10 +685,213 @@ class ProvenanceLog:
         return [r.as_dict() for r in self.rejections]
 
 
-# ── Derived scalars (Step 6) ──────────────────────────────────────────────────
+# ── Derived scalars: Provenance Scheme B ──────────────────────────────────────
+#
+# The scalar is `source:confidence[+witness]` — see `enrichment.confidence`
+# for the grammar and the confidence table. What lives HERE is only the
+# adapter: the translation from what a lane recorded (a producer chain, a
+# confidence scale, a rule id, an evidence ref) into the terms the confidence
+# table is written in. The decision itself is `compute_confidence`, and this
+# module does not take it.
+#
+# Why an adapter rather than each lane stating its own confidence: a lane
+# knows what it saw, not what that is worth relative to what every other lane
+# saw. Ranking evidence is a whole-pipeline judgement, so it is made in one
+# place, from evidence the lanes record without interpreting.
 
-def derived_scalar(log: ProvenanceLog, field: str) -> str | None:
-    """``producer:tier:confidence_band`` for one scoped field.
+#: Producers whose write IS a registry response.
+_REGISTRY_PRODUCERS: frozenset[str] = frozenset({"ror", "gleif"})
+
+#: Producers that read a page. The value's source is the domain that served
+#: it, which is why these do not share the `input` fallback below.
+_WEB_PRODUCERS: frozenset[str] = frozenset(
+    {"website_resolver", "page_read", "domain_resolver"},
+)
+
+#: The record's own email domain — a witness under rule 4, not a page read.
+_EMAIL_PRODUCER = "record_email"
+
+#: Rule-id prefix that marks a registry hit reached by crosswalking through a
+#: Wikidata item rather than by querying the registry directly. The registry
+#: still authored the value (see `_crosswalk_to_ror`), so the source stays
+#: `ror`/`gleif`; the crosswalk is what `+wikidata` records.
+_CROSSWALK_RULE_PREFIX = "wikidata:crosswalk"
+
+#: `unchanged-verified` records WHAT corroborated the retained name as a
+#: `kind:detail` string. This maps the kind to the witness token.
+_CORROBORATION_WITNESSES: dict[str, str] = {
+    "page": WITNESS_WEB,
+    "domain": WITNESS_WEB,
+    "wikidata": WITNESS_WIKIDATA,
+    "registry": WITNESS_REGISTRY,
+    "email": WITNESS_DOMAIN,
+}
+
+#: `domain_ownership` conditions that constitute an INDEPENDENT witness for
+#: the domain (hard rule 4). `name` and `serp` are deliberately absent: a
+#: string comparison against the record's own Name 1, and a page fetched from
+#: the very domain it is being asked to corroborate, are each one source.
+_DOMAIN_WITNESSES: dict[str, str] = {
+    "email": WITNESS_DOMAIN,
+    "registry": WITNESS_REGISTRY,
+}
+
+
+def _ref(event: ProvenanceEvent) -> dict[str, Any]:
+    return event.evidence_ref if isinstance(event.evidence_ref, dict) else {}
+
+
+def _host_of(url: str | None) -> str:
+    """The bare host of *url*, or ``""`` — no network, no validation."""
+    if not url:
+        return ""
+    text = str(url).strip()
+    text = text.split("://", 1)[-1]
+    text = text.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    if "@" in text:
+        text = text.rsplit("@", 1)[-1]
+    text = text.split(":", 1)[0]
+    return text.lower().lstrip(".")
+
+
+def _web_domain_for(event: ProvenanceEvent) -> str:
+    """The domain that goes in ``web:{domain}`` for a web-produced value.
+
+    For the ``domain`` field the written value IS the domain. For anything
+    else a page produced, the domain is the host of the page that was read.
+    """
+    if event.field == "domain" and event.new_value:
+        return str(event.new_value).strip().lower()
+    ref = _ref(event)
+    for key in ("email_domain", "source_url", "withdrawn"):
+        host = _host_of(ref.get(key))
+        if host:
+            return host
+    return str(event.new_value or "").strip().lower()
+
+
+def situation_for(
+    event: ProvenanceEvent, record: Any = None,
+) -> tuple[str, EvidenceSituation]:
+    """``(source, EvidenceSituation)`` for one attributing event.
+
+    The whole old→new mapping, in one readable function, and the only place a
+    producer name is turned into a source token. *record* is optional and is
+    consulted for exactly one thing: whether Wikidata's ``P856`` independently
+    agreed with the domain the ownership guard accepted, which is a fact about
+    the record rather than about the write that produced it.
+    """
+    producer = event.producer_chain[-1] if event.producer_chain else "input"
+    scale = event.confidence_scale
+    rule_id = event.rule_id or ""
+    ref = _ref(event)
+
+    # ── A registry authored it ────────────────────────────────────────────
+    # `ror:1:exact`, `gleif:1:exact` and every fuzzy variant collapse here:
+    # the match MODE is not a confidence, and it stays on the event and in the
+    # trace rather than in the column.
+    if producer in _REGISTRY_PRODUCERS:
+        return producer, EvidenceSituation(
+            registry_authored=True,
+            has_source=True,
+            via_wikidata_crosswalk=rule_id.startswith(_CROSSWALK_RULE_PREFIX),
+            llm_involved=any(
+                link.startswith("llm") for link in event.producer_chain
+            ),
+        )
+
+    # ── The classifier ────────────────────────────────────────────────────
+    # `classifier:-:rule` said only that a rule fired, never WHICH evidence
+    # the rule read — so a record type ROR settled and one nothing settled
+    # shipped the same string. The classifier records `decided_by`; that is
+    # the source, and an unresolved type has no source at all.
+    if producer == "classifier":
+        decided = str(ref.get("decided_by") or "unresolved")
+        if decided in _REGISTRY_PRODUCERS:
+            return decided, EvidenceSituation(
+                registry_authored=True, has_source=True,
+            )
+        if decided == "unresolved":
+            return SOURCE_INPUT, EvidenceSituation(has_source=False)
+        # `keyword` — the record's own Name 1 read as a research institution.
+        # One source, uncontradicted: the input.
+        return SOURCE_INPUT, EvidenceSituation(has_source=True)
+
+    # ── A model ───────────────────────────────────────────────────────────
+    # Every `llm_*` producer and every `self_*` band collapse to one string.
+    # The model's self-report survives on the event; it was never a
+    # measurement and it is not an authority claim, which is precisely what
+    # `self_high` in an exported column was being read as.
+    if producer.startswith("llm") or scale == LLM_SELF_REPORTED:
+        return SOURCE_LLM, EvidenceSituation(
+            has_source=True, llm_involved=True,
+        )
+
+    # ── The record's own email domain ─────────────────────────────────────
+    if producer == _EMAIL_PRODUCER:
+        return confidence_web_source(_web_domain_for(event)), EvidenceSituation(
+            has_source=True, witness=WITNESS_DOMAIN,
+        )
+
+    # ── A page / a resolved website ───────────────────────────────────────
+    # All eight `website_resolver:*:*` variants collapse to one provisional
+    # string, and that is the substantive claim of hard rule 4: the tier and
+    # the ownership condition told a reader which check fired, never that a
+    # second, independent source agreed. Only a registry-stated website, a
+    # Wikidata P856 agreement, or the record's own email domain does that.
+    if producer in _WEB_PRODUCERS:
+        witness = _DOMAIN_WITNESSES.get(str(ref.get("verified_by") or ""))
+        if witness is None and event.field == "domain" and record is not None:
+            corroboration = (
+                record.get("_wikidata_corroboration")
+                if hasattr(record, "get") else None
+            )
+            if (
+                isinstance(corroboration, dict)
+                and corroboration.get("domain_corroborated")
+            ):
+                witness = WITNESS_WIKIDATA
+        return confidence_web_source(_web_domain_for(event)), EvidenceSituation(
+            has_source=True, witness=witness,
+        )
+
+    # ── Batch consensus ───────────────────────────────────────────────────
+    # NOT in the migration's state table — see `provenance_migration_report.md`.
+    # An identifier a sibling record matched is authored by that registry, but
+    # THIS record never looked it up, so it is never `verified` here. The
+    # donor record id stays on the event, which is what a reviewer opens.
+    if scale == INHERITED:
+        source = {
+            "ror_id": SOURCE_ROR, "lei_id": SOURCE_GLEIF,
+        }.get(event.field, SOURCE_INPUT)
+        return source, EvidenceSituation(has_source=True)
+
+    # ── The input value stood ─────────────────────────────────────────────
+    # Fix 2's three unchanged states, which are the three rows of the
+    # confidence table that concern a value nobody rewrote.
+    if scale == INPUT_CORROBORATED:
+        kind = str(ref.get("corroborated_by") or "").split(":", 1)[0]
+        return SOURCE_INPUT, EvidenceSituation(
+            has_source=True,
+            witness=_CORROBORATION_WITNESSES.get(kind, WITNESS_WEB),
+        )
+    if scale == INPUT_SELF_CONSISTENT:
+        return SOURCE_INPUT, EvidenceSituation(
+            has_source=True,
+            llm_involved=True,
+            canonical_proposal_equals_input=True,
+        )
+
+    # Everything else is a deterministic rule reshaping or retaining the
+    # record's own value with nothing corroborating it — the old
+    # `input:1:rule`. No source agreed; that is the table's last row.
+    return SOURCE_INPUT, EvidenceSituation(has_source=False)
+
+
+def derived_scalar(
+    log: ProvenanceLog, field: str, record: Any = None,
+) -> str | None:
+    """``source:confidence[+witness]`` for one scoped field.
 
     Regenerated from the events every time — never maintained separately, so
     the scalar and the log cannot drift apart. ``None`` when the field has no
@@ -670,15 +901,17 @@ def derived_scalar(log: ProvenanceLog, field: str) -> str | None:
     event = log.attributing_event(field)
     if event is None:
         return None
-    tier = "-" if event.tier is None else str(event.tier)
-    band = confidence_band(event.confidence_scale, event.confidence_value)
-    return f"{event.producer_chain[-1]}:{tier}:{band}"
+    source, situation = situation_for(event, record)
+    band, witness = compute_confidence(situation)
+    return confidence_render(source, band, witness)
 
 
-def derived_scalars(log: ProvenanceLog) -> dict[str, str | None]:
+def derived_scalars(
+    log: ProvenanceLog, record: Any = None,
+) -> dict[str, str | None]:
     """The six derived scalar columns, regenerated from *log*."""
     return {
-        column: derived_scalar(log, field)
+        column: derived_scalar(log, field, record)
         for field, column in DERIVED_SCALAR_FIELDS.items()
     }
 

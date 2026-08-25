@@ -6,11 +6,16 @@ Generated: 2026-08-21 · Commit: d4fc46938514c9a7d249979c4aa9b4ae4cf3e564 · Bra
 specifies the structures a reader of the thesis needs in front of them. It does not restate the
 delta; where a fact is already in `11_DELTA.md` it is referenced by section, not repeated.
 
-**Provenance is out of scope.** `enrichment/provenance.py`'s record model — `Evidence`,
-`ProvenanceEvent`, `RejectedCandidate`, `ProvenanceLog`, the confidence scales, the guards and the
-six `*_provenance` derived scalars — is being reimplemented and the thesis carries a placeholder
-for it. It is named below only where another subsystem cannot be described without the dependency,
-and then in one sentence.
+**Provenance: the placeholder is resolved.** `enrichment/provenance.py`'s record model —
+`Evidence`, `ProvenanceEvent`, `RejectedCandidate`, `ProvenanceLog`, the confidence scales and the
+guards — stands as described. What was "being reimplemented" at this pass's header commit was the
+**exported** representation, and it has since landed: the `*_provenance` derived scalars are now
+Provenance Scheme B, `source:confidence[+witness]`, with confidence computed by one function from
+one table. The grammar, the table and the four hard rules are documented **once**, in README §
+"The provenance grammar — Scheme B"; the old→new mapping with counts is in
+`provenance_migration_report.md`; the parameter that governs it is in `04_PARAMETERS.md` §1.21.
+This document is otherwise unchanged, and the entries below that quote Scheme A strings are
+correct for their header commit and are marked where they are not current.
 
 **Method.** Every claim carries a `path:line` citation into the working tree at the header commit.
 Rationale is quoted only from module docstrings, code comments and commit messages; where none
@@ -321,18 +326,35 @@ that evidence behind are cited where the key is written.
 | 3 | `person-unresolved` | Record holds a person whose organisation could not be resolved | `_ev_person_unresolved` (`orchestrator.py:2325`) | `name1` (`flags.py:422-423`) | No |
 | 4 | `no-match` | No source could identify the organisation | `_nothing_was_enriched(result)` **and** no other code fired. "if any other code fired, that code is the actionable one and this would only add noise" (`flags.py:504-509`). `_nothing_was_enriched` is false if status is `enriched`/`verified`, or any of `ror_id`/`lei_id`/`domain`/`department_domain`/`source_url` is set, or any `{slot}_changed` / `contact_changed` / `email_changed` is true (`:221-243`) | `name1` | **Yes** — registry mode only |
 | 5 | `unverified-inference` | Value rests on model training data and nothing else | Field is in `_evidence_free_fields(...)`, is not registry-named, is not corroborated by `department_domain`, and `{field}_changed` is true (`flags.py:444-456`). Raised "regardless of the model's confidence: a confident unverifiable claim is the more dangerous case" (`:426-430`) | The field itself (`name1`…`name5`) | **Yes** — registry mode only, and only when scoped to `name1` |
-| 6 | `low-confidence-unchanged` | Left exactly as supplied; canonical form not established | Field is in `_ev_low_conf_unchanged`, is not registry-named, is not already `unverified-inference`, and `{field}_enriched` is non-empty (`flags.py:465-471`). Written by Tier 2A's `low_conf_unchanged` (`orchestrator.py:1287-1290`), by Tier 3's decline path (`:1390-1399`), and by the ROR-miss research passthrough (`:3244-3246`) | The field itself | **Yes** — both modes, scoped to `name1` |
+| 6 ‡ | `low-confidence-unchanged` | Left exactly as supplied; canonical form not established | **RETIRED — no longer a code.** At the header commit: field is in `_ev_low_conf_unchanged`, is not registry-named, is not already `unverified-inference`, and `{field}_enriched` is non-empty (`flags.py:465-471`). It now derives from the field's own provenance instead: the condition is exactly `input:low`, and `flag_for_review` follows from that with no code attached. The reason text is unchanged and still rendered in the same position. For `name3`…`name5`, which are outside provenance scope, the `_ev_low_conf_unchanged` marker still supplies the same derived flag | The field itself | **Yes** — by re-derivation, not by naming a code |
 | 7 | `dept-via-lab` | Parent department inferred from the lab's own page, not read from a stated department | `_ev_dept_via_lab` (`orchestrator.py:3501`) | `name2` **and** `_ev_demoted_to` (default `name3`) (`flags.py:476-478`) | No |
 | 8 | `name3-not-demoted` | Parent department written to Name 2 but every slot below was full, so the lab name could not move down | `_ev_name3_not_demoted` (`orchestrator.py:3502-3506`) | All of `DEPT_SLOTS` = `name2`…`name5` (`flags.py:479-480`) | No |
 | 9 | `multiple-contacts` | More than one person in Contact, so the department could not be confirmed against a contact's page | `_multi_contact` (`orchestrator.py:2996`) **and not** `contact_used`. "When Tier 2A ran anyway (`contact_used`), the department is settled and there is nothing outstanding" (`flags.py:483-488`) | `contact`, `name2` | No |
 | 10 | `email-conflict` | An email in the record differs from the one on file | `_ev_email_conflict`, set when preprocessing emits an `email-conflict` flag (`orchestrator.py:3003-3004`) | `email` (`flags.py:490-491`) | No |
 | 11 | `domain-unverified` | A candidate website was found but nothing tied it to this organisation | `_domain_unverified`, written by `write_domain` on a guard rejection as the rejected domain string, not a bare marker (`utils/domain_resolver.py:464-469`) | `domain` (`flags.py:498-502`) | No |
+| 12 † | `entity-superseded` | The organisation the record names no longer exists as a separate entity | `_ev_entity_superseded`, written by `orchestrator._wikidata_crosswalk` when the matched Wikidata item carries `P576` (dissolved) or `P1366` (replaced by). The value is the reason clause itself — `"replaced by <label> (<QID>)"` or `"dissolved <date>"` — and is rendered through `_DETAILED_REASONS`, falling back to the generic wording for a bare `True`. Raised whatever the registry crosswalk then found: "a dissolved entity's LEI record is itself informative", and the flag is about the entity, not about whether the lookup worked | `name1` | No |
+
+† **Post-baseline.** Code 12 was added after the commit pinned in this document's header
+(`515cc7c`), by the Stage 2c Wikidata crosswalk lane. Codes 1–11 are the baseline.
+
+**Why the name is not rewritten to the successor.** The lane knows the successor's label and QID
+and deliberately declines to write them. Which legal entity a customer record should point at
+after a merger depends on contracts and open orders the enrichment service cannot see — it is a
+business decision, not a data-quality correction — so the flag hands the reviewer the successor
+and stops. This is the same shape as code 11's `_DETAILED_REASONS` entry: name the specific thing
+in doubt rather than send the reviewer to rediscover it.
 
 **Emission order** is `_CODE_ORDER` (`flags.py:97-109`), not `ALL_CODES` order: `overflow`,
-`opaque-code`, `person-unresolved`, `no-match`, `unverified-inference`, `low-confidence-unchanged`,
-`dept-via-lab`, `name3-not-demoted`, `multiple-contacts`, `email-conflict`, `domain-unverified`.
+`opaque-code`, `person-unresolved`, `entity-superseded`, `no-match`, `unverified-inference`,
+`low-confidence-unchanged`, `dept-via-lab`, `name3-not-demoted`, `multiple-contacts`,
+`email-conflict`, `domain-unverified`. ‡ `low-confidence-unchanged` is retired as a code but keeps
+its slot in `_CODE_ORDER`, so the derived low's clause appears where the code's clause used to —
+which is what makes "review UX is unchanged" a checkable claim rather than an intention.
 Rationale: "most structural first, so the leading clause of a multi-code reason is the one that most
-changes what a reviewer does" (`:95-96`).
+changes what a reviewer does" (`:95-96`). `entity-superseded` sits above `no-match` because "this
+organisation no longer exists" is a bigger change to what a reviewer does than "we could not
+identify it" — and because raising it suppresses `no-match`, which is correct: the pipeline *did*
+establish something about the record.
 
 **Retraction.** The only withdrawal path is `flags.retract(result, codes, field)` (`flags.py:326-372`),
 and its only caller is `apply_batch_consensus` (`enrichment/batch_consensus.py:525-527`). It is
@@ -340,8 +362,12 @@ constrained four ways:
 
 - Only after a propagated write to `name1_enriched`, so `field` is always `"name1"`.
 - Only the codes the write falsified, listed as data in `_RETRACTED_BY_NAME1`
-  (`batch_consensus.py:131-134`): under `registry` mode `low-confidence-unchanged`, `no-match`,
-  `unverified-inference`; under `name_form` mode `low-confidence-unchanged` alone.
+  (`batch_consensus.py:131-134`): under `registry` mode `no-match` and `unverified-inference`;
+  under `name_form` mode none. ‡ `low-confidence-unchanged` was in both lists and is in neither
+  now: the propagated write goes through `EnrichmentResult.write`, which regenerates the field's
+  provenance, so the derived low withdraws itself. `retract` re-derives it and reports the
+  withdrawal under the retired code's name, because the statement withdrawn is the one that code
+  used to make.
 - Withdrawal is per field: "a code scoped to two fields keeps the other one and is dropped only when
   its scope empties" (`flags.py:339-341`).
 - "A record-level code (empty scope) is never reached, because no field is in its scope"

@@ -1,0 +1,40 @@
+{
+ "domain": "search:nestle purina pet care",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Nestle Purina Pet Care"
+  },
+  "search": [
+   {
+    "id": "Q542376",
+    "title": "Q542376",
+    "pageid": 510869,
+    "concepturi": "http://www.wikidata.org/entity/Q542376",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q542376",
+    "display": {
+     "label": {
+      "value": "Nestl\u00e9 Purina PetCare",
+      "language": "en"
+     },
+     "description": {
+      "value": "American pet food manufacturer, subsidiary of the Swiss corporation Nestl\u00e9",
+      "language": "en"
+     }
+    },
+    "label": "Nestl\u00e9 Purina PetCare",
+    "description": "American pet food manufacturer, subsidiary of the Swiss corporation Nestl\u00e9",
+    "match": {
+     "type": "alias",
+     "language": "es",
+     "text": "Nestl\u00e9 Purina Pet care"
+    },
+    "aliases": [
+     "Nestl\u00e9 Purina Pet care"
+    ]
+   }
+  ],
+  "success": 1
+ }
+}

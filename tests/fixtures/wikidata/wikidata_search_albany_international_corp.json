@@ -1,0 +1,39 @@
+{
+ "domain": "search:albany international corp",
+ "payload": {
+  "searchinfo": {
+   "search": "Albany International Corp"
+  },
+  "search": [
+   {
+    "id": "Q23018189",
+    "title": "Q23018189",
+    "pageid": 25032575,
+    "concepturi": "http://www.wikidata.org/entity/Q23018189",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q23018189",
+    "display": {
+     "label": {
+      "value": "Albany International",
+      "language": "en"
+     },
+     "description": {
+      "value": "company from New York, United States",
+      "language": "en"
+     }
+    },
+    "label": "Albany International",
+    "description": "company from New York, United States",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "Albany International Corporation"
+    },
+    "aliases": [
+     "Albany International Corporation"
+    ]
+   }
+  ],
+  "success": 1
+ }
+}

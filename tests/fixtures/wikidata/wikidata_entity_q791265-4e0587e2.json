@@ -1,0 +1,71 @@
+{
+ "domain": "entity:q791265",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q791265",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Avon"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Avon, Connecticut"
+    },
+    {
+     "language": "en",
+     "value": "Avon, CT"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 2154459,
+        "id": "Q2154459"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.town.avon.ct.us/",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

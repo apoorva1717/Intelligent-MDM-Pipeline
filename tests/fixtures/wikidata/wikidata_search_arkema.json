@@ -1,0 +1,132 @@
+{
+ "domain": "search:arkema",
+ "payload": {
+  "searchinfo": {
+   "search": "Arkema"
+  },
+  "search": [
+   {
+    "id": "Q673327",
+    "title": "Q673327",
+    "pageid": 634165,
+    "concepturi": "http://www.wikidata.org/entity/Q673327",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q673327",
+    "display": {
+     "label": {
+      "value": "Arkema",
+      "language": "en"
+     },
+     "description": {
+      "value": "French Chemical company",
+      "language": "en"
+     }
+    },
+    "label": "Arkema",
+    "description": "French Chemical company",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Arkema"
+    }
+   },
+   {
+    "id": "Q37458665",
+    "title": "Q37458665",
+    "pageid": 38833301,
+    "concepturi": "http://www.wikidata.org/entity/Q37458665",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q37458665",
+    "display": {
+     "label": {
+      "value": "Arkema",
+      "language": "en"
+     },
+     "description": {
+      "value": "family name",
+      "language": "en"
+     }
+    },
+    "label": "Arkema",
+    "description": "family name",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Arkema"
+    }
+   },
+   {
+    "id": "Q139407595",
+    "title": "Q139407595",
+    "pageid": 132864875,
+    "concepturi": "http://www.wikidata.org/entity/Q139407595",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q139407595",
+    "display": {
+     "label": {
+      "value": "Arkema K.K. (Japan)",
+      "language": "en"
+     },
+     "description": {
+      "value": "company in Chiyoda City, Japan",
+      "language": "en"
+     }
+    },
+    "label": "Arkema K.K. (Japan)",
+    "description": "company in Chiyoda City, Japan",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Arkema K.K. (Japan)"
+    }
+   },
+   {
+    "id": "Q29123704",
+    "title": "Q29123704",
+    "pageid": 30781817,
+    "concepturi": "http://www.wikidata.org/entity/Q29123704",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q29123704",
+    "display": {
+     "label": {
+      "value": "Arkema (United States)",
+      "language": "en"
+     }
+    },
+    "label": "Arkema (United States)",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Arkema (United States)"
+    }
+   },
+   {
+    "id": "Q30294900",
+    "title": "Q30294900",
+    "pageid": 31907511,
+    "concepturi": "http://www.wikidata.org/entity/Q30294900",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q30294900",
+    "display": {
+     "label": {
+      "value": "Arkema (Canada)",
+      "language": "en"
+     },
+     "description": {
+      "value": "company in B\u00e9cancour, Canada",
+      "language": "en"
+     }
+    },
+    "label": "Arkema (Canada)",
+    "description": "company in B\u00e9cancour, Canada",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Arkema (Canada)"
+    }
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

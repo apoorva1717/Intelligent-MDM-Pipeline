@@ -1,0 +1,141 @@
+{
+ "domain": "entity:q49213",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q49213",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "University of Texas at Austin"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "UT-Austin"
+    },
+    {
+     "language": "en",
+     "value": "UT Austin"
+    },
+    {
+     "language": "en",
+     "value": "UT"
+    },
+    {
+     "language": "en",
+     "value": "University of Texas, Austin"
+    },
+    {
+     "language": "en",
+     "value": "University of Texas"
+    },
+    {
+     "language": "en",
+     "value": "UTA"
+    },
+    {
+     "language": "en",
+     "value": "The University of Texas at Austin"
+    },
+    {
+     "language": "en",
+     "value": "TTexas Longhorns swimming and diving"
+    },
+    {
+     "language": "en",
+     "value": "Univ. of Texas, Austin"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 62078547,
+        "id": "Q62078547"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 23002039,
+        "id": "Q23002039"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P159": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 16559,
+        "id": "Q16559"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.utexas.edu/",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P6782": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P6782",
+      "datavalue": {
+       "value": "00hj54h04",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

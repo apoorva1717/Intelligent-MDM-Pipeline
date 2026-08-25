@@ -1,0 +1,10 @@
+{
+ "domain": "search:bay area allergy",
+ "payload": {
+  "searchinfo": {
+   "search": "Bay Area Allergy"
+  },
+  "search": [],
+  "success": 1
+ }
+}

@@ -1,0 +1,47 @@
+{
+ "domain": "entity:q64718633",
+ "payload": {
+  "id": "Q64718633",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Admixture Mapping of Ethnic and Racial Insulin Complex Outcomes"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30612,
+        "id": "Q30612"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

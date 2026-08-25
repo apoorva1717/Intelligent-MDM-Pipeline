@@ -1,0 +1,68 @@
+{
+ "domain": "entity:q31151",
+ "payload": {
+  "id": "Q31151",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "population genetics"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Genetics, Population"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 11862829,
+        "id": "Q11862829"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 4671286,
+        "id": "Q4671286"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P279": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 7162,
+        "id": "Q7162"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

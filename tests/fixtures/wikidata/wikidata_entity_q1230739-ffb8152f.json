@@ -1,0 +1,133 @@
+{
+ "domain": "entity:q1230739",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q1230739",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "University of Texas at Arlington"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "UT Arlington"
+    },
+    {
+     "language": "en",
+     "value": "University of Texas-Arlington"
+    },
+    {
+     "language": "en",
+     "value": "University of Texas\u2013Arlington"
+    },
+    {
+     "language": "en",
+     "value": "University of Texas, Arlington"
+    },
+    {
+     "language": "en",
+     "value": "University of Texas Arlington"
+    },
+    {
+     "language": "en",
+     "value": "uta.edu"
+    },
+    {
+     "language": "en",
+     "value": "Univ. of Texas, Arlington"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 62078547,
+        "id": "Q62078547"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 23002039,
+        "id": "Q23002039"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P159": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 17943,
+        "id": "Q17943"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.uta.edu",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P6782": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P6782",
+      "datavalue": {
+       "value": "019kgqr73",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

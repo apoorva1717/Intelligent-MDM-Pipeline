@@ -1,0 +1,11 @@
+{
+ "domain": "search:dow chemical usa",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Dow Chemical USA"
+  },
+  "search": [],
+  "success": 1
+ }
+}

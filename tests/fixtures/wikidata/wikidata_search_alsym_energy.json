@@ -1,0 +1,10 @@
+{
+ "domain": "search:alsym energy",
+ "payload": {
+  "searchinfo": {
+   "search": "Alsym Energy"
+  },
+  "search": [],
+  "success": 1
+ }
+}

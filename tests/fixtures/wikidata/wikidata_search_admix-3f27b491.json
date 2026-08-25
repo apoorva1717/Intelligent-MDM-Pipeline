@@ -1,0 +1,133 @@
+{
+ "domain": "search:admix",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Admix"
+  },
+  "search": [
+   {
+    "id": "Q831619",
+    "title": "Q831619",
+    "pageid": 784327,
+    "concepturi": "http://www.wikidata.org/entity/Q831619",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q831619",
+    "display": {
+     "label": {
+      "value": "admixture",
+      "language": "en"
+     }
+    },
+    "label": "admixture",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "admixture"
+    }
+   },
+   {
+    "id": "Q112064761",
+    "title": "Q112064761",
+    "pageid": 106975492,
+    "concepturi": "http://www.wikidata.org/entity/Q112064761",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q112064761",
+    "display": {
+     "label": {
+      "value": "ADMIXTOOLS",
+      "language": "en"
+     },
+     "description": {
+      "value": "software package",
+      "language": "en"
+     }
+    },
+    "label": "ADMIXTOOLS",
+    "description": "software package",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "ADMIXTOOLS"
+    }
+   },
+   {
+    "id": "Q1887639",
+    "title": "Q1887639",
+    "pageid": 1817804,
+    "concepturi": "http://www.wikidata.org/entity/Q1887639",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q1887639",
+    "display": {
+     "label": {
+      "value": "admixture",
+      "language": "en"
+     },
+     "description": {
+      "value": "in paint: binder, thinner, solvent or additive",
+      "language": "en"
+     }
+    },
+    "label": "admixture",
+    "description": "in paint: binder, thinner, solvent or additive",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "admixture"
+    }
+   },
+   {
+    "id": "Q120922510",
+    "title": "Q120922510",
+    "pageid": 115367708,
+    "concepturi": "http://www.wikidata.org/entity/Q120922510",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q120922510",
+    "display": {
+     "label": {
+      "value": "admixture mapping",
+      "language": "en"
+     },
+     "description": {
+      "value": "method used to identify genetic variants associated with traits and/or diseases in ethnic groups whose genomes resulted from a recent mixture of two or more geographically distinct ancestral populations",
+      "language": "en"
+     }
+    },
+    "label": "admixture mapping",
+    "description": "method used to identify genetic variants associated with traits and/or diseases in ethnic groups whose genomes resulted from a recent mixture of two or more geographically distinct ancestral populations",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "admixture mapping"
+    }
+   },
+   {
+    "id": "Q64718633",
+    "title": "Q64718633",
+    "pageid": 64376758,
+    "concepturi": "http://www.wikidata.org/entity/Q64718633",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q64718633",
+    "display": {
+     "label": {
+      "value": "Admixture Mapping of Ethnic and Racial Insulin Complex Outcomes",
+      "language": "en"
+     },
+     "description": {
+      "value": "clinical trial",
+      "language": "en"
+     }
+    },
+    "label": "Admixture Mapping of Ethnic and Racial Insulin Complex Outcomes",
+    "description": "clinical trial",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Admixture Mapping of Ethnic and Racial Insulin Complex Outcomes"
+    }
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

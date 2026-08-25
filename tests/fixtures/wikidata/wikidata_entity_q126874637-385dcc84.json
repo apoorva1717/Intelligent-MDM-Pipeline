@@ -1,0 +1,48 @@
+{
+ "domain": "entity:q126874637",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q126874637",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Ascend Performance Materials France"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 43229,
+        "id": "Q43229"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 142,
+        "id": "Q142"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

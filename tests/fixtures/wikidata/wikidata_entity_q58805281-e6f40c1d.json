@@ -1,0 +1,32 @@
+{
+ "domain": "entity:q58805281",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q58805281",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Adaptive Computing Optimization in Software-Defined Network-Based Industrial Internet of Things with Fog Computing"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 13442814,
+        "id": "Q13442814"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

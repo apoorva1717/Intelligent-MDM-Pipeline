@@ -1,0 +1,10 @@
+{
+ "domain": "search:amcol lnternational corporation",
+ "payload": {
+  "searchinfo": {
+   "search": "Amcol lnternational Corporation"
+  },
+  "search": [],
+  "success": 1
+ }
+}

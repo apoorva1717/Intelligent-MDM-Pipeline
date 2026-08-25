@@ -1,0 +1,10 @@
+{
+ "domain": "search:ambiopharm",
+ "payload": {
+  "searchinfo": {
+   "search": "Ambiopharm"
+  },
+  "search": [],
+  "success": 1
+ }
+}

@@ -1,0 +1,10 @@
+{
+ "domain": "search:anthea life",
+ "payload": {
+  "searchinfo": {
+   "search": "Anthea Life"
+  },
+  "search": [],
+  "success": 1
+ }
+}

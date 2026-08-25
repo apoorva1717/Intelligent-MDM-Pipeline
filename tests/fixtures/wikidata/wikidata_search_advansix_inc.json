@@ -1,0 +1,10 @@
+{
+ "domain": "search:advansix inc",
+ "payload": {
+  "searchinfo": {
+   "search": "AdvanSix Inc"
+  },
+  "search": [],
+  "success": 1
+ }
+}

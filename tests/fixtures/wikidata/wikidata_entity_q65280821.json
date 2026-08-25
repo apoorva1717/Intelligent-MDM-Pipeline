@@ -1,0 +1,14 @@
+{
+ "domain": "entity:q65280821",
+ "payload": {
+  "id": "Q65280821",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Binary solution"
+   }
+  },
+  "aliases": {},
+  "claims": {}
+ }
+}

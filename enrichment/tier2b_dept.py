@@ -22,7 +22,7 @@ from llm.openai_client import OpenAIClient
 from llm.prompts import TIER2B_SYSTEM_PROMPT, TIER2B_USER_PROMPT_TEMPLATE
 from search.base import SearchClient, SearchResult
 from search.page_fetcher import PageContent, PageFetcher
-from utils.cache import BatchCache
+from utils.cache import BatchCache, cached_serp
 from utils.text_utils import expand_abbreviations, is_blank
 
 logger = logging.getLogger(__name__)
@@ -217,12 +217,7 @@ async def _search_and_rank(
     seen_urls: set[str] = set()
 
     for query in queries:
-        cached = cache.get_serp(query)
-        if cached is not None:
-            results = cached
-        else:
-            results = await search_client.search(query, num_results=5)
-            cache.set_serp(query, results)
+        results = await cached_serp(cache, search_client, query, num_results=5)
 
         for r in results:
             if r.url not in seen_urls:
@@ -232,9 +227,15 @@ async def _search_and_rank(
     def _score(sr: SearchResult) -> int:
         return 1 if domain and domain in sr.url.lower() else 0
 
-    scored = [(_score(r), r) for r in all_results]
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [r for _, r in scored]
+    # Fix C(1) — (score DESC, canonical id ASC), the URL being the canonical id.
+    # The previous stable sort on score alone left ties in SERP order, which is
+    # not reproducible between runs.
+    return [
+        r for _, _, r in sorted(
+            ((-_score(r), (r.url or ""), r) for r in all_results),
+            key=lambda t: (t[0], t[1]),
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------

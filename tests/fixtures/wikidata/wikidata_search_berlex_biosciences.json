@@ -1,0 +1,10 @@
+{
+ "domain": "search:berlex biosciences",
+ "payload": {
+  "searchinfo": {
+   "search": "Berlex Biosciences"
+  },
+  "search": [],
+  "success": 1
+ }
+}

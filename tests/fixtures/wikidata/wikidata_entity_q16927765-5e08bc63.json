@@ -1,0 +1,71 @@
+{
+ "domain": "entity:q16927765",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q16927765",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Quantum Artificial Intelligence Lab"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Quantum AI Lab"
+    },
+    {
+     "language": "en",
+     "value": "QuAIL"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 483242,
+        "id": "Q483242"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.nas.nasa.gov/quantum",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

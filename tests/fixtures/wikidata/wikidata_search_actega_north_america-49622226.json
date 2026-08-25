@@ -1,0 +1,11 @@
+{
+ "domain": "search:actega north america",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "ACTEGA NORTH AMERICA"
+  },
+  "search": [],
+  "success": 1
+ }
+}

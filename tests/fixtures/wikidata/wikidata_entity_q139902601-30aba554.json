@@ -1,0 +1,48 @@
+{
+ "domain": "entity:q139902601",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q139902601",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "ADVANCED SOLUTIONS LIFE SCIENCES, LLC"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 4830453,
+        "id": "Q4830453"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P159": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 43668,
+        "id": "Q43668"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

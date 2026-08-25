@@ -1,0 +1,10 @@
+{
+ "domain": "search:bozzetto inc",
+ "payload": {
+  "searchinfo": {
+   "search": "Bozzetto, Inc"
+  },
+  "search": [],
+  "success": 1
+ }
+}

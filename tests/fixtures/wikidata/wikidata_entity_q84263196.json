@@ -1,0 +1,230 @@
+{
+ "domain": "entity:q84263196",
+ "payload": {
+  "id": "Q84263196",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "COVID-19"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "coronavirus disease 2019"
+    },
+    {
+     "language": "en",
+     "value": "nCOVD-19"
+    },
+    {
+     "language": "en",
+     "value": "2019-nCoV acute respiratory disease"
+    },
+    {
+     "language": "en",
+     "value": "Novel Coronavirus Pneumonia"
+    },
+    {
+     "language": "en",
+     "value": "Covid-19"
+    },
+    {
+     "language": "en",
+     "value": "Severe Acute Respiratory Syndrome Coronavirus 2"
+    },
+    {
+     "language": "en",
+     "value": "Wuhan respiratory syndrome"
+    },
+    {
+     "language": "en",
+     "value": "severe acute respiratory syndrome type 2"
+    },
+    {
+     "language": "en",
+     "value": "nCOVD 19"
+    },
+    {
+     "language": "en",
+     "value": "CD-19"
+    },
+    {
+     "language": "en",
+     "value": "SARS-CoV-2"
+    },
+    {
+     "language": "en",
+     "value": "2019 novel coronavirus pneumonia"
+    },
+    {
+     "language": "en",
+     "value": "Wuhan pneumonia"
+    },
+    {
+     "language": "en",
+     "value": "COVID"
+    },
+    {
+     "language": "en",
+     "value": "COVID 19"
+    },
+    {
+     "language": "en",
+     "value": "Coronavirus disease 2019"
+    },
+    {
+     "language": "en",
+     "value": "nCOVD19"
+    },
+    {
+     "language": "en",
+     "value": "2019 NCP"
+    },
+    {
+     "language": "en",
+     "value": "COVID19"
+    },
+    {
+     "language": "en",
+     "value": "2019 novel coronavirus respiratory syndrome"
+    },
+    {
+     "language": "en",
+     "value": "seafood market pneumonia"
+    },
+    {
+     "language": "en",
+     "value": "SARS-CoV-2 infection"
+    },
+    {
+     "language": "en",
+     "value": "COVID-2019"
+    },
+    {
+     "language": "en",
+     "value": "WuRS"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 112193867,
+        "id": "Q112193867"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P279": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 2633267,
+        "id": "Q2633267"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 18975243,
+        "id": "Q18975243"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 2603200,
+        "id": "Q2603200"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 182672,
+        "id": "Q182672"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 107295072,
+        "id": "Q107295072"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 12192,
+        "id": "Q12192"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 609748,
+        "id": "Q609748"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

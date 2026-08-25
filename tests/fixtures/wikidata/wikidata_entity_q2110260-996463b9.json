@@ -1,0 +1,32 @@
+{
+ "domain": "entity:q2110260",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q2110260",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "biozone"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P279": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 7044276,
+        "id": "Q7044276"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

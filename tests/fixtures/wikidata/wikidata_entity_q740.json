@@ -1,0 +1,62 @@
+{
+ "domain": "entity:q740",
+ "payload": {
+  "id": "Q740",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "cobalt"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Co"
+    },
+    {
+     "language": "en",
+     "value": "element 27"
+    },
+    {
+     "language": "en",
+     "value": "\u2082\u2087Co"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 11344,
+        "id": "Q11344"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P279": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 2512777,
+        "id": "Q2512777"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

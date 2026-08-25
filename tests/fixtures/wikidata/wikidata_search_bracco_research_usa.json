@@ -1,0 +1,10 @@
+{
+ "domain": "search:bracco research usa",
+ "payload": {
+  "searchinfo": {
+   "search": "Bracco Research USA"
+  },
+  "search": [],
+  "success": 1
+ }
+}

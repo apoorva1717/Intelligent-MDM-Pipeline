@@ -1,0 +1,10 @@
+{
+ "domain": "search:act solutions corp",
+ "payload": {
+  "searchinfo": {
+   "search": "ACT Solutions Corp"
+  },
+  "search": [],
+  "success": 1
+ }
+}

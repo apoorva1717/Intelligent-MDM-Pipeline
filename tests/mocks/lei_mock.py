@@ -11,7 +11,7 @@ import logging
 from typing import Any
 
 from config import Settings
-from enrichment.tier1_lei import LEIClient
+from enrichment.tier1_lei import LEIClient, _name_match_score
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +89,13 @@ class MockLEIClient(LEIClient):
         self,
         name: str,
         country_code: str | None = None,
+        *,
+        # Fix C(3) / D(2) record context. Accepted and unused: a mock
+        # stands in for the registry, not for the client-side guards
+        # that read these.
+        city: str | None = None,
+        state: str | None = None,
+        record_domain: str | None = None,
     ) -> dict[str, Any]:
         self.call_count += 1
         self.last_name = name
@@ -136,3 +143,69 @@ class MockLEIClient(LEIClient):
             name[:40], result["lei_id"], result["legal_name"],
         )
         return result
+
+    async def call_by_id(
+        self,
+        lei: str,
+        query_name: str,
+        country_code: str | None = None,
+        *,
+        # Fix C(3) / D(2) record context. Accepted and unused: a mock
+        # stands in for the registry, not for the client-side guards
+        # that read these.
+        city: str | None = None,
+        state: str | None = None,
+        record_domain: str | None = None,
+    ) -> dict[str, Any]:
+        """Resolve a known LEI, with the name-verification guard unchanged.
+
+        The by-identifier path the [Wikidata crosswalk
+        lane](`enrichment.wikidata`) follows. The pointer buys the lookup; the
+        guard still decides. ``_name_match_score`` is the production scorer, so
+        a pointer to a real LEI whose legal name is a different company's is
+        refused here exactly as it would be live — which is what
+        ``test_wikidata.py``'s LEI-crosswalk test asserts.
+        """
+        self.call_count += 1
+        identifier = (lei or "").strip().upper()
+        for data in _MOCK_LEI.values():
+            if data.get("lei_id", "").upper() != identifier:
+                continue
+            score = _name_match_score(query_name or "", data["legal_name"])
+            if score < float(self._threshold):
+                logger.info(
+                    "[MOCK] LEI by-id: %s → '%s' rejected by name guard "
+                    "(%.1f < %.1f)",
+                    identifier, data["legal_name"], score, self._threshold,
+                )
+                return {
+                    "matched": False, "strategy": "by_id", "score": score,
+                    "guard_rejections": [{
+                        "guard": "gleif_name_verification",
+                        "candidate_name": data["legal_name"],
+                        "candidate_id": data["lei_id"],
+                        "score": score,
+                        "threshold": self._threshold,
+                        "detail": (
+                            "legal-name match score below the guard threshold"
+                        ),
+                        "query": query_name,
+                    }],
+                }
+            return {
+                "matched": True,
+                "strategy": "by_id",
+                "confidence": "high",
+                "score": score,
+                "guard_rejections": [],
+                "lei_id": data["lei_id"],
+                "legal_name": data["legal_name"],
+                "country": data["country"],
+                "status": data["status"],
+                "category": data.get("category"),
+                "sub_category": data.get("sub_category"),
+                "legal_form_id": data.get("legal_form_id"),
+                "legal_form_other": data.get("legal_form_other"),
+            }
+        logger.info("[MOCK] LEI by-id: %s not found", identifier)
+        return {"matched": False, "strategy": "by_id", "score": 0.0}

@@ -1,0 +1,32 @@
+{
+ "domain": "search:3bc",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "3BC"
+  },
+  "search": [
+   {
+    "id": "Q131200123",
+    "title": "Q131200123",
+    "pageid": 125095100,
+    "concepturi": "http://www.wikidata.org/entity/Q131200123",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q131200123",
+    "display": {
+     "label": {
+      "value": "3bc",
+      "language": "fr"
+     }
+    },
+    "label": "3bc",
+    "match": {
+     "type": "label",
+     "language": "fr",
+     "text": "3bc"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

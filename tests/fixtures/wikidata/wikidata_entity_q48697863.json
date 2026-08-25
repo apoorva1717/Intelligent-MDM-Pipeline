@@ -1,0 +1,78 @@
+{
+ "domain": "entity:q48697863",
+ "payload": {
+  "id": "Q48697863",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Alfred Saxons"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Alfred University athletics"
+    },
+    {
+     "language": "en",
+     "value": "Alfred University Saxons"
+    },
+    {
+     "language": "en",
+     "value": "AU Saxons"
+    },
+    {
+     "language": "en",
+     "value": "Saxons"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 2367225,
+        "id": "Q2367225"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://gosaxons.com/",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

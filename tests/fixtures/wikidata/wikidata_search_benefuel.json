@@ -1,0 +1,10 @@
+{
+ "domain": "search:benefuel",
+ "payload": {
+  "searchinfo": {
+   "search": "Benefuel"
+  },
+  "search": [],
+  "success": 1
+ }
+}

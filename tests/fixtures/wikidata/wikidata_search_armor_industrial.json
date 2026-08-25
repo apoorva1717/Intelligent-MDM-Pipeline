@@ -1,0 +1,10 @@
+{
+ "domain": "search:armor industrial",
+ "payload": {
+  "searchinfo": {
+   "search": "Armor Industrial"
+  },
+  "search": [],
+  "success": 1
+ }
+}

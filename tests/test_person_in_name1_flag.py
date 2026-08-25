@@ -22,7 +22,8 @@ from tests.mocks.lei_mock import MockLEIClient
 
 
 class _NoMatchROR(MockRORClient):
-    async def call(self, name, country_code=None, country=None, city=None, state=None):
+    async def call(self, name, country_code=None, country=None, city=None,
+                   state=None, **_ctx):
         return {"matched": False, "score": 0.0}
 
 

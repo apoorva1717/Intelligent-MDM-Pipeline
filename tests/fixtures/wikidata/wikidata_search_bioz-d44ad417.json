@@ -1,0 +1,136 @@
+{
+ "domain": "search:bioz",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Bioz"
+  },
+  "search": [
+   {
+    "id": "Q271826",
+    "title": "Q271826",
+    "pageid": 263049,
+    "concepturi": "http://www.wikidata.org/entity/Q271826",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q271826",
+    "display": {
+     "label": {
+      "value": "Biozat",
+      "language": "en"
+     },
+     "description": {
+      "value": "commune in Allier, France",
+      "language": "en"
+     }
+    },
+    "label": "Biozat",
+    "description": "commune in Allier, France",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Biozat"
+    }
+   },
+   {
+    "id": "Q864916",
+    "title": "Q864916",
+    "pageid": 816309,
+    "concepturi": "http://www.wikidata.org/entity/Q864916",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q864916",
+    "display": {
+     "label": {
+      "value": "Biozentrum University of Basel",
+      "language": "en"
+     },
+     "description": {
+      "value": "division of the University of Basel",
+      "language": "en"
+     }
+    },
+    "label": "Biozentrum University of Basel",
+    "description": "division of the University of Basel",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Biozentrum University of Basel"
+    }
+   },
+   {
+    "id": "Q2110260",
+    "title": "Q2110260",
+    "pageid": 2036682,
+    "concepturi": "http://www.wikidata.org/entity/Q2110260",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q2110260",
+    "display": {
+     "label": {
+      "value": "biozone",
+      "language": "en"
+     },
+     "description": {
+      "value": "rank of biostratigraphic unit",
+      "language": "en"
+     }
+    },
+    "label": "biozone",
+    "description": "rank of biostratigraphic unit",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "biozone"
+    }
+   },
+   {
+    "id": "Q65085752",
+    "title": "Q65085752",
+    "pageid": 64727402,
+    "concepturi": "http://www.wikidata.org/entity/Q65085752",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q65085752",
+    "display": {
+     "label": {
+      "value": "Bioz",
+      "language": "en"
+     }
+    },
+    "label": "Bioz",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Bioz"
+    }
+   },
+   {
+    "id": "Q113366042",
+    "title": "Q113366042",
+    "pageid": 108152599,
+    "concepturi": "http://www.wikidata.org/entity/Q113366042",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q113366042",
+    "display": {
+     "label": {
+      "value": "3-oxopimeloyl-[acyl-carrier-protein] synthase",
+      "language": "en"
+     },
+     "description": {
+      "value": "InterPro protein family",
+      "language": "en"
+     }
+    },
+    "label": "3-oxopimeloyl-[acyl-carrier-protein] synthase",
+    "description": "InterPro protein family",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "BioZ"
+    },
+    "aliases": [
+     "BioZ"
+    ]
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

@@ -1,0 +1,85 @@
+{
+ "domain": "entity:q61662138",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q61662138",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Faculty of Mechanical Engineering"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "ME"
+    },
+    {
+     "language": "en",
+     "value": "Faculty of Mechanical, Maritime and Materials Engineering"
+    },
+    {
+     "language": "en",
+     "value": "3mE"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 180958,
+        "id": "Q180958"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 55,
+        "id": "Q55"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.tudelft.nl/3me/",
+       "type": "string"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.tudelft.nl/me/",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,131 @@
+{
+ "domain": "search:binary solution",
+ "payload": {
+  "searchinfo": {
+   "search": "Binary Solution"
+  },
+  "search": [
+   {
+    "id": "Q65280821",
+    "title": "Q65280821",
+    "pageid": 64920936,
+    "concepturi": "http://www.wikidata.org/entity/Q65280821",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q65280821",
+    "display": {
+     "label": {
+      "value": "Binary solution",
+      "language": "en"
+     }
+    },
+    "label": "Binary solution",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Binary solution"
+    }
+   },
+   {
+    "id": "Q74098666",
+    "title": "Q74098666",
+    "pageid": 73727446,
+    "concepturi": "http://www.wikidata.org/entity/Q74098666",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q74098666",
+    "display": {
+     "label": {
+      "value": "Binary Solutions and the Lever Rule Revisited",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific article published in July 1997",
+      "language": "en"
+     }
+    },
+    "label": "Binary Solutions and the Lever Rule Revisited",
+    "description": "scientific article published in July 1997",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Binary Solutions and the Lever Rule Revisited"
+    }
+   },
+   {
+    "id": "Q80311677",
+    "title": "Q80311677",
+    "pageid": 79711788,
+    "concepturi": "http://www.wikidata.org/entity/Q80311677",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q80311677",
+    "display": {
+     "label": {
+      "value": "Binary solutions of imperfect liquids",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific article published on 01 February 1949",
+      "language": "en"
+     }
+    },
+    "label": "Binary solutions of imperfect liquids",
+    "description": "scientific article published on 01 February 1949",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Binary solutions of imperfect liquids"
+    }
+   },
+   {
+    "id": "Q37576994",
+    "title": "Q37576994",
+    "pageid": 38950877,
+    "concepturi": "http://www.wikidata.org/entity/Q37576994",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q37576994",
+    "display": {
+     "label": {
+      "value": "BINARY SOLUTIONS OF CONSOLUTE LIQUIDS",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific article published on January 1929",
+      "language": "en"
+     }
+    },
+    "label": "BINARY SOLUTIONS OF CONSOLUTE LIQUIDS",
+    "description": "scientific article published on January 1929",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "BINARY SOLUTIONS OF CONSOLUTE LIQUIDS"
+    }
+   },
+   {
+    "id": "Q91962694",
+    "title": "Q91962694",
+    "pageid": 91139703,
+    "concepturi": "http://www.wikidata.org/entity/Q91962694",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q91962694",
+    "display": {
+     "label": {
+      "value": "Binary Solutions of Hyaluronan and Lactose-Modified Chitosan: The Influence of Experimental Variables in Assembling Complex Coacervates",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific article published on 13 April 2020",
+      "language": "en"
+     }
+    },
+    "label": "Binary Solutions of Hyaluronan and Lactose-Modified Chitosan: The Influence of Experimental Variables in Assembling Complex Coacervates",
+    "description": "scientific article published on 13 April 2020",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Binary Solutions of Hyaluronan and Lactose-Modified Chitosan: The Influence of Experimental Variables in Assembling Complex Coacervates"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

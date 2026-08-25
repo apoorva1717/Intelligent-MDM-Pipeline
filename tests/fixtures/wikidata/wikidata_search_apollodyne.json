@@ -1,0 +1,10 @@
+{
+ "domain": "search:apollodyne",
+ "payload": {
+  "searchinfo": {
+   "search": "Apollodyne"
+  },
+  "search": [],
+  "success": 1
+ }
+}

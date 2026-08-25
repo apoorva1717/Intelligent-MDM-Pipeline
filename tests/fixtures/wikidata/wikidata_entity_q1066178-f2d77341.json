@@ -1,0 +1,43 @@
+{
+ "domain": "entity:q1066178",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q1066178",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Aurora"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Aurora (first name)"
+    },
+    {
+     "language": "en",
+     "value": "Aurora (given name)"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 11879590,
+        "id": "Q11879590"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

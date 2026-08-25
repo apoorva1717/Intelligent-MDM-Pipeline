@@ -1,0 +1,140 @@
+{
+ "domain": "search:co",
+ "payload": {
+  "searchinfo": {
+   "search": "Co"
+  },
+  "search": [
+   {
+    "id": "Q740",
+    "title": "Q740",
+    "pageid": 1041,
+    "concepturi": "http://www.wikidata.org/entity/Q740",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q740",
+    "display": {
+     "label": {
+      "value": "cobalt",
+      "language": "en"
+     },
+     "description": {
+      "value": "chemical element with symbol Co and atomic number 27",
+      "language": "en"
+     }
+    },
+    "label": "cobalt",
+    "description": "chemical element with symbol Co and atomic number 27",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "cobalt"
+    }
+   },
+   {
+    "id": "Q739",
+    "title": "Q739",
+    "pageid": 1040,
+    "concepturi": "http://www.wikidata.org/entity/Q739",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q739",
+    "display": {
+     "label": {
+      "value": "Colombia",
+      "language": "en"
+     },
+     "description": {
+      "value": "country in South America",
+      "language": "en"
+     }
+    },
+    "label": "Colombia",
+    "description": "country in South America",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Colombia"
+    }
+   },
+   {
+    "id": "Q1261",
+    "title": "Q1261",
+    "pageid": 1636,
+    "concepturi": "http://www.wikidata.org/entity/Q1261",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q1261",
+    "display": {
+     "label": {
+      "value": "Colorado",
+      "language": "en"
+     },
+     "description": {
+      "value": "state of the United States of America",
+      "language": "en"
+     }
+    },
+    "label": "Colorado",
+    "description": "state of the United States of America",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Colorado"
+    }
+   },
+   {
+    "id": "Q565",
+    "title": "Q565",
+    "pageid": 832,
+    "concepturi": "http://www.wikidata.org/entity/Q565",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q565",
+    "display": {
+     "label": {
+      "value": "Wikimedia Commons",
+      "language": "en"
+     },
+     "description": {
+      "value": "online repository of free-use image, audio, and other media files",
+      "language": "en"
+     }
+    },
+    "label": "Wikimedia Commons",
+    "description": "online repository of free-use image, audio, and other media files",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "Commons"
+    },
+    "aliases": [
+     "Commons"
+    ]
+   },
+   {
+    "id": "Q84263196",
+    "title": "Q84263196",
+    "pageid": 83565290,
+    "concepturi": "http://www.wikidata.org/entity/Q84263196",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q84263196",
+    "display": {
+     "label": {
+      "value": "COVID-19",
+      "language": "en"
+     },
+     "description": {
+      "value": "contagious disease caused by SARS-CoV-2",
+      "language": "en"
+     }
+    },
+    "label": "COVID-19",
+    "description": "contagious disease caused by SARS-CoV-2",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "COVID-19"
+    }
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

@@ -88,7 +88,7 @@ class _CountingROR:
         self.queries: list[str] = []
 
     async def call(self, name, country_code=None, country=None,
-                   city=None, state=None) -> dict[str, Any]:
+                   city=None, state=None, **_ctx) -> dict[str, Any]:
         self.queries.append(name)
         return {"matched": False, "score": 0.0}
 

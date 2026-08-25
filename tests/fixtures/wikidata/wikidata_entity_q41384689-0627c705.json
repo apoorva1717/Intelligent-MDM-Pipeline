@@ -1,0 +1,32 @@
+{
+ "domain": "entity:q41384689",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q41384689",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Bioserotypes and virulence markers of Y. enterocolitica strains isolated from roe deer (Capreolus capreolus) and red deer (Cervus elaphus)"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 13442814,
+        "id": "Q13442814"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

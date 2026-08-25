@@ -1,0 +1,54 @@
+{
+ "domain": "entity:q128790007",
+ "payload": {
+  "id": "Q128790007",
+  "labels": {},
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 6881511,
+        "id": "Q6881511"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.archchemicals.com/",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P1366": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P1366",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 128789876,
+        "id": "Q128789876"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

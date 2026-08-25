@@ -1,0 +1,10 @@
+{
+ "domain": "search:aixelo inc",
+ "payload": {
+  "searchinfo": {
+   "search": "Aixelo Inc"
+  },
+  "search": [],
+  "success": 1
+ }
+}

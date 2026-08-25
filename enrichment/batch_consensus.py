@@ -129,8 +129,13 @@ CONSENSUS_SOURCE = "batch_consensus"
 # match, recorded with the donor's id. Under `name_form` neither is answered —
 # electing the batch's modal spelling introduces no evidence — so both stand.
 _RETRACTED_BY_NAME1: dict[str, tuple[str, ...]] = {
-    "registry": (LOW_CONFIDENCE_UNCHANGED, NO_MATCH, UNVERIFIED_INFERENCE),
-    "name_form": (LOW_CONFIDENCE_UNCHANGED,),
+    # `low-confidence-unchanged` is NOT here any more: it was retired with the
+    # provenance migration, and the state it named is now read off the record's
+    # own provenance. `member.write` below regenerates `name1_provenance` from
+    # the inheriting event, so the derived flag is withdrawn by re-derivation
+    # rather than by naming a code — see enrichment.flags.retract.
+    "registry": (NO_MATCH, UNVERIFIED_INFERENCE),
+    "name_form": (),
 }
 
 # A record_type of "unknown" asserts nothing (Fix 3), so it is treated as

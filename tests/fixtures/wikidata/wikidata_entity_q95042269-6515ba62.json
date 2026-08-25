@@ -1,0 +1,127 @@
+{
+ "domain": "entity:q95042269",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q95042269",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "AZD1222"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "ChAdOx1 nCoV-19"
+    },
+    {
+     "language": "en",
+     "value": "Consortium of the Jenner Institute COVID-19 vaccine candidate"
+    },
+    {
+     "language": "en",
+     "value": "AZD 1222"
+    },
+    {
+     "language": "en",
+     "value": "AZD1222 Vaccine for the Prevention of COVID-19"
+    },
+    {
+     "language": "en",
+     "value": "AZD-1222"
+    },
+    {
+     "language": "en",
+     "value": "Oxford/AstraZeneca vaccine"
+    },
+    {
+     "language": "en",
+     "value": "Oxford vaccine"
+    },
+    {
+     "language": "en",
+     "value": "Covishield"
+    },
+    {
+     "language": "en",
+     "value": "Vaxzevria"
+    },
+    {
+     "language": "en",
+     "value": "Oxford\u2013AstraZeneca COVID-19 vaccine"
+    },
+    {
+     "language": "en",
+     "value": "AstraZeneca vaccine"
+    },
+    {
+     "language": "en",
+     "value": "Astra vaccine"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 98734151,
+        "id": "Q98734151"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P279": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 87719492,
+        "id": "Q87719492"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 96841548,
+        "id": "Q96841548"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 28051899,
+        "id": "Q28051899"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

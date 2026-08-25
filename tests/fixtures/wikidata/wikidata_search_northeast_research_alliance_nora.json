@@ -1,0 +1,10 @@
+{
+ "domain": "search:northeast research alliance nora",
+ "payload": {
+  "searchinfo": {
+   "search": "Northeast Research Alliance NORA"
+  },
+  "search": [],
+  "success": 1
+ }
+}

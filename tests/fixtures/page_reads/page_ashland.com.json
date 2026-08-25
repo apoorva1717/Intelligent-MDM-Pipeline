@@ -1,0 +1,14 @@
+{
+ "domain": "ashland.com",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "status": 403,
+  "blocked": true,
+  "error": null,
+  "url": "https://www.ashland.com/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

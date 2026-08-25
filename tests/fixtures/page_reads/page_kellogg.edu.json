@@ -1,0 +1,14 @@
+{
+ "domain": "kellogg.edu",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "status": 403,
+  "blocked": true,
+  "error": null,
+  "url": "https://kellogg.edu/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

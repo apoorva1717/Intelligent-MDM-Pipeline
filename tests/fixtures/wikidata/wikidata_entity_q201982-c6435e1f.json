@@ -1,0 +1,101 @@
+{
+ "domain": "entity:q201982",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q201982",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Clichy"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Clichy-la-Garenne"
+    },
+    {
+     "language": "en",
+     "value": "Clichy-sur-Seine"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 484170,
+        "id": "Q484170"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 142,
+        "id": "Q142"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.ville-clichy.fr",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P1366": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P1366",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 166640,
+        "id": "Q166640"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P1366",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 2891347,
+        "id": "Q2891347"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

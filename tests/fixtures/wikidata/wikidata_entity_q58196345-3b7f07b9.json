@@ -1,0 +1,101 @@
+{
+ "domain": "entity:q58196345",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q58196345",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Johnson\u00a0& Johnson"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Johnson\u00a0& Johnson, s.r.o."
+    },
+    {
+     "language": "en",
+     "value": "Johnson  & Johnson, s.r.o."
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 4830453,
+        "id": "Q4830453"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 6881511,
+        "id": "Q6881511"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 213,
+        "id": "Q213"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P159": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 1085,
+        "id": "Q1085"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P1278": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P1278",
+      "datavalue": {
+       "value": "549300JUV0HPZDEUW949",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

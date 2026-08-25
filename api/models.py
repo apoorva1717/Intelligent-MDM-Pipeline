@@ -361,9 +361,13 @@ class EnrichmentResult(BaseModel):
     # difference is normal rather than an error to correct. Null unless a page
     # read returned an identity.
     operating_name: Optional[str] = None
-    # `web:{domain}:extracted:{date}` — deliberately not the
-    # `producer:tier:band` shape the six scoped fields use. This value came
-    # from a page on a day, and the day is the part that decays.
+    # `web:{domain}:provisional` — Provenance Scheme B, the same grammar the
+    # scoped fields use (enrichment/confidence.py). Never `verified`: the page
+    # and the domain that served it are one evidence system, so a site naming
+    # itself corroborates nothing independent. The fetch date used to be in
+    # this string and is now on the cache entry and the
+    # `operating_name_extracted` trace line — a decaying token in an exported
+    # field is read as part of the claim.
     operating_name_provenance: Optional[str] = None
     # Serialised as the "Domain" column: the registrable domain ('mit.edu'),
     # written only through utils.domain_resolver.resolve_domain. Null when the
@@ -457,6 +461,14 @@ class EnrichmentResult(BaseModel):
     # rendered into `flag_reason`, and is kept so a later withdrawal re-renders
     # the codes it keeps with the wording they were raised with.
     flag_notes: Dict[str, str] = Field(default_factory=dict, exclude=True)
+    # Core fields (Name 1, Name 2) whose derived provenance confidence is
+    # `low` — the derived half of `flag_for_review`, which no longer follows
+    # from `flag_codes` alone. Internal for the same reason `flag_scopes` is:
+    # it is already rendered into `flag_reason` and into `flagged_fields`, and
+    # is kept so the batch-consensus pass can tell whether its write changed
+    # the derivation (see enrichment.flags.retract). The confidence itself
+    # ships, in `name1_provenance` / `name2_provenance`.
+    flag_low_confidence: List[str] = Field(default_factory=list, exclude=True)
     error: Optional[str] = None
     record_type: Literal["research_institution", "company", "unknown"] = "unknown"
     # Registry identifiers — both surface in the JSON (not excluded) so the
@@ -466,8 +478,10 @@ class EnrichmentResult(BaseModel):
     lei_id: Optional[str] = None
 
     # ── Per-field provenance (Fix 10) ────────────────────────────────
-    # Six derived scalars, one per Phase 1 scoped field, in the format
-    # `producer:tier:confidence_band` — `ror:1:exact`, `llm_tier3:3:self_high`.
+    # Six derived scalars, one per Phase 1 scoped field, in Provenance
+    # Scheme B — `source:confidence[+witness]`, e.g. `ror:verified`,
+    # `input:verified+web`, `llm:provisional`, `web:acme.com:provisional`.
+    # The grammar and the confidence table are in enrichment/confidence.py.
     # They are REGENERATED from `provenance` and never maintained separately,
     # so the column and the log cannot drift. Null when the field is null:
     # there is no value to attribute.
@@ -553,10 +567,10 @@ class EnrichmentResult(BaseModel):
     tier1_retry_hit: Optional[str] = Field(default=None, exclude=True)
     # Fix 2 — which of the three unchanged-Name-1 states this record is in, or
     # None when a tier rewrote Name 1 and none of them apply. Excluded from the
-    # response body: the state already ships, in `name1_provenance`, as the
-    # band of the derived scalar (`input:1:verified` / `input:1:confirmed` /
-    # `input:1:rule`). This field is the same fact in a form the batch summary
-    # and the evaluation scripts can count without parsing a scalar.
+    # response body: the state already ships, in `name1_provenance`
+    # (`input:verified+web` / `input:provisional+llm` / `input:low`). This
+    # field is the same fact in a form the batch summary and the evaluation
+    # scripts can count without parsing a scalar.
     unchanged_name1_state: Optional[
         Literal["unchanged-verified", "unchanged-confirmed", "unchanged-unresolved"]
     ] = Field(default=None, exclude=True)
@@ -620,7 +634,8 @@ class EnrichmentResult(BaseModel):
         if column:
             self._force(
                 column,
-                derived_scalar(log, field) if value not in (None, "") else None,
+                derived_scalar(log, field, self)
+                if value not in (None, "") else None,
             )
 
     def _force(self, name: str, value: object) -> None:
@@ -674,6 +689,33 @@ class EnrichmentSummary(BaseModel):
     # state or country, so the accepted domain was reported and kept rather
     # than withdrawn. Almost always a brand-vs-legal-name variant.
     page_mismatch_not_withdrawn: int = 0
+    # Wikidata crosswalk lane (enrichment/wikidata.py). `matched`, `no_match`,
+    # `ambiguous` and `unavailable` partition `queried` — every invocation ends
+    # in exactly one. `type_rejected` / `country_rejected` are diagnostics that
+    # deliberately overlap with `no_match`: they count records where a gauntlet
+    # step refused at least one candidate.
+    wikidata_queried: int = 0
+    wikidata_matched: int = 0
+    wikidata_no_match: int = 0
+    wikidata_ambiguous: int = 0
+    wikidata_unavailable: int = 0
+    wikidata_type_rejected: int = 0
+    wikidata_country_rejected: int = 0
+    # What the pointer bought. `crosswalk_ror` + `crosswalk_lei` count pointers
+    # followed; `crosswalk_registry_hit` counts the ones the registry's own
+    # guards then confirmed — the gap between them is pointers the registry
+    # refused, which is the lane working as designed.
+    wikidata_crosswalk_ror: int = 0
+    wikidata_crosswalk_lei: int = 0
+    wikidata_crosswalk_registry_hit: int = 0
+    wikidata_superseded_flagged: int = 0
+    # A match with no registry pointer: `operating_name` at most, never Name 1.
+    wikidata_witness_only: int = 0
+    wikidata_domain_corroborated: int = 0
+    # P856 disagreed with the record's candidate domain. Counted and acted on
+    # in no way — Wikidata may be stale, and a wiki field is not grounds to
+    # withdraw a domain the ownership guard accepted.
+    wikidata_domain_disagree: int = 0
     # Records whose provisional routing_type disagreed with the record_type the
     # evidence finally supported — i.e. tiers were gated on the wrong type.
     # Surfaced, not corrected: re-running those records is a separate decision.
@@ -681,6 +723,30 @@ class EnrichmentSummary(BaseModel):
     # Lookups served under the normalised cache key that the previous
     # lowercase-only key would have missed — ROR + LEI + SERP combined.
     cache_hits_after_normalisation: int = 0
+    # ── Fix B — the shared evidence cache (utils/cache.py) ────────────────
+    # `evidence_cache_frozen` reports whether this run was an evaluation
+    # freeze. `evidence_network_calls` counts the answers this run had to go
+    # and get: every cache miss that reached a source. It is the number the
+    # reproducibility gate asserts is ZERO on a warm second run — a re-run that
+    # calls out is a re-run whose evidence is not the evidence it is comparing
+    # against. `evidence_frozen_misses` counts what a frozen run went without.
+    evidence_cache_frozen: bool = False
+    evidence_network_calls: int = 0
+    # Which sources those calls went to, so a non-zero count on a warm run
+    # names the lane to look at rather than sending someone through the trace.
+    evidence_network_calls_by_namespace: dict[str, int] = Field(
+        default_factory=dict,
+    )
+    evidence_frozen_misses: int = 0
+    evidence_cache_hits: int = 0
+    # Fix D(2) — registry matches whose registered locality contradicted the
+    # record but whose NAME match was exact, so the row carries no
+    # `registry-location-mismatch`. Kept as a batch number rather than a
+    # per-row field because it answers a question about the batch: how often
+    # is the register's address not the operating address? A rise here without
+    # a rise in the flag is the normal case getting more common, not a
+    # regression. See `enrichment/consistency.py`.
+    registry_location_unconfirmed: int = 0
     # Domain ownership guard telemetry (utils/domain_resolver.py). The three
     # `domain_from_*` counters partition the records that kept a domain by the
     # evidence that carried it; `domain_from_serp` covers every web-derived

@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -31,7 +32,7 @@ from llm.prompts import (
     WEBSITE_INFERENCE_USER_PROMPT_TEMPLATE,
 )
 from search.base import SearchClient, SearchResult
-from utils.cache import BatchCache
+from utils.cache import BatchCache, cached_serp
 from utils.text_utils import acronym_matches_name, extract_domain
 
 logger = logging.getLogger(__name__)
@@ -189,6 +190,32 @@ def _domain_introduces_foreign_brand(name1: str, url: str) -> bool:
     return False
 
 
+def _candidate_key(sr: SearchResult) -> str:
+    """The canonical id of a SERP candidate, for Fix C(1)'s tiebreak.
+
+    The registrable domain first, then the full URL — two results on the same
+    site order by URL, and two different sites order by domain, so the key is
+    total and does not change when the search API reshuffles equally-ranked
+    results between runs.
+    """
+    return f"{extract_domain(sr.url) or ''}|{(sr.url or '').lower()}"
+
+
+def _best_candidate(
+    valid: list[SearchResult], rank: "Callable[[SearchResult], int]",
+) -> SearchResult:
+    """The highest-ranked candidate, ties broken by canonical id ASC.
+
+    Fix C(1). This was ``max(valid, key=_rank)``, which returns the FIRST
+    maximum and therefore inherited the search API's own ordering for every
+    tie. SERP order is not reproducible between runs — one chemspeed record
+    changed its candidate domain between two runs of the identical batch on
+    exactly this — so the tie is now broken by the candidate's own identity
+    instead. Nothing about which candidates are *eligible* changes.
+    """
+    return min(valid, key=lambda sr: (-rank(sr), _candidate_key(sr)))
+
+
 def _root_url(url: str) -> str:
     """Reduce a URL to scheme://host (drop path/query/fragment)."""
     try:
@@ -284,7 +311,7 @@ def _assemble_path_b_trace(
                 0 if not _has_host_match(name1, sr.url, record_type)
                 else (1 if _domain_introduces_foreign_brand(name1, sr.url) else 2)
             )
-        best = max(valid, key=lambda sr: ranks[id(sr)])
+        best = _best_candidate(valid, lambda sr: ranks[id(sr)])
         if ranks[id(best)] != 0:
             chosen_sr = best
 
@@ -387,7 +414,7 @@ def select_website_from_serp(
             return 0
         return 1 if _domain_introduces_foreign_brand(name1, sr.url) else 2
 
-    best = max(valid, key=_rank)  # first max preserves SERP order on ties
+    best = _best_candidate(valid, _rank)
     best_rank = _rank(best)
     if best_rank == 0:
         # No candidate has a distinctive name token (or, for institutions, the
@@ -494,23 +521,21 @@ async def resolve_website_via_serp(
         # forms stay distinct keys (utils.cache.serp_key), so §8's retry still
         # issues a real second search instead of being served the phrase
         # results it exists to escape.
-        cached = cache.get_serp(query, country)
-        if cached is not None:
-            results = cached
-        else:
-            try:
-                results = await search_client.search(query, num_results=num_results)
-            except Exception as exc:
-                logger.info("[%s] website Path B: SERP call failed: %s", record_id, exc)
-                if trace:
-                    trace_logger.info(json.dumps(_assemble_path_b_trace(
-                        record_id=record_id, name1=name1, record_type=record_type,
-                        query=query, num_results=num_results, results=[],
-                        chosen=WebsiteResolution(), error=f"serp_call_failed: {exc}",
-                        attempt=attempt,
-                    )))
-                return WebsiteResolution()
-            cache.set_serp(query, results, country)
+        try:
+            results = await cached_serp(
+                cache, search_client, query,
+                num_results=num_results, country=country,
+            )
+        except Exception as exc:
+            logger.info("[%s] website Path B: SERP call failed: %s", record_id, exc)
+            if trace:
+                trace_logger.info(json.dumps(_assemble_path_b_trace(
+                    record_id=record_id, name1=name1, record_type=record_type,
+                    query=query, num_results=num_results, results=[],
+                    chosen=WebsiteResolution(), error=f"serp_call_failed: {exc}",
+                    attempt=attempt,
+                )))
+            return WebsiteResolution()
         chosen = select_website_from_serp(name1, results, record_type)
         logger.info(
             "[%s] website Path B (%s): query=%r url=%s confidence=%s",

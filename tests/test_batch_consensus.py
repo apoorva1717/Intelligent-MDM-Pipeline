@@ -70,6 +70,21 @@ def _flagged(record_id: str, name1: str, scopes: dict, **kw) -> EnrichmentResult
     return _result(record_id, name1, **{**render_flags(scopes), **kw})
 
 
+def _low_conf(
+    record_id: str, name1: str, fields=("name1",), scopes=None, **kw,
+) -> EnrichmentResult:
+    """A result flagged by the DERIVED low, the way a real one arrives here.
+
+    `low-confidence-unchanged` was retired by the provenance migration: the
+    doubt it named is `input:low` on the field, and the flag follows from that
+    rather than from a code. So a record that used to reach this pass carrying
+    the code now reaches it carrying `flag_low_confidence` — and the retraction
+    these tests are about withdraws the derived low instead of a token.
+    """
+    rendered = render_flags(scopes or {}, low_confidence=list(fields))
+    return _result(record_id, name1, **{**rendered, **kw})
+
+
 class TestPropagation:
     def test_single_registry_identity_reaches_every_member(self):
         """One resolved row carries the whole group."""
@@ -708,8 +723,7 @@ class TestFlagsFalsifiedByPropagation:
         claiming the value was never touched."""
         rows = [
             _result("r15", "Coastal Diagnostics, Inc."),
-            _flagged("r16", "Coastal Diagnostics",
-                     {LOW_CONFIDENCE_UNCHANGED: {"name1"}}),
+            _low_conf("r16", "Coastal Diagnostics"),
             _result("r17", "Coastal Diagnostics, Inc."),
         ]
         telemetry = apply_batch_consensus(rows)
@@ -724,38 +738,39 @@ class TestFlagsFalsifiedByPropagation:
     def test_it_goes_under_registry_consensus_too(self):
         rows = [
             _result("a", "Coastal Diagnostics, Inc.", ror_id="ror.org/01abc"),
-            _flagged("b", "Coastal Diagnostics",
-                     {LOW_CONFIDENCE_UNCHANGED: {"name1"}}),
+            _low_conf("b", "Coastal Diagnostics"),
         ]
         apply_batch_consensus(rows)
 
         assert rows[1].name1_enriched == "Coastal Diagnostics, Inc."
         assert rows[1].flag_codes == []
+        assert rows[1].flag_for_review is False
+        assert rows[1].flag_low_confidence == []
 
     def test_a_name_that_does_not_move_keeps_its_flag(self):
         """No write, nothing falsified. The group agrees on the spelling the
         flagged record already holds, so its doubt is untouched."""
         rows = [
             _result("a", "Coastal Diagnostics", ror_id="ror.org/01abc"),
-            _flagged("b", "Coastal Diagnostics",
-                     {LOW_CONFIDENCE_UNCHANGED: {"name1"}}),
+            _low_conf("b", "Coastal Diagnostics"),
         ]
         telemetry = apply_batch_consensus(rows)
 
         assert rows[1].name1_enriched == "Coastal Diagnostics"
-        assert rows[1].flag_codes == [LOW_CONFIDENCE_UNCHANGED]
+        assert rows[1].flag_for_review is True
+        assert rows[1].flag_low_confidence == ["name1"]
         assert telemetry.flags_retracted == 0
 
     def test_the_donor_keeps_its_own_flag(self):
         rows = [
-            _flagged("a", "Coastal Diagnostics, Inc.",
-                     {LOW_CONFIDENCE_UNCHANGED: {"name1"}},
-                     ror_id="ror.org/01abc"),
+            _low_conf("a", "Coastal Diagnostics, Inc.",
+                      ror_id="ror.org/01abc"),
             _result("b", "Coastal Diagnostics"),
         ]
         apply_batch_consensus(rows)
 
-        assert rows[0].flag_codes == [LOW_CONFIDENCE_UNCHANGED]
+        assert rows[0].flag_low_confidence == ["name1"]
+        assert rows[0].flag_for_review is True
         assert rows[1].flag_codes == []
 
     def test_registry_consensus_answers_no_match_and_unverified_inference(self):
@@ -778,10 +793,9 @@ class TestFlagsFalsifiedByPropagation:
         doubt about evidence survives it. Only the "unchanged" claim goes."""
         rows = [
             _result("a", "Coastal Diagnostics, Inc."),
-            _flagged("b", "Coastal Diagnostics", {
+            _low_conf("b", "Coastal Diagnostics", scopes={
                 NO_MATCH: {"name1"},
                 UNVERIFIED_INFERENCE: {"name1"},
-                LOW_CONFIDENCE_UNCHANGED: {"name1"},
             }),
         ]
         apply_batch_consensus(rows)
@@ -789,19 +803,21 @@ class TestFlagsFalsifiedByPropagation:
         assert rows[1].name1_enriched == "Coastal Diagnostics, Inc."
         assert rows[1].flag_codes == [NO_MATCH, UNVERIFIED_INFERENCE]
         assert rows[1].flagged_fields == ["name1"]
+        # The "unchanged" claim is the only thing the write falsified.
+        assert rows[1].flag_low_confidence == []
 
     def test_a_code_scoped_to_two_fields_keeps_the_other_one(self):
         """Withdrawal is per field, not per code: name1's half goes and
         name2's half stays, because nothing was written to name2."""
         rows = [
             _result("a", "Coastal Diagnostics, Inc.", ror_id="ror.org/01abc"),
-            _flagged("b", "Coastal Diagnostics",
-                     {LOW_CONFIDENCE_UNCHANGED: {"name1", "name2"}},
-                     name2_enriched="Radiology"),
+            _low_conf("b", "Coastal Diagnostics", ("name1", "name2"),
+                      name2_enriched="Radiology"),
         ]
         apply_batch_consensus(rows)
 
-        assert rows[1].flag_codes == [LOW_CONFIDENCE_UNCHANGED]
+        assert rows[1].flag_low_confidence == ["name2"]
+        assert rows[1].flag_for_review is True
         assert rows[1].flagged_fields == ["name2"]
         assert rows[1].flag_reason.startswith("Name 2:")
 
@@ -811,22 +827,20 @@ class TestFlagsFalsifiedByPropagation:
         rows = [
             _result("a", "Coastal Diagnostics, Inc.", ror_id="ror.org/01abc"),
             _result("b", "Coastal Diagnostics, Inc.", ror_id="ror.org/09xyz"),
-            _flagged("c", "Coastal Diagnostics",
-                     {LOW_CONFIDENCE_UNCHANGED: {"name1"}}),
+            _low_conf("c", "Coastal Diagnostics"),
         ]
         telemetry = apply_batch_consensus(rows)
 
         assert telemetry.conflicts == 1
         assert telemetry.flags_retracted == 0
-        assert rows[2].flag_codes == [LOW_CONFIDENCE_UNCHANGED]
+        assert rows[2].flag_low_confidence == ["name1"]
 
     def test_the_three_flag_columns_stay_consistent_after_withdrawal(self):
         """flag_for_review iff flag_codes, and flag_reason renders the same
         codes — the contract holds through a retraction as well as a raise."""
         rows = [
             _result("a", "Coastal Diagnostics, Inc.", ror_id="ror.org/01abc"),
-            _flagged("b", "Coastal Diagnostics", {
-                LOW_CONFIDENCE_UNCHANGED: {"name1"},
+            _low_conf("b", "Coastal Diagnostics", scopes={
                 DOMAIN_UNVERIFIED: {"domain"},
             }),
         ]

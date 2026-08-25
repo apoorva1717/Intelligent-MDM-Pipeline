@@ -1,0 +1,85 @@
+{
+ "domain": "entity:q1005953",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q1005953",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Midland"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Midland, Michigan"
+    },
+    {
+     "language": "en",
+     "value": "Midland, MI"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 1093829,
+        "id": "Q1093829"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 62049,
+        "id": "Q62049"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://cityofmidlandmi.gov",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,136 @@
+{
+ "domain": "search:dow chemical co",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Dow Chemical Co"
+  },
+  "search": [
+   {
+    "id": "Q855639",
+    "title": "Q855639",
+    "pageid": 807405,
+    "concepturi": "http://www.wikidata.org/entity/Q855639",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q855639",
+    "display": {
+     "label": {
+      "value": "Dow Chemical Company",
+      "language": "en"
+     },
+     "description": {
+      "value": "American chemical company",
+      "language": "en"
+     }
+    },
+    "label": "Dow Chemical Company",
+    "description": "American chemical company",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Dow Chemical Company"
+    }
+   },
+   {
+    "id": "Q30338756",
+    "title": "Q30338756",
+    "pageid": 31950975,
+    "concepturi": "http://www.wikidata.org/entity/Q30338756",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q30338756",
+    "display": {
+     "label": {
+      "value": "Dow Chemical Company (South Korea)",
+      "language": "en"
+     }
+    },
+    "label": "Dow Chemical Company (South Korea)",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Dow Chemical Company (South Korea)"
+    }
+   },
+   {
+    "id": "Q7359784",
+    "title": "Q7359784",
+    "pageid": 7267846,
+    "concepturi": "http://www.wikidata.org/entity/Q7359784",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q7359784",
+    "display": {
+     "label": {
+      "value": "Rohm and Haas Corporate Headquarters",
+      "language": "en"
+     },
+     "description": {
+      "value": "Corporate headquarters building in Philadelphia",
+      "language": "en"
+     }
+    },
+    "label": "Rohm and Haas Corporate Headquarters",
+    "description": "Corporate headquarters building in Philadelphia",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "Dow Chemical Company building"
+    },
+    "aliases": [
+     "Dow Chemical Company building"
+    ]
+   },
+   {
+    "id": "Q30594048",
+    "title": "Q30594048",
+    "pageid": 32204784,
+    "concepturi": "http://www.wikidata.org/entity/Q30594048",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q30594048",
+    "display": {
+     "label": {
+      "value": "Dow Chemical Co. v. United States",
+      "language": "en"
+     },
+     "description": {
+      "value": "1986 United States Supreme Court case",
+      "language": "en"
+     }
+    },
+    "label": "Dow Chemical Co. v. United States",
+    "description": "1986 United States Supreme Court case",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Dow Chemical Co. v. United States"
+    }
+   },
+   {
+    "id": "Q108075539",
+    "title": "Q108075539",
+    "pageid": 103348330,
+    "concepturi": "http://www.wikidata.org/entity/Q108075539",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q108075539",
+    "display": {
+     "label": {
+      "value": "Dow Chemical Company cafeteria building",
+      "language": "en"
+     },
+     "description": {
+      "value": "administrative building in Freeport, Texas",
+      "language": "en"
+     }
+    },
+    "label": "Dow Chemical Company cafeteria building",
+    "description": "administrative building in Freeport, Texas",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Dow Chemical Company cafeteria building"
+    }
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

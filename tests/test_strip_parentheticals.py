@@ -61,7 +61,7 @@ class _EmptyLLM:
 
 class _NoMatchROR:
     async def call(self, name, country_code=None, country=None,
-                   city=None, state=None) -> dict[str, Any]:
+                   city=None, state=None, **_ctx) -> dict[str, Any]:
         return {"matched": False, "score": 0.0}
 
 

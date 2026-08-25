@@ -20,6 +20,8 @@ import certifi
 import requests
 from bs4 import BeautifulSoup
 
+from utils.cache import DiskCache, note_network_call
+
 logger = logging.getLogger(__name__)
 
 REMOVE_TAGS = {"script", "style", "nav", "footer", "header", "aside", "form", "iframe"}
@@ -89,11 +91,75 @@ class PageFetchResult:
 
 
 class PageFetcher:
-    """Fetches a URL and returns structured page content."""
+    """Fetches a URL and returns structured page content.
 
-    def __init__(self, timeout: int = 10, max_chars: int = 1500) -> None:
+    Fix B - every entry point below goes through one URL-keyed evidence cache
+    (*store*, the ``fetch`` namespace). Before that only the corroborator's
+    root read was recorded, by ``page_corroborator.fetch_pages`` at the
+    *domain* level; the department probe's subdomain HEADs, its link scrape,
+    its candidate verifications, Tier 2A's profile pages and Tier 2B's
+    department pages all went to the live web on every run. A batch could
+    therefore be re-run against a warm cache and still make hundreds of
+    requests, each of which could answer differently.
+
+    Under a frozen store a miss makes no request and returns this method's
+    "could not look" value - ``None`` / ``False`` / ``[]`` / a
+    ``PageFetchResult`` with no status. The miss is traced by the store.
+    """
+
+    def __init__(
+        self,
+        timeout: int = 10,
+        max_chars: int = 1500,
+        store: "DiskCache | None" = None,
+    ) -> None:
         self._timeout = timeout
         self._max_chars = max_chars
+        self._store = store
+
+    # -- the cache seam ------------------------------------------------------
+
+    async def _cached(self, key, live, decode, on_frozen_miss):
+        """Serve *key* from the store, else run *live* and record it.
+
+        *decode* turns a recorded JSON payload back into the method's return
+        type; *live* returns ``(value, payload)`` - the value to return and the
+        JSON to record (``None`` records nothing).
+        """
+        if self._store is None:
+            value, _ = await live()
+            return value
+        recorded = self._store.get(key)
+        if recorded is not None:
+            return decode(recorded)
+        if self._store.replay_only:
+            return on_frozen_miss()
+        note_network_call("fetch")
+        value, payload = await live()
+        if payload is not None:
+            self._store.set(key, payload)
+        return value
+
+    @staticmethod
+    def _content_to_json(content):
+        if content is None:
+            return None
+        return {
+            "url": content.url, "url_path": content.url_path,
+            "page_title": content.page_title, "h1": content.h1,
+            "breadcrumb": content.breadcrumb, "body_text": content.body_text,
+        }
+
+    @staticmethod
+    def _content_from_json(raw):
+        if not isinstance(raw, dict):
+            return None
+        return PageContent(
+            url=raw.get("url") or "", url_path=raw.get("url_path") or "",
+            page_title=raw.get("page_title") or "", h1=raw.get("h1") or "",
+            breadcrumb=raw.get("breadcrumb") or "",
+            body_text=raw.get("body_text") or "",
+        )
 
     async def fetch_page_result(
         self, url: str, timeout: int | None = None,
@@ -103,14 +169,31 @@ class PageFetcher:
         Never raises: a transport failure comes back as ``status=None`` with
         ``error`` set, which the corroborator treats as "could not look".
         """
-        loop = asyncio.get_running_loop()
-        try:
-            return await loop.run_in_executor(
-                None, partial(self._sync_fetch_result, url, timeout),
+        async def _live():
+            loop = asyncio.get_running_loop()
+            try:
+                res = await loop.run_in_executor(
+                    None, partial(self._sync_fetch_result, url, timeout),
+                )
+            except Exception as exc:  # noqa: BLE001 - never fail a record
+                _log_fetch_failure(url, exc)
+                res = PageFetchResult(url=url, error=type(exc).__name__)
+            return res, {
+                "url": res.url, "status": res.status, "error": res.error,
+                "content": self._content_to_json(res.content),
+            }
+
+        def _decode(raw):
+            return PageFetchResult(
+                url=raw.get("url") or url, status=raw.get("status"),
+                error=raw.get("error"),
+                content=self._content_from_json(raw.get("content")),
             )
-        except Exception as exc:  # noqa: BLE001 — a fetch must never fail a record
-            _log_fetch_failure(url, exc)
-            return PageFetchResult(url=url, error=type(exc).__name__)
+
+        return await self._cached(
+            "result:" + url, _live, _decode,
+            lambda: PageFetchResult(url=url, error="frozen_miss"),
+        )
 
     def _sync_fetch_result(
         self, url: str, timeout: int | None = None,
@@ -154,14 +237,22 @@ class PageFetcher:
         return content.body_text or None
 
     async def fetch_page_content(self, url: str) -> PageContent | None:
-        loop = asyncio.get_running_loop()
-        try:
-            return await loop.run_in_executor(
-                None, partial(self._sync_fetch_structured, url)
-            )
-        except Exception as exc:
-            _log_fetch_failure(url, exc)
-            return None
+        async def _live():
+            loop = asyncio.get_running_loop()
+            try:
+                content = await loop.run_in_executor(
+                    None, partial(self._sync_fetch_structured, url)
+                )
+            except Exception as exc:
+                _log_fetch_failure(url, exc)
+                content = None
+            return content, {"content": self._content_to_json(content)}
+
+        return await self._cached(
+            "content:" + url, _live,
+            lambda raw: self._content_from_json(raw.get("content")),
+            lambda: None,
+        )
 
     async def subdomain_exists(self, host: str, timeout: int = 5) -> bool:
         """HEAD-probe ``https://<host>/``. Returns ``True`` for any
@@ -171,25 +262,41 @@ class PageFetcher:
         ``radiology.jhu.edu``, ``eps.harvard.edu``) before falling
         through to SERP-based discovery.
         """
-        loop = asyncio.get_running_loop()
-        try:
-            return await loop.run_in_executor(
-                None, partial(self._sync_subdomain_exists, host, timeout),
-            )
-        except Exception:
-            return False
+        async def _live():
+            loop = asyncio.get_running_loop()
+            try:
+                exists = await loop.run_in_executor(
+                    None, partial(self._sync_subdomain_exists, host, timeout),
+                )
+            except Exception:
+                exists = False
+            return exists, {"exists": bool(exists)}
+
+        return await self._cached(
+            "head:" + host, _live,
+            lambda raw: bool(raw.get("exists")),
+            lambda: False,
+        )
 
     async def resolve_final_url(self, url: str, timeout: int = 5) -> str | None:
         """Follow *url*'s redirect chain once and return the FINAL URL (or None
         on failure). Lets the department probe key off the live host when ROR's
         website is stale (``dur.ac.uk`` → ``durham.ac.uk``)."""
-        loop = asyncio.get_running_loop()
-        try:
-            return await loop.run_in_executor(
-                None, partial(self._sync_resolve_final_url, url, timeout),
-            )
-        except Exception:
-            return None
+        async def _live():
+            loop = asyncio.get_running_loop()
+            try:
+                final = await loop.run_in_executor(
+                    None, partial(self._sync_resolve_final_url, url, timeout),
+                )
+            except Exception:
+                final = None
+            return final, {"final_url": final}
+
+        return await self._cached(
+            "final:" + url, _live,
+            lambda raw: raw.get("final_url"),
+            lambda: None,
+        )
 
     def _sync_resolve_final_url(self, url: str, timeout: int) -> str | None:
         try:
@@ -240,14 +347,27 @@ class PageFetcher:
         Used by the orchestrator's department-URL probe.
         Returns an empty list on fetch failure or no matching links.
         """
-        loop = asyncio.get_running_loop()
-        try:
-            return await loop.run_in_executor(
-                None, partial(self._sync_fetch_outgoing_links, url, base_domain),
-            )
-        except Exception as exc:
-            _log_fetch_failure(url, exc)
-            return []
+        async def _live():
+            loop = asyncio.get_running_loop()
+            try:
+                links = await loop.run_in_executor(
+                    None,
+                    partial(self._sync_fetch_outgoing_links, url, base_domain),
+                )
+            except Exception as exc:
+                _log_fetch_failure(url, exc)
+                links = []
+            return links, {"links": [[t, u] for t, u in links]}
+
+        return await self._cached(
+            "links:" + url + "|" + base_domain, _live,
+            lambda raw: [
+                (str(pair[0]), str(pair[1]))
+                for pair in (raw.get("links") or ())
+                if isinstance(pair, (list, tuple)) and len(pair) == 2
+            ],
+            lambda: [],
+        )
 
     def _sync_fetch_outgoing_links(
         self, url: str, base_domain: str,

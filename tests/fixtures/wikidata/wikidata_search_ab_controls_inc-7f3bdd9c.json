@@ -1,0 +1,11 @@
+{
+ "domain": "search:ab controls inc",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "AB Controls, Inc"
+  },
+  "search": [],
+  "success": 1
+ }
+}

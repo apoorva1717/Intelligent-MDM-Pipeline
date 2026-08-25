@@ -1,0 +1,10 @@
+{
+ "domain": "search:behr paint company",
+ "payload": {
+  "searchinfo": {
+   "search": "Behr Paint Company"
+  },
+  "search": [],
+  "success": 1
+ }
+}

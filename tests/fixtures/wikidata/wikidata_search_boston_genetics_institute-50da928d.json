@@ -1,0 +1,11 @@
+{
+ "domain": "search:boston genetics institute",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Boston Genetics Institute"
+  },
+  "search": [],
+  "success": 1
+ }
+}

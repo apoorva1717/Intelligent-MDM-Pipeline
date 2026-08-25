@@ -1,0 +1,11 @@
+{
+ "domain": "search:biopharm associates",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "BioPharm Associates"
+  },
+  "search": [],
+  "success": 1
+ }
+}

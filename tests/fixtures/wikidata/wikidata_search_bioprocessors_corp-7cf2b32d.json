@@ -1,0 +1,11 @@
+{
+ "domain": "search:bioprocessors corp",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Bioprocessors Corp"
+  },
+  "search": [],
+  "success": 1
+ }
+}

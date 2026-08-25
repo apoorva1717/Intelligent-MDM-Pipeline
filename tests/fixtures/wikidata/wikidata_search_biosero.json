@@ -1,0 +1,137 @@
+{
+ "domain": "search:biosero",
+ "payload": {
+  "searchinfo": {
+   "search": "Biosero"
+  },
+  "search": [
+   {
+    "id": "Q117009121",
+    "title": "Q117009121",
+    "pageid": 111796438,
+    "concepturi": "http://www.wikidata.org/entity/Q117009121",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q117009121",
+    "display": {
+     "label": {
+      "value": "Biosero",
+      "language": "en"
+     },
+     "description": {
+      "value": "American laboratory automation company",
+      "language": "en"
+     }
+    },
+    "label": "Biosero",
+    "description": "American laboratory automation company",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Biosero"
+    }
+   },
+   {
+    "id": "Q46799581",
+    "title": "Q46799581",
+    "pageid": 47915820,
+    "concepturi": "http://www.wikidata.org/entity/Q46799581",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q46799581",
+    "display": {
+     "label": {
+      "value": "Bioserogroups of Campylobacter species isolated from sheep in Kaduna State, Nigeria",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific article published on 01 August 2000",
+      "language": "en"
+     }
+    },
+    "label": "Bioserogroups of Campylobacter species isolated from sheep in Kaduna State, Nigeria",
+    "description": "scientific article published on 01 August 2000",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Bioserogroups of Campylobacter species isolated from sheep in Kaduna State, Nigeria"
+    }
+   },
+   {
+    "id": "Q41405273",
+    "title": "Q41405273",
+    "pageid": 42724182,
+    "concepturi": "http://www.wikidata.org/entity/Q41405273",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q41405273",
+    "display": {
+     "label": {
+      "value": "Bioserotypes and virulence markers of Yersinia enterocolitica strains isolated from mallards (Anas platyrhynchos) and Pheasants (Phasianus colchicus).",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific article published on December 2012",
+      "language": "en"
+     }
+    },
+    "label": "Bioserotypes and virulence markers of Yersinia enterocolitica strains isolated from mallards (Anas platyrhynchos) and Pheasants (Phasianus colchicus).",
+    "description": "scientific article published on December 2012",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Bioserotypes and virulence markers of Yersinia enterocolitica strains isolated from mallards (Anas platyrhynchos) and Pheasants (Phasianus colchicus)."
+    }
+   },
+   {
+    "id": "Q41384689",
+    "title": "Q41384689",
+    "pageid": 42704192,
+    "concepturi": "http://www.wikidata.org/entity/Q41384689",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q41384689",
+    "display": {
+     "label": {
+      "value": "Bioserotypes and virulence markers of Y. enterocolitica strains isolated from roe deer (Capreolus capreolus) and red deer (Cervus elaphus)",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific article published on January 1, 2014",
+      "language": "en"
+     }
+    },
+    "label": "Bioserotypes and virulence markers of Y. enterocolitica strains isolated from roe deer (Capreolus capreolus) and red deer (Cervus elaphus)",
+    "description": "scientific article published on January 1, 2014",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Bioserotypes and virulence markers of Y. enterocolitica strains isolated from roe deer (Capreolus capreolus) and red deer (Cervus elaphus)"
+    }
+   },
+   {
+    "id": "Q41529818",
+    "title": "Q41529818",
+    "pageid": 42845865,
+    "concepturi": "http://www.wikidata.org/entity/Q41529818",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q41529818",
+    "display": {
+     "label": {
+      "value": "Bioserotypes of Yersinia isolated in Italy from 1979 to 1982",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific article published on November 1983",
+      "language": "en"
+     }
+    },
+    "label": "Bioserotypes of Yersinia isolated in Italy from 1979 to 1982",
+    "description": "scientific article published on November 1983",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Bioserotypes of Yersinia isolated in Italy from 1979 to 1982"
+    }
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

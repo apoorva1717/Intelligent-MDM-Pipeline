@@ -1,0 +1,65 @@
+{
+ "domain": "search:google quantum ai",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Google Quantum AI"
+  },
+  "search": [
+   {
+    "id": "Q137637461",
+    "title": "Q137637461",
+    "pageid": 131302185,
+    "concepturi": "http://www.wikidata.org/entity/Q137637461",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q137637461",
+    "display": {
+     "label": {
+      "value": "Google Quantum AI",
+      "language": "en"
+     },
+     "description": {
+      "value": "Research division of Google Inc.",
+      "language": "en"
+     }
+    },
+    "label": "Google Quantum AI",
+    "description": "Research division of Google Inc.",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Google Quantum AI"
+    }
+   },
+   {
+    "id": "Q16927765",
+    "title": "Q16927765",
+    "pageid": 18530104,
+    "concepturi": "http://www.wikidata.org/entity/Q16927765",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q16927765",
+    "display": {
+     "label": {
+      "value": "Quantum Artificial Intelligence Lab",
+      "language": "en"
+     },
+     "description": {
+      "value": "joint initiative of NASA, Universities Space Research Association, and Google",
+      "language": "en"
+     }
+    },
+    "label": "Quantum Artificial Intelligence Lab",
+    "description": "joint initiative of NASA, Universities Space Research Association, and Google",
+    "match": {
+     "type": "label",
+     "language": "it",
+     "text": "Google Quantum AI Lab"
+    },
+    "aliases": [
+     "Google Quantum AI Lab"
+    ]
+   }
+  ],
+  "success": 1
+ }
+}

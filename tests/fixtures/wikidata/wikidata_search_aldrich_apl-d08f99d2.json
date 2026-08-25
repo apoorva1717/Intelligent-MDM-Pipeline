@@ -1,0 +1,11 @@
+{
+ "domain": "search:aldrich apl",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Aldrich APL"
+  },
+  "search": [],
+  "success": 1
+ }
+}

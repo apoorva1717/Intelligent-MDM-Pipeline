@@ -1,0 +1,89 @@
+{
+ "domain": "entity:q29413411",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q29413411",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "3M22 Zircon"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "3M22 Tsirkon"
+    },
+    {
+     "language": "en",
+     "value": "SS-N-33"
+    },
+    {
+     "language": "en",
+     "value": "Zircon"
+    },
+    {
+     "language": "en",
+     "value": "3M22 Tsircon"
+    },
+    {
+     "language": "en",
+     "value": "Tsirkon"
+    },
+    {
+     "language": "en",
+     "value": "Tsircon"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 18487055,
+        "id": "Q18487055"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P279": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 181860,
+        "id": "Q181860"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 643532,
+        "id": "Q643532"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

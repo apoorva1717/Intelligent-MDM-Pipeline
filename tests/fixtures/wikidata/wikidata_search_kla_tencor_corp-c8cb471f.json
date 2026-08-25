@@ -1,0 +1,11 @@
+{
+ "domain": "search:kla tencor corp",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Kla-Tencor Corp"
+  },
+  "search": [],
+  "success": 1
+ }
+}

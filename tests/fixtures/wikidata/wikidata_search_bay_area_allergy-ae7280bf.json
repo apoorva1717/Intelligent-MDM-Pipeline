@@ -1,0 +1,11 @@
+{
+ "domain": "search:bay area allergy",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Bay Area Allergy"
+  },
+  "search": [],
+  "success": 1
+ }
+}

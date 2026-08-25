@@ -1,0 +1,10 @@
+{
+ "domain": "search:bet pharm veterinary pharmacy",
+ "payload": {
+  "searchinfo": {
+   "search": "BET Pharm Veterinary Pharmacy"
+  },
+  "search": [],
+  "success": 1
+ }
+}

@@ -1,0 +1,70 @@
+{
+ "domain": "entity:q885619",
+ "payload": {
+  "id": "Q885619",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Blue Ash"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Blue Ash, Ohio"
+    },
+    {
+     "language": "en",
+     "value": "Blue Ash, OH"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 108569710,
+        "id": "Q108569710"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.blueash.com/",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

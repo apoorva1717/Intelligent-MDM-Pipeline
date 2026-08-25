@@ -1,0 +1,47 @@
+{
+ "domain": "entity:q125276170",
+ "payload": {
+  "id": "Q125276170",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "ABB Inc. v. Domtar Inc."
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 19930933,
+        "id": "Q19930933"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 16,
+        "id": "Q16"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,11 @@
+{
+ "domain": "search:baril corp",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Baril Corp"
+  },
+  "search": [],
+  "success": 1
+ }
+}

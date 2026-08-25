@@ -1,0 +1,14 @@
+{
+ "domain": "avon.com",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "status": 403,
+  "blocked": true,
+  "error": null,
+  "url": "https://avon.com/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

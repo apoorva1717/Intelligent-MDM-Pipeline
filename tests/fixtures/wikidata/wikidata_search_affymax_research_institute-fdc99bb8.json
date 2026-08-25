@@ -1,0 +1,11 @@
+{
+ "domain": "search:affymax research institute",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Affymax Research Institute"
+  },
+  "search": [],
+  "success": 1
+ }
+}

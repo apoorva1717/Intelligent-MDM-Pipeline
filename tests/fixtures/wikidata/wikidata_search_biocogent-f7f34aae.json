@@ -1,0 +1,11 @@
+{
+ "domain": "search:biocogent",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Biocogent"
+  },
+  "search": [],
+  "success": 1
+ }
+}

@@ -18,7 +18,7 @@ from llm.prompts import TIER2A_SYSTEM_PROMPT, TIER2A_USER_PROMPT_TEMPLATE
 from utils.name_slots import DEPT_SLOTS, slot_label
 from search.base import SearchClient, SearchResult
 from search.page_fetcher import PageContent, PageFetcher
-from utils.cache import BatchCache
+from utils.cache import BatchCache, cached_serp
 from utils.text_utils import is_blank, score_search_result
 
 logger = logging.getLogger(__name__)
@@ -334,12 +334,7 @@ async def _search_and_rank(
     seen_urls: set[str] = set()
 
     for query in queries:
-        cached = cache.get_serp(query)
-        if cached is not None:
-            results = cached
-        else:
-            results = await search_client.search(query, num_results=5)
-            cache.set_serp(query, results)
+        results = await cached_serp(cache, search_client, query, num_results=5)
 
         for r in results:
             if r.url not in seen_urls:
@@ -370,9 +365,18 @@ async def _search_and_rank(
                 score += 20
         return score
 
-    scored = [(_rank(r), r) for r in all_results]
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [r for _, r in scored[:3]]
+    # Fix C(1) — (score DESC, canonical id ASC). The URL is the canonical id of
+    # a SERP candidate. Python's sort is stable, so the previous
+    # `key=score, reverse=True` left equally-ranked candidates in SERP order,
+    # and SERP order is not stable between runs: the same three pages came back
+    # in a different sequence, a different one was fetched first, and the
+    # contact lane read a different page.
+    return [
+        r for _, _, r in sorted(
+            ((-_rank(r), (r.url or ""), r) for r in all_results),
+            key=lambda t: (t[0], t[1]),
+        )[:3]
+    ]
 
 
 async def _extract_affiliation(

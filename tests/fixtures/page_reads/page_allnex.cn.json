@@ -1,0 +1,14 @@
+{
+ "domain": "allnex.cn",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "status": null,
+  "blocked": false,
+  "error": "ReadTimeout",
+  "url": "https://allnex.cn/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

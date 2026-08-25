@@ -1,0 +1,11 @@
+{
+ "domain": "search:20 15 visioneers",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "20/15 Visioneers"
+  },
+  "search": [],
+  "success": 1
+ }
+}

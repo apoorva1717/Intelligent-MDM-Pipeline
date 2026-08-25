@@ -25,7 +25,13 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from llm.openai_client import _FENCE_RE, get_openai_client
+from llm.openai_client import (
+    _FENCE_RE,
+    LLM_SEED,
+    LLM_TOP_P,
+    _is_unsupported_param,
+    get_openai_client,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,28 +41,6 @@ try:  # pragma: no cover - import guard
     from openai import APIConnectionError, APITimeoutError
 except Exception:  # noqa: BLE001
     APIConnectionError = APITimeoutError = ()  # type: ignore[assignment]
-
-
-def _is_unsupported_param(exc: Exception, *names: str) -> bool:
-    """True when an error looks like the deployment/API rejecting one of
-    ``names`` (a 400 about an unknown/unsupported/out-of-range arg)."""
-    text = str(exc).lower()
-    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
-    mentions_param = any(n in text for n in names)
-    looks_like_bad_arg = any(
-        phrase in text
-        for phrase in (
-            "unrecognized", "unsupported", "unknown", "not supported",
-            "extra inputs",
-            # Reasoning deployments that accept the argument but only at its
-            # default phrase it as an unsupported *value*, not an unknown key.
-            "does not support", "only the default",
-        )
-    )
-    if mentions_param and (looks_like_bad_arg or status == 400):
-        return True
-    # Some SDKs raise TypeError for an unexpected kwarg before any HTTP call.
-    return isinstance(exc, TypeError) and mentions_param
 
 
 def _is_unsupported_reasoning_effort(exc: Exception) -> bool:
@@ -75,6 +59,11 @@ def _is_unsupported_temperature(exc: Exception) -> bool:
     Both are handled the same way — drop it and retry.
     """
     return _is_unsupported_param(exc, "temperature")
+
+
+def _is_unsupported_seed(exc: Exception) -> bool:
+    """True when an error looks like the deployment/API rejecting ``seed``."""
+    return _is_unsupported_param(exc, "seed")
 
 
 def _is_retryable(exc: Exception) -> bool:
@@ -167,6 +156,8 @@ class DedupLLM:
         # a single bad-request doesn't sink every block.
         self._use_reasoning_effort = bool(self._reasoning_effort)
         self._use_temperature = True
+        # Fix A — same one-shot fallback shape as the two above.
+        self._use_seed = True
         self._client: Any = None
         logger.info(
             "Dedup LLM initialised (deployment=%s, api_version=%s, "
@@ -223,6 +214,15 @@ class DedupLLM:
                 "max_completion_tokens": max_tokens,
                 "response_format": {"type": "json_object"},
             }
+            # Fix A — the adjudication verdict gates a merge, so the call is
+            # pinned exactly as the Phase 1 tiers are. `top_p` and `seed` are
+            # orthogonal to `reasoning_effort` (unlike `temperature`, which the
+            # reasoning deployments refuse alongside it), so both are sent on
+            # every path; `seed` drops out at runtime if the deployment
+            # rejects it, the same one-shot fallback the other two params get.
+            params["top_p"] = LLM_TOP_P
+            if self._use_seed:
+                params["seed"] = LLM_SEED
             if self._use_reasoning_effort:
                 params["reasoning_effort"] = self._reasoning_effort
             # Temperature and reasoning_effort are mutually exclusive on
@@ -268,6 +268,15 @@ class DedupLLM:
                         "disabling it and retrying: %s", exc,
                     )
                     self._use_temperature = False
+                    continue
+                # And for `seed`. Caught once; the parameter is a
+                # reproducibility aid, never a correctness gate.
+                if self._use_seed and _is_unsupported_seed(exc):
+                    logger.warning(
+                        "Dedup LLM: deployment rejected seed; disabling it "
+                        "and retrying: %s", exc,
+                    )
+                    self._use_seed = False
                     continue
                 if _is_retryable(exc) and attempt < self._max_retries - 1:
                     delay = 0.5 * (2 ** attempt)

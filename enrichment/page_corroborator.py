@@ -45,8 +45,8 @@ from datetime import date
 from typing import Any
 from urllib.parse import urljoin
 
+from enrichment.locality import compare_locality
 from enrichment.tier1_lei import _name_match_score
-from enrichment.tier1_ror import _US_POSTAL_CODES
 from llm.openai_client import OpenAIClient
 from llm.prompts import (
     PAGE_READ_PROMPT_VERSION,
@@ -57,6 +57,12 @@ from search.page_fetcher import PageFetcher
 from utils.cache import PageCache
 
 logger = logging.getLogger(__name__)
+
+from enrichment.confidence import (
+    PROVISIONAL,
+    render as confidence_render,
+    web_source as confidence_web_source,
+)
 
 # One JSON line per corroboration attempt, on its own logger — the same shape
 # as `enrichment.trace.website` and `enrichment.trace.retry`. A page read is
@@ -153,6 +159,9 @@ class Corroboration:
     location_scope: str | None = None
     fetched_paths: list[str] = field(default_factory=list)
     from_fixture: bool = False
+    #: ISO date the page was fetched, from the cache entry (Fix B(4)). What
+    #: `operating_name_provenance` stamps — never the date of THIS run.
+    fetched_at: str | None = None
 
     @property
     def corroborated(self) -> bool:
@@ -184,6 +193,7 @@ class Corroboration:
             ),
             "fetched_paths": list(self.fetched_paths),
             "from_fixture": self.from_fixture,
+            "fetched_at": self.fetched_at,
         }
 
 
@@ -222,16 +232,22 @@ async def fetch_pages(
     missing fixture is reported as ``fetch_unavailable``, never silently
     re-fetched.
     """
-    cached = cache.get(domain)
-    if cached is not None:
-        cached = dict(cached)
+    entry = cache.get_entry(domain)
+    if entry is not None and entry.get("payload") is not None:
+        cached = dict(entry["payload"])
         cached["from_fixture"] = True
+        # Fix B(4) — the date the page was READ, carried out of the cache
+        # entry. The provenance string is a claim about a day, so re-running
+        # against a warm cache has to reproduce the original day rather than
+        # stamp today's.
+        cached["fetched_at"] = entry.get("fetched_at")
         return cached
 
     if cache.replay_only:
         return {
             "status": None, "blocked": False, "error": "replay_only_miss",
             "url": None, "title": "", "h1": "", "text": "", "paths": [],
+            "fetched_at": None,
         }
 
     root = f"https://{domain}/"
@@ -245,6 +261,7 @@ async def fetch_pages(
     }
     if not result.ok or result.content is None:
         cache.set(domain, payload)
+        payload["fetched_at"] = cache.fetched_at(domain)
         return payload
 
     content = result.content
@@ -272,6 +289,7 @@ async def fetch_pages(
         break
 
     cache.set(domain, payload)
+    payload["fetched_at"] = cache.fetched_at(domain)
     return payload
 
 
@@ -326,42 +344,6 @@ async def read_page(
 # Compare
 # ---------------------------------------------------------------------------
 
-def _norm(value: str | None) -> str:
-    return _WS_RE.sub(" ", (value or "").strip().lower())
-
-
-def _norm_region(value: str | None) -> str:
-    """A US region normalised so "CA" and "California" compare equal.
-
-    Reuses ``tier1_ror._US_POSTAL_CODES`` — the existing two-letter code map —
-    rather than a second table. The map is ROR-local because expanding those
-    codes inside a *name* is ambiguous ("IN Laboratories"); here the value is a
-    Region field, where a bare two-letter token can only be the state, and the
-    result is used for a comparison and never written anywhere. The same
-    licence ``utils.domain_resolver`` already takes with
-    ``_normalise_for_tokens``.
-
-    Without this, `San Francisco, California` on a page "contradicts"
-    `San Francisco, CA` on the record — measured on the chemspeed batch, where
-    it produced a false contradiction on Anresco Laboratories.
-    """
-    text = _norm(value).strip(". ")
-    if not text:
-        return ""
-    # The map's values are title-cased ("ca" -> "California"); both sides of
-    # the comparison are lowercase here.
-    return _US_POSTAL_CODES.get(text, text).lower()
-
-
-def _postal_matches(stated: str | None, record: str | None) -> bool:
-    """Postal codes compared on digits/letters only — "12345-6789" and "12345"
-    are the same place written two ways, and a 5-digit ZIP is the part both
-    sides always carry."""
-    a = re.sub(r"[^a-z0-9]", "", (stated or "").lower())[:5]
-    b = re.sub(r"[^a-z0-9]", "", (record or "").lower())[:5]
-    return bool(a) and a == b
-
-
 def compare_location(
     statement: PageStatement,
     *,
@@ -372,58 +354,36 @@ def compare_location(
 ) -> tuple[str, str | None, str | None]:
     """``("consistent" | "contradicted" | "neutral", detail, scope)``.
 
+    A thin adapter over :func:`enrichment.locality.compare_locality`, which is
+    where these rules now live — Fix D(2) applies the same comparator to ROR
+    and GLEIF localities, and the registry clients cannot import this module
+    (it imports them). The rules are unchanged in the move; see that module's
+    docstring for them and for why *scope* is part of the answer.
+
     Neutral is the default and the common case: most company pages state a
     name and no address, and a site that does not publish its address tells
     us nothing about where the customer is. Only a *stated* place that differs
     is a contradiction — which is precisely the AB Controls signal (the page
     states Milwaukee, the record says Irvine).
 
-    *scope* names the granularity the verdict was reached at — ``"postal"``,
-    ``"city"``, ``"region"`` or ``"country"`` — because the granularities are
-    not equally strong evidence. Two cities in the same state are routinely one
-    company's plant and head office (Houston / Baytown, Texas); two states or
-    two countries are not. The withdrawal rule in
-    ``Orchestrator._corroborate_domain`` reads this, and only a region- or
-    country-level contradiction is allowed to take a domain back.
+    The withdrawal rule in ``Orchestrator._corroborate_domain`` reads *scope*,
+    and only a region- or country-level contradiction is allowed to take a
+    domain back.
     """
     if not statement.states_location:
         return "neutral", None, None
-
-    if _postal_matches(statement.stated_postal_code, postal_code):
-        return "consistent", f"postal {statement.stated_postal_code}", "postal"
-
-    stated_city, record_city = _norm(statement.stated_city), _norm(city)
-    stated_region = _norm_region(statement.stated_region)
-    record_region = _norm_region(region)
-    stated_country, record_country = _norm(statement.stated_country), _norm(country)
-
-    # Country first, and only when both sides state one: a different country is
-    # the strongest disagreement available and is not softened by a city that
-    # happens to share a name.
-    if stated_country and record_country and stated_country != record_country:
-        return "contradicted", (
-            f"page states country {statement.stated_country}; "
-            f"record says {country}"
-        ), "country"
-
-    if stated_region and record_region and stated_region != record_region:
-        return "contradicted", (
-            f"page states region {statement.stated_region}; record says {region}"
-        ), "region"
-
-    if stated_city and record_city:
-        if stated_city == record_city:
-            return "consistent", f"city {statement.stated_city}", "city"
-        return "contradicted", (
-            f"page states city {statement.stated_city}; record says {city}"
-        ), "city"
-
-    if stated_region and record_region:
-        return "consistent", f"region {statement.stated_region}", "region"
-
-    # A stated country that matches, with nothing finer, is too coarse to
-    # corroborate a US SMB — every candidate in a US batch would pass.
-    return "neutral", None, None
+    verdict, detail, scope = compare_locality(
+        stated_city=statement.stated_city,
+        stated_region=statement.stated_region,
+        stated_country=statement.stated_country,
+        stated_postal_code=statement.stated_postal_code,
+        city=city, region=region, country=country, postal_code=postal_code,
+    )
+    # The corroborator's own prose has always led with "page states …"; the
+    # shared comparator is source-agnostic and says "states …".
+    if detail and detail.startswith("states "):
+        detail = f"page {detail}"
+    return verdict, detail, scope
 
 
 def compare(
@@ -479,11 +439,13 @@ async def corroborate(
     from_fixture = bool(payload.get("from_fixture"))
     url = payload.get("url")
     paths = list(payload.get("paths") or ())
+    fetched_at = payload.get("fetched_at")
 
     def _out(outcome: str, **kw) -> Corroboration:
         result = Corroboration(
             outcome=outcome, domain=domain, source_url=url,
-            fetched_paths=paths, from_fixture=from_fixture, **kw,
+            fetched_paths=paths, from_fixture=from_fixture,
+            fetched_at=fetched_at, **kw,
         )
         line = {
             "record_id": record_id,
@@ -524,9 +486,28 @@ async def corroborate(
     )
 
 
-def operating_name_provenance(domain: str, when: date | None = None) -> str:
-    """``web:{domain}:extracted:{date}`` — the provenance string for an
-    extracted identity. Deliberately NOT the ``producer:tier:band`` shape the
-    six scoped fields use: this value did not come from the enrichment tiers,
-    it came from a page on a day, and the day is the part that decays."""
-    return f"web:{domain}:extracted:{(when or date.today()).isoformat()}"
+def operating_name_provenance(domain: str) -> str:
+    """``web:{domain}:provisional`` — the provenance of an extracted identity.
+
+    Provenance Scheme B, the same grammar and the same confidence table the
+    six scoped fields use (:mod:`enrichment.confidence`). Two things changed
+    from ``web:{domain}:extracted:{date}``, and both are the scheme's point:
+
+    ``extracted`` was a METHOD, and a method is not a confidence. What a
+    reviewer needs from this column is how much weight the name carries, and
+    the answer is ``provisional``: one source read it off one page, and the
+    page it was read from is the domain in the source token — which is one
+    source, not two, under hard rule 4. It reaches ``verified`` only if an
+    independent system agrees, and this path has no such agreement to report.
+
+    The DATE is gone from the string and lives where it can be acted on: on
+    the evidence-cache entry (``PageCache.fetched_at``, which is also what
+    made the string reproducible under Fix B(4)) and on the
+    ``operating_name_extracted`` trace line the orchestrator emits at the
+    write site. It was removed from the column because a decaying token in an
+    exported field is read as part of the claim, and eleven rows of the two
+    diffed chemspeed runs once differed in nothing else.
+    """
+    return confidence_render(
+        confidence_web_source(domain), PROVISIONAL,
+    )

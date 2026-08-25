@@ -1,0 +1,15 @@
+{
+ "domain": "bioinnovations.net",
+ "payload": {
+  "status": 200,
+  "blocked": false,
+  "error": null,
+  "url": "https://www.bioinnovations.net/",
+  "title": "BIO INNOVATIONS",
+  "h1": "Storefront",
+  "text": "BIO INNOVATIONS Storefront Healthy Living Starts Here Skip Main Banner Skip Best Sellers BEST SELLERS Skip Health Interest 1-6 SHOP & LEARN Allergies Support Brain Health Children's Health Diabetes Support Digestive Health Foundational Health Skip Health Interest 7-12 Heart Health Joint Health Men's Health Mood Support Pain Support Respiratory Health Skip Health Interest 13-18 Senior Health Skin & Beauty Health Thyroid Health Vision Health Women's Health Yeast Support Skip Catalog/Cooking REQUEST OUR LATEST CATALOG HEALTHY COOKING RECIPES",
+  "paths": [
+   "/"
+  ]
+ }
+}

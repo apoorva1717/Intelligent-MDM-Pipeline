@@ -1,0 +1,11 @@
+{
+ "domain": "search:nucor steel marion inc",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Nucor Steel Marion, Inc"
+  },
+  "search": [],
+  "success": 1
+ }
+}

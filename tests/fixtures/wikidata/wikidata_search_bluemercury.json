@@ -1,0 +1,36 @@
+{
+ "domain": "search:bluemercury",
+ "payload": {
+  "searchinfo": {
+   "search": "Bluemercury"
+  },
+  "search": [
+   {
+    "id": "Q4930376",
+    "title": "Q4930376",
+    "pageid": 4711184,
+    "concepturi": "http://www.wikidata.org/entity/Q4930376",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q4930376",
+    "display": {
+     "label": {
+      "value": "Bluemercury",
+      "language": "en"
+     },
+     "description": {
+      "value": "chain of American beauty stores",
+      "language": "en"
+     }
+    },
+    "label": "Bluemercury",
+    "description": "chain of American beauty stores",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Bluemercury"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

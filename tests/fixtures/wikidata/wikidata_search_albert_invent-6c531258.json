@@ -1,0 +1,11 @@
+{
+ "domain": "search:albert invent",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Albert Invent"
+  },
+  "search": [],
+  "success": 1
+ }
+}

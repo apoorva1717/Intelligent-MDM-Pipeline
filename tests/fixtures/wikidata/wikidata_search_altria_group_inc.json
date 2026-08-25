@@ -1,0 +1,39 @@
+{
+ "domain": "search:altria group inc",
+ "payload": {
+  "searchinfo": {
+   "search": "Altria Group, Inc"
+  },
+  "search": [
+   {
+    "id": "Q445007",
+    "title": "Q445007",
+    "pageid": 419840,
+    "concepturi": "http://www.wikidata.org/entity/Q445007",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q445007",
+    "display": {
+     "label": {
+      "value": "Altria",
+      "language": "en"
+     },
+     "description": {
+      "value": "American multinational company",
+      "language": "en"
+     }
+    },
+    "label": "Altria",
+    "description": "American multinational company",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "Altria Group, Inc."
+    },
+    "aliases": [
+     "Altria Group, Inc."
+    ]
+   }
+  ],
+  "success": 1
+ }
+}

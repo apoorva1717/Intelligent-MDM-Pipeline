@@ -1,0 +1,10 @@
+{
+ "domain": "search:arqule inc",
+ "payload": {
+  "searchinfo": {
+   "search": "ArQule Inc"
+  },
+  "search": [],
+  "success": 1
+ }
+}

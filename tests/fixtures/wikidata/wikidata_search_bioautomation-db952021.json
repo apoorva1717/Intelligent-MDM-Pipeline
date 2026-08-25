@@ -1,0 +1,37 @@
+{
+ "domain": "search:bioautomation",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "BioAutomation"
+  },
+  "search": [
+   {
+    "id": "Q50515245",
+    "title": "Q50515245",
+    "pageid": 51469160,
+    "concepturi": "http://www.wikidata.org/entity/Q50515245",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q50515245",
+    "display": {
+     "label": {
+      "value": "Bioautomation",
+      "language": "en"
+     },
+     "description": {
+      "value": "Academic journal published by Academic Publishing House, covering the subjects: Technology: Chemical technology: Biotechnology | Medicine: Medicine (General): Computer applications to medicine. Medical informatics | Science: Biology (Gene",
+      "language": "en"
+     }
+    },
+    "label": "Bioautomation",
+    "description": "Academic journal published by Academic Publishing House, covering the subjects: Technology: Chemical technology: Biotechnology | Medicine: Medicine (General): Computer applications to medicine. Medical informatics | Science: Biology (Gene",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Bioautomation"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

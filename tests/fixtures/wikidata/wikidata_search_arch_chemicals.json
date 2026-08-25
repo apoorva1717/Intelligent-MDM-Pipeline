@@ -1,0 +1,31 @@
+{
+ "domain": "search:arch chemicals",
+ "payload": {
+  "searchinfo": {
+   "search": "Arch Chemicals"
+  },
+  "search": [
+   {
+    "id": "Q128790007",
+    "title": "Q128790007",
+    "pageid": 122765787,
+    "concepturi": "http://www.wikidata.org/entity/Q128790007",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q128790007",
+    "display": {
+     "label": {
+      "value": "Arch Chemicals",
+      "language": "de"
+     }
+    },
+    "label": "Arch Chemicals",
+    "match": {
+     "type": "label",
+     "language": "de",
+     "text": "Arch Chemicals"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

@@ -1,0 +1,86 @@
+{
+ "domain": "entity:q2945375",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q2945375",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "3M"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Team3M"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 1756006,
+        "id": "Q1756006"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 31,
+        "id": "Q31"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.team3m.com/",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P576": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P576",
+      "datavalue": {
+       "value": {
+        "time": "+2016-00-00T00:00:00Z",
+        "timezone": 0,
+        "before": 0,
+        "after": 0,
+        "precision": 9,
+        "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+       },
+       "type": "time"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

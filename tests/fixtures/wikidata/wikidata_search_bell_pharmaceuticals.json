@@ -1,0 +1,10 @@
+{
+ "domain": "search:bell pharmaceuticals",
+ "payload": {
+  "searchinfo": {
+   "search": "Bell Pharmaceuticals"
+  },
+  "search": [],
+  "success": 1
+ }
+}

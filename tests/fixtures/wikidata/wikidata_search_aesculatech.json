@@ -1,0 +1,10 @@
+{
+ "domain": "search:aesculatech",
+ "payload": {
+  "searchinfo": {
+   "search": "AesculaTech"
+  },
+  "search": [],
+  "success": 1
+ }
+}

@@ -25,6 +25,7 @@ Both phases share the same FastAPI app, configuration system, Azure Functions de
    - [Stage 2b: Person Affiliation Lookup](#stage-2b-person-affiliation-lookup)
    - [Stage 3: Tier 2 — Multi-Mode Canonicalization](#stage-3-tier-2--multi-mode-canonicalization)
    - [Stage 4: Tier 3 — LLM Inference (Last Resort)](#stage-4-tier-3--llm-inference-last-resort)
+   - [Stage 2c: Wikidata crosswalk lane](#stage-2c-wikidata-crosswalk-lane)
    - [Stage 5: Tier 1 re-lookup after canonicalisation](#stage-5-tier-1-re-lookup-after-canonicalisation)
      - [Stage 5 diagnostics — `RETRY_TRACE`](#stage-5-diagnostics--retry_trace)
    - [Stage 5b: Page-read corroborator](#stage-5b-page-read-corroborator)
@@ -39,9 +40,10 @@ Both phases share the same FastAPI app, configuration system, Azure Functions de
 7. [Record Classification Logic](#record-classification-logic)
 8. [Confidence, Flags, and Enrichment Status](#confidence-flags-and-enrichment-status)
 9. [Per-Field Provenance and Admissibility](#per-field-provenance-and-admissibility)
-10. [Data Models](#data-models)
-11. [API Endpoints](#api-endpoints)
-12. [Phase 2 — Deduplication Adjudicator](#phase-2--deduplication-adjudicator)
+10. [Determinism and Reproducibility](#determinism-and-reproducibility)
+11. [Data Models](#data-models)
+12. [API Endpoints](#api-endpoints)
+13. [Phase 2 — Deduplication Adjudicator](#phase-2--deduplication-adjudicator)
     - [Why a Separate Pass](#why-a-separate-pass)
     - [The Two-Level Identity Model](#the-two-level-identity-model)
     - [Critical Identity Rules](#critical-identity-rules)
@@ -55,17 +57,17 @@ Both phases share the same FastAPI app, configuration system, Azure Functions de
     - [Telemetry](#telemetry)
     - [Chaining Enrichment → Dedup](#chaining-enrichment--dedup)
     - [Dedup Diagnostics](#dedup-diagnostics)
-13. [Project Structure](#project-structure)
-14. [Module-by-Module Reference](#module-by-module-reference)
-15. [External Services and APIs](#external-services-and-apis)
-16. [Configuration and Environment Variables](#configuration-and-environment-variables)
-17. [Setup and Installation](#setup-and-installation)
-18. [Running Locally](#running-locally)
-19. [Testing](#testing)
-20. [Azure Function Deployment](#azure-function-deployment)
-21. [ADF Integration and DATAshaper Mapping](#adf-integration-and-datashaper-mapping)
-22. [Complete Data Flow Diagram](#complete-data-flow-diagram)
-23. [Changelog](#changelog)
+14. [Project Structure](#project-structure)
+15. [Module-by-Module Reference](#module-by-module-reference)
+16. [External Services and APIs](#external-services-and-apis)
+17. [Configuration and Environment Variables](#configuration-and-environment-variables)
+18. [Setup and Installation](#setup-and-installation)
+19. [Running Locally](#running-locally)
+20. [Testing](#testing)
+21. [Azure Function Deployment](#azure-function-deployment)
+22. [ADF Integration and DATAshaper Mapping](#adf-integration-and-datashaper-mapping)
+23. [Complete Data Flow Diagram](#complete-data-flow-diagram)
+24. [Changelog](#changelog)
 
 ---
 
@@ -492,6 +494,109 @@ ROR is the registry for *research institutions* and has no good coverage of ordi
 
 ---
 
+### Stage 2c: Wikidata crosswalk lane
+
+**File:** `enrichment/wikidata.py` · **Entry point:** `Orchestrator._wikidata_crosswalk` · **Flag:** `WIKIDATA_ENABLED` (default on)
+
+**Where it sits.** ROR miss **and** GLEIF miss **and** no registry identifier on the record → **`wikidata_crosswalk`** → the existing [web/domain evidence](#website-domain-department-domain--search-term-resolution) → the existing LLM lanes. Concretely: on the company branch it runs immediately after [`_run_lei_lookup`](#stage-2-company-tier-1--gleif--lei-registry-lookup) returns a miss and *before* `company_canonical`; on the research branch it runs where the ROR-miss passthrough would otherwise write the input straight through (GLEIF never runs there, so the record has no registry identity either way).
+
+It is a **pure insert**. With `WIKIDATA_ENABLED=false` no call is made, no counter moves and every serialised field is byte-identical to a build without the lane — asserted, not assumed, by `tests/test_wikidata.py::TestTheLaneIsAPureInsert`, which compares a full `model_dump` of a four-record batch against a run with both entry points excised.
+
+#### The principle: a crosswalk and a witness, never an authority
+
+> **Wikidata buys a lookup key, not a value.**
+
+Two outcomes, and the difference between them is the whole design.
+
+| | |
+|---|---|
+| **Crosswalk** | The matched item carries a **ROR ID (`P6782`)** or an **LEI (`P1278`)**. The lane does not copy Wikidata's label anywhere. It re-queries ROR / GLEIF **by that identifier**, through the existing Tier-1 clients (`RORClient.call_by_id` / `LEIClient.call_by_id`), and the registry's response writes the name and the identifier exactly as a direct Tier-1 hit would. Every registry guard applies unchanged. The written fields' provenance is the **registry's** — `producer_chain = ("ror",)` / `("gleif",)`, scale `registry_exact`, confidence per the [provenance table](#confidence-is-not-one-scale) — never `wikidata`. Only `rule_id` records that the crosswalk fired (`wikidata:crosswalk-ror`), which is what makes a crosswalked identity auditable after the fact. Counted in trace and metrics; invisible in the value. |
+| **Witness** | The item carries no registry pointer. Wikidata is then **one source** and is treated as one. It may corroborate — feeding the existing [`unchanged-verified`](#the-three-unchanged-name-1-states) evidence check, and `P856` may corroborate a candidate domain — but it may **never** terminally write `name1_enriched`. The most it writes is `operating_name`, the field [the page corroborator](#stage-5b-page-read-corroborator) already uses for "what another source calls this organisation", with provenance `wikidata:provisional`. |
+
+Why the asymmetry: Wikidata is an open wiki, and a crowd-edited label is not a customer master's source of truth for a legal name. Treating it as a *lookup key* is safe in a way that treating it as a *value* is not — a wrong pointer resolves to a registry record that then fails the registry's own name and country guards, and the record simply misses. That is exactly what test 2 of the suite pins: a `P1278` pointing at `PFIZER AG` on a record that says "Acme Widgets Inc" scores far below GLEIF's 88 and writes nothing.
+
+**The LLM is not involved in this lane at all.** Matching is deterministic — search, a fixed constraint gauntlet, and the same RapidFuzz comparison GLEIF's verification guard makes. Where ambiguity survives the gauntlet the answer is *no match*, never an LLM tiebreak: a tiebreak is precisely the judgement a crowd-sourced source has not earned.
+
+#### The matching gauntlet
+
+All six constraints are mandatory and are applied in this order. The **SPARQL endpoint is never used** anywhere in the lane.
+
+| # | Constraint | Rule |
+|---|---|---|
+| 1 | **Query** | `wbsearchentities` on the record name — labels **and** aliases, `language=en`, `limit=5`. Because the API searches aliases, the lane needs no alias expansion of its own. |
+| 2 | **Disambiguation** | `P31 = Q4167410` is a **no-match for the whole record**, never a list to choose from. A perfectly good candidate sitting behind a disambiguation hit is deliberately not reached: the wiki has said the name identifies several organisations. |
+| 3 | **Type whitelist** | The item's `P31`, or **one** `P279` step up from it, must land in `TYPE_WHITELIST` — 22 explicit QIDs, each named in a comment, covering business/company, university/college, research institute, hospital/health system, government agency, national laboratory and nonprofit. No transitive closure: two `P279` steps up from almost anything is `organization` (Q43229), which gates nothing. See [`04_PARAMETERS.md` §1.18](docs/thesis/04_PARAMETERS.md) for the list and for why the one step is resolved from a declared table rather than a live query. |
+| 4 | **Country** | `P17`, or `P159` resolved to *its* country, must be the United States (`Q30`). **Missing both is a rejection** — see the note below. |
+| 5 | **Name** | Best label/alias against the record name through `enrichment.tier1_lei._name_match_score` (`token_sort_ratio`, max of raw and legal-form-stripped) at `LEI_NAME_MATCH_THRESHOLD`. **No new scorer, no new threshold, no new normalisation function** — this is the same supplied-name-vs-official-name comparison GLEIF's guard and the page reader both make. |
+| 6 | **Identity cross-check** | Only when the record has a city: an item whose `P159` resolves to a place contradicting the record's city/region is a no-match. A **missing `P159` is neutral**, exactly as a page that states no address is neutral. The record's *region* rescues a headquarters stated at state granularity ("California" against a record in `CA`), through the `_US_POSTAL_CODES` map the page corroborator already reuses. |
+
+More than one candidate surviving all six is a **collision**, and a collision is a no-match counted separately as `wikidata_ambiguous`.
+
+> **Why a missing country is a rejection, and why that is deliberately conservative.** The population this lane serves is a US customer master, so an item with no country statement is not thereby "probably American" — it is an item nobody has finished curating, and admitting it would mean matching a US record against a same-named organisation anywhere on earth. This is the same reasoning [ROR's country guard](#country-guard) already applies: a wrong-country identity is worse than none, because it wrongly converges distinct entities in [Phase 2](#phase-2--deduplication-adjudicator). The cost is measured and reported in `wikidata_lane_report.md` rather than assumed away.
+
+> **Step 6 is city-level, which is stricter than the page corroborator's region-level withdrawal rule** — and the two are answering different questions. The corroborator is deciding whether to *destroy* a domain it has already published, where a plant and a head office in one state (Houston / Baytown, TX) must not count as a disagreement. This is deciding whether to *admit* a crowd-sourced identity in the first place, and refusing is cheap: the record proceeds to the web lane exactly as it would have.
+
+#### Supersession detection
+
+When the matched item carries `P576` (dissolved) or `P1366` (replaced by):
+
+- The name is **not** rewritten to the successor. Which legal entity a customer record should point at after a merger depends on contracts and open orders this service cannot see; it is a business decision, not a data-quality correction.
+- Flag code **`entity-superseded`** is appended (never overwriting — through the existing `_ev_*` evidence → `compute_flags` convention), scoped to `name1`, with a reason naming the successor's label and QID where `P1366` is present, or stating the dissolution date where only `P576` is.
+- The registry-pointer crosswalk **still runs** — a dissolved entity's LEI record is itself informative — and the flag stands regardless of what it finds.
+
+This is the only new flag code. Nothing else in the [flag vocabulary](#the-codes) changed.
+
+#### Domain corroboration
+
+`P856` (official website) is compared with the record's candidate or accepted domain on **registrable-domain equality**, reusing `utils.domain_resolver.canonicalise_domain` — the same registrable-stem reduction the [ownership guard](#2b--ownership-guard-domain_ownership_guard_enabled-default-on) uses, so `https://www.acme.com/en/` and `acme.com` are one domain here exactly as they are there.
+
+The check is **deferred**: when the lane runs, the website paths have not proposed a candidate yet, so `P856` is stashed on the record and settled in `_finalise_and_return` after `_maybe_resolve_website_bc` and before the page read. Agreement counts as one corroborating source and feeds the same `unchanged-verified` marker the name match feeds. **Disagreement is not grounds to withdraw the domain** — a `P856` statement can be years stale, and a wiki field is weaker evidence than the site itself. It is counted as `wikidata_domain_disagree` and nothing else happens.
+
+#### Provenance
+
+Registry-written fields carry the registry's own provenance: `ror:verified` / `gleif:verified` in the [derived scalar columns](#response-shape), or `ror:verified+wikidata` / `gleif:verified+wikidata` when the crosswalk is what found them — ROR still authored the value, and `+wikidata` records the route. See [the provenance grammar](#the-provenance-grammar--scheme-b).
+
+A Wikidata **witness** write carries `wikidata:provisional` on `operating_name_provenance`.
+
+> The witness path writes `wikidata:provisional` — one source, uncontradicted, and it can never be `verified`, because this path is taken precisely when the crosswalk found **no** registry pointer to follow, so there is no second evidence system agreeing. A crowd-edited label is a pointer, never an authority. (Before the provenance migration this was the placeholder `wikidata:2:crosswalk`, whose `2` asserted a tier the lane never ran; see [the provenance grammar](#the-provenance-grammar--scheme-b) and `provenance_migration_report.md`.)
+
+The record-level `source` / `confidence` columns are deliberately **not** set to `wikidata` / `provisional` on the witness path: `confidence` is a bounded enum (`high`/`medium`/`low`/`none`) that `provisional` is not a member of, and overwriting the record-level `source` would relabel a record whose Name 1 the lane did not write. The claim belongs on the field's own provenance token, which is where it is.
+
+#### Call budget and fixtures
+
+**Two API calls per record**: one `wbsearchentities`, and one `wbgetentities` that fetches the claims of **every** search hit in a single batched request — which is what makes the collision check affordable, because the gauntlet has to run over all five candidates to know whether more than one survives.
+
+> ⚠️ **A third, conditional call.** Steps 4 and 6 need the *referenced* items — a `P159` headquarters resolved to its country and its label, and a `P1366` successor's label — and those QIDs are not known until the second call has returned. A third batched `wbgetentities` therefore fires **only** when a surviving candidate carries `P159` or `P1366`, resolves every referenced item in one request, and is cached by QID across the whole batch, so it costs nothing after the first record that names a given city. The alternative was to drop constraints 4 and 6 or to silently exceed the budget; this is stated rather than either. `P17` is present on most curated US organisations, so the common path is two calls. See [`04_PARAMETERS.md` §1.18](docs/thesis/04_PARAMETERS.md).
+
+Every call is fixture-cached through `utils.cache.PageCache` — **the existing page-fixture mechanism**, under `WIKIDATA_FIXTURE_DIR` and its own filename prefix — keyed on the **query string** for a search and on the **QID** for an entity fetch. `WIKIDATA_FIXTURE_REPLAY_ONLY` refuses to fetch anything not already recorded, which is what the test suite runs under so no test can reach the live API.
+
+An entity fixture records **only the nine properties the lane reads**, plus the English labels and aliases (`wikidata.prune_entity`, `READ_PROPERTIES`). Wikidata entities are enormous — every statement, qualifier, reference and hash an item has accumulated — and the unpruned recordings for the chemspeed batch came to **4.3 MB** against 589 KB for the entire page-read store; pruned they are **169 KB**. This is the same choice the page fixtures make in storing extracted text rather than raw HTML: a fixture is a record of what the pipeline *consumed*. The cost is stated rather than hidden — **adding a property to the lane means the existing recordings do not carry it**, and `scripts/wikidata_warm_fixtures.py` has to be re-run before a replay means anything.
+
+> ⚠️ **Rate limiting is real, and the retry schedule is measured.** The first live 100-row run at concurrency 3 took `HTTP 429` on **28 of 68** invocations under the GLEIF client's 0.5s/1.0s backoff. Wikidata rate-limits anonymous callers far harder than GLEIF does, and a 429 is the API stating a rate rather than a failure to recover from — retrying it in half a second is not a retry, it is the same request. A 429 now backs off from **5s**, doubling, and a server-supplied `Retry-After` wins outright (capped at 30s so one header cannot stall a batch). The lane also distinguishes **operations** (the budget number: one per search or entity fetch) from **HTTP requests** (what a rate limiter sees, retries included) — conflating them was what made the first run look as though it spent five calls on one record. `scripts/wikidata_warm_fixtures.py` records a workbook's fixtures serially, one request every two seconds, so a measured batch is a replay rather than a race against the rate limiter.
+
+**Failure is closed.** A timeout, a non-200, or a malformed body is `wikidata_unavailable` — a no-match counted apart from a real miss. Nothing on any path can fail a record: `tests/test_wikidata.py::TestFailureIsClosed` includes a client that raises an unexpected `RuntimeError`, and the record still ships.
+
+#### Telemetry
+
+Batch-summary counters, maintained unconditionally (like the page-read counters, so a measurement run cannot end up with silently-zero numbers because a flag was forgotten). `WIKIDATA_TRACE` gates a per-record JSON line on `enrichment.trace.wikidata` carrying every candidate and why it was refused.
+
+`wikidata_matched`, `wikidata_no_match`, `wikidata_ambiguous` and `wikidata_unavailable` **partition** `wikidata_queried`. `wikidata_type_rejected` and `wikidata_country_rejected` are diagnostics and deliberately overlap with `no_match`: they count records where that gauntlet step refused at least one *candidate*.
+
+| Counter | Meaning |
+|---|---|
+| `wikidata_queried` | Lane invocations — records that reached it eligible |
+| `wikidata_matched` / `wikidata_no_match` / `wikidata_ambiguous` / `wikidata_unavailable` | The four outcomes; they sum to `queried` |
+| `wikidata_type_rejected` / `wikidata_country_rejected` | Records where a candidate was refused on type / country |
+| `wikidata_crosswalk_ror` / `wikidata_crosswalk_lei` | Pointers followed |
+| `wikidata_crosswalk_registry_hit` | Pointers the registry's own guards then confirmed. The gap to the two counters above is pointers the registry refused — the lane working as designed |
+| `wikidata_superseded_flagged` | `entity-superseded` raised |
+| `wikidata_witness_only` | Matched with no registry pointer |
+| `wikidata_domain_corroborated` / `wikidata_domain_disagree` | `P856` against the record's candidate domain |
+
+**Measured** on the 100-row chemspeed US SMB batch: see `wikidata_lane_report.md`. The expected yield on a population of private US small and mid-size businesses is **low**, and the report states the real numbers rather than tuning the gauntlet to raise them.
+
+---
+
 ### Stage 2b: Person Affiliation Lookup
 
 **File:** `enrichment/person_affiliation.py`
@@ -676,7 +781,7 @@ Tier 2 has three sub-modes that handle different scenarios for enriching Name2 (
 - a field a later authority overwrote is no longer Tier 3's claim — Fix 2's Tier 1 retry writing the registry's official name is the common case;
 - a Name 2 the department probe went on to locate on the organisation's own web presence is corroborated by `department_domain`, a column a reviewer can open.
 
-Where Tier 3 **leaves** a value unchanged there is no new claim, and the record reads as `low-confidence-unchanged` (or `no-match`) instead. Tier 3 itself raises no flag: it reports its suggestions and its confidence, and `enrichment/flags.py` decides what that means once the record is final.
+Where Tier 3 **leaves** a value unchanged there is no new claim, and the record reads as `input:low` on the field — flagged, [derived](#the-derived-review-flag) — or as `no-match` instead. Tier 3 itself raises no flag: it reports its suggestions and its confidence, and `enrichment/flags.py` decides what that means once the record is final.
 
 ---
 
@@ -812,9 +917,9 @@ The doubt an unchanged Name 1 carries is not one thing, so one outcome cannot ex
 
 | State | Condition | Provenance | Flagged? |
 |---|---|---|---|
-| `unchanged-verified` | the input name is corroborated by evidence independent of the record: an ownership-guard-passing domain tied to Name 1, or a [page read](#stage-5b-page-read-corroborator) that states this organisation's identity | `input:1:verified` | No |
-| `unchanged-confirmed` | the company-canonical model, asked what the organisation is called and never shown the record's answer, returned it — `normalize_key(proposal) == normalize_key(input)` | `input:1:confirmed` | No |
-| `unchanged-unresolved` | nothing came back, or what came back was refused by the identity guard and names something materially different | `input:1:rule` (unchanged) | Yes — existing `low-confidence-unchanged` code, existing reason text |
+| `unchanged-verified` | the input name is corroborated by evidence independent of the record: an ownership-guard-passing domain tied to Name 1, or a [page read](#stage-5b-page-read-corroborator) that states this organisation's identity | `input:verified+web` (or `+wikidata` / `+registry` per the actual witness) | No |
+| `unchanged-confirmed` | the company-canonical model, asked what the organisation is called and never shown the record's answer, returned it — `normalize_key(proposal) == normalize_key(input)` | `input:provisional+llm` — the one `+llm` the [confidence table](#the-provenance-grammar--scheme-b) allows, and `provisional` because hard rule 1 bars a model from carrying anything to `verified` | No |
+| `unchanged-unresolved` | nothing came back, or what came back was refused by the identity guard and names something materially different | `input:low` | Yes — **derived** from the confidence, with the same reason text. The `low-confidence-unchanged` code is [retired](#the-derived-review-flag): it said exactly what `input:low` says |
 
 **Decided once, from the settled record.** The same rule as [`compute_flags`](#flag-rules) and for the same reason: which tier ran is not the question. That is also what makes the treatment consistent, because the answer no longer depends on which branch reached the passthrough. The per-branch `_ev_low_conf_unchanged` markers for Name 1 are gone; the department slots keep theirs.
 
@@ -913,7 +1018,7 @@ The pipeline finds a candidate domain for most records and then decides whether 
 
 | Outcome | Condition | Consequence |
 |---|---|---|
-| `corroborated` | name consistent AND location consistent-or-neutral | `domain-unverified` withdrawn; `operating_name` written with provenance `web:{domain}:extracted:{date}`; feeds [`unchanged-verified`](#the-three-unchanged-name-1-states) |
+| `corroborated` | name consistent AND location consistent-or-neutral | `domain-unverified` withdrawn; `operating_name` written with provenance `web:{domain}:provisional`; feeds [`unchanged-verified`](#the-three-unchanged-name-1-states) |
 | `name_mismatch` | the page names a different organisation | an **accepted** domain is withdrawn (`domain`/`website_url` cleared, `domain-unverified` raised, a `page_identity` guard rejection logged); an already-unverified one keeps its flag. Either way the reason gains a clause naming what the page said |
 | `contradicted` | name consistent, stated location differs | noted, never acted on. The name matched, so the site is probably right and it is the record's *address* that is in doubt — not what `domain-unverified` asks a reviewer to check |
 | `fetch_unavailable` / `parked` / `no_identity` | we could not look, or the page says nothing | nothing changes; counted |
@@ -1019,11 +1124,11 @@ The flag was correct when `compute_flags` ran and stopped being correct afterwar
 
 | withdrawn on a propagated `name1_enriched` | registry mode | name-form mode |
 |---|---|---|
-| `low-confidence-unchanged` | ✅ | ✅ |
+| the derived low (ex-`low-confidence-unchanged`) | ✅ | ✅ |
 | `no-match` | ✅ | — |
 | `unverified-inference` | ✅ | — |
 
-`low-confidence-unchanged` goes in both modes because its entire content is *"the value was left as supplied"*, and it no longer was. The other two go only under registry consensus, because only there does something arrive that answers them: `no-match` says no source identified the organisation and a registry identity now has, and `unverified-inference` says the value rests on no external evidence and it now rests on the donor's registry match — with the donor's record id in the receiving record's provenance, so the inherited claim stays auditable. Under name-form consensus neither is answered: electing the batch's modal spelling introduces no evidence, so both stand.
+The derived low goes in both modes because its entire content is *"the value was left as supplied"*, and it no longer was — and it goes by **re-derivation** rather than by naming a code, because the write that falsified it also rewrote the provenance it is read from. The other two go only under registry consensus, because only there does something arrive that answers them: `no-match` says no source identified the organisation and a registry identity now has, and `unverified-inference` says the value rests on no external evidence and it now rests on the donor's registry match — with the donor's record id in the receiving record's provenance, so the inherited claim stays auditable. Under name-form consensus neither is answered: electing the batch's modal spelling introduces no evidence, so both stand.
 
 Withdrawal is **per field**, not per code — a code scoped to `name1` and `name2` keeps its `name2` half, because nothing was written to `name2`. A record whose name does not move loses nothing, because nothing was falsified; nor does the donor, nor any member of a conflicting group, which propagates nothing at all.
 
@@ -1293,7 +1398,7 @@ The flag answers one question for a reviewer: *is there something here for me to
 
 1. **Rebuilt, never appended.** `compute_flags` is called **once**, from `finalise`, after every name, domain and contact field has settled. Tiers record *evidence*; they never write a flag. A record that reached Tier 3 and was then rescued by Fix 2's Tier 1 retry ends with a registry identifier and **no** Tier 3 reason, because the reason is derived from what the record *holds*, not from what ran.
 2. **Field-scoped.** `flagged_fields` names the output fields the flag concerns. A record with a verified ROR ID and an uncertain department scopes to `name2` alone — which is what tells a reviewer a one-field check from a full record review.
-3. **`flag_for_review` is true if and only if `flag_codes` is non-empty**, and `flag_reason` is the prose rendering of the same codes.
+3. **`flag_for_review` is derived**, and `flag_reason` is the prose rendering of everything that raised it. See [the derived review flag](#the-derived-review-flag) — this replaced the older "true iff `flag_codes` is non-empty", which is no longer the contract.
 
 Property 1 assumes every input to the decision has settled by the time `finalise` runs, and one pass breaks that assumption: [batch consensus](#stage-6-batch-consensus) runs after the whole batch is finalised and can replace `name1_enriched`, leaving a flag that describes a value no longer on the record. It withdraws exactly the codes its own write falsified, through `flags.retract`, and can only ever withdraw — never raise, never re-judge. See [Flags a propagated name falsifies](#flags-a-propagated-name-falsifies).
 
@@ -1301,21 +1406,37 @@ Property 1 assumes every input to the decision has settled by the time `finalise
 
 | Field | Column | Meaning |
 |---|---|---|
-| `flag_for_review` | Flag for Review | boolean; true iff `flag_codes` is non-empty |
+| `flag_for_review` | Flag for Review | boolean; **derived** — see [below](#the-derived-review-flag). Not `bool(flag_codes)` |
 | `flag_codes` | Flag Codes | machine-readable codes from the table below; a record may carry several |
 | `flagged_fields` | Flagged Fields | which output fields the codes concern (`name1`, `name2`, `name3`, `name4`, `domain`, `contact`, `email`, `address`) |
 | `flag_reason` | Flag Reason | human-readable prose, one clause per code, each prefixed with its own field scope |
 
 The scope is encoded in the reason text **as well as** in `flagged_fields`, so a consumer reading only the two pre-Fix-8 columns still learns which field is in doubt.
 
-Two further fields are internal (`exclude=True`) and exist only so a later pass can re-render what it keeps with the wording it was raised with: `flag_details` (the specific value a code names — the rejected domain) and `flag_notes` (one clause **appended** to a code's prose). Notes are how the [page read](#stage-5b-page-read-corroborator) reports what a candidate site actually said without growing the code vocabulary: a finding that sharpens an existing doubt is not a new doubt, and a code with no note renders byte-identically to before.
+Three further fields are internal (`exclude=True`) and exist only so a later pass can re-render what it keeps with the wording it was raised with: `flag_details` (the specific value a code names — the rejected domain), `flag_notes` (one clause **appended** to a code's prose), and `flag_low_confidence` (the fields whose confidence raised the flag with no code attached). Notes are how the [page read](#stage-5b-page-read-corroborator) reports what a candidate site actually said without growing the code vocabulary: a finding that sharpens an existing doubt is not a new doubt, and a code with no note renders byte-identically to before.
+
+#### The derived review flag
+
+```
+flagged := any(core field confidence == "low")  OR  any code present
+core fields := Name 1, Name 2
+```
+
+The flag no longer follows from `flag_codes` alone. A core field whose [provenance confidence](#the-provenance-grammar--scheme-b) is `low` raises it with **no code attached**, because `low-confidence-unchanged` was a code whose entire content was *"the value was left in place and nothing corroborated it"* — which is the definition of `input:low`. Recording it twice meant the two could disagree: one was raised by a tier remembering to leave a marker, the other is derived from the record's write history.
+
+**`low-confidence-unchanged` is retired.** It cannot appear in `flag_codes` again — it is not in `ALL_CODES`, and `flags.render` **raises** if a caller still passes it, rather than silently discarding a real doubt about a real field. What survives is the part a human reads: its reason text is attached to the derived flag, in the same position in a multi-part reason, so `Flag Reason` is byte-identical to what it was before the migration on all 100 records of the reference batch.
+
+**Core fields are Name 1 and Name 2 only.** `Domain` and `Record Type` carry provenance and export their confidence like every other scoped field, but they do not raise the flag. The flag asks a human to check a **name**; a record with no settled type is not a record with a wrong name in it. Including `Record Type` would have taken the reference batch from 55 flagged rows to 96 — 72 of its 100 records have no determinable type — which is the "flag on 47 of 50 records" failure this whole model exists to have fixed.
+
+One case is not derivable and is read from the tier's marker instead: the **department slots** `Name 3`–`Name 5` are not in [Phase 1 provenance scope](#phase-1-scope), so they carry no confidence at all. Their doubt still comes from `_ev_low_conf_unchanged`, and joins the same derived flag with the same prose. When those slots enter provenance scope that half deletes itself and nothing else changes.
+
+[Batch consensus](#stage-6-batch-consensus) withdraws the derived low the way it withdraws a code: `EnrichmentResult.write` regenerates `name1_provenance` from the inheriting event, so a record that was `input:low` because its own value stood is no longer `input:low` once a donor's value replaced it, and the flag drops out on its own.
 
 #### The codes
 
 | Code | Raised when | Scope |
 |---|---|---|
 | `no-match` | Every tier failed: no identifier, no domain, no evidence URL, no field changed. Suppressed when any other code applies — it means "nothing to go on at all" | `name1` |
-| `low-confidence-unchanged` | The input value was left in place and nothing corroborated it. For **Name 1** this is the `unchanged-unresolved` state and only that state — see [the three unchanged-Name-1 states](#the-three-unchanged-name-1-states); for the department slots it is the older per-slot rule (canonicalisation attempted, came back below threshold) | the field(s) left as supplied |
 | `dept-via-lab` | UC 13 fired: Name 2 was a granular unit and the parent department was **inferred from the lab's page**, not read from a stated department | `name2`, `name3` |
 | `name3-not-demoted` | UC 13 fired but every slot below Name 2 was already populated, so the lab name could not be moved down | `name2`…`name5` |
 | `person-unresolved` | A person was detected in Name 1 and their affiliation could not be resolved | `name1` |
@@ -1325,6 +1446,9 @@ Two further fields are internal (`exclude=True`) and exist only so a later pass 
 | `email-conflict` | An email found in the record differs from a populated email field | `email` |
 | `multiple-contacts` | The contact field names more than one person and Tier 2A could not act | `contact`, `name2` |
 | `unverified-inference` | Tier 3 **wrote** a value, at any confidence — see [Tier 3](#stage-4-tier-3--llm-inference-last-resort) | the field(s) Tier 3 wrote |
+| `entity-superseded` | The [Wikidata crosswalk lane](#stage-2c-wikidata-crosswalk-lane) matched an item carrying `P576` (dissolved) or `P1366` (replaced by). The name is **not** rewritten to the successor — that is a business decision — so the reason names the successor's label and QID, or the dissolution date, and stops. Raised whatever the crosswalk then found | `name1` |
+| `source-conflict` | Two sources named this organisation and named **different** organisations, and the [cross-source gate](#cross-source-consistency-fix-d) acted: the lower-priority source's fields were removed. The reason names both entities. Raised only when something was actually withdrawn, so the code always describes a change visible in the record | `name1`, plus `domain` when the withdrawn source supplied it |
+| `registry-location-mismatch` | A ROR or GLEIF match whose **registered locality contradicts** the record's city/state. The match is *kept* — a company relocating within one country is ordinary — and the reason names both places | `address` |
 
 #### What is deliberately NOT flagged
 
@@ -1437,18 +1561,65 @@ Two projections of the same data, both in the `/enrich` JSON:
 ]
 ```
 
-…plus `provenance_rejected` and `provenance_rejected_omitted`, and **six derived scalar columns** — one per scoped field, format `producer:tier:confidence_band`:
+…plus `provenance_rejected` and `provenance_rejected_omitted`, and the **derived scalar columns** — one per scoped field. Their format is the provenance grammar, defined once immediately below.
 
-| Column | Example |
-|---|---|
-| `Name 1 Provenance` | `ror:1:exact`, or `input:1:verified` / `input:1:confirmed` / `input:1:rule` for a [retained Name 1](#the-three-unchanged-name-1-states) |
-| `Name 2 Provenance` | `llm_lab_parent:2:self_high` |
-| `Domain Provenance` | `ror:1:exact` |
-| `Record Type Provenance` | `classifier:-:rule` |
-| `ROR ID Provenance` | `ror:1:exact` |
-| `LEI ID Provenance` | `batch_consensus:-:inherited` |
+### The provenance grammar — Scheme B
 
-Bands are namespaced by scale (`self_high`, never a bare `high`) precisely so two scalars cannot read as comparable just because both say "high". They are **regenerated from the events** on every write and never maintained separately, so the column and the log cannot drift.
+> **This is the single definition.** Every other mention of a provenance string in this README, in `docs/thesis/`, and in the code links here rather than restating it. The machine-readable copy is `enrichment/confidence.py`; `PROVENANCE_PATTERN` there is the regex quoted below, and the finalisation assertion, the parsers and the tests all import it rather than re-deriving it.
+
+```
+provenance := source ":" confidence ( "+" witness )?
+source     := "input" | "ror" | "gleif" | "wikidata" | "web:" domain | "llm"
+confidence := "verified" | "provisional" | "low"
+witness    := "web" | "wikidata" | "llm" | "registry" | "domain"
+```
+
+It applies to **all seven** provenance columns — `Name 1`, `Name 2`, `Domain`, `Record Type`, `ROR ID`, `LEI ID`, `Operating Name`. There are no tiers, no methods (`exact` / `fuzzy` / `rule`), no `self_high` / `self_medium`, and no dates anywhere in an exported provenance string. All of that still exists, on the provenance **event** and in the trace; it was removed from the column, where it was being read as a warrant it never was. The four reasons are in the module docstring of `enrichment/confidence.py`.
+
+> `web:{domain}:provisional` contains **two** colons. Split from the right for the confidence, or — better — call `enrichment.confidence.parse()`, which every consumer in this repository now does. The naive `split(":")` puts the domain in the confidence slot.
+
+#### Confidence is computed by one function
+
+`enrichment.confidence.compute_confidence(evidence) -> (confidence, witness | None)`. No lane, no tier and no guard assigns a confidence of its own; each records what it saw, and this table says what that is worth. Precedence is top to bottom.
+
+| Evidence situation | Confidence | Witness |
+|---|---|---|
+| Value authored by a registry (ROR/GLEIF response) | `verified` | `+wikidata` iff the crosswalk routed there, else none |
+| Non-registry value + an independent second source agrees | `verified` | **required** — name the witness |
+| Single uncontradicted source | `provisional` | `+llm` only for the canonical-proposal-equals-input case; else none |
+| No source, contradicted evidence, ambiguity/no-match, short-name guard | `low` | never |
+
+Contradiction and ambiguity are tested **first**, above the registry row: a registry hit that a consistency check refused is not a verified value that happens to carry a flag, it is a value the pipeline decided against.
+
+Four hard rules, enforced rather than documented:
+
+1. **`llm` never reaches `verified`** — not as a source, not as a witness. An `llm` witness does not satisfy row 2; it falls through to `provisional`. This is what the old `self_high` band quietly broke: a model's assertion about its own output rendered into a band that sorted above `medium`.
+2. **A witness-less `verified` is a registry's alone** — `ror`, `gleif`, or `wikidata` in its crosswalked-registry role. Any other witness-less `verified` is invalid output and `validate()` rejects it, which is what makes the rule checkable from the string without knowing which lane wrote it.
+3. **Rejected or contradicted evidence never appears in provenance.** It appears in flag reasons and in `provenance_rejected`.
+4. **"Independent" means a different evidence system.** A page fetched from the domain it corroborates is **one** source, not two. Concretely: a domain the ownership guard accepted, plus that site's own page agreeing about the name or the location, is `web:{domain}:provisional`. A domain reaches `verified` only on a registry-stated website, a Wikidata `P856` agreement, or the record's own email domain.
+
+#### The seven columns
+
+| Column | Example | Notes |
+|---|---|---|
+| `Name 1 Provenance` | `gleif:verified`, `input:verified+web`, `input:provisional+llm`, `input:low`, `llm:provisional` | the four `input:*` forms are the [unchanged Name 1 states](#the-three-unchanged-name-1-states) |
+| `Name 2 Provenance` | `llm:provisional` | |
+| `Domain Provenance` | `ror:verified`, `web:acme.com:provisional`, `web:acme.com:verified+domain` | see hard rule 4 |
+| `Record Type Provenance` | `ror:verified`, `gleif:verified`, `input:provisional`, `input:low` | the source is what **decided** the type; `input:low` means nothing did |
+| `ROR ID Provenance` | `ror:verified`, `ror:verified+wikidata` | |
+| `LEI ID Provenance` | `gleif:verified` | |
+| `Operating Name Provenance` | `web:acme.com:provisional`, `wikidata:provisional` | never `verified` — a page naming itself is one source |
+
+Six of the seven are **regenerated from the provenance events** on every write and never maintained separately, so the column and the log cannot drift. `Operating Name Provenance` is written directly (the page corroborator and the Wikidata witness path), which makes it the one that could drift out of the scheme unnoticed — so it is inside the finalisation assertion with the rest.
+
+#### The finalisation assertion
+
+`finalise` validates every one of the seven columns against the grammar and hard rules 1–2 before the record is returned. An invalid string **raises**; it is never emitted. A provenance column that does not parse is worse than an empty one, because a consumer reads it as an attribution. An empty column is always legal — a field with no value has nothing to attribute.
+
+#### Migrating from Scheme A
+
+The previous scheme was `producer:tier:method` (`ror:1:exact`, `llm_tier3:3:self_medium`, `website_resolver:3:rule`) plus `web:{domain}:extracted:{date}` for the operating name. The full old→new mapping, with counts from a 100-record run, is in **`provenance_migration_report.md`**. Two artefacts in different schemes are **not comparable**: `tools/run_diff.py` detects the mismatch and refuses, because seven of the sixty-seven columns change on almost every row and the diff would report the whole batch as differing. Use `tools/provenance_invariance.py` to compare behaviour across the migration — it partitions the columns instead of refusing.
+
 
 The XLSX output goes from **59 to 65 columns**. `/enrich/file` cannot carry the nested array and emits the six derived columns only; the events ship in the `/enrich` JSON response.
 
@@ -1459,6 +1630,123 @@ The XLSX output goes from **59 to 65 columns**. `/enrich/file` cannot carry the 
 - **Not a behaviour change.** This records what happens; it does not alter it. On the 50-record demo batch, all six scoped fields are byte-identical to the pre-fix run, live and mocked, as are `flag_codes`, `flagged_fields`, `tier_used` and `source`.
 
 **Volume** — 217 events for 50 records (4.34/record; 196 writes, 21 transforms), 53 logged rejections and 34 beyond the cap. Projected at ~43,400 events per 10,000 records. Tests `test_provenance.py`.
+
+---
+
+## Determinism and Reproducibility
+
+**Files:** `llm/openai_client.py` (Fix A) · `utils/cache.py` (Fix B) · `enrichment/registry_match.py`, `enrichment/locality.py` (Fix C) · `enrichment/consistency.py` (Fix D) · `tools/run_diff.py` (the gate)
+
+Two runs of the identical 101-row chemspeed batch, on the identical codebase, produced **7 substantively different records** — including two silent wrong-entity acceptances. Nothing in the repository could have detected that: the runs had been compared by eye. Everything in this section exists because of that measurement, and `tools/run_diff.py` is what turns "the pipeline is reproducible" into a claim that can fail.
+
+The three rules that came out of it:
+
+1. **A pipeline whose evidence is re-gathered on every run is not reproducible, whatever its logic does.** Determinism has to reach the *inputs* before it is worth anything at the decision points.
+2. **Ordering a tie deterministically only makes the wrong answer reproducible.** Where two candidates are genuinely indistinguishable, the honest output is no match — not the first one, and not the one that happens to score a hair higher.
+3. **Every guard passing individually does not make a record consistent.** Guards are per-source; identity is a property of the whole record, and something has to compare the sources to each other.
+
+### Fix A — every decision-gating LLM call is pinned
+
+`temperature=0` alone is not determinism. It makes the sampler pick the arg-max token, but a tie between two equally-likely tokens is still broken by the service, and batching and MoE routing perturb the logits themselves between requests. Three chemspeed records flipped their `confidence` self-report between `self_high` and `self_medium` across the two runs on exactly that — which matters because `finalise` drops a Tier 3 department guess unless the confidence is high.
+
+So every Phase 1 call and the Phase 2 adjudication call now send all three of:
+
+| Parameter | Value | Where |
+|---|---|---|
+| `temperature` | `LLM_TEMPERATURE = 0.0` | `llm/openai_client.py` |
+| `top_p` | `LLM_TOP_P = 1.0` | `llm/openai_client.py` |
+| `seed` | `LLM_SEED = 42` | `llm/openai_client.py` |
+
+> These three are necessary and **not sufficient**. Measured on this deployment (`gpt-5.4-2026-03-05`, seed accepted on every API version probed, no `system_fingerprint` returned): two warm runs still differed on 10 of 100 rows. `seed` is a best-effort request. The `llm` cache namespace below is what closes the remaining gap.
+
+They are module constants, not env knobs: a reproducibility control that can be changed per environment is not a control. (`dedup/llm.py` makes the same argument for its own `TEMPERATURE`.) The seed's *value* is arbitrary; only its fixity matters, and it is recorded in [`04_PARAMETERS.md`](docs/thesis/04_PARAMETERS.md) so a re-run can be reproduced from the parameter table alone.
+
+If the deployment rejects `seed`, that is caught **once, process-wide** — logged, and the call retried without it. Every later call goes straight out without it. A per-call probe would pay a guaranteed 400 on every record; `seed_supported()` reports the state and the person-affiliation provenance event records which way it went.
+
+Prompt content is audited for the same reason: no template interpolates a clock, a run id or a record id (pinned structurally by `tests/test_determinism.py`), and every **evidence list injected into a prompt is sorted by a stable key before rendering**. The person-affiliation lane sorts its SERP snippets by URL — two runs that retrieve the same five results in a different order previously built two different prompts, and temperature 0 bought nothing.
+
+### Fix B — one evidence cache, keyed on the request, shared across runs
+
+Eleven of the differing rows differed in *nothing but an extraction date*. That is what a cache that does not survive the process looks like from the outside: every fetch re-executed, and a re-executed fetch can answer differently.
+
+`EVIDENCE_CACHE_DIR` (default `tests/fixtures`) is now one directory with one namespace per source:
+
+| Namespace | Directory | Key |
+|---|---|---|
+| `page` | `page_reads/` | registrable domain |
+| `wikidata` | `wikidata/` | `search:<normalised query>` / `entity:<QID>` |
+| `serp` | `serp/` | normalised query + quoted-flag + country |
+| `fetch` | `fetch/` | the URL (or host) requested |
+| `ror` / `gleif` | `registry/` | normalised name + country |
+| `llm` | `llm/` | SHA-256 of deployment + API version + sampling params + both prompts |
+
+Four properties:
+
+- **Keys are pure functions of the request.** No key contains a run id, a batch id, a date or a record id. `tests/test_determinism.py` asserts this structurally rather than by inspection.
+- **Every lane goes through it.** The SERP and registry caches used to be in-memory only and cleared per batch; the person-affiliation lane and every `PageFetcher` entry point (the department probe's subdomain HEADs, its link scrape, its candidate verifications, Tier 2A's profile pages, Tier 2B's department pages) called out directly and were never recorded at all. `utils.cache.cached_serp` and `PageFetcher(store=…)` are now the only ways a search or a fetch is issued.
+- **Entries are immutable and dated.** An entry is written once, by the live fetch that produced it, and carries `fetched_at`. That date used to be stamped into `Operating Name Provenance`, which is what made the string reproduce on a warm re-run; the provenance migration then removed it from the column altogether, so the column is now reproducible by construction rather than by care. The date is still on the entry and is emitted on the `operating_name_extracted` trace line, which is where a reviewer can act on it. A legacy entry with no `fetched_at` falls back to the file's own modification date, which is still the day the fetch happened and still stable.
+- **The model is a source too.** `temperature=0` + `top_p=1` + an *accepted* `seed` still left **10 of 100 rows** differing between two warm runs — every one an LLM decision. `seed` is documented as best-effort, and this deployment returns no `system_fingerprint` to detect a backend change with, so the last of the nondeterminism cannot be closed from the client side. An LLM answer is evidence the pipeline reads, on exactly the argument `PAGE_FIXTURE_DIR` already makes about a page, so `OpenAIClient.extract_json` records it under a digest of everything that could change it. Editing a prompt template invalidates every entry that used it, which is correct: the recorded answer answered a different question.
+- **A failed search is not an empty one.** `search.base.SearchUnavailable` separates "the provider could not execute this query" from "this query has no results". The providers used to swallow a reset connection and return `[]`; a durable cache would have made one dropped TLS handshake permanent, recorded as "this organisation has no web presence". Callers still see `[]` and behave exactly as before, and nothing is recorded.
+- **`CACHE_FROZEN` is the evaluation freeze switch** — the direct analogue of freezing `dedup/weights.json` before a measurement. With it on, a cache miss is an **error**, not a call: the miss is recorded per record as `evidence-unavailable-frozen` on the `enrichment.trace.cache` logger, counted in the batch summary as `evidence_frozen_misses`, and the record proceeds without that piece of evidence. It applies to every namespace at once — freezing three of five sources would not freeze the run.
+
+The batch summary reports `evidence_network_calls` (answers this run had to go and get), `evidence_cache_hits`, `evidence_frozen_misses` and `evidence_cache_frozen`. `evidence_network_calls == 0` on a warm second run is the reproducibility gate's precondition: a run that called out is not comparing the same evidence the first one saw.
+
+Two namespaces are committed to the repository and four are `.gitignore`d by default. A page read and a Wikidata item are claims about what a source said on a day and a thesis re-run has to reproduce the decisions they drove; the SERP, fetch, registry and LLM recordings are cheap to re-gather. Un-ignore them to commit a frozen evaluation set.
+
+### Fix C — deterministic candidate selection
+
+**File:** `enrichment/registry_match.py`
+
+Three rules, shared by ROR and GLEIF so the two registries cannot drift apart on the question.
+
+**A total order.** Both clients used to pick their winner with a stable sort on score alone, or with `max()`, which returns the *first* maximum — so every tie inherited the API's response order, and response order is not stable between runs. Selection is now `(score DESC, canonical registry id ASC)`, with any stronger discriminator ranked ahead of the score (ROR ranks an exact display-name match first; GLEIF ranks `ACTIVE` first). ROR's `items[:10]` truncation is gone with it — that was another way for response order to decide which candidates were even scored. The same `(score DESC, canonical id ASC)` shape now governs SERP selection in `website_resolver`, Tier 2A, Tier 2B and both department-probe scans.
+
+**A near-tie is a no-match.** `REGISTRY_AMBIGUITY_MARGIN = 2.0` (on the 0–100 rapidfuzz scale; ROR's 0–1 scale is converted). When the top two candidates are within it, **neither** is returned — the same rule the [Wikidata lane](#stage-2c-wikidata-crosswalk-lane) already applies when two items survive its gauntlet, and for the same reason. The comparison is made within one tier of the stronger discriminator (an inactive GLEIF entity cannot make an active one ambiguous; a ROR record whose display name is not an exact match cannot make one that is ambiguous), and only when the winner would otherwise have been a match. Derivation is in [`04_PARAMETERS.md`](docs/thesis/04_PARAMETERS.md).
+
+**A short name needs a second signal.** "BHS" and "BIC" are three characters; registry name matching at any threshold is collision-prone on strings that short. `is_collision_prone()` marks a name whose significant characters (legal forms dropped) number four or fewer, or which is a single all-caps token of five or fewer. Such a match is accepted **only** when a second, independent signal agrees: the registry's registered locality matching the record's city/state, or the candidate's own website being the domain the record already carries. Otherwise it is a no match. No acronym is expanded and no threshold moves.
+
+The guard is restricted to a single token deliberately: a great many SAP records carry their whole name in capitals ("LARGO MEDICAL CTR"), and treating every one of those as an acronym would apply the rule to most of a batch.
+
+### Cross-source consistency (Fix D)
+
+**File:** `enrichment/consistency.py`
+
+The motivating record: **BIC Corp, Milford CT**. It shipped GLEIF's correct legal name and LEI *and* a ROR id and domain belonging to a different company — Centene on one run, Balchem on the next — with no flag, and with Search Term 1 rewritten from the wrong ROR entity. Every individual guard had passed. Nothing had ever compared the two registries' answers to each other.
+
+`apply_cross_source_gate` runs once, in `finalise`, before `compute_flags` (so the flag can describe what it did) and before the search-term derivation (so the terms come from what survived):
+
+1. **Collect** what each source said the organisation is called — ROR's official name, GLEIF's legal name, and the identity a page read extracted into `operating_name` — recorded by each writer as a transient `_src_*` key.
+2. **Compare** them pairwise with the existing machinery: `tier1_lei._name_match_score` (`token_sort_ratio`, max of raw and legal-form-stripped) at `LEI_NAME_MATCH_THRESHOLD`. No new scorer and no new threshold.
+3. **On disagreement, keep one and null the other.** A registry outranks the web, always. Between GLEIF and ROR, keep whichever agrees better with the record's **own supplied** Name 1 — not with the enriched name, which by that point *is* one of the two claimants. A losing ROR takes its identifier, and the domain and acronym it supplied, with it.
+4. **Flag it** — `source-conflict`, naming both entities. A record that silently dropped one of two identities tells a reviewer nothing.
+
+**The registry location check.** The [locality comparator](#stage-5b-page-read-corroborator) built for the page read now lives in `enrichment/locality.py` and is applied to ROR and GLEIF matches too, with its rules unchanged: silence is not evidence, only a *stated* place that differs is a contradiction, and the granularity of the disagreement is part of the answer. A registry match whose registered locality contradicts the record's city/state **keeps the match** and gains `registry-location-mismatch` — flag, do not discard, because same-country relocations are common. Combined with Fix C's short-name rule, a short-name match with a location contradiction becomes a no match outright, because the contradiction is precisely the second signal it needed.
+
+**Search Term integrity.** `search_term_1`'s chain is unchanged (registry acronym → TLD-stripped domain → a handle from the enriched Name 1), but the first link now has to be an acronym *of the final `name1_enriched`* — the same `acronym_matches_name` test `tier1_ror` already uses to pick the current ROR acronym. The domain link needs no second check: a losing registry's domain is already gone, nulled by the gate, which is the right place for that decision because it is the place that knows which source lost.
+
+### The reproducibility gate
+
+`tools/run_diff.py` joins two run artefacts on `(name1_original, city)` — input-side, and emphatically **not** Search Term 1, which the pipeline writes — and compares every column in `api/output_columns.py`, ignoring nothing. Rows sharing a key are disambiguated by customer number and then by input row position, so nothing is silently merged or dropped.
+
+```bash
+python scripts/run_batch.py docs/thesis/chemspeed_us_100.xlsx \
+    --out logs/determinism/run1.xlsx --json logs/determinism/run1.json
+python scripts/run_batch.py docs/thesis/chemspeed_us_100.xlsx \
+    --out logs/determinism/run2.xlsx --json logs/determinism/run2.json
+python tools/run_diff.py logs/determinism/run1.json logs/determinism/run2.json
+```
+
+It exits non-zero on any difference. `scripts/run_batch.py --frozen` and `--cache-dir` drive the freeze switch and the cache location for an evaluation run.
+
+**A zero-diff against one frozen cache does not, on its own, distinguish a reproducible pipeline from a replay.** The experiment that does is `tools/shuffle_evidence.py`: it builds a second cache whose content is identical and whose **order is inverted** — every SERP result list, ROR `items`, GLEIF `data` and Wikidata `search` list reversed, nothing added or removed. That is the perturbation a live API makes between two runs.
+
+```bash
+python tools/shuffle_evidence.py tests/fixtures _cache_shuffled
+python scripts/run_batch.py docs/thesis/chemspeed_us_100.xlsx     --cache-dir _cache_shuffled --json logs/determinism/order_rev.json
+python tools/run_diff.py logs/determinism/run1.json logs/determinism/order_rev.json
+```
+
+Identical output **and identical cache-hit counts** mean nothing depended on arrival order — not a selection, and not a prompt (the LLM namespace is keyed on the rendered prompt, so a prompt that changed shape would show up as a live call). It caught the last violation in the codebase: `_fuzzy_lookup` took `completions[:5]` in GLEIF's own order, which is a *truncation* rather than a sort and so survived the first pass of Fix C — one record resolved to a different LEI depending on the order. The measured results of both experiments, and of the "freeze everything except the model" one, are in [`determinism_findings.md`](determinism_findings.md) §4a.
 
 ---
 
@@ -1507,9 +1795,9 @@ Two columns are new with [Fix 3](#stage-5b-page-read-corroborator), both nullabl
 | Field | Column | Content |
 |---|---|---|
 | `operating_name` | `Operating Name` | the organisation name the candidate website **states about itself**, read from the page |
-| `operating_name_provenance` | `Operating Name Provenance` | `web:{domain}:extracted:{YYYY-MM-DD}` |
+| `operating_name_provenance` | `Operating Name Provenance` | `web:{domain}:provisional` |
 
-> ⚠️ `operating_name` is **not** a second `Name 1` and must never be mapped onto it. A page is a witness, not an authority on what the customer master should call this customer, and a site trading under a brand while the record holds the legal entity is the normal case. Its provenance string is deliberately **not** the `producer:tier:band` shape the six scoped fields use — this value came from a page on a day, and the day is the part that decays.
+> ⚠️ `operating_name` is **not** a second `Name 1` and must never be mapped onto it. A page is a witness, not an authority on what the customer master should call this customer, and a site trading under a brand while the record holds the legal entity is the normal case. It carries the same [provenance grammar](#the-provenance-grammar--scheme-b) as the six scoped fields, and it is `provisional` and never `verified`: the page and the domain it was served from are one evidence system.
 
 ```json
 {
@@ -1569,7 +1857,7 @@ Two columns are new with [Fix 3](#stage-5b-page-read-corroborator), both nullabl
       "lei_id": null,
       "domain": "mit.edu",
       "flag_for_review": true,
-      "flag_codes": ["low-confidence-unchanged"],
+      "flag_codes": [],
       "flagged_fields": ["name2"],
       "flag_reason": "Name 2: left exactly as supplied — the canonical form could not be established with enough confidence to rewrite it; confirm the value is correct",
       "error": null
@@ -2053,11 +2341,15 @@ enrichment_api/
 │   ├── overflow_check.py         # UC 0: adjacent-name-pair overflow detection
 │   ├── tier1_ror.py              # Tier 1: ROR API client, scoring, child matching, acronym expansion
 │   ├── tier1_lei.py              # Tier 1 (company): GLEIF/LEI registry client + verification guard
+│   ├── wikidata.py               # Stage 2c: crosswalk lane — registry pointer or single witness, never an authority
 │   ├── tier2a_contact.py         # Tier 2A: Contact person lookup (Modes A & B)
 │   ├── tier2b_dept.py            # Tier 2B: Department web search
 │   ├── tier2_canonical.py        # Tier 2 Canonical: LLM-only department normalization
 │   ├── unchanged_state.py        # Fix 2: the three unchanged-Name-1 states
 │   ├── page_corroborator.py      # Fix 3: fetch + read the candidate site, compare with the record
+│   ├── locality.py               # THE locality comparator, shared by the page read and both registries
+│   ├── registry_match.py         # Fix C: total order, ambiguity margin, short-name guard (ROR + GLEIF)
+│   ├── consistency.py            # Fix D: cross-source gate — no record ships two contradictory identities
 │   ├── lab_resolver.py           # UC 13: granular unit → parent department resolver
 │   ├── tier3_llm.py              # Tier 3: Pure LLM inference (last resort)
 │   ├── company_canonical.py      # Company name canonicalization via LLM
@@ -2080,13 +2372,14 @@ enrichment_api/
 ├── utils/                        # Shared utilities
 │   ├── text_utils.py             # Cleaning, normalization, country codes, domain extraction
 │   ├── domain_resolver.py        # Single write path for `domain` / `website_url` + ownership guard
-│   ├── cache.py                  # Cache-key builders + per-batch SERP cache + PageCache (disk-backed page reads)
+│   ├── cache.py                  # The evidence cache: one disk-backed store per source, one CACHE_FROZEN switch
 │   └── __init__.py
 │
 ├── tests/                        # Test suite
 │   ├── conftest.py               # Fixtures and mock injection
 │   ├── test_*.py                 # Unit tests per module
 │   ├── test_dedup.py             # Phase 2 dedup adjudicator tests (algorithm + route)
+│   ├── test_determinism.py       # Fixes A-D: pinned LLM calls, cache keys, selection order, consistency
 │   ├── mocks/                    # Mock client implementations
 │   │   ├── lei_mock.py           # Deterministic GLEIF/LEI client for tests
 │   │   └── dedup_mock.py         # Conservative offline dedup LLM (never invents merges)
@@ -2094,8 +2387,15 @@ enrichment_api/
 │
 ├── scripts/                      # Development and debugging tools
 │   ├── test_local.py             # Integration test runner (--mock / --live / --fixture)
+│   ├── run_batch.py              # Offline XLSX batch run (+ trace capture, --no-wikidata A/B)
+│   ├── wikidata_warm_fixtures.py # Record the crosswalk lane's fixtures serially, before a measured run
+│   ├── wikidata_lane_report.py   # A/B diff of two run_batch runs — the numbers behind wikidata_lane_report.md
 │   ├── debug_ucsf.py             # Debugging utility
 │   └── verify_fixes.py           # Post-fix verification script
+│
+├── tools/                        # Measurement tools (not part of the service)
+│   ├── run_diff.py               # THE reproducibility gate — diff two runs of one batch, column by column
+│   └── shuffle_evidence.py       # Order-inverted copy of a recorded cache — tells reproducibility from replay
 │
 ├── requirements.txt              # Production dependencies
 ├── requirements-dev.txt          # Dev/test dependencies (pytest, etc.)
@@ -2151,6 +2451,10 @@ The single place `record_type` is decided. `classify(TypeEvidence)` returns `(re
 ### `enrichment/tier1_lei.py` — GLEIF / LEI Client (company Tier 1)
 
 Async GLEIF client (`call_lei` + `LEIClient`), structured like the ROR client: precise `legalName`+country+ACTIVE filter, then `fuzzycompletions` fallback, retries/backoff, a module-level cache, and `resolve_tls_verify()` TLS. Enforces the RapidFuzz `token_sort_ratio` verification guard (legal-form-suffix-aware) so unverified/fabricated hits are rejected. Returns a match dict (LEI, legal name, country, strategy, confidence) or a clean miss/error — never raises, so a GLEIF failure can't fail the record.
+
+### `enrichment/wikidata.py` — Wikidata Crosswalk Lane (Stage 2c)
+
+Async MediaWiki-Action-API client (`WikidataClient`) plus the deterministic matching gauntlet (`resolve`). Two calls per record — `wbsearchentities`, then one batched `wbgetentities` over every search hit — with a third, conditional, batch-shared call for referenced items (`P159` headquarters, `P1366` successor). No SPARQL, no LLM. Constraints: disambiguation rejection, an explicit 22-QID type whitelist with one declared `P279` step, US-only country, the existing `tier1_lei._name_match_score` at the existing threshold, and a headquarters-city cross-check; two survivors are a collision and a no-match. On a `P6782`/`P1278` pointer the lane hands off to `RORClient.call_by_id` / `LEIClient.call_by_id` and the **registry** writes the identity through its own unchanged guards; with no pointer it writes at most `operating_name`. Every response is fixture-cached through `utils.cache.PageCache`; a timeout, non-200 or malformed body fails closed to `wikidata_unavailable` and never fails a record. See [Stage 2c](#stage-2c-wikidata-crosswalk-lane).
 
 ### `enrichment/tier2a_contact.py` — Contact Lookup
 
@@ -2210,11 +2514,23 @@ The single flag authority. `compute_flags` is called once, from `finalise`, and 
 
 ### `enrichment/page_corroborator.py` — Page-Read Corroborator
 
-`corroborate()` fetches a candidate domain, has the LLM read what the page *states*, and compares that statement with the record. `fetch_pages` does the root-plus-imprint fetch through `PageCache`; `read_page` runs the constrained reader; `compare` / `compare_location` produce the verdict, with location returning a *scope* (`postal`/`city`/`region`/`country`) because the granularities are not equally strong evidence. Name comparison reuses GLEIF's own `_name_match_score`; region comparison reuses ROR's `_US_POSTAL_CODES` so `CA` and `California` compare equal. Nothing here writes `name1_enriched`. Full description in [Stage 5b](#stage-5b-page-read-corroborator). Tests `test_page_corroborator.py`.
+`corroborate()` fetches a candidate domain, has the LLM read what the page *states*, and compares that statement with the record. `fetch_pages` does the root-plus-imprint fetch through `PageCache`; `read_page` runs the constrained reader; `compare` / `compare_location` produce the verdict, with location returning a *scope* (`postal`/`city`/`region`/`country`) because the granularities are not equally strong evidence. Name comparison reuses GLEIF's own `_name_match_score`; the location rules themselves now live in [`enrichment/locality.py`](#enrichmentlocalitypy--the-shared-locality-comparator) so the registries can apply the same ones ([Fix D(2)](#determinism-and-reproducibility)), and region comparison folds `CA` and `California` together through the map that module owns. `operating_name_provenance` stamps the date the page was **fetched**, read out of the cache entry — not the date the run executed. Nothing here writes `name1_enriched`. Full description in [Stage 5b](#stage-5b-page-read-corroborator). Tests `test_page_corroborator.py`.
+
+### `enrichment/locality.py` — The Shared Locality Comparator
+
+`compare_locality()` and the `US_REGION_CODES` map. The rules the page read was designed around — silence is neutral, only a *stated* place that differs is a contradiction, and the granularity (`postal`/`city`/`region`/`country`) is part of the answer — extracted verbatim so [Fix D(2)](#determinism-and-reproducibility) can apply them to ROR and GLEIF localities as well. A leaf module that imports nothing from `enrichment`, which is what breaks the cycle: `page_corroborator` imports both registry clients, so the registry clients could not have imported it. `tier1_ror` re-exports the map under its historical `_US_POSTAL_CODES` name. Tests `test_determinism.py`, `test_page_corroborator.py`.
+
+### `enrichment/registry_match.py` — Registry Selection Rules ([Fix C](#determinism-and-reproducibility))
+
+`rank_key()` (score DESC, canonical id ASC), `ambiguity_verdict()` and `REGISTRY_AMBIGUITY_MARGIN`, `is_collision_prone()` and `second_signal()`. Shared by ROR and GLEIF so the two registries cannot drift apart on *which candidate wins* and *whether any does*. Decides nothing on its own — the clients call it. Tests `test_determinism.py`.
+
+### `enrichment/consistency.py` — Cross-Source Consistency Gate ([Fix D](#determinism-and-reproducibility))
+
+`apply_cross_source_gate()` and `apply_registry_location_check()`, both called once from `finalise` before `compute_flags`. Collects what each source said the organisation is called (recorded by each writer through `record_registry_identity`), compares them with `tier1_lei._name_match_score` at `LEI_NAME_MATCH_THRESHOLD`, and on disagreement keeps the higher-priority source and nulls the other's fields, leaving `source-conflict` evidence for the flag. Emits one JSON line per acted-on record on `enrichment.trace.consistency`. Tests `test_determinism.py`.
 
 ### `enrichment/provenance.py` — Per-Field Provenance
 
-`EnrichedRecord` (the write-locked working record), the `Evidence` / `ProvenanceEvent` / `RejectedCandidate` model, the confidence-scale vocabulary and its bands, the derived-scalar projection, and the admissibility gate. Everything the pipeline writes to one of the six scoped fields passes through `EnrichedRecord.write`; there is no other way in, and direct assignment raises. Full description in [Per-Field Provenance and Admissibility](#per-field-provenance-and-admissibility). Tests `test_provenance.py`.
+`EnrichedRecord` (the write-locked working record), the `Evidence` / `ProvenanceEvent` / `RejectedCandidate` model, the confidence-scale vocabulary, the adapter that maps a recorded event onto the [confidence table](#the-provenance-grammar--scheme-b), the derived-scalar projection, and the admissibility gate. The grammar and the one confidence decision live next door in `enrichment/confidence.py`, which imports nothing from the pipeline — that is what lets every lane share it. Everything the pipeline writes to one of the six scoped fields passes through `EnrichedRecord.write`; there is no other way in, and direct assignment raises. Full description in [Per-Field Provenance and Admissibility](#per-field-provenance-and-admissibility). Tests `test_provenance.py`.
 
 ### `dedup/models.py` — Dedup Schemas
 
@@ -2266,6 +2582,8 @@ Async wrapper around `AsyncAzureOpenAI`. Enforces JSON response format, strips c
 
 TLS verification is resolved by `resolve_tls_verify()`: it honors a corporate CA bundle (`AZURE_OPENAI_CA_BUNDLE` / `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE`) so a TLS-inspecting VPN doesn't break LLM calls, supports `LLM_SSL_VERIFY=false` as an insecure last resort, and otherwise uses certifi. The httpx client keeps `trust_env=True` so the VPN's `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` are honored; connect/read timeouts are configurable (`LLM_HTTP_CONNECT_TIMEOUT`, `LLM_HTTP_TIMEOUT`). This applies to both phases since the dedup client reuses this factory.
 
+**Determinism ([Fix A](#determinism-and-reproducibility)).** Every request carries `LLM_TEMPERATURE = 0.0`, `LLM_TOP_P = 1.0` and `LLM_SEED = 42` — module constants, not env knobs, because a reproducibility control that can be changed per environment is not a control. A deployment that rejects `seed` is handled **once, process-wide** (logged, retried without it, never re-sent); `seed_supported()` reports the state. `_is_unsupported_param()` lives here rather than in `dedup/llm.py` because both phases talk to the same Azure resource and two copies of the phrase list would drift. `OpenAIClient.extract_json` now actually forwards its `temperature` argument, which it previously accepted and dropped.
+
 ### `llm/prompts.py` — Prompt Templates
 
 All LLM prompt templates as Python constants. Includes system prompts and user prompt templates for: overflow check, Tier 2A affiliation extraction, Tier 2B department extraction, Tier 2 canonical normalization, company canonicalization, Tier 3 inference, and plain-name classification.
@@ -2285,6 +2603,8 @@ Free search fallback using the `duckduckgo-search` library. No API key required.
 ### `search/page_fetcher.py` — Page Fetcher
 
 HTTP page fetcher with BeautifulSoup parsing. Extracts structured elements: URL path, page title, H1, breadcrumb navigation, and truncated body text. Detects breadcrumbs via `aria-label`, `role="navigation"`, and class patterns. `resolve_final_url()` follows a URL's redirect chain once (HEAD, GET fallback) so the department probe can key off the live host (`dur.ac.uk` → `durham.ac.uk`). User-Agent: "BrukerMDM-Enrichment/1.0".
+
+Every entry point goes through the shared evidence cache's `fetch` namespace, keyed on the URL (or host) requested — see [Fix B](#determinism-and-reproducibility). Before that, only the corroborator's root read was recorded, at the *domain* level, and the department probe's subdomain HEADs, its link scrape, its candidate verifications, Tier 2A's profile pages and Tier 2B's department pages all went to the live web on every run. Under a frozen store a miss makes no request and returns the method's "could not look" value.
 
 `fetch_page_result()` is the status-carrying entry point [Fix 3](#stage-5b-page-read-corroborator) uses: it returns a `PageFetchResult` (`status`, `content`, `error`) instead of collapsing every failure to `None`, because a 403 and a 404 mean different things to a corroborator — one is "we could not look", the other is "try the next path". It deliberately does **not** pin `verify=certifi.where()`, so `requests` honours `REQUESTS_CA_BUNDLE`; pinning certifi fails every fetch behind the TLS-inspecting corporate VPN (measured: 47 of 54 domains, all `SSLError`). The HTML extraction rules are shared with `fetch_page_content()` through `_parse()`.
 
@@ -2308,15 +2628,19 @@ HTTP page fetcher with BeautifulSoup parsing. Extracts structured elements: URL 
 
 The single point where `domain` and `website_url` are decided; no other module writes either field. `canonicalise_domain()` reduces a candidate URL to the registrable domain (reusing `extract_domain()`), `canonicalise_host()` does the same for a department domain but keeps the subdomain, and `resolve_domain()` applies the four ownership conditions — registry provenance, name similarity, email domain, on-domain search evidence — returning a `DomainDecision` the caller writes or a rejection it flags `domain-unverified`. Also exposes `email_domain()` / `is_generic_email_domain()` (consumer-provider blocklist) and `name_similarity()`. See [Website, Domain, Department-Domain & Search-Term Resolution §2](#2--domain--the-single-write-path-utilsdomain_resolverpy).
 
-### `utils/cache.py` — Cache Keys & Batch Cache
+### `utils/cache.py` — The Evidence Cache
 
-Home of the **cache-key builders** (`lookup_key`, `serp_key`) and of `BatchCache` / `SerpCache` / `PageCache`.
+Home of the **cache-key builders** (`lookup_key`, `serp_key`, `serp_disk_key`, `registry_disk_key`) and of the store itself: `DiskCache` (aliased `PageCache` for its original caller), `EvidenceCache`, `SerpCache`, `BatchCache` and `cached_serp`.
 
-`PageCache` is [Fix 3](#stage-5b-page-read-corroborator)'s store, keyed on the registrable **domain**. It is the only cache here with a disk layer: a page read is a claim about what a site said on a given day, so re-running a thesis batch has to reproduce its corroboration decisions rather than re-litigate them against today's web. One JSON file per domain under `PAGE_FIXTURE_DIR`, recorded as a side effect of a live fetch; `replay_only` refuses to fetch anything not already recorded, so a missing fixture surfaces as `fetch_unavailable` instead of a silent network call.
+`DiskCache` is a two-layer store — in memory for the life of the orchestrator, on disk behind that — keyed on an opaque case-folded string and holding a JSON payload. **Entries are immutable**: `set()` is a no-op on a key already recorded, so `fetched_at` keeps naming the day the evidence was actually gathered however many times the batch is re-run. That date is what the `operating_name_extracted` trace line quotes (it is no longer in the exported column — see [the provenance grammar](#the-provenance-grammar--scheme-b)). `replay_only` refuses to go to the source at all and records the miss as `evidence-unavailable-frozen`.
 
-`BatchCache` holds the SERP and resolved-host namespaces (`get/set_resolved_host` caches the department probe's redirect-resolved base so it costs one request per institution). It is created fresh for each `/enrich` request; an optional process-level `SerpCache` lets overlapping SERP queries reuse results across batches. There is **no ROR namespace here** — `get_ror`/`set_ror` existed but had no callers anywhere in the codebase, and were removed rather than left implying a layer that never ran. ROR and LEI lookups consult the module-level `_ror_cache` / `_lei_cache` in `enrichment/tier1_ror.py` and `enrichment/tier1_lei.py`.
+`EvidenceCache` holds one `DiskCache` per namespace under `EVIDENCE_CACHE_DIR`, and one `CACHE_FROZEN` switch over all of them. It is process-global (`set_active_evidence_cache`) because the ROR and GLEIF clients are module-level functions with module-level caches and reach the disk layer through `registry_cached` / `registry_record` rather than through eight new parameters. It counts `network_calls` — every point the pipeline reached a source instead of a recording — which is the number the [reproducibility gate](#determinism-and-reproducibility) asserts is zero on a warm second run.
 
-**Keys.** Every namespace keys on `normalize_key(query)` (reused from [`dedup/signatures.py`](#dedupsignaturespy--step-a-signature-collapsing): lowercase, trim, collapse whitespace, strip punctuation, fold accents) **plus the country**. Lowercasing alone collapses `MIT` / `mit` but not `Coastal Diagnostics, Inc.` against `Coastal Diagnostics Inc`, so one organisation was looked up under several keys inside a single batch, got several outcomes, and the batch emitted contradictory records for it. Country is in the key because a name-only key lets two genuinely distinct organisations that share a name in different countries share an entry. (It does **not** separate a same-country name collision — two US "Cardinal Instruments" still collide.)
+`cached_serp()` is the **only** way a SERP search is issued, and `PageFetcher(store=…)` the only way a page is fetched. Before [Fix B](#determinism-and-reproducibility) the person-affiliation lane and every `PageFetcher` entry point called out directly, so their answers were never recorded and a second run re-issued them.
+
+`BatchCache` holds the SERP and resolved-host namespaces (`get/set_resolved_host` caches the department probe's redirect-resolved base so it costs one request per institution). It is created fresh for each `/enrich` request; the process-level `SerpCache` lets overlapping SERP queries reuse results across batches, and since [Fix B](#determinism-and-reproducibility) across *runs* too, because it now has a disk layer behind it. There is **no ROR namespace here** — `get_ror`/`set_ror` existed but had no callers anywhere in the codebase, and were removed rather than left implying a layer that never ran. ROR and LEI lookups consult the module-level `_ror_cache` / `_lei_cache` in `enrichment/tier1_ror.py` and `enrichment/tier1_lei.py`, which are cleared per batch (a stale failure must not outlive its batch) and are now backed by the shared `registry` namespace on disk, which is what survives the process.
+
+**Keys.** Every key is a pure function of the request — no run id, no batch id, no date, no record id, asserted structurally by `tests/test_determinism.py`. Every namespace keys on `normalize_key(query)` (reused from [`dedup/signatures.py`](#dedupsignaturespy--step-a-signature-collapsing): lowercase, trim, collapse whitespace, strip punctuation, fold accents) **plus the country**. Lowercasing alone collapses `MIT` / `mit` but not `Coastal Diagnostics, Inc.` against `Coastal Diagnostics Inc`, so one organisation was looked up under several keys inside a single batch, got several outcomes, and the batch emitted contradictory records for it. Country is in the key because a name-only key lets two genuinely distinct organisations that share a name in different countries share an entry. (It does **not** separate a same-country name collision — two US "Cardinal Instruments" still collide.)
 
 > ⚠️ Three conditions hold for every key, and the first is what makes the punctuation stripping safe:
 > 1. The normalised key is used **only** as a dictionary key for cache lookup.
@@ -2335,6 +2659,7 @@ Home of the **cache-key builders** (`lookup_key`, `serp_key`) and of `BatchCache
 |---------|---------|---------------|----------|
 | **ROR API v2** (`api.ror.org`) | Organization/institution lookup | None (free, public) | No fallback — if ROR misses, escalate to Tier 2/3 |
 | **GLEIF API v1** (`api.gleif.org`) | Company legal-name + LEI lookup (Tier 1, company branch) | None (free, public) | No fallback — if GLEIF misses/errors, escalate to LLM company canonicalization. A GLEIF failure never fails the record |
+| **Wikidata Action API** (`www.wikidata.org/w/api.php`) | [Stage 2c crosswalk lane](#stage-2c-wikidata-crosswalk-lane) — a registry pointer (`P6782`/`P1278`) or a single corroborating witness, on records ROR and GLEIF both missed. `wbsearchentities` + `wbgetentities` only; the SPARQL endpoint is never used | None (free, public; the client sends an identifying `User-Agent`) | No fallback — a timeout, non-200 or malformed body is `wikidata_unavailable` and the record continues to the web lane. A Wikidata failure never fails the record |
 | **Azure OpenAI / AI Foundry** | All Phase 1 LLM calls + Phase 2 dedup adjudication | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` | No fallback — Phase 1 records fall to `unresolved`; Phase 2 signatures fall to `manual_review` |
 | **SerpAPI** (`serpapi.com`) | Google Search results for Tier 2A/2B | `SERPAPI_KEY` | DuckDuckGo |
 | **DuckDuckGo** | Free web search | None | N/A (is itself the fallback) |
@@ -2385,7 +2710,9 @@ Copy `.env.example` to `.env` and configure:
 | `PAGE_CORROBORATION_ENABLED` | `true` | [Stage 5b](#stage-5b-page-read-corroborator) page-read corroborator on/off. When off no page is fetched and nothing downstream changes |
 | `PAGE_NAME_MATCH_THRESHOLD` | `88` | rapidfuzz `token_sort_ratio` (0-100) an extracted page name must reach against Name 1. Uses GLEIF's own scorer (`tier1_lei._name_match_score`) and inherits `LEI_NAME_MATCH_THRESHOLD`'s derivation — same comparison, same default, separate knob so retuning one does not silently retune the other |
 | `PAGE_READ_TIMEOUT_SECONDS` | `8` | Hard per-request timeout for a corroboration fetch. Shorter than `PAGE_FETCH_TIMEOUT_SECONDS`: this is optional evidence on a path that already has an answer, and up to five requests may be issued per domain |
-| `PAGE_FIXTURE_DIR` | `tests/fixtures/page_reads` | Where page reads are recorded, one JSON file per domain, so a re-run reproduces its corroboration decisions. Empty string disables the disk layer (memory-only) |
+| `EVIDENCE_CACHE_DIR` | `tests/fixtures` | Root of the [shared evidence cache](#determinism-and-reproducibility). One subdirectory per source (`page_reads/`, `wikidata/`, `serp/`, `fetch/`, `registry/`), one JSON file per key, every key a pure function of the request. Empty string disables the disk layer everywhere (memory-only) |
+| `CACHE_FROZEN` | `false` | The **evaluation freeze switch**, the analogue of freezing `dedup/weights.json`. When true a cache miss is an ERROR rather than a network call: it is recorded per record as `evidence-unavailable-frozen` on `enrichment.trace.cache`, counted in the summary as `evidence_frozen_misses`, and the record proceeds without that evidence. Applies to every namespace at once |
+| `PAGE_FIXTURE_DIR` | `<EVIDENCE_CACHE_DIR>/page_reads` | Where page reads are recorded, one JSON file per domain, so a re-run reproduces its corroboration decisions. An explicit override of the shared root. Empty string disables the disk layer (memory-only) |
 | `PAGE_FIXTURE_REPLAY_ONLY` | `false` | Refuse to fetch anything not already recorded — a missing fixture surfaces as `fetch_unavailable` rather than a silent network call. For CI and offline re-analysis |
 | `PAGE_EXTRACT_FEEDS_RETRY` | `false` | Offer a page-extracted legal name to the Stage 5 retry as a lookup candidate, spending its own once-per-record budget. Off by default: Stage 5's trace shows its yield is bounded by GLEIF's coverage of private US SMBs, not by the supply of candidate names |
 | `MOCK_EXTERNAL_CALLS` | `false` | Use mock clients (no real API calls) |
@@ -2415,6 +2742,23 @@ The company counterpart to ROR. For company-type records, resolves the official 
 | `GLEIF_TIMEOUT_SECONDS` | `15` | Per-call HTTP timeout |
 | `LEI_NAME_MATCH_THRESHOLD` | `88` | `token_sort_ratio` (0-100) verification threshold; below it a candidate is rejected (no fabrication) |
 | `LEI_MAX_RETRIES` | `2` | Retries on transient (5xx/network) GLEIF errors, exponential backoff |
+
+### Stage 2c — Wikidata crosswalk lane
+
+Runs on a record ROR and GLEIF both missed. Follows a registry pointer if the matched item carries one, and otherwise witnesses. See [Stage 2c: Wikidata crosswalk lane](#stage-2c-wikidata-crosswalk-lane).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WIKIDATA_ENABLED` | `true` | Master switch. `false` makes the lane a no-op and the pipeline byte-identical to a build without it |
+| `WIKIDATA_API_BASE` | `https://www.wikidata.org/w/api.php` | MediaWiki Action API. The SPARQL endpoint is never used |
+| `WIKIDATA_TIMEOUT_SECONDS` | `10` | Per-call HTTP timeout. Short, because the lane is optional evidence on a record that proceeds either way |
+| `WIKIDATA_MAX_RETRIES` | `2` | Retries on transient (5xx / network / 429) errors, exponential backoff |
+| `WIKIDATA_SEARCH_LIMIT` | `5` | Candidates fetched and run through the gauntlet — the collision window |
+| `WIKIDATA_FIXTURE_DIR` | `<EVIDENCE_CACHE_DIR>/wikidata` | Where responses are recorded, one JSON file per key — a namespace of the [shared evidence cache](#determinism-and-reproducibility), with its own explicit override. `""` for memory-only |
+| `WIKIDATA_FIXTURE_REPLAY_ONLY` | `false` | `true` → an unrecorded query is `wikidata_unavailable` and no network call is made. The mode the test suite runs under |
+| `WIKIDATA_TRACE` | `false` | `true` → one JSON line per lane invocation on `enrichment.trace.wikidata`. Diagnostic only; the summary counters are maintained regardless |
+
+The name threshold is **not** a new knob: the lane reuses `LEI_NAME_MATCH_THRESHOLD`.
 
 ### Phase 2 — Dedup Adjudicator (`POST /api/dedup/cluster-block`)
 
@@ -2537,7 +2881,19 @@ pytest tests/test_batch_consensus.py -v
 
 # Stage 5 diagnostics, the three unchanged states, the page-read corroborator
 pytest tests/test_retry_trace.py tests/test_unchanged_state.py tests/test_page_corroborator.py -v
+
+# Stage 2c Wikidata crosswalk lane (gauntlet, crosswalk, witness, pure insert)
+pytest tests/test_wikidata.py -v
+
+# Determinism and cross-source consistency (Fixes A-D)
+pytest tests/test_determinism.py -v
 ```
+
+The Wikidata tests never reach the live API: `tests/conftest.py` sets
+`WIKIDATA_FIXTURE_REPLAY_ONLY=true` for the whole suite, so any orchestrator
+built with a partial `mock_clients` dict reports `wikidata_unavailable` rather
+than calling out, and the lane tests inject `MockWikidataClient` with curated
+`wbgetentities` payloads in the API's own shape.
 
 > **Known pre-existing failures.** Five tests fail on `main` and are unrelated to the fixes above (verified against a clean checkout):
 > `test_name_slot_parity.py::test_department_in_a_lower_slot_is_not_reported_missing`,
@@ -2545,6 +2901,10 @@ pytest tests/test_retry_trace.py tests/test_unchanged_state.py tests/test_page_c
 > `test_orchestrator.py::test_web_search_fallback_for_name1`,
 > `test_orchestrator.py::test_web_search_determines_record_type`,
 > `test_routes.py::test_issues_compare_segments_g6_and_g7_out_of_the_metric`.
+>
+> Re-verified against a `git stash` of the [Stage 2c](#stage-2c-wikidata-crosswalk-lane) work: the
+> same five fail on a clean tree and no others. Suite total after the lane:
+> **1948 passed, 5 failed** (55 of the passes are `test_wikidata.py`).
 
 ### Offline batch runs
 
@@ -2557,7 +2917,32 @@ python scripts/retry_trace_report.py logs/runs/trace.jsonl --md table.md
 python scripts/fix_reports.py --before before.json --after after.json     --page-trace logs/runs/trace.jsonl --input docs/thesis/chemspeed_us_100.xlsx
 ```
 
-Set `PAGE_FIXTURE_REPLAY_ONLY=true` to re-run against the recorded page reads only, with no page fetches.
+`--frozen` sets `CACHE_FROZEN=true` for the run (a cache miss becomes a recorded `evidence-unavailable-frozen` instead of a network call) and `--cache-dir` overrides `EVIDENCE_CACHE_DIR`. `PAGE_FIXTURE_REPLAY_ONLY=true` still freezes the page namespace on its own.
+
+### The reproducibility gate
+
+`tools/run_diff.py` joins two run artefacts on `(name1_original, city)` — input-side, and deliberately not Search Term 1, which the pipeline writes — and compares **every** column in `api/output_columns.py`. It exits non-zero on any difference and prints per-column counts.
+
+```bash
+python scripts/run_batch.py docs/thesis/chemspeed_us_100.xlsx     --out logs/determinism/run1.xlsx --json logs/determinism/run1.json
+python scripts/run_batch.py docs/thesis/chemspeed_us_100.xlsx     --out logs/determinism/run2.xlsx --json logs/determinism/run2.json
+python tools/run_diff.py logs/determinism/run1.json logs/determinism/run2.json
+```
+
+Run the batch once first to warm the evidence cache; the gate's precondition is `evidence_network_calls == 0` on run 2, which `run_diff` prints from the run's own summary. A second run that called out is not comparing the same evidence the first one saw. See [Determinism and Reproducibility](#determinism-and-reproducibility) and [`determinism_findings.md`](determinism_findings.md).
+
+**Measuring the Wikidata lane.** Record its fixtures first — serially, one request every two seconds — so the measured run is a replay rather than a race against Wikidata's rate limiter, then run the A/B and diff it:
+
+```bash
+python scripts/wikidata_warm_fixtures.py docs/thesis/chemspeed_us_100.xlsx
+
+python scripts/run_batch.py docs/thesis/chemspeed_us_100.xlsx     --out logs/wd_baseline.xlsx --json logs/wd_baseline.json     --trace-out logs/wd_baseline_trace.jsonl --no-wikidata
+python scripts/run_batch.py docs/thesis/chemspeed_us_100.xlsx     --out logs/wd_on.xlsx --json logs/wd_on.json     --trace-out logs/wd_on_trace.jsonl --wikidata-trace
+
+python scripts/wikidata_lane_report.py
+```
+
+> Run the `--no-wikidata` baseline **twice** and diff it against itself first (`tools/run_diff.py`). That noise floor was **7 of 100 rows** before Fixes A–D, which is why an A/B on this pipeline could not be read; it is the measurement that motivated [Determinism and Reproducibility](#determinism-and-reproducibility). See `wikidata_lane_report.md` §5 and [`determinism_findings.md`](determinism_findings.md).
 
 ### Phase 2 Dedup Test Coverage
 
@@ -2655,7 +3040,7 @@ Phase 2 runs **after** Phase 1 and the address gates: enrichment first canonical
 | Column | Type | Content |
 |---|---|---|
 | `Operating Name` | `NVARCHAR(255)` NULL | the organisation name the candidate website states about itself |
-| `Operating Name Provenance` | `NVARCHAR(255)` NULL | `web:{domain}:extracted:{YYYY-MM-DD}` |
+| `Operating Name Provenance` | `NVARCHAR(255)` NULL | `web:{domain}:provisional` |
 
 1. `dp_legacy.test_77.Legacy` — add both columns as nullable.
 2. `sql/usp_merge_legacy_enriched.sql` — add both to the `OPENJSON … WITH` list and to `WHEN MATCHED THEN UPDATE SET`. `Operating Name` should follow the `COALESCE(NULLIF(…),'')` pattern the name columns use; the provenance column can be assigned directly, as `[Record Type]` and `[ROR ID]` are.
@@ -2724,9 +3109,22 @@ For each record (async, concurrency-limited via Semaphore):
   │    │   ├─ Try child matching for Name2/Name3 (local, no 2nd API call)
   │    │   └─ If no Name2 signal and no contact → RETURN (Tier 1 final)
   │    └─ If MISS:
-  │         ├─ If looks like research institution → passthrough, may escalate
+  │         ├─ If looks like research institution → STAGE 2c below, else passthrough, may escalate
   │         └─ If looks like company → Tier 1 GLEIF/LEI lookup (verified → name1 + lei_id);
-  │              on miss/error → LLM company canonicalization (never fabricates)
+  │              on miss/error → STAGE 2c below, then LLM company canonicalization
+  │
+  ├──► STAGE 2c: Wikidata crosswalk lane   [ROR miss AND GLEIF miss AND no registry id]
+  │    ├─ wbsearchentities(name, en, limit 5)                    ← call 1
+  │    ├─ wbgetentities(all 5 hits, batched)                     ← call 2
+  │    ├─ Gauntlet: disambiguation → type whitelist → country(US) → name (GLEIF's
+  │    │  scorer, GLEIF's threshold) → HQ city cross-check.  2+ survivors = no-match
+  │    │  └─ (conditional call 3, batched + batch-cached: P159 → country/label, P1366 → label)
+  │    ├─ P576 / P1366 present → append flag `entity-superseded`, name UNCHANGED
+  │    ├─ Has P6782 → ROR.call_by_id  ─┐  registry writes name1 + id + domain,
+  │    ├─ Has P1278 → GLEIF.call_by_id ─┘  all its own guards, ROR/gleif provenance
+  │    │                                   → LLM canonicalization is SKIPPED
+  │    └─ No pointer → witness: operating_name only, feeds unchanged-verified.
+  │       NEVER name1_enriched.  Failure of any kind → wikidata_unavailable, no-op
   │
   ├──► STAGE 3: Tier 2 — Multi-Mode Canonicalization
   │    │
@@ -2802,15 +3200,45 @@ RETURN EnrichmentResponse (JSON)
 
 ## Changelog
 
-### Stage 5 diagnostics, the three unchanged states, and the page-read corroborator (newest)
+### Determinism, the evidence cache and cross-source consistency (newest)
+
+Two runs of the identical 101-row chemspeed batch on the identical codebase produced **7 substantively different records**, two of them silent wrong-entity acceptances. `tools/run_diff.py` is the tool that turns that from an eyeball comparison into a gate; the four fixes below are what it now passes. Full write-up in [Determinism and Reproducibility](#determinism-and-reproducibility), measured results in [`determinism_findings.md`](determinism_findings.md).
+
+- **Every decision-gating LLM call is pinned** — `temperature=0`, `top_p=1`, `seed=42` as module constants, on both phases, with a one-shot fallback if the deployment rejects `seed`. `OpenAIClient.extract_json` now actually forwards the `temperature` it had always accepted and dropped. Evidence lists injected into prompts are sorted by a stable key.
+- **One evidence cache, keyed on the request, shared across runs.** `EVIDENCE_CACHE_DIR` with six namespaces (page reads, Wikidata, SERP, page fetches, registry responses, LLM completions). Entries are immutable and dated, so the fetch date is stable across runs and the `operating_name_extracted` trace line reproduces. `cached_serp` and `PageFetcher(store=…)` are the only ways a search or a fetch is issued — the person-affiliation lane and every `PageFetcher` entry point previously went to the live web on every run and were never recorded.
+- **`CACHE_FROZEN`** — the evaluation freeze switch. A miss is an ERROR recorded per record as `evidence-unavailable-frozen`, not a network call.
+- **`temperature=0` + `seed` was not enough.** With both accepted and sent, two warm runs still differed on 10 of 100 rows. The model is now a recorded source like any other; that closed the last of it, and took the batch from 92 minutes to 1.8 seconds.
+- **Deterministic candidate selection** — one total order (`score DESC, canonical id ASC`) at all six selection points, a `REGISTRY_AMBIGUITY_MARGIN` that makes a near-tie a **no-match**, and a short-name guard requiring a second signal before a ≤4-character or acronym name may take a registry match.
+- **Cross-source consistency gate** — no record ships two contradictory identities. The lower-priority source's fields are removed and **`source-conflict`** is raised naming both entities. A registry match whose registered locality contradicts the record keeps its match and gains **`registry-location-mismatch`**. These are the only two flag codes added; the vocabulary is pinned at 14.
+- **Search Term 1** can no longer be derived from a registry entity that lost the consistency check.
+
+### Stage 2c — the Wikidata crosswalk lane
+
+A lane between the [GLEIF miss](#stage-2-company-tier-1--gleif--lei-registry-lookup) and the web-evidence step, on records ROR and GLEIF both missed. Full write-up and measurements in `wikidata_lane_report.md`; the lane itself in [Stage 2c](#stage-2c-wikidata-crosswalk-lane).
+
+**Wikidata buys a lookup key, not a value.** An item carrying a ROR ID (`P6782`) or an LEI (`P1278`) is re-queried *by that identifier* through the existing Tier-1 clients (`RORClient.call_by_id`, `LEIClient.call_by_id`), and the **registry** writes the name and the identifier under its own unchanged guards, with `producer_chain = ("ror",)` / `("gleif",)` and scale `registry_exact` — only `rule_id` records that the crosswalk fired. An item with no pointer is a single witness: it may write `operating_name` and feed [`unchanged-verified`](#the-three-unchanged-name-1-states), and may **never** write `name1_enriched`. The asymmetry is the point — a wrong pointer resolves to a registry record that then fails the registry's own name and country guards, whereas a wrong label would ship. **No LLM is involved anywhere in the lane**, and where ambiguity survives the gauntlet the answer is no-match, not a tiebreak.
+
+**A six-constraint gauntlet, all mandatory.** Disambiguation (`P31 = Q4167410`) is a whole-record no-match, never a menu. Type must land in a 22-QID whitelist, or one *declared* `P279` step from it — no transitive closure, because two steps up from almost anything is `organization`. Country must be `Q30`, and a missing country is a rejection (the same conservatism as ROR's country guard: a wrong-country identity wrongly converges distinct entities in Phase 2). The name check reuses `tier1_lei._name_match_score` at `LEI_NAME_MATCH_THRESHOLD` — **no new scorer, no new threshold, no new normalisation function**. A `P159` that contradicts the record's city is a no-match; a missing one is neutral. Two survivors is a collision, counted as `wikidata_ambiguous`.
+
+**Measured on the 100-row chemspeed US SMB batch, and the number is low.** 68 records queried, **3 matched, 0 registry pointers followed, 2 rows changed**. 56 of the 68 return *no Wikidata item at all* — the batch is private US SMBs, and that is an absence of source data rather than a tuning opportunity. Of the 27 candidates the remaining 12 records produced, 21 were refused on type: four scholarly articles, three US patents, three bare `organization`, two `type of technology`, and one each of software, clinical trial, retracted paper and gas-fired power station. **The gauntlet was not tuned after seeing this** — `Q1341478` (energy company) is missing from the `P279` table and cost one record two candidates; it is recorded as an open item rather than added.
+
+**The A/B diff needed a repeated baseline to be readable.** Two runs with the lane *off* differ on **7 of 100 rows** — the LLM tiers are not deterministic, and `Aldrich APL` resolves to Allen Public Library in one run and Arlington Public Library in the next. The lane-on diff is also 7 rows, of which exactly **2** are the lane, identifiable because its writes carry the Wikidata witness token (`wikidata:2:crosswalk` at the time of that measurement; `wikidata:provisional` now). Everything else is inside the noise band and is not claimed.
+
+**Three transport fixes the first live run forced.** It took `HTTP 429` on **28 of 68** invocations under the GLEIF client's 0.5 s retry schedule — nothing broke (all 28 failed closed to `wikidata_unavailable`, no record harmed) but 28 unanswered records is not a measurement. A 429 now backs off from 5 s and honours `Retry-After`; the lane separates *operations* (the two-call budget) from *HTTP requests* (what a rate limiter sees); and `scripts/wikidata_warm_fixtures.py` records a workbook serially at one request every two seconds — 100 queries, 110 requests, zero 429s — so a measured batch is a fixture replay. Fixtures store only the nine properties the lane reads (`prune_entity`): **4.3 MB → 169 KB**.
+
+**One new flag code, `entity-superseded`** — the matched item carries `P576` (dissolved) or `P1366` (replaced by). The name is **not** rewritten to the successor: which legal entity a customer record should point at after a merger depends on contracts this service cannot see. The reason names the successor's label and QID, or the dissolution date, and stops. The registry crosswalk still runs and the flag stands whatever it finds. It did not fire on this batch.
+
+New: `enrichment/wikidata.py`, `tier1_ror.call_ror_by_id`, `tier1_lei.call_lei_by_id`, `utils.cache.PageCache(prefix=…)`, `scripts/wikidata_warm_fixtures.py`, `scripts/wikidata_lane_report.py`, eight `WIKIDATA_*` settings, fourteen `wikidata_*` summary counters. Tests `test_wikidata.py` (55). **Config-gated:** with `WIKIDATA_ENABLED=false` the pipeline is byte-identical to a build without the lane — asserted against a run with both entry points excised, and confirmed on the batch (all fourteen counters zero).
+
+### Stage 5 diagnostics, the three unchanged states, and the page-read corroborator
 
 Three changes worked in order against the 100-row chemspeed US SMB batch. Full write-ups in `retry_trace_findings.md`, `unchanged_split_report.md`, `corroborator_report.md`; combined before/after in `combined_delta.md`.
 
 **Fix 1 — Stage 5 traced, and deliberately not repaired.** [`RETRY_TRACE`](#stage-5-diagnostics--retry_trace) emits one JSON line per finalised record: eligibility judged from the shipped record, the skip reason, the registries queried, the guards that refused, the hit. On the batch the retry was reached on **100 of 100** records, so the zero-hit result was never a wiring defect. Of 25 records whose Name 1 an LLM authored, 18 were skipped because the "corrected" name equals the already-queried name under `normalize_key` — punctuation and casing only, including both names cited as plausible LEI holders — and 7 fired, queried ROR and GLEIF, and were missed by both; 2 further records were rescued and took an LEI. No guard misfired: the highest-scoring rejected candidate in the run is a pension trust at 80.0 against an 88 threshold, correctly refused. **The instrumentation is the entire code delta.** Stage 5's yield on this population is bounded by GLEIF's coverage of private US SMBs, not by the pipeline. Residual finding, logged as an open item: GLEIF's fulltext search returns the same ten unrelated names for almost every query, which suggests it is matching on the legal-suffix token.
 
-**Fix 2 — one unchanged-Name-1 outcome became [three](#the-three-unchanged-name-1-states).** Whether a retained Name 1 was flagged used to depend on which branch reached the passthrough: Tier 3 and the ROR-miss research path left a marker, the company branch's failed-canonicalisation path left none. That produced 37 flags and 5 silent passes drawn from the same evidence class. The decision moved into `finalise`, taken once from the settled record, and split into `unchanged-verified` (corroborated by an ownership-guard-passing domain or a page read → `input:1:verified`), `unchanged-confirmed` (the company-canonical model's *generated* proposal reproduces the input under `normalize_key` → `input:1:confirmed`) and `unchanged-unresolved` (`input:1:rule`, flagged, reason text byte-identical). `low-confidence-unchanged` **36 → 18**; records carrying any flag **54 → 34**. Registry near-match was deliberately **not** implemented as corroboration — the only candidate in the batch that would have qualified is a different legal entity at 80.7 — and `email` evidence is excluded because it identifies the record, not the name. Verified and confirmed records now report `enrichment_status = verified` ("Info — confirmed correct"), the first path other than Tier 2A Mode B to produce that value.
+**Fix 2 — one unchanged-Name-1 outcome became [three](#the-three-unchanged-name-1-states).** Whether a retained Name 1 was flagged used to depend on which branch reached the passthrough: Tier 3 and the ROR-miss research path left a marker, the company branch's failed-canonicalisation path left none. That produced 37 flags and 5 silent passes drawn from the same evidence class. The decision moved into `finalise`, taken once from the settled record, and split into `unchanged-verified` (corroborated by an ownership-guard-passing domain or a page read → `input:1:verified`), `unchanged-confirmed` (the company-canonical model's *generated* proposal reproduces the input under `normalize_key` → `input:1:confirmed`) and `unchanged-unresolved` (`input:1:rule`, flagged, reason text byte-identical). `low-confidence-unchanged` **36 → 18**; records carrying any flag **54 → 34**. Registry near-match was deliberately **not** implemented as corroboration — the only candidate in the batch that would have qualified is a different legal entity at 80.7 — and `email` evidence is excluded because it identifies the record, not the name. Verified and confirmed records now report `enrichment_status = verified` ("Info — confirmed correct"), the first path other than Tier 2A Mode B to produce that value. *(Provenance strings quoted in this entry are Scheme A, the grammar in force at the time; see [the provenance grammar](#the-provenance-grammar--scheme-b) for what they read as now, and `provenance_migration_report.md` for the mapping.)*
 
-**Fix 3 — the candidate website is [read](#stage-5b-page-read-corroborator) before it is judged.** A record with a candidate domain and no registry identity has its site fetched (root, then the first of `/impressum`, `/legal`, `/about`, `/contact` that answers) and an LLM reads what the page *states*, with instructions to return null rather than fill a gap from memory. 47 reads on the batch: 16 corroborated, 19 stated no identity, 6 named a different organisation, 3 contradicted the location, 3 unavailable. 16 `operating_name` values written — **never** `name1_enriched`, asserted by test. Page reads are cached on the domain and recorded to disk, so a thesis re-run reproduces its corroboration decisions instead of re-asking today's web. Two new nullable columns, `Operating Name` and `Operating Name Provenance` (`web:{domain}:extracted:{date}`); the SQL/ADF artefacts that need them are listed in `corroborator_report.md`.
+**Fix 3 — the candidate website is [read](#stage-5b-page-read-corroborator) before it is judged.** A record with a candidate domain and no registry identity has its site fetched (root, then the first of `/impressum`, `/legal`, `/about`, `/contact` that answers) and an LLM reads what the page *states*, with instructions to return null rather than fill a gap from memory. 47 reads on the batch: 16 corroborated, 19 stated no identity, 6 named a different organisation, 3 contradicted the location, 3 unavailable. 16 `operating_name` values written — **never** `name1_enriched`, asserted by test. Page reads are cached on the domain and recorded to disk, so a thesis re-run reproduces its corroboration decisions instead of re-asking today's web. Two new nullable columns, `Operating Name` and `Operating Name Provenance` (`web:{domain}:extracted:{date}` at the time; `web:{domain}:provisional` now); the SQL/ADF artefacts that need them are listed in `corroborator_report.md`.
 
 **Three defects the runs exposed, and fixed.** (1) A Fix 2 short-circuit returned before any tier set `enrichment_status`, leaving 12 records at the `failed` default — a DATAshaper "Error" severity on records the pipeline had just confirmed. (2) The new fetch pinned `verify=certifi.where()` and failed on **47 of 54** domains behind the TLS-inspecting corporate VPN; it now honours `REQUESTS_CA_BUNDLE`, as the pre-existing fetch path always has. (3) Withdrawing an accepted domain on a below-threshold name score alone destroyed four correct domains — `AquaPhoenix` for "AquaPhoenix Scientific, Inc.", `Analytical Sales and Services, Inc.` for "Analytical Sales" — because `token_sort_ratio` is length-sensitive by design and a brand-vs-legal-name variant is exactly the shape it scores low. Withdrawal now requires the page to name a different organisation **and** place it in a different state or country, which separates the batch's one true wrong-entity domain from all four false ones.
 
@@ -2822,10 +3250,10 @@ The response carried one `tier_used` / `source` / `confidence` triple per record
 
 - **The six scoped fields cannot be assigned.** `_init_result` returns an `EnrichedRecord` on which `name1_enriched`, `name2_enriched`, `domain`, `record_type`, `ror_id` and `lei_id` are write-locked: `record["domain"] = x` raises, and the only way in is `record.write(field, value, evidence)` with a required structured `evidence`. `EnrichmentResult` carries the same lock past finalisation, because batch consensus writes onto finalised records. Recording provenance is easy to add and easy to bypass, so the enforcement is the point — the phase-1 scope is six fields because those are the ones whose wrong value causes a wrong merge in Phase 2, and because none of them is personal data.
 - **One event per write, not per record.** `seq` is monotonic across the whole record so the interleaving is reconstructable; `producer_chain` names the tools that produced *one* value in sequence (`["serp","fetch","llm_tier2a"]`); a field written twice is two events. LLM writes record the deployment, the prompt version and the temperature — a value produced by a model deployment is not reproducible without them — and never the prompt text.
-- **Confidence is no longer one number.** `ror_local`, `fuzzy_ratio` and `llm_self_reported` are not commensurable: 0.85 from each means three different things. Every event carries `confidence_scale` beside `confidence_value`, and derived bands are namespaced by scale (`self_high`, never a bare `high`). The record-level `confidence` is kept for backward compatibility and documented as a coarse projection, not a measurement. Two cross-scale comparison sites are reported and left unchanged: `tier2a_contact.py`'s `max(llm_score, our_score)` and the (dead) `determine_enrichment_status`.
+- **Confidence is no longer one number.** `ror_local`, `fuzzy_ratio` and `llm_self_reported` are not commensurable: 0.85 from each means three different things. Every event carries `confidence_scale` beside `confidence_value`. (The scale-namespaced *bands* were the exported form until [Provenance Scheme B](#the-provenance-grammar--scheme-b) replaced them; the scales themselves remain on every event, which is where the migration moved them.) The record-level `confidence` is kept for backward compatibility and documented as a coarse projection, not a measurement. Two cross-scale comparison sites are reported and left unchanged: `tier2a_contact.py`'s `max(llm_score, our_score)` and the (dead) `determine_enrichment_status`.
 - **Guard rejections are logged; candidate lists are not.** The five guards — ROR country, distinctive-token, identifier-token, Fix 1's domain ownership, GLEIF name verification — record what they refused, capped at 3 per field per record with the overflow counted rather than silently dropped. On the demo batch: 22 GLEIF name-verification, 18 distinctive-token, 13 domain-ownership, 3 identifier-token, 2 GLEIF country. (The distinctive-token count rose from 16 when `_DISTINCTIVE_TOKEN_MIN_LEN` [dropped from 5 to 4](#name-scoring-logic) — the two added refusals are Customer 40000015's `AUM BioTech` and `Best Biotech`.)
 - **An unattributable value is not shipped.** At the end of `finalise` every non-null scoped field must have an event; one that does not is reverted to the input value and flagged `unattributed-value`. The record is never failed — the original input beats both a failed batch and an unattributable value.
-- **Six new columns, 59 → 65.** `producer:tier:confidence_band` per scoped field, regenerated from the events and never maintained separately. The nested events array ships in the `/enrich` JSON only; `/enrich/file` emits the six columns. **Whether DATAshaper's column-typed validation model accepts 65 columns needs confirming externally before rollout.**
+- **Six new columns, 59 → 65.** `producer:tier:confidence_band` per scoped field, regenerated from the events and never maintained separately. *(That format was replaced by [Provenance Scheme B](#the-provenance-grammar--scheme-b); the columns and their regeneration are unchanged.)* The nested events array ships in the `/enrich` JSON only; `/enrich/file` emits the six columns. **Whether DATAshaper's column-typed validation model accepts 65 columns needs confirming externally before rollout.**
 - **`flagged_fields` is now derived from the log.** "Is this value an unverified inference" is a question about who wrote it last, and the log is that record — so the `unverified-inference` scope follows from provenance rather than from a marker a tier remembered to set, and a field a registry overwrote is no longer the LLM's claim without needing a second check.
 - **Not telemetry, not persisted, not a behaviour change.** The log is in the API response; App Insights stays operational monitoring; the API remains stateless and gains no database. On the demo batch all six scoped values are byte-identical to the pre-fix run — live and mocked — as are `flag_codes`, `flagged_fields`, `tier_used` and `source`. 217 events for 50 records, ~43,400 projected for 10,000. Tests `test_provenance.py`.
 
@@ -2838,7 +3266,7 @@ The response carried one `tier_used` / `source` / `confidence` triple per record
 - **Field-scoped.** New `flagged_fields` column names the output fields a flag concerns, and the scope is repeated in the reason prose. Rows 14 / 36 / 38 hold verified ROR IDs and an uncertain department: they now scope to `name2` alone, so a reviewer can tell a one-field check from a full record review. 9 of the 21 flagged records are single-field.
 - **New `flag_codes` column** — a machine-readable list, because a record can hold several conditions and the single concatenated `flag_reason` string did not scale. `flag_for_review` is true **iff** `flag_codes` is non-empty; `flag_reason` is prose only, and states what is uncertain and what to do rather than which tier ran.
 - **Absence of data is not a defect.** "Research institution with no department and no contact" fired on 10 of 50 records — all resolved by ROR with verified identifiers, and none of them actionable. Removed, along with the blanket "Tier 2B results are always flagged" (a stated department read off an on-domain page has a `source_url` to audit) and the provenance-based "Website inferred by LLM — verify" (superseded by the evidence-based `domain-unverified`).
-- **Tier 3 is flagged on what it wrote, not on the fact that it ran.** Anything Tier 3 writes carries `unverified-inference` regardless of its confidence — a confident unverifiable claim is the more dangerous case. Where it leaves a value unchanged the record reads `low-confidence-unchanged` or `no-match` instead, and a blank Name 2 that Finalization Rule 1 leaves blank carries nothing at all: nothing was dropped.
+- **Tier 3 is flagged on what it wrote, not on the fact that it ran.** Anything Tier 3 writes carries `unverified-inference` regardless of its confidence — a confident unverifiable claim is the more dangerous case. Where it leaves a value unchanged the record reads `input:low` (flagged, derived) or `no-match` instead, and a blank Name 2 that Finalization Rule 1 leaves blank carries nothing at all: nothing was dropped.
 - **Measured on the demo batch** (live run) — flag rate **47/50 → 21/50**, and one of the 21 is the workbook's trailing phantom row. 13 distinct reason strings collapse to 6 codes in use: `low-confidence-unchanged` 15, `domain-unverified` 12, and one each of `person-unresolved`, `dept-via-lab`, `overflow`, `no-match`. Tests `test_flags.py`.
 
 ### Batch consensus — one identity per organisation per address

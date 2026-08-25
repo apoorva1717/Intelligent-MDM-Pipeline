@@ -1,0 +1,10 @@
+{
+ "domain": "search:agraquest inc",
+ "payload": {
+  "searchinfo": {
+   "search": "AgraQuest Inc"
+  },
+  "search": [],
+  "success": 1
+ }
+}

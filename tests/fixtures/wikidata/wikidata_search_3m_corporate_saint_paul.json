@@ -1,0 +1,10 @@
+{
+ "domain": "search:3m corporate saint paul",
+ "payload": {
+  "searchinfo": {
+   "search": "3M Corporate (Saint Paul)"
+  },
+  "search": [],
+  "success": 1
+ }
+}

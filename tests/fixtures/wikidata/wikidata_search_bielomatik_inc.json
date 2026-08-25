@@ -1,0 +1,10 @@
+{
+ "domain": "search:bielomatik inc",
+ "payload": {
+  "searchinfo": {
+   "search": "Bielomatik Inc"
+  },
+  "search": [],
+  "success": 1
+ }
+}

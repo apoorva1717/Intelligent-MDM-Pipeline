@@ -73,6 +73,23 @@ def _bool(val: str | None, default: bool = False) -> bool:
     return val.strip().lower() in ("true", "1", "yes")
 
 
+def _cache_dir(override_var: str, subdir: str) -> str:
+    """Resolve one evidence-cache namespace directory.
+
+    An explicit per-namespace variable wins (``PAGE_FIXTURE_DIR`` and
+    ``WIKIDATA_FIXTURE_DIR`` predate the shared root and their recordings are
+    already committed under those paths). Otherwise the namespace is a
+    subdirectory of ``EVIDENCE_CACHE_DIR``, so moving the whole cache is one
+    variable rather than five. An empty root means memory-only and must not
+    become an absolute ``/subdir``.
+    """
+    explicit = os.getenv(override_var)
+    if explicit is not None:
+        return explicit
+    root = os.getenv("EVIDENCE_CACHE_DIR", "tests/fixtures").strip().rstrip("/\\")
+    return f"{root}/{subdir}" if root else ""
+
+
 # ── Environment variable validation ──────────────────────────────────────────
 
 REQUIRED_VARS = [
@@ -114,9 +131,21 @@ OPTIONAL_VARS_WITH_DEFAULTS = {
     "PAGE_CORROBORATION_ENABLED": "true",
     "PAGE_NAME_MATCH_THRESHOLD": "88",
     "PAGE_READ_TIMEOUT_SECONDS": "8",
+    # Fix B — the shared evidence cache.
+    "EVIDENCE_CACHE_DIR": "tests/fixtures",
+    "CACHE_FROZEN": "false",
     "PAGE_FIXTURE_DIR": "tests/fixtures/page_reads",
     "PAGE_FIXTURE_REPLAY_ONLY": "false",
     "PAGE_EXTRACT_FEEDS_RETRY": "false",
+    # Wikidata crosswalk lane (enrichment/wikidata.py).
+    "WIKIDATA_ENABLED": "true",
+    "WIKIDATA_API_BASE": "https://www.wikidata.org/w/api.php",
+    "WIKIDATA_TIMEOUT_SECONDS": "10",
+    "WIKIDATA_MAX_RETRIES": "2",
+    "WIKIDATA_SEARCH_LIMIT": "5",
+    "WIKIDATA_FIXTURE_DIR": "tests/fixtures/wikidata",
+    "WIKIDATA_FIXTURE_REPLAY_ONLY": "false",
+    "WIKIDATA_TRACE": "false",
     "MOCK_EXTERNAL_CALLS": "false",
     "ENV": "production",
     "LOG_LEVEL": "INFO",
@@ -248,6 +277,35 @@ class Settings:
         default_factory=lambda: int(os.getenv("PAGE_FETCH_TIMEOUT_SECONDS", "10"))
     )
 
+    # ── Fix B — the shared evidence cache (utils/cache.py) ────────────────
+    # ONE directory for every external answer the pipeline reads: SERP results,
+    # page reads, Wikidata items, ROR and GLEIF lookups. Each namespace gets a
+    # subdirectory (`page_reads/`, `wikidata/`, `serp/`, `registry/`), and every
+    # key is a pure function of the request — never a run id, a batch id or a
+    # date. Before this, the SERP and registry caches lived only in memory and
+    # were cleared per batch, so a second run of a batch re-issued every call it
+    # had already paid for; eleven rows of the two diffed chemspeed runs
+    # differed only in an extraction date, which is what that looks like from
+    # the outside.
+    #
+    # PAGE_FIXTURE_DIR / WIKIDATA_FIXTURE_DIR still override their own
+    # namespaces (they predate this and their recordings are already committed
+    # under those paths); everything else is derived from here. Set to "" for a
+    # memory-only run.
+    evidence_cache_dir: str = field(
+        default_factory=lambda: os.getenv("EVIDENCE_CACHE_DIR", "tests/fixtures")
+    )
+    # The evaluation freeze switch, and the direct analogue of freezing
+    # `dedup/weights.json` before a measurement. When true a cache miss is an
+    # ERROR rather than a network call: the miss is recorded per record as
+    # `evidence-unavailable-frozen` on the `enrichment.trace.cache` logger and
+    # counted in the batch summary, and the record proceeds without that piece
+    # of evidence. It applies to every namespace at once — freezing three of
+    # five sources would not freeze the run.
+    cache_frozen: bool = field(
+        default_factory=lambda: _bool(os.getenv("CACHE_FROZEN"), default=False)
+    )
+
     # ── Fix 3 — page-read corroborator (enrichment/page_corroborator.py) ──
     # Feature flag, following LEI_LOOKUP_ENABLED / DOMAIN_OWNERSHIP_GUARD_ENABLED.
     # When off the step does not run and no page is fetched.
@@ -285,9 +343,7 @@ class Settings:
     # corroboration decisions rather than re-litigate them against today's web.
     # Set to "" to disable the fixture store (memory-only).
     page_fixture_dir: str = field(
-        default_factory=lambda: os.getenv(
-            "PAGE_FIXTURE_DIR", "tests/fixtures/page_reads",
-        )
+        default_factory=lambda: _cache_dir("PAGE_FIXTURE_DIR", "page_reads")
     )
     # Refuse to fetch anything not already recorded. A missing fixture then
     # surfaces as `fetch_unavailable` instead of a silent new network call —
@@ -306,6 +362,65 @@ class Settings:
         default_factory=lambda: _bool(
             os.getenv("PAGE_EXTRACT_FEEDS_RETRY"), default=False,
         )
+    )
+
+    # ── Wikidata crosswalk lane (enrichment/wikidata.py) ─────────────────
+    # Feature flag, following LEI_LOOKUP_ENABLED / PAGE_CORROBORATION_ENABLED.
+    # When off the lane does not run, no Wikidata call is made, and the
+    # pipeline's output is byte-identical to a build without the lane — which
+    # is asserted, not assumed, by
+    # `tests/test_wikidata.py::TestTheLaneIsAPureInsert`.
+    wikidata_enabled: bool = field(
+        default_factory=lambda: _bool(os.getenv("WIKIDATA_ENABLED"), default=True)
+    )
+    # The MediaWiki Action API. The SPARQL endpoint is deliberately NOT used
+    # anywhere in this lane: it is separately rate-limited, frequently
+    # unavailable, and a query language is a far larger surface than a search
+    # plus an entity fetch needs.
+    wikidata_api_base: str = field(
+        default_factory=lambda: os.getenv(
+            "WIKIDATA_API_BASE", "https://www.wikidata.org/w/api.php",
+        )
+    )
+    # Hard per-request timeout. Short for the same reason the page read's is:
+    # this lane is optional evidence on a record that will proceed to the web
+    # lane regardless, so a slow host must not dominate the record's latency.
+    wikidata_timeout_seconds: float = field(
+        default_factory=lambda: float(os.getenv("WIKIDATA_TIMEOUT_SECONDS", "10"))
+    )
+    wikidata_max_retries: int = field(
+        default_factory=lambda: int(os.getenv("WIKIDATA_MAX_RETRIES", "2"))
+    )
+    # Candidates `wbsearchentities` returns. Five is the collision window: the
+    # gauntlet is run over ALL of them (in one batched entity call) so that two
+    # survivors can be detected as an ambiguity rather than silently resolved
+    # by taking the first.
+    wikidata_search_limit: int = field(
+        default_factory=lambda: int(os.getenv("WIKIDATA_SEARCH_LIMIT", "5"))
+    )
+    # Where the lane's API responses are recorded, one JSON file per key
+    # (`wikidata_search_….json`, `wikidata_entity_q….json`). Wikidata is an
+    # open wiki whose items change under you, so a matching decision is a claim
+    # about what it said on a day — exactly the reasoning behind
+    # PAGE_FIXTURE_DIR. Set to "" for memory-only.
+    wikidata_fixture_dir: str = field(
+        default_factory=lambda: _cache_dir("WIKIDATA_FIXTURE_DIR", "wikidata")
+    )
+    # Refuse to call anything not already recorded; a missing fixture surfaces
+    # as `wikidata_unavailable` rather than as a silent new network call.
+    wikidata_fixture_replay_only: bool = field(
+        default_factory=lambda: _bool(
+            os.getenv("WIKIDATA_FIXTURE_REPLAY_ONLY"), default=False,
+        )
+    )
+    # Diagnostic-only per-record trace of the crosswalk lane, mirroring
+    # RETRY_TRACE / WEBSITE_TRACE. Off by default; enabling it only adds one
+    # JSON line per lane invocation on `enrichment.trace.wikidata` and never
+    # changes what the lane matches or writes. The batch-summary counters are
+    # maintained unconditionally (as the page-read counters are), so a report
+    # run does not have to remember to turn this on to get its numbers.
+    wikidata_trace: bool = field(
+        default_factory=lambda: _bool(os.getenv("WIKIDATA_TRACE"), default=False)
     )
 
     # Concurrency

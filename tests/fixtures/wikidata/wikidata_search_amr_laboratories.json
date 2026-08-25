@@ -1,0 +1,10 @@
+{
+ "domain": "search:amr laboratories",
+ "payload": {
+  "searchinfo": {
+   "search": "AMR Laboratories"
+  },
+  "search": [],
+  "success": 1
+ }
+}

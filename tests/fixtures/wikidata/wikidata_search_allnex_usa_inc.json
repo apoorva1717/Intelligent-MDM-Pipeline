@@ -1,0 +1,10 @@
+{
+ "domain": "search:allnex usa inc",
+ "payload": {
+  "searchinfo": {
+   "search": "Allnex USA Inc"
+  },
+  "search": [],
+  "success": 1
+ }
+}

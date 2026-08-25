@@ -1,0 +1,43 @@
+{
+ "domain": "entity:q2904278",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q2904278",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Biovision Hierarchy"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "BVH"
+    },
+    {
+     "language": "en",
+     "value": "BVH format"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 235557,
+        "id": "Q235557"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

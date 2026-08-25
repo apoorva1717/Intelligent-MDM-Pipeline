@@ -1,0 +1,13 @@
+{
+ "domain": "advaxis.com",
+ "payload": {
+  "status": null,
+  "blocked": false,
+  "error": "ConnectTimeout",
+  "url": "https://advaxis.com/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

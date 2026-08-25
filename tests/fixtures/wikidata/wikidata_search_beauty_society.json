@@ -1,0 +1,10 @@
+{
+ "domain": "search:beauty society",
+ "payload": {
+  "searchinfo": {
+   "search": "Beauty Society"
+  },
+  "search": [],
+  "success": 1
+ }
+}

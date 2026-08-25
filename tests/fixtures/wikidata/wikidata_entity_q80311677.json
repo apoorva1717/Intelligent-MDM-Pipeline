@@ -1,0 +1,31 @@
+{
+ "domain": "entity:q80311677",
+ "payload": {
+  "id": "Q80311677",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Binary solutions of imperfect liquids"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 13442814,
+        "id": "Q13442814"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

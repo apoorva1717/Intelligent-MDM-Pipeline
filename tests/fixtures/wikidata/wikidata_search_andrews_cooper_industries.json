@@ -1,0 +1,10 @@
+{
+ "domain": "search:andrews cooper industries",
+ "payload": {
+  "searchinfo": {
+   "search": "Andrews-Cooper Industries"
+  },
+  "search": [],
+  "success": 1
+ }
+}

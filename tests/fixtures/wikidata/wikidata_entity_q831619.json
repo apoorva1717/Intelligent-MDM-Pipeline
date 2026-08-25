@@ -1,0 +1,31 @@
+{
+ "domain": "entity:q831619",
+ "payload": {
+  "id": "Q831619",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "admixture"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P279": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 22657,
+        "id": "Q22657"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

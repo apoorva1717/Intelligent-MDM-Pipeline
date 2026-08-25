@@ -90,7 +90,7 @@ none are rounded or normalised.
 | GLEIF retry backoff | `0.5 * (2 ** (attempt - 1))` seconds → 0.5 s, 1.0 s | float (formula) | `enrichment/tier1_lei.py:202` | `enrichment/tier1_lei.py:207` | Longer waits between attempts | Faster re-hits on a failing endpoint | "retrying transient errors with backoff" (`enrichment/tier1_lei.py:183`) |
 | GLEIF retryable condition | status is `None` or `>= 500` | predicate | `enrichment/tier1_lei.py:198` | `enrichment/tier1_lei.py:200` | n/a | n/a | "Only retry transient failures (network, timeout, 5xx). A 4xx is not going to get better on retry." (`enrichment/tier1_lei.py:195-196`) |
 | GLEIF `page[size]` | `"10"` | str (API param) | `enrichment/tier1_lei.py:259` | request params at `:268` | More candidate records verified per exact query | Fewer candidates; a correct match beyond rank 10 is never seen | ⚠ UNDOCUMENTED — author to supply |
-| Fuzzy-completions resolution cap | `5` (`completions[:5]`) | int | `enrichment/tier1_lei.py:340` | `enrichment/tier1_lei.py:340-358` | More per-LEI record fetches (more GLEIF calls per record) | Fewer fuzzy candidates resolved and verified | ⚠ UNDOCUMENTED — author to supply |
+| Fuzzy-completions resolution cap | `5` (`_FUZZY_RESOLVE_LIMIT`) | int | `enrichment/tier1_lei.py` | `enrichment/tier1_lei._fuzzy_lookup` | More per-LEI record fetches (more GLEIF calls per record) | Fewer fuzzy candidates resolved and verified | A **call budget**: each completion resolved costs one further GLEIF request. Which five are taken is §1.19.3's business — since Fix C(1) it is the five smallest LEIs, not the first five GLEIF listed. A truncation is still a selection, and this one was the last place in the pipeline where arrival order decided an answer (measured: one chemspeed record, AkzoNobel, resolved to a different LEI when the recorded completion list was reversed) |
 
 ### 1.5 · Search (SERP) and page fetching
 
@@ -294,6 +294,218 @@ batch; a new state whose boundary is an existing guard inherits both.
 | `RETRY_TRACE` | `false` | bool (env) | `config.py` (`Settings.retry_trace`); `.env.example` | `enrichment/orchestrator._emit_retry_trace` | `true` → one JSON line per finalised record on `enrichment.trace.retry` | n/a | "Purely additive — retry behaviour is unchanged." (`config.py`); diagnostic-only, mirrors `WEBSITE_TRACE` |
 | Region normalisation source | `tier1_ror._US_POSTAL_CODES` (50 two-letter codes) | dict | `enrichment/tier1_ror.py`; consumed in `page_corroborator._norm_region` | `page_corroborator.compare_location` | n/a | Without it, `San Francisco, California` on a page contradicts `San Francisco, CA` on the record — measured as a false contradiction on `Anresco Laboratories` in run D | Reuses the existing map rather than a second table. The map is ROR-local because expanding those codes inside a *name* is ambiguous ("IN Laboratories"); here the value is a Region field, where a bare two-letter token can only be the state, and the result is used for a comparison and never written (`enrichment/page_corroborator.py`) |
 
+### 1.18 · Stage 2c — Wikidata crosswalk lane (`enrichment/wikidata.py`)
+
+> **Post-baseline.** This section documents code added *after* the commit pinned in this
+> document's header (`515cc7c`). It is recorded here rather than in a separate note because the
+> feature brief asked for the type whitelist and the call budget to live with the other
+> parameters, and splitting one parameter table across two documents helps nobody. Every other
+> section of this document still describes the baseline.
+
+The lane introduces **no numeric name threshold**. Constraint 5 of its gauntlet reuses
+`enrichment/tier1_lei._name_match_score` at `LEI_NAME_MATCH_THRESHOLD` (§1.4) — the same scorer
+and the same value the page-read corroborator inherits in §1.17, and for the same stated reason:
+it is the same supplied-name-vs-official-name comparison, so retuning it in one place must not
+silently retune it in another, and a new number would need its own derivation and its own tuning
+batch.
+
+What the lane *does* add is two closed sets and a call budget, both below.
+
+#### 1.18.1 · Feature flags, transport and fixtures
+
+| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
+|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
+| `WIKIDATA_ENABLED` | `true` | bool (env) | `config.py` (`Settings.wikidata_enabled`); `.env.example` | `enrichment/orchestrator._wikidata_crosswalk` | n/a | `false` → no call is made, no counter moves, and every serialised field is byte-identical to a build without the lane | "Feature flag, following LEI_LOOKUP_ENABLED / PAGE_CORROBORATION_ENABLED. … asserted, not assumed, by `tests/test_wikidata.py::TestTheLaneIsAPureInsert`" (`config.py`) |
+| `WIKIDATA_API_BASE` | `https://www.wikidata.org/w/api.php` | str (env) | `config.py` (`Settings.wikidata_api_base`); `.env.example` | `wikidata.WikidataClient._get` | n/a — endpoint | n/a | "The SPARQL endpoint is deliberately NOT used anywhere in this lane: it is separately rate-limited, frequently unavailable, and a query language is a far larger surface than a search plus an entity fetch needs." (`config.py`) |
+| `WIKIDATA_TIMEOUT_SECONDS` | `10` | float (env) | `config.py` (`Settings.wikidata_timeout_seconds`); `.env.example` | `wikidata.WikidataClient._get` | Slow responses tolerated; per-record latency rises | Calls abort sooner → `wikidata_unavailable`, which changes nothing about the record | "Short for the same reason the page read's is: this lane is optional evidence on a record that will proceed to the web lane regardless, so a slow host must not dominate the record's latency." (`config.py`). Cf. `PAGE_READ_TIMEOUT_SECONDS` = 8 (§1.17) |
+| `WIKIDATA_MAX_RETRIES` | `2` | int (env) | `config.py` (`Settings.wikidata_max_retries`); `.env.example` | `wikidata.WikidataClient._get` | More attempts on 5xx / network / 429 | `0` → the first transient failure is `wikidata_unavailable` | Mirrors `LEI_MAX_RETRIES` = 2 (§1.4) and reuses its `0.5 * 2^(attempt-1)` backoff shape. **429 is treated as transient**, unlike the GLEIF client, because Wikidata rate-limits anonymous bulk callers and a 429 is the API asking to be slowed down rather than a refusal (`enrichment/wikidata.py`) |
+| `WIKIDATA_SEARCH_LIMIT` | `5` | int (env) | `config.py` (`Settings.wikidata_search_limit`); `.env.example` | `wikidata.WikidataClient.search` | More candidates run through the gauntlet → more chances of a match AND more chances of a two-survivor collision, which is a no-match. Also widens the single batched entity request | Fewer candidates; the true item can fall outside the window and the record misses | "Five is the collision window: the gauntlet is run over ALL of them (in one batched entity call) so that two survivors can be detected as an ambiguity rather than silently resolved by taking the first." (`config.py`). The value is `wbsearchentities`'s own conventional page size |
+| `WIKIDATA_FIXTURE_DIR` | `tests/fixtures/wikidata` | str (env) | `config.py` (`Settings.wikidata_fixture_dir`); `.env.example` | `utils.cache.PageCache` via `Orchestrator.__init__` (prefix `wikidata`) | n/a | Empty string → memory-only; a re-run re-queries and its matching decisions may differ from the recorded run | "Wikidata is an open wiki whose items change under you, so a matching decision is a claim about what it said on a day — exactly the reasoning behind PAGE_FIXTURE_DIR." (`config.py`) |
+| `WIKIDATA_FIXTURE_REPLAY_ONLY` | `false` | bool (env) | `config.py` (`Settings.wikidata_fixture_replay_only`); `.env.example` | `wikidata.WikidataClient._cached` / `.entities` | `true` → an unrecorded query is `wikidata_unavailable` and no network call is made | n/a | Set to `true` for the whole test suite in `tests/conftest.py`: nineteen test modules build an Orchestrator with a partial `mock_clients` dict, and without it the lane would reach the live API from any test whose record misses ROR and GLEIF |
+| `WIKIDATA_TRACE` | `false` | bool (env) | `config.py` (`Settings.wikidata_trace`); `.env.example` | `wikidata.resolve` (`enrichment.trace.wikidata`) | `true` → one JSON line per lane invocation, carrying every candidate and its rejection reason | n/a | Diagnostic-only, mirrors `RETRY_TRACE` / `WEBSITE_TRACE`. **The batch-summary counters are maintained unconditionally** (as the page-read counters are), "so a report run does not have to remember to turn this on to get its numbers" (`config.py`) |
+| Name-match threshold | **reused**, `LEI_NAME_MATCH_THRESHOLD` = `88` | float (env) | §1.4 | `wikidata.best_name_score` via `orchestrator._wikidata_crosswalk` | see §1.4 | see §1.4 | Deliberately **not** a separate knob, unlike `PAGE_NAME_MATCH_THRESHOLD`. The page corroborator separated its copy so that retuning a registry guard would not silently retune what counts as a corroborating page; here the comparison decides whether a wiki item may be used as a *registry lookup key*, which is the registry's own question, so the registry's own threshold is the right one to move with |
+
+#### 1.18.2 · The type whitelist and the one `P279` step
+
+| Parameter | Value | Type | Defined at | Consumed at | Effect if widened | Effect if narrowed | Rationale |
+|-----------|-------|------|-----------|-------------|-------------------|--------------------|-----------|
+| `TYPE_WHITELIST` | 22 QIDs (below) | frozenset (inline) | `enrichment/wikidata.py` | `wikidata.type_allowed` | More item kinds admitted; the failure mode is a same-named non-organisation matching a record (the film case) | Fewer candidates survive constraint 3; `wikidata_type_rejected` rises and the hit rate falls | "The list is deliberately explicit rather than derived from a `P279` closure. Two steps up from 'pharmaceutical company' is 'organization', and two steps up from a film production company is also 'organization' — a closure admits everything and gates nothing." (`enrichment/wikidata.py`). Every QID verified against live Wikidata on 2026-08-23; pinned by `test_wikidata.py::TestTheWhitelist` |
+| `P279_ONE_STEP` | 12 subtype → parent pairs | dict (inline) | `enrichment/wikidata.py` | `wikidata.type_allowed` | A subtype added here reaches the whitelist in one step | A subtype removed is rejected outright | **Resolved from a declared table, not a live query.** "The alternative is a third API call per unrecognised class, and the two-call budget … is a hard constraint — a class hierarchy walk is exactly the unbounded fan-out that budget exists to prevent." A subtype absent from the table gets no step up and is rejected: "the lane under-matches rather than admitting an unverified class, and the rejection is visible as `wikidata_type_rejected` rather than as a silent pass." (`enrichment/wikidata.py`) |
+| Country gate | `Q30` (United States) only; missing `P17` **and** `P159` ⇒ reject | inline | `enrichment/wikidata.py` (`country_verdict`) | `wikidata.resolve` | Admitting a missing country would match a US record against a same-named organisation anywhere on earth | n/a — already the strictest setting | Deliberately conservative, on the same reasoning as ROR's country guard (§1.3): "a wrong-country identity is worse than none, because it wrongly converges distinct entities in Phase 2." An item with no country statement "is not thereby 'probably American' — it is an item nobody has finished curating." (`enrichment/wikidata.py`) |
+| Identity cross-check granularity | **city** (region rescues a state-level HQ) | inline | `enrichment/wikidata.py` (`city_verdict`) | `wikidata.resolve` | Relaxing to region would match the page corroborator's withdrawal rule and admit more items | n/a | Deliberately stricter than §1.17's `{region, country}` withdrawal scope, and the asymmetry is argued rather than inherited: "the corroborator is deciding whether to *destroy* a domain it already published … whereas this is deciding whether to *admit* a crowd-sourced identity in the first place. Refusing to admit one is cheap; the record simply proceeds to the web lane." Region normalisation reuses `tier1_ror._US_POSTAL_CODES` through `page_corroborator._norm_region`, exactly as §1.17 does (`enrichment/wikidata.py`) |
+| Collision rule | 2+ survivors ⇒ no-match | inline | `enrichment/wikidata.py` (`resolve`) | same | n/a — not orderable | Substituting "take the highest name score" would resolve collisions silently | "Two curated items both pass every constraint, so the constraints have not identified one organisation — and choosing between them on the higher fuzzy score would be exactly the tiebreak this lane does not do." Counted separately as `wikidata_ambiguous` so the cost is visible (`enrichment/wikidata.py`) |
+| Disambiguation rule | `P31 = Q4167410` ⇒ whole-record no-match | inline | `enrichment/wikidata.py` (`resolve`) | same | n/a | n/a | A disambiguation hit short-circuits the *record*, not just the candidate — a good candidate behind it is deliberately not reached, because "the wiki is saying the name identifies several organisations, and picking one from the list is precisely the judgement this lane refuses to make" (`enrichment/wikidata.py`) |
+
+`TYPE_WHITELIST`, verbatim, with the label Wikidata returns for each:
+
+| Category | QIDs |
+|---|---|
+| business / company | `Q4830453` business · `Q783794` company · `Q6881511` enterprise |
+| university / college | `Q3918` university · `Q189004` college · `Q875538` public university · `Q902104` private university · `Q1336920` community college · `Q1371037` institute of technology |
+| research institute | `Q31855` research institute · `Q7315155` research center · `Q483242` laboratory |
+| national laboratory | `Q2624320` United States national laboratory |
+| hospital / health system | `Q16917` hospital · `Q11000047` health system · `Q4287745` medical organization · `Q1774898` clinic |
+| government agency | `Q327333` government agency · `Q2659904` government organization · `Q20857065` United States federal agency |
+| nonprofit organisation | `Q163740` nonprofit organization · `Q708676` charitable organization |
+
+`P279_ONE_STEP`, verbatim: `Q19644607` pharmaceutical company → company, business · `Q90298876` biotechnology
+company → company, business · `Q7603893` state public university → public university · `Q1336920` community
+college → college · `Q11000047` health system → medical organization · `Q1371037` institute of technology →
+university · `Q2624320` US national laboratory → research institute, laboratory · `Q483242` laboratory →
+research institute · `Q708676` charitable organization → nonprofit organization · `Q20857065` US federal
+agency → government agency · `Q875538` public university → university · `Q902104` private university →
+university.
+
+#### 1.18.3 · The call budget
+
+| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
+|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
+| Per-record API calls | **2**, plus a conditional 3rd | inline | `enrichment/wikidata.py` (`resolve`) | same | A per-candidate entity fetch would be 1 + N calls | Dropping the entity call removes every constraint but the search itself | One `wbsearchentities`, then one `wbgetentities` that fetches **all** search hits in a single batched request. Batching is what makes the collision check affordable: "the gauntlet has to be run over every candidate to know whether more than one survives, and one request does that." (`enrichment/wikidata.py`) |
+| Conditional reference call | 1, batched per record, cached by QID across the batch | inline | `enrichment/wikidata.py` (`resolve`) | same | n/a | Removing it forces constraints 4 and 6 to be dropped, or the successor label to go unnamed in the `entity-superseded` reason | ⚠ **Stated deviation from the two-call budget.** Constraints 4 (`P159` → its country) and 6 (`P159` → its label) and the supersession reason (`P1366` → its label) all need *referenced* items, whose QIDs are unknown until the second call has returned; a third call is unavoidable if those constraints are to be applied at all. It fires only when a **surviving** candidate carries `P159` or `P1366`, resolves every referenced item in one request, and is cached by QID across the whole batch, so it costs nothing after the first record that names a given city. `P17` is present on most curated US organisations, so the common path remains two calls. The alternative — silently dropping constraints 4 and 6, or silently making the call — was rejected in favour of recording it here and in `README.md` |
+| `wbgetentities` `ids` cap | 50 | int (inline) | `enrichment/wikidata.py` (`entities`) | same | n/a — the API's own limit | n/a | The lane never asks for more than `WIKIDATA_SEARCH_LIMIT` plus a handful of referenced items, so the cap is a defensive slice rather than a tuning knob |
+| Fixture key | `search:<normalize_key(query)>` · `entity:<QID>` | inline | `enrichment/wikidata.py` | `utils.cache.PageCache` | n/a | n/a | The normalised query reuses `dedup.signatures.normalize_key`, under the same contract every other cache namespace here keeps (§`utils/cache.py`): the key is a dictionary key only, and the **unnormalised** name is what is sent to the API |
+| `READ_PROPERTIES` (fixture pruning) | 9 properties: `P31`, `P279`, `P17`, `P159`, `P856`, `P6782`, `P1278`, `P576`, `P1366` | tuple (inline) | `enrichment/wikidata.py` (`prune_entity`) | `WikidataClient.entities` before `PageCache.set` | Recording more properties enlarges the fixture store; nothing is read that is not parsed | Recording fewer breaks the gauntlet on replay | Measured: unpruned recordings for the 100-row chemspeed batch were **4.3 MB**, against 589 KB for the entire page-read fixture store; pruned they are **169 KB**. "A fixture is a record of *what the pipeline consumed*, which is the thing a re-run has to reproduce, and it is worth being able to read one" — the same choice the page fixtures make in storing extracted text rather than raw HTML. ⚠ **Stated cost:** adding a property to the lane means existing recordings do not carry it and must be refreshed with `scripts/wikidata_warm_fixtures.py` (`enrichment/wikidata.py`) |
+| `_RATE_LIMIT_BACKOFF_SECONDS` | `5.0` | float (inline) | `enrichment/wikidata.py` | `wikidata._backoff` | Longer waits between rate-limited retries; fewer 429s, slower batches | Shorter waits; more `wikidata_unavailable` under load | **Derived from the batch.** The first live 100-row run at concurrency 3 took `HTTPStatusError:429` on **28 of 68** invocations under the GLEIF client's 0.5 s schedule (§1.4). "A 429 is the API stating a rate, not a failure to recover from, so retrying it in half a second is not a retry — it is the same request." An ordinary transient error keeps the 0.5 s schedule (`enrichment/wikidata.py`) |
+| `_MAX_RETRY_AFTER_SECONDS` | `30.0` | float (inline) | `enrichment/wikidata.py` | `wikidata._backoff` | A longer server-supplied pause is honoured; one header can stall a batch further | Shorter cap → the lane gives up sooner and reports `wikidata_unavailable`, which costs the record nothing | A server-supplied `Retry-After` wins over the schedule — "guessing over the top of the server's own stated interval is how a client earns a longer ban" — but is capped so one header cannot stall a whole batch (`enrichment/wikidata.py`) |
+| Warm-up pause | `2.0` s between live requests | float (CLI) | `scripts/wikidata_warm_fixtures.py` (`--pause`) | same | Slower recording, fewer 429s | Faster recording, more 429s | Recording a workbook's fixtures serially before the measured run turns that run into a replay: no rate limiting, no network variance, and a re-run that reproduces its matching decisions. 100 queries warmed in 110 live HTTP requests with **zero** 429s at this pause |
+
+---
+
+### 1.19 · Determinism and cross-source consistency (Fixes A–D)
+
+> **Post-baseline.** Like §1.17 and §1.18, this section documents code added *after* the commit
+> pinned in this document's header. It is recorded here because the parameters below are
+> reproducibility controls, and a reproducibility control that is not written down in the
+> parameter table cannot be reproduced from it.
+
+**Why these exist.** Two runs of the identical 101-row chemspeed batch, on the identical
+codebase, produced **7 substantively different records** — measured with `tools/run_diff.py`
+against `logs/runs/E_final.json` and `logs/runs/F_final.json`, 30 differing cells across 14
+columns. Two of the seven were silent wrong-entity acceptances. Every parameter below is either
+a determinism control or a refusal rule; **none of them widens a threshold or accepts anything
+the previous build rejected.**
+
+#### 1.19.1 · Fix A — LLM sampling parameters
+
+| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
+|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
+| `LLM_TEMPERATURE` | `0.0` | float (module constant) | `llm/openai_client.py` | every `chat.completions.create` on both phases | Sampling entropy in every tier's JSON extraction | Already at the floor | Was a bare literal inside `call_openai`; promoted to a named constant so the person-affiliation provenance event that *records* the temperature cannot disagree with the request that used it. **Deliberately not an env var** — "a reproducibility control that can be changed per environment is not a control", the argument `dedup/llm.py` already makes for its own `TEMPERATURE` |
+| `LLM_TOP_P` | `1.0` | float (module constant) | `llm/openai_client.py` | as above | n/a — 1.0 is the whole distribution | Nucleus truncation becomes a second, independent source of run-to-run variation | Temperature 0 selects the arg-max; `top_p` decides *which tokens were candidates at all*. Leaving it at the service default meant the enrichment tiers were relying on an unstated value |
+| `LLM_SEED` | `42` | int (module constant) | `llm/openai_client.py` | as above, as `seed=` | n/a | n/a | **The value is arbitrary; only its fixity matters.** It is recorded here so a thesis re-run is reproducible from the parameter table alone. `temperature=0` alone is not determinism: a tie between two equally-likely tokens is still broken server-side, and batching/MoE routing perturbs the logits between requests. Measured: three chemspeed rows flipped `confidence` between `self_high` and `self_medium` across the two runs, which matters because `finalise` drops a Tier 3 department guess below high confidence. ⚠ **Measured limit** — the deployment (`gpt-5.4-2026-03-05`) *accepts* the parameter on every API version probed (`2024-08-01-preview` … `2025-04-01-preview`) and returns **no `system_fingerprint`**, and two warm runs with the seed accepted and sent still differed on **10 of 100 rows**, every one of them an LLM decision. The seed is a best-effort request, not a guarantee; §1.19.2's `llm` cache namespace is what closes the gap |
+| Seed-rejection fallback | one-shot, process-wide | bool (module state) | `llm/openai_client.py` (`_SEED_SUPPORTED`) | `call_openai`; `dedup/llm.py` (`_use_seed`) | n/a | n/a | A deployment that rejects `seed` is caught **once**, logged, and the call retried without it; every later call goes out without it. A per-call probe would pay a guaranteed 400 on every record. Same shape as the existing `reasoning_effort` and `temperature` fallbacks in `dedup/llm.py` |
+
+Prompt content carries no clock, run id or record id (asserted structurally by
+`tests/test_determinism.py::TestPromptsCarryNothingNondeterministic`), and every evidence list
+injected into a prompt is sorted by a stable key before rendering —
+`enrichment/person_affiliation.py` sorts its SERP snippets by URL, so two runs that retrieve the
+same five results in a different order build the same prompt.
+
+#### 1.19.2 · Fix B — the shared evidence cache
+
+| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
+|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
+| `EVIDENCE_CACHE_DIR` | `tests/fixtures` | str (env) | `config.py` (`Settings.evidence_cache_dir`); `.env.example` | `utils.cache.build_evidence_cache` via `Orchestrator.__init__` | n/a — a path | Empty string → memory-only everywhere; a second run re-gathers all its evidence and its output is not comparable to the first | One root for six namespaces (`page_reads/`, `wikidata/`, `serp/`, `fetch/`, `registry/`, `llm/`). Before it, the SERP and registry caches were in-memory and cleared per batch, and the person-affiliation lane and every `PageFetcher` entry point were not cached at all — so a "re-run" re-gathered most of its evidence. **11 of the 30 differing cells were an extraction date and nothing else**, which is what that looks like from the outside |
+| `CACHE_FROZEN` | `false` | bool (env) | `config.py` (`Settings.cache_frozen`); `.env.example`; `scripts/run_batch.py --frozen` | every `DiskCache` (`replay_only`) | `true` → a miss is an ERROR: no call, recorded per record as `evidence-unavailable-frozen` on `enrichment.trace.cache`, counted as `evidence_frozen_misses`, record proceeds without that evidence | n/a | The **evaluation freeze switch**, and the direct analogue of freezing `dedup/weights.json` before a measurement. Applies to every namespace at once — freezing three of five sources would not freeze the run. `PAGE_FIXTURE_REPLAY_ONLY` / `WIKIDATA_FIXTURE_REPLAY_ONLY` still freeze their own namespace independently and OR with this |
+| `PAGE_FIXTURE_DIR` | `<EVIDENCE_CACHE_DIR>/page_reads` | str (env) | `config.py` (`_cache_dir`) | as §1.17 | n/a | n/a | Derived from the shared root now, with the explicit variable still winning. Its committed recordings keep their path, so nothing moved |
+| `WIKIDATA_FIXTURE_DIR` | `<EVIDENCE_CACHE_DIR>/wikidata` | str (env) | `config.py` (`_cache_dir`) | as §1.18 | n/a | n/a | As above |
+| `llm` namespace | `<EVIDENCE_CACHE_DIR>/llm` | dir | `utils.cache.EvidenceCache.LAYOUT`; key by `llm_disk_key` | `llm.openai_client.OpenAIClient.extract_json` | n/a | Removing it returns the pipeline to the 10-of-100 noise floor `LLM_SEED` alone leaves | **The measurement that forced it.** With `temperature=0`, `top_p=1` and an accepted `seed`, two warm runs of the chemspeed batch still differed on 10 rows. An LLM answer *is* evidence the pipeline reads, on exactly the argument `PAGE_FIXTURE_DIR` already makes about a page, so it is recorded like one. The key is a SHA-256 of deployment + API version + all three sampling parameters + `max_tokens` + **both prompts verbatim**, so an entry can only be served to a byte-identical request and editing a prompt template invalidates every entry that used it. Deliberately not the `prompt_version` digest, which identifies the *template*: two records put different values through one template. The prompts are not stored — only the parsed response plus a 160/400-character head of each, for legibility |
+| Entry immutability | write-once | rule (inline) | `utils/cache.py` (`DiskCache.set`) | every namespace | n/a | Overwriting would move `fetched_at` forward on evidence that was never re-gathered, and change `Operating Name Provenance` on a record nothing else about had changed | A recorded entry is never rewritten; a second run reads what the first one saw. `fetched_at` falls back to the file's modification date for entries recorded before the field existed — still the day of the fetch, still stable across runs |
+
+The batch summary gains `evidence_network_calls`, `evidence_cache_hits`,
+`evidence_frozen_misses` and `evidence_cache_frozen`. `evidence_network_calls == 0` on a warm
+second run is the reproducibility gate's precondition.
+
+#### 1.19.3 · Fix C — registry candidate selection
+
+| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
+|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
+| `REGISTRY_AMBIGUITY_MARGIN` | `2.0` (0–100 scale; `scaled_margin()` converts to ROR's 0–1) | float (module constant) | `enrichment/registry_match.py` | `tier1_lei._best_verified_candidate`; `tier1_ror.call_ror` (query path) | More candidate pairs refused as indistinguishable → fewer registry matches, more records to the web lane. Above ~5 it starts refusing pairs a whole distinguishing token separates ("Analytical Sales" vs "Analytical Sales and Services"), which would be refusing matches the evidence *does* distinguish | `0` restores "the top candidate always wins", i.e. the oscillation this exists to stop | **DERIVATION.** The margin must cover the difference a single character makes and no more. `token_sort_ratio` is a normalised edit distance: on the 15–30 character legal names these registries return, one character between two candidates moves the score by ≈2 points (2/(2·20)·100 ≈ 2.5 for a 20-character pair). Two candidates that close are separated by a punctuation or spelling variant in the registry's own record, and which ranks higher can flip when the registry re-indexes. **2.0 is the smallest value that covers the one-character case.** ONE constant, deliberately — the Wikidata lane's ambiguity rule ("more than one candidate survived the gauntlet") needs no threshold, so there was none to reuse and there is now exactly one to reuse from |
+| Short-name length | `≤ 4` significant characters (legal forms dropped) | int (module constant) | `enrichment/registry_match.py` (`_SHORT_NAME_MAX_LEN`) | `is_collision_prone` | More names require a corroborating signal → fewer short-name matches accepted | Fewer; at `0` the guard never fires and "BHS" can match any expansion | "BHS", "BIC" and "3M" are three characters or fewer after the legal form is dropped. There is not enough string there for a name match to identify one organisation among a registry's millions, at any threshold — the batch matched a *different* BHS expansion on each of two runs |
+| Acronym length | `≤ 5` for a single all-caps token | int (module constant) | `enrichment/registry_match.py` (`_ACRONYM_MAX_LEN`) | `is_collision_prone` | Longer all-caps names treated as acronyms → the guard fires on more records | Fewer acronyms guarded | Restricted to a **single token** on purpose: a great many SAP records carry their whole name in capitals ("LARGO MEDICAL CTR"), and treating each as an acronym would apply the guard to most of a batch. Five covers the NASA/USDA-shaped acronyms where same-name registry collisions actually happen |
+| Corroborating signals | locality `consistent`, **or** candidate website = record domain | closed set | `enrichment/registry_match.py` (`second_signal`) | both registry clients | n/a — the set is closed by the fix that authorised it | n/a | A *neutral* locality is not agreement: silence is not evidence, the rule the whole locality comparator rests on. The record's domain comes from an already-accepted `domain` or the host of a supplied email — weak evidence of a website, strong evidence of which organisation the record is about |
+| Selection order | `(stronger discriminator, score DESC, canonical id ASC)` | rule | `enrichment/registry_match.py` (`rank_key`) | both registry clients; SERP selection in `website_resolver`, Tier 2A, Tier 2B, the department probe | n/a | n/a | The previous order was a stable sort on score alone (or `max()`, which returns the first maximum), so every tie inherited the API's response order. ROR's `items[:10]` truncation was removed with it — that was another way for response order to decide which candidates were scored at all |
+| GLEIF completion truncation | five smallest **LEIs**, not the first five returned | rule | `enrichment/tier1_lei._fuzzy_lookup` | same | n/a | n/a | The counterpart to removing ROR's `[:10]`, for a cap that cannot be removed because it is a real call budget (§1.4). Found by `tools/shuffle_evidence.py` after the rest of Fix C had landed: a truncation is a selection, and this one still read arrival order |
+
+#### 1.19.4 · Fix D — cross-source consistency
+
+| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
+|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
+| Cross-source name threshold | **reused**, `LEI_NAME_MATCH_THRESHOLD` = `88` | float (env) | §1.4 | `enrichment/consistency.apply_cross_source_gate` | see §1.4 | see §1.4 | Deliberately **not** a new knob. "Do these two names name the same organisation" is the question GLEIF's verification guard, the page reader (§1.17) and the Wikidata lane (§1.18) all already ask, with one scorer (`tier1_lei._name_match_score`) at one value. A fourth number would need its own derivation and its own tuning batch |
+| Source priority | GLEIF/ROR ≻ web; between the registries, the one closer to the record's own Name 1 | rule | `enrichment/consistency.py` | as above | n/a | n/a | A page is a witness and a register is a register. Between two registries the tiebreak scores against `name1_original` — **not** the enriched name, which by that point *is* one of the two claimants, so scoring against it would hand the tie to whichever source wrote last. On the BIC row: input "BIC Corp", GLEIF "BIC CORPORATION", ROR "Centene Corporation" |
+| Registry locality verdict | comparator reused verbatim from §1.17 | rule | `enrichment/locality.py` | both registry clients → `apply_registry_location_check` | n/a | n/a | Same three rules as the page read: silence is neutral, only a stated place that differs is a contradiction, and the granularity is part of the answer. A contradiction **flags** (`registry-location-mismatch`) and does not discard — a company relocating within one country is ordinary. Only in combination with the short-name guard does it refuse, because there the contradiction is exactly the second signal that was needed |
+
+A failed search is **not** recorded. `search.base.SearchUnavailable` distinguishes "the provider could not execute this query" from "this query has no results"; the providers previously swallowed a reset connection and returned `[]`, which a durable cache would have made permanent — one dropped TLS handshake recorded as "this organisation has no web presence". Callers still see `[]` and behave exactly as before. The same rule already applied to registry errors (`registry_record` refuses anything carrying `error`).
+
+#### 1.19.5 · The reproducibility gate
+
+| Parameter | Value | Type | Defined at | Rationale |
+|-----------|-------|------|-----------|-----------|
+| Join key | `(name1_original, city)`, then customer number, then input row position | tuple | `tools/run_diff.py` (`KEY_FIELDS`) | Input-side, so two runs that disagree about a record still line that record up. **Not** Search Term 1: the pipeline writes it, and Fix D(3) exists precisely because it could be derived from a registry entity that lost a consistency check. The two fallbacks exist because 17 chemspeed rows share a `(name, city)` key — nine of them carrying neither a Name 1 nor a customer number — and silently merging or dropping them would shrink the batch the gate measures |
+| Columns compared | all of `api/output_columns.RESPONSE_COLUMNS` | set | `tools/run_diff.py` | Nothing is excluded, whitelisted or normalised away. `None` and `""` compare equal and that is the only fold. `duration_ms` is not in the shipped schema and is the one output that *should* differ |
+| Pass condition | zero differing rows **and** `evidence_network_calls == 0` on run 2 | rule | `tools/run_diff.py`; batch summary | A clean diff from a run that went to the network does not mean what the gate needs it to mean — it is not comparing the same evidence the first run saw |
+| Replay control | run the batch against an **order-inverted** copy of the same cache and diff | rule | `tools/shuffle_evidence.py` | The gate above cannot, on its own, tell a reproducible pipeline from a replay of one recording. This can: identical content in inverted order is exactly the perturbation a live API makes, and identical output **plus identical cache-hit counts** means no selection and no prompt read the order. It is also what caught the GLEIF truncation above |
+
+---
+
+### 1.20 · Provenance Scheme B — the exported grammar (`enrichment/confidence.py`)
+
+> **Post-baseline.** Like §1.17–§1.19, this documents code added *after* the commit pinned in this
+> document's header.
+>
+> **Canonical definition: README § "The provenance grammar — Scheme B".** The grammar and the
+> confidence table are reproduced here because this document is the thesis's parameter reference
+> and a reader must be able to interpret an exported provenance column from it alone. They are
+> **not** maintained here: the machine-readable source is `enrichment/confidence.py`
+> (`PROVENANCE_PATTERN`, `compute_confidence`), which the pipeline, the parsers and the tests all
+> import rather than re-derive. If this table and that module ever disagree, the module is right.
+
+**Why this exists.** The exported provenance was `producer:tier:method` — `ror:1:exact`,
+`llm_tier3:3:self_medium`, `website_resolver:3:rule` — plus `web:{domain}:extracted:{date}` for
+the operating name. It exported the *mechanism* where a reader needs the *claim*. The tier is a
+route, not a warrant; the method token was not comparable across producers (`exact` meant
+"an identifier was returned" for a registry and "≥ 99.5 on a fuzzy ratio" for a string
+comparison); `self_*` leaked a model's assessment of its own output into a slot read as an
+authority claim; and the date decayed, which is why eleven rows of two diffed runs once differed
+in nothing else.
+
+```
+provenance := source ":" confidence ( "+" witness )?
+source     := "input" | "ror" | "gleif" | "wikidata" | "web:" domain | "llm"
+confidence := "verified" | "provisional" | "low"
+witness    := "web" | "wikidata" | "llm" | "registry" | "domain"
+```
+
+**Confidence is computed by one function** — `compute_confidence(evidence)`. No lane, tier or
+guard assigns a confidence of its own; each records what it saw, and this table says what that is
+worth. Precedence is top to bottom.
+
+| Evidence situation | Confidence | Witness |
+|---|---|---|
+| Value authored by a registry (ROR/GLEIF response) | `verified` | `+wikidata` iff the crosswalk routed there, else none |
+| Non-registry value + an independent second source agrees | `verified` | required — name the witness |
+| Single uncontradicted source | `provisional` | `+llm` only for the canonical-proposal-equals-input case; else none |
+| No source, contradicted evidence, ambiguity/no-match, short-name guard | `low` | never |
+
+| Parameter | Value | Type | Defined in | Consumed by | Rationale |
+|---|---|---|---|---|---|
+| Grammar | `PROVENANCE_PATTERN` — the regex above, anchored | regex (module constant) | `enrichment/confidence.py` | `finalise`'s assertion; `parse()`; `tools/run_diff.py`'s scheme detector; `scripts/fix_reports.py` | One definition, imported everywhere. A second copy of a grammar is a second grammar |
+| Confidence vocabulary | `verified` \| `provisional` \| `low` | closed set | `enrichment/confidence.py` | as above | Three values, ordered, and comparable across every producer — which the scale-namespaced bands (`self_high`, `exact`, `rule`) deliberately were not |
+| Witness vocabulary | `web` \| `wikidata` \| `llm` \| `registry` \| `domain` | closed set | `enrichment/confidence.py` | as above | Names the second evidence system, so a `verified` on a non-registry value is never unattributed |
+| Scoped columns | all 7 `*_provenance` columns | set | `enrichment/orchestrator.PROVENANCE_COLUMNS` | the finalisation assertion | Includes `operating_name_provenance`, which is written directly rather than derived — the one column that could drift out of the scheme unnoticed |
+| Hard rule 1 | `llm` never reaches `verified`, as source or as witness | rule | `confidence.compute_confidence`, `confidence.validate` | finalisation assertion | "A confident unverifiable claim is the more dangerous case, not the safer one" — the claim `self_high` in an exported column was being read as |
+| Hard rule 2 | a witness-less `verified` is legal only for `ror` / `gleif` / `wikidata`-as-crosswalked-registry | rule | `confidence.validate` | finalisation assertion | Makes the rule checkable from the string alone, without knowing which lane wrote it |
+| Hard rule 3 | rejected or contradicted evidence never appears in provenance | rule | `confidence.compute_confidence` (contradiction is tested **above** the registry row) | — | A registry hit a consistency check refused is a value the pipeline decided against, not a verified value that happens to carry a flag |
+| Hard rule 4 | "independent" = a different evidence system | rule | `provenance.situation_for` (`_DOMAIN_WITNESSES`) | domain provenance | A page fetched from the domain it corroborates is **one** source. A domain reaches `verified` only on a registry-stated website, a Wikidata `P856` agreement, or the record's own email domain |
+| Invalid output | raises `ProvenanceGrammarError` | rule | `confidence.validate_all` in `finalise` | — | A provenance column that does not parse is worse than an empty one: a consumer reads it as an attribution. An empty column is always legal — a field with no value has nothing to attribute |
+| Review-flag core fields | `name1_enriched`, `name2_enriched` | set | `enrichment/flags.CORE_PROVENANCE_FIELDS` | `compute_flags` | `flagged := any(core field == low) OR any code`. `domain` and `record_type` export their confidence but do not raise the flag: the flag asks a human to check a **name**. Including `record_type` would take the 100-record reference batch from 55 flagged rows to 96, since 72 of its records have no determinable type |
+
+**Measured on the 100-record chemspeed batch**, migrating against the same frozen evidence cache
+(`tools/provenance_invariance.py`): **0 differences across all 56 non-provenance, non-flag
+columns**; every provenance column migrated; **0 rows changed flag status**; `Flag Reason`
+byte-identical on all 100 rows. The double-run reproducibility gate still passes at
+0 differing rows and 0 network calls on run 2. Full mapping with counts:
+`provenance_migration_report.md`.
+
 ---
 
 ## 2 · Conflicts — parameters defined in more than one place
@@ -390,10 +602,12 @@ Unlike the residue knobs, these two are read directly from the environment insid
 
 ## 3 · Environment variables
 
-Every environment variable read anywhere in the repository — 45 rows covering 47 variables (the
+Every environment variable read anywhere in the repository — 54 rows covering 56 variables (the
 final row groups the three standard proxy variables). The seven added by Fixes 1 and 3
-(`RETRY_TRACE`, `PAGE_*`) are all optional with working defaults; none breaks anything when unset. "Breaks when unset" is read from the code
-path that consumes it. **Secret** marks values that authenticate to an external service.
+(`RETRY_TRACE`, `PAGE_*`) and the eight added by the Stage 2c crosswalk lane (`WIKIDATA_*`) are
+all optional with working defaults; none breaks anything when unset. "Breaks when unset" is read
+from the code path that consumes it. **Secret** marks values that authenticate to an external
+service — the Wikidata lane adds none, because the Action API needs no authentication.
 
 | Variable | Default | Secret | Sourced from | What breaks when unset | Defined / read at |
 |----------|---------|--------|--------------|------------------------|-------------------|
@@ -426,6 +640,14 @@ path that consumes it. **Secret** marks values that authenticate to an external 
 | `PAGE_FIXTURE_DIR` | `tests/fixtures/page_reads` | no | `.env` / Application Settings | Nothing — the default path is used. An **empty** value disables the disk layer, so page reads live only in memory and a re-run may reach different corroboration verdicts | `config.py` (`Settings.page_fixture_dir`); `utils.cache.PageCache` |
 | `PAGE_FIXTURE_REPLAY_ONLY` | `false` | no | `.env` / Application Settings | Nothing — live fetching stays enabled | `config.py` (`Settings.page_fixture_replay_only`); `enrichment/page_corroborator.fetch_pages` |
 | `PAGE_EXTRACT_FEEDS_RETRY` | `false` | no | `.env` / Application Settings | Nothing — the optional Stage 5 feed stays off | `config.py` (`Settings.page_extract_feeds_retry`); `enrichment/orchestrator._maybe_feed_retry_from_page` |
+| `WIKIDATA_ENABLED` | `true` | no | `.env` / Application Settings | Nothing — the Stage 2c crosswalk lane stays on | `config.py` (`Settings.wikidata_enabled`); `enrichment/orchestrator._wikidata_crosswalk` |
+| `WIKIDATA_API_BASE` | `https://www.wikidata.org/w/api.php` | no | `.env` / Application Settings | Nothing | `config.py` (`Settings.wikidata_api_base`); `enrichment/wikidata.WikidataClient._get` |
+| `WIKIDATA_TIMEOUT_SECONDS` | `10` | no | `.env` / Application Settings | Nothing | `config.py` (`Settings.wikidata_timeout_seconds`); `enrichment/wikidata.WikidataClient._get` |
+| `WIKIDATA_MAX_RETRIES` | `2` | no | `.env` / Application Settings | Nothing | `config.py` (`Settings.wikidata_max_retries`); `enrichment/wikidata.WikidataClient._get` |
+| `WIKIDATA_SEARCH_LIMIT` | `5` | no | `.env` / Application Settings | Nothing | `config.py` (`Settings.wikidata_search_limit`); `enrichment/wikidata.WikidataClient.search` |
+| `WIKIDATA_FIXTURE_DIR` | `tests/fixtures/wikidata` | no | `.env` / Application Settings | Nothing — the default path is used. An **empty** value disables the disk layer, so a re-run may reach different matching verdicts | `config.py` (`Settings.wikidata_fixture_dir`); `utils.cache.PageCache` (prefix `wikidata`) |
+| `WIKIDATA_FIXTURE_REPLAY_ONLY` | `false` | no | `.env` / Application Settings; forced to `"true"` for the whole test suite by `tests/conftest.py` | Nothing — live querying stays enabled | `config.py` (`Settings.wikidata_fixture_replay_only`); `enrichment/wikidata.WikidataClient._cached` |
+| `WIKIDATA_TRACE` | `false` | no | `.env`; forced to `"true"` by `scripts/run_batch.py --wikidata-trace` | Nothing — the lane behaves identically and the summary counters are still maintained; only the `enrichment.trace.wikidata` JSON lines are not emitted | `config.py` (`Settings.wikidata_trace`); `enrichment/wikidata.resolve` |
 | `LEI_MAX_RETRIES` | `2` | no | `.env` / Application Settings | Nothing | `config.py:91`, `:199` |
 | `FUZZY_MATCH_THRESHOLD` | `80` | no | `.env` / Application Settings | Nothing | `config.py:92`, `:204` |
 | `MAX_PAGE_CONTENT_CHARS` | `1500` effective (⚠ `3000` documented — §2.1) | no | `.env` / Application Settings | Nothing | `config.py:93`, `:209` |
@@ -642,7 +864,8 @@ Enumerated so the thesis records what is not yet fixed. All are open items alrea
 
 ---
 
-Pass 4 complete. 147 parameter rows across 15 subsystem groups (§1); 7 conflicts recorded (§2);
+Pass 4 complete. 147 parameter rows across 15 subsystem groups (§1), plus §1.20's 10
+provenance-grammar rows added post-baseline; 7 conflicts recorded (§2);
 40 environment variables enumerated, of which 2 are secrets and 2 are required (§3); 33
 scoring-weight bands documented, of which 2 are evidenced as agreed with the industry
 supervisor, 5 are explicitly flagged UNCONFIRMED in code, and 26 carry no recorded agreement

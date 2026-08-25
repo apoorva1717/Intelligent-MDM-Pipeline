@@ -1,0 +1,10 @@
+{
+ "domain": "search:biopharm associates",
+ "payload": {
+  "searchinfo": {
+   "search": "BioPharm Associates"
+  },
+  "search": [],
+  "success": 1
+ }
+}

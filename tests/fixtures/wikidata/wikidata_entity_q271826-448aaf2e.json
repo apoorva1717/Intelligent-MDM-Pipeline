@@ -1,0 +1,60 @@
+{
+ "domain": "entity:q271826",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q271826",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Biozat"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 484170,
+        "id": "Q484170"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 142,
+        "id": "Q142"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://commune-biozat.fr/",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,32 @@
+{
+ "domain": "entity:q67200977",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q67200977",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Johnson & Johnson"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 21191270,
+        "id": "Q21191270"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

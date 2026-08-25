@@ -1,0 +1,31 @@
+{
+ "domain": "entity:q41529818",
+ "payload": {
+  "id": "Q41529818",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Bioserotypes of Yersinia isolated in Italy from 1979 to 1982"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 13442814,
+        "id": "Q13442814"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

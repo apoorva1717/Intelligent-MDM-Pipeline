@@ -1,0 +1,140 @@
+{
+ "domain": "search:astrazeneca",
+ "payload": {
+  "searchinfo": {
+   "search": "AstraZeneca"
+  },
+  "search": [
+   {
+    "id": "Q731938",
+    "title": "Q731938",
+    "pageid": 688214,
+    "concepturi": "http://www.wikidata.org/entity/Q731938",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q731938",
+    "display": {
+     "label": {
+      "value": "AstraZeneca",
+      "language": "en"
+     },
+     "description": {
+      "value": "British-Swedish pharmaceutical company",
+      "language": "en"
+     }
+    },
+    "label": "AstraZeneca",
+    "description": "British-Swedish pharmaceutical company",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "AstraZeneca"
+    }
+   },
+   {
+    "id": "Q95042269",
+    "title": "Q95042269",
+    "pageid": 93969461,
+    "concepturi": "http://www.wikidata.org/entity/Q95042269",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q95042269",
+    "display": {
+     "label": {
+      "value": "AZD1222",
+      "language": "en"
+     },
+     "description": {
+      "value": "viral vector vaccine for prevention of COVID-19",
+      "language": "en"
+     }
+    },
+    "label": "AZD1222",
+    "description": "viral vector vaccine for prevention of COVID-19",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "AstraZeneca vaccine"
+    },
+    "aliases": [
+     "AstraZeneca vaccine"
+    ]
+   },
+   {
+    "id": "Q30338680",
+    "title": "Q30338680",
+    "pageid": 31950893,
+    "concepturi": "http://www.wikidata.org/entity/Q30338680",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q30338680",
+    "display": {
+     "label": {
+      "value": "AstraZeneca AB",
+      "language": "en"
+     },
+     "description": {
+      "value": "Swedish company",
+      "language": "en"
+     }
+    },
+    "label": "AstraZeneca AB",
+    "description": "Swedish company",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "AstraZeneca AB"
+    }
+   },
+   {
+    "id": "Q30268710",
+    "title": "Q30268710",
+    "pageid": 31881459,
+    "concepturi": "http://www.wikidata.org/entity/Q30268710",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q30268710",
+    "display": {
+     "label": {
+      "value": "AstraZeneca",
+      "language": "en"
+     },
+     "description": {
+      "value": "company in Osaka, Japan",
+      "language": "en"
+     }
+    },
+    "label": "AstraZeneca",
+    "description": "company in Osaka, Japan",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "AstraZeneca"
+    }
+   },
+   {
+    "id": "Q1335294",
+    "title": "Q1335294",
+    "pageid": 1274973,
+    "concepturi": "http://www.wikidata.org/entity/Q1335294",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q1335294",
+    "display": {
+     "label": {
+      "value": "AstraZeneca (United States)",
+      "language": "en"
+     },
+     "description": {
+      "value": "biopharmaceutical company, acquired by AstraZeneca in 2007",
+      "language": "en"
+     }
+    },
+    "label": "AstraZeneca (United States)",
+    "description": "biopharmaceutical company, acquired by AstraZeneca in 2007",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "AstraZeneca (United States)"
+    }
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

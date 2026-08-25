@@ -1,0 +1,57 @@
+{
+ "domain": "search:nestle health science",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Nestle Health Science"
+  },
+  "search": [
+   {
+    "id": "Q45132270",
+    "title": "Q45132270",
+    "pageid": 46310561,
+    "concepturi": "http://www.wikidata.org/entity/Q45132270",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q45132270",
+    "display": {
+     "label": {
+      "value": "Nestl\u00e9 Health Science",
+      "language": "en"
+     },
+     "description": {
+      "value": "business enterprise in United States of America",
+      "language": "en"
+     }
+    },
+    "label": "Nestl\u00e9 Health Science",
+    "description": "business enterprise in United States of America",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Nestl\u00e9 Health Science"
+    }
+   },
+   {
+    "id": "Q131213431",
+    "title": "Q131213431",
+    "pageid": 125108380,
+    "concepturi": "http://www.wikidata.org/entity/Q131213431",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q131213431",
+    "display": {
+     "label": {
+      "value": "Nestle Health Science France",
+      "language": "fr"
+     }
+    },
+    "label": "Nestle Health Science France",
+    "match": {
+     "type": "label",
+     "language": "fr",
+     "text": "Nestle Health Science France"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

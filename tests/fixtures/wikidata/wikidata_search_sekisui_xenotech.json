@@ -1,0 +1,10 @@
+{
+ "domain": "search:sekisui xenotech",
+ "payload": {
+  "searchinfo": {
+   "search": "Sekisui Xenotech"
+  },
+  "search": [],
+  "success": 1
+ }
+}

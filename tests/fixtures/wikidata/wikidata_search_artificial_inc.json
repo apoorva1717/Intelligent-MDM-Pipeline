@@ -1,0 +1,10 @@
+{
+ "domain": "search:artificial inc",
+ "payload": {
+  "searchinfo": {
+   "search": "Artificial, Inc"
+  },
+  "search": [],
+  "success": 1
+ }
+}

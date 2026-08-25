@@ -1,0 +1,10 @@
+{
+ "domain": "search:axys pharmaceuticals",
+ "payload": {
+  "searchinfo": {
+   "search": "Axys Pharmaceuticals"
+  },
+  "search": [],
+  "success": 1
+ }
+}

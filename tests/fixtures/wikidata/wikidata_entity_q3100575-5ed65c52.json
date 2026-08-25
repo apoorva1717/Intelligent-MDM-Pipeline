@@ -1,0 +1,95 @@
+{
+ "domain": "entity:q3100575",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q3100575",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Genetics"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Genetics (Austin, Tex.)"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 5633421,
+        "id": "Q5633421"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 5253501,
+        "id": "Q5253501"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.genetics.org",
+       "type": "string"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://catalog.hathitrust.org/api/volumes/oclc/1570590.html",
+       "type": "string"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://search.proquest.com/publication/47453",
+       "type": "string"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://books.google.com/books?id=TJ_zAAAAMAAJ",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

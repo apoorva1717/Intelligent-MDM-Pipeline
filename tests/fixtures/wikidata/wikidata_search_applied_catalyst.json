@@ -1,0 +1,10 @@
+{
+ "domain": "search:applied catalyst",
+ "payload": {
+  "searchinfo": {
+   "search": "Applied catalyst"
+  },
+  "search": [],
+  "success": 1
+ }
+}

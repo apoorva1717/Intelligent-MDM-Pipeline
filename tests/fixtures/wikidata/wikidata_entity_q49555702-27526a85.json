@@ -1,0 +1,48 @@
+{
+ "domain": "entity:q49555702",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q49555702",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Saint Edwards University Track Field"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 22698,
+        "id": "Q22698"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

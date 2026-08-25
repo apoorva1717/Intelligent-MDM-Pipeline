@@ -1,0 +1,127 @@
+{
+ "domain": "search:akzonobel",
+ "payload": {
+  "searchinfo": {
+   "search": "AkzoNobel"
+  },
+  "search": [
+   {
+    "id": "Q50912",
+    "title": "Q50912",
+    "pageid": 53015,
+    "concepturi": "http://www.wikidata.org/entity/Q50912",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q50912",
+    "display": {
+     "label": {
+      "value": "AkzoNobel",
+      "language": "en"
+     },
+     "description": {
+      "value": "Dutch chemical company",
+      "language": "en"
+     }
+    },
+    "label": "AkzoNobel",
+    "description": "Dutch chemical company",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "AkzoNobel"
+    }
+   },
+   {
+    "id": "Q30338836",
+    "title": "Q30338836",
+    "pageid": 31951054,
+    "concepturi": "http://www.wikidata.org/entity/Q30338836",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q30338836",
+    "display": {
+     "label": {
+      "value": "AkzoNobel (United States)",
+      "language": "en"
+     }
+    },
+    "label": "AkzoNobel (United States)",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "AkzoNobel (United States)"
+    }
+   },
+   {
+    "id": "Q28971306",
+    "title": "Q28971306",
+    "pageid": 30631307,
+    "concepturi": "http://www.wikidata.org/entity/Q28971306",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q28971306",
+    "display": {
+     "label": {
+      "value": "AkzoNobel (Germany)",
+      "language": "en"
+     }
+    },
+    "label": "AkzoNobel (Germany)",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "AkzoNobel (Germany)"
+    }
+   },
+   {
+    "id": "Q30338838",
+    "title": "Q30338838",
+    "pageid": 31951057,
+    "concepturi": "http://www.wikidata.org/entity/Q30338838",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q30338838",
+    "display": {
+     "label": {
+      "value": "AkzoNobel (United Kingdom)",
+      "language": "en"
+     },
+     "description": {
+      "value": "UK business",
+      "language": "en"
+     }
+    },
+    "label": "AkzoNobel (United Kingdom)",
+    "description": "UK business",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "AkzoNobel (United Kingdom)"
+    }
+   },
+   {
+    "id": "Q33121064",
+    "title": "Q33121064",
+    "pageid": 34582856,
+    "concepturi": "http://www.wikidata.org/entity/Q33121064",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q33121064",
+    "display": {
+     "label": {
+      "value": "AkzoNobel (France)",
+      "language": "en"
+     },
+     "description": {
+      "value": "company in Amb\u00e8s, France",
+      "language": "en"
+     }
+    },
+    "label": "AkzoNobel (France)",
+    "description": "company in Amb\u00e8s, France",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "AkzoNobel (France)"
+    }
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

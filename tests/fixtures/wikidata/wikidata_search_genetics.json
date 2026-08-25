@@ -1,0 +1,140 @@
+{
+ "domain": "search:genetics",
+ "payload": {
+  "searchinfo": {
+   "search": "Genetics"
+  },
+  "search": [
+   {
+    "id": "Q7162",
+    "title": "Q7162",
+    "pageid": 8311,
+    "concepturi": "http://www.wikidata.org/entity/Q7162",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q7162",
+    "display": {
+     "label": {
+      "value": "genetics",
+      "language": "en"
+     },
+     "description": {
+      "value": "science of genes, heredity, and variation in living organisms",
+      "language": "en"
+     }
+    },
+    "label": "genetics",
+    "description": "science of genes, heredity, and variation in living organisms",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "genetics"
+    }
+   },
+   {
+    "id": "Q3100575",
+    "title": "Q3100575",
+    "pageid": 2962962,
+    "concepturi": "http://www.wikidata.org/entity/Q3100575",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q3100575",
+    "display": {
+     "label": {
+      "value": "Genetics",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific journal",
+      "language": "en"
+     }
+    },
+    "label": "Genetics",
+    "description": "scientific journal",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Genetics"
+    }
+   },
+   {
+    "id": "Q31151",
+    "title": "Q31151",
+    "pageid": 34101,
+    "concepturi": "http://www.wikidata.org/entity/Q31151",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q31151",
+    "display": {
+     "label": {
+      "value": "population genetics",
+      "language": "en"
+     },
+     "description": {
+      "value": "subfield of genetics that deals with genetic differences of populations, part of evolutionary biology",
+      "language": "en"
+     }
+    },
+    "label": "population genetics",
+    "description": "subfield of genetics that deals with genetic differences of populations, part of evolutionary biology",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "Genetics, Population"
+    },
+    "aliases": [
+     "Genetics, Population"
+    ]
+   },
+   {
+    "id": "Q15762471",
+    "title": "Q15762471",
+    "pageid": 17395784,
+    "concepturi": "http://www.wikidata.org/entity/Q15762471",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q15762471",
+    "display": {
+     "label": {
+      "value": "Genetics and Molecular Research",
+      "language": "en"
+     },
+     "description": {
+      "value": "journal",
+      "language": "en"
+     }
+    },
+    "label": "Genetics and Molecular Research",
+    "description": "journal",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Genetics and Molecular Research"
+    }
+   },
+   {
+    "id": "Q15765508",
+    "title": "Q15765508",
+    "pageid": 17398832,
+    "concepturi": "http://www.wikidata.org/entity/Q15765508",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q15765508",
+    "display": {
+     "label": {
+      "value": "Genetics in Medicine",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific journal",
+      "language": "en"
+     }
+    },
+    "label": "Genetics in Medicine",
+    "description": "scientific journal",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Genetics in Medicine"
+    }
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

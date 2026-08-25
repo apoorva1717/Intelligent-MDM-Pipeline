@@ -1,0 +1,60 @@
+{
+ "domain": "entity:q26518",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "id": "Q26518",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "S\u00f6dert\u00e4lje"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 12813115,
+        "id": "Q12813115"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 34,
+        "id": "Q34"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.sodertalje.se/",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

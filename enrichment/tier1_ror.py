@@ -21,8 +21,23 @@ from typing import Any
 import httpx
 from rapidfuzz import fuzz
 
+from enrichment.locality import US_REGION_CODES, compare_registry_addresses
+from enrichment.registry_match import (
+    CROSSWALK_TIER,
+    ambiguity_verdict,
+    is_collision_prone,
+    name_match_tier,
+    rank_key,
+    second_signal,
+)
 from llm.openai_client import resolve_tls_verify
-from utils.cache import CacheKey, legacy_lookup_key, lookup_key
+from utils.cache import (
+    CacheKey,
+    RegistryUnavailableFrozen,
+    cached_registry_get,
+    legacy_lookup_key,
+    lookup_key,
+)
 from utils.text_utils import (
     _fuzzy_token_covers,
     acronym_matches_name,
@@ -134,23 +149,12 @@ _US_STATE_ABBREV_RE = re.compile(r"\b([A-Za-z]{3,5})\b\.?")
 # immediately follow put the code beyond doubt — "FL State Univ" can only mean
 # Florida State University. Everything else ("IN Laboratories", "OR
 # Diagnostics") is left untouched.
-_US_POSTAL_CODES: dict[str, str] = {
-    "al": "Alabama", "ak": "Alaska", "az": "Arizona", "ar": "Arkansas",
-    "ca": "California", "co": "Colorado", "ct": "Connecticut",
-    "de": "Delaware", "fl": "Florida", "ga": "Georgia", "hi": "Hawaii",
-    "id": "Idaho", "il": "Illinois", "in": "Indiana", "ia": "Iowa",
-    "ks": "Kansas", "ky": "Kentucky", "la": "Louisiana", "me": "Maine",
-    "md": "Maryland", "ma": "Massachusetts", "mi": "Michigan",
-    "mn": "Minnesota", "ms": "Mississippi", "mo": "Missouri",
-    "mt": "Montana", "ne": "Nebraska", "nv": "Nevada",
-    "nh": "New Hampshire", "nj": "New Jersey", "nm": "New Mexico",
-    "ny": "New York", "nc": "North Carolina", "nd": "North Dakota",
-    "oh": "Ohio", "ok": "Oklahoma", "or": "Oregon",
-    "pa": "Pennsylvania", "ri": "Rhode Island", "sc": "South Carolina",
-    "sd": "South Dakota", "tn": "Tennessee", "tx": "Texas", "ut": "Utah",
-    "vt": "Vermont", "va": "Virginia", "wa": "Washington",
-    "wv": "West Virginia", "wi": "Wisconsin", "wy": "Wyoming",
-}
+# The map itself now lives in `enrichment.locality` — Fix D(2) applies the
+# same US-region normalisation to registry localities as the page read
+# does, and one map serving both is the point. Re-exported under the
+# historical private name so the structural test that pins "ROR-local
+# expansion maps never touch an output name" keeps testing this object.
+_US_POSTAL_CODES: dict[str, str] = US_REGION_CODES
 
 # The closed set of following contexts. Nothing outside these four fires.
 _TWO_LETTER_CONTEXT = (
@@ -778,16 +782,25 @@ def _extract_org_fields(org: dict[str, Any]) -> dict[str, Any]:
     ]
 
     country = None
+    # The registered locality. Fix D(2) compares it against the record's
+    # city/state with the same comparator the page read uses; ROR keeps it on
+    # the primary location's geonames details.
+    city = region = None
     if org.get("locations"):
-        country = (
-            org["locations"][0]
-            .get("geonames_details", {})
-            .get("country_name")
+        geo = org["locations"][0].get("geonames_details", {}) or {}
+        country = geo.get("country_name")
+        city = (geo.get("name") or "").strip() or None
+        region = (
+            (geo.get("country_subdivision_name") or "").strip()
+            or (geo.get("country_subdivision_code") or "").strip()
+            or None
         )
 
     return {
         "ror_id": org["id"],
         "official_name": display_name,
+        "city": city,
+        "region": region,
         "acronym": acronym,
         "org_types": org_types,
         "is_research_institution": is_research,
@@ -807,6 +820,8 @@ async def call_ror(
     city: str | None = None,
     state: str | None = None,
     base_url: str | None = None,
+    *,
+    record_domain: str | None = None,
 ) -> dict[str, Any]:
     """Hybrid ROR lookup: affiliation-first with query-fallback.
 
@@ -885,13 +900,114 @@ async def call_ror(
             "query": name,
         })
 
-    def _no_match(score: float = 0.0) -> dict[str, Any]:
-        r: dict[str, Any] = {
+    def _cache(result: dict[str, Any]) -> dict[str, Any]:
+        """Memory-cache the decision for the rest of this batch.
+
+        The DECISION is memory-only and dies with the batch. What outlives the
+        process is the registry's raw response, recorded by
+        `utils.cache.cached_registry_get` — so a change to the selection rules
+        below is re-applied on every run instead of being frozen along with the
+        evidence. See that function.
+        """
+        _ror_cache[cache_key] = result
+        return result
+
+    def _no_match(score: float = 0.0, refused_by: str | None = None) -> dict[str, Any]:
+        return _cache({
             "matched": False, "score": score,
             "guard_rejections": guard_rejections,
-        }
-        _ror_cache[cache_key] = r
-        return r
+            "refused_by": refused_by,
+        })
+
+    def _locality(
+        fields: dict[str, Any],
+    ) -> tuple[str, str | None, str | None, list[str]]:
+        """Fix D(2) — the ROR record's registered locality against this record's.
+
+        Compared, carried, and never acted on here: a contradiction keeps the
+        match (same-country relocations are common) and the orchestrator raises
+        `registry-location-mismatch` on it. The one place it does decide
+        something is Fix C(3) below, where a short name with a contradicting
+        locality has nothing left to stand on.
+
+        ROR publishes ONE primary location, so the address set has one member
+        — but it goes through the same aggregating comparator GLEIF's two do,
+        so the two registries cannot drift apart on the granularity rule (a
+        city difference inside an agreeing region is a note, not a
+        contradiction).
+        """
+        return compare_registry_addresses(
+            [{
+                "kind": "registered",
+                "city": fields.get("city"),
+                "region": fields.get("region"),
+                "country": fields.get("country"),
+            }],
+            city=city, region=state, country=country,
+        )
+
+    def _name_tier(org: dict[str, Any], queries: list[str]) -> str:
+        """How strongly the NAME identified *org* — see `registry_match`.
+
+        Every name variant ROR publishes counts, not only the display name:
+        ROR carries aliases and former names, and a record that states one of
+        them verbatim has named this organisation exactly as surely as one
+        that states the display name. That is the same set `_is_exact` ranks
+        on in the query path.
+
+        Each variant goes through the SAME bracket strip `_extract_org_fields`
+        applies to the display name. ROR's "(United States)" / "(Detroit)"
+        qualifier is its keyspace disambiguating two records, not part of the
+        organisation's name, and it must not be part of what the record is
+        asked to state verbatim — leaving it in reported "Sekisui Xenotech" →
+        "Sekisui XenoTech (United States)" as a fuzzy match and flagged three
+        exact matches on the chemspeed batch.
+        """
+        return name_match_tier(
+            list(queries),
+            [
+                strip_parentheticals(
+                    _strip_ror_country_suffix(ne.get("value") or ""),
+                )
+                for ne in (org.get("names") or [])
+            ],
+        )
+
+    def _short_name_ok(
+        fields: dict[str, Any], score: float, org: dict[str, Any],
+    ) -> bool:
+        """Fix C(3) — a collision-prone name needs a corroborating signal.
+
+        "BHS" fuzzy-matches Berkshire Health Systems and Behavioral Health
+        Systems equally well, and the chemspeed batch matched a different one
+        on each run. A name this short is not evidence on its own: either the
+        registry's locality agrees with the record's, or the candidate's own
+        website is the domain the record already carries, or it is a no match.
+        No acronym is expanded and no threshold moves.
+        """
+        if not is_collision_prone(name):
+            return True
+        signal = second_signal(
+            location_verdict=fields.get("location_verdict"),
+            candidate_domain=fields.get("domain"),
+            record_domain=record_domain,
+        )
+        if signal is not None:
+            fields["corroborated_by"] = signal
+            return True
+        logger.info(
+            "ROR: refusing '%s' → '%s' (%s) — the name is too short to "
+            "identify an organisation on its own and nothing corroborates it "
+            "(location=%s)",
+            name[:60], fields.get("official_name"), fields.get("ror_id"),
+            fields.get("location_verdict"),
+        )
+        _note_rejection(
+            "short_name_uncorroborated", org, score,
+            "collision-prone name with no corroborating signal "
+            f"(location={fields.get('location_verdict')})",
+        )
+        return False
 
     try:
         # verify=resolve_tls_verify() — reuse the OpenAI client's TLS trust
@@ -915,11 +1031,18 @@ async def call_ror(
                 aff_str: str, rescore_names: list[str], strategy: str,
             ) -> dict[str, Any] | None:
                 logger.info("ROR affiliation request: '%s'", aff_str[:120])
-                resp = await client.get(
-                    base_url, params={"affiliation": aff_str},
+
+                async def _fetch_affiliation() -> dict[str, Any]:
+                    resp = await client.get(
+                        base_url, params={"affiliation": aff_str},
+                    )
+                    resp.raise_for_status()
+                    return resp.json()
+
+                data = await cached_registry_get(
+                    "ror", base_url, {"affiliation": aff_str},
+                    _fetch_affiliation,
                 )
-                resp.raise_for_status()
-                data = resp.json()
                 ch = next(
                     (it for it in data.get("items", []) if it.get("chosen") is True),
                     None,
@@ -975,6 +1098,15 @@ async def call_ror(
                     )
                     return None
                 fields = _extract_org_fields(org)
+                (
+                    fields["location_verdict"],
+                    fields["location_detail"],
+                    fields["location_scope"],
+                    fields["location_notes"],
+                ) = _locality(fields)
+                fields["name_match_tier"] = _name_tier(org, rescore_names)
+                if not _short_name_ok(fields, local_score, org):
+                    return None
                 res: dict[str, Any] = {
                     "matched": True,
                     "score": ch["score"],
@@ -985,7 +1117,7 @@ async def call_ror(
                     "country_filter": country_code,
                     "strategy": strategy,
                 }
-                _ror_cache[cache_key] = res
+                _cache(res)
                 logger.info(
                     "ROR affiliation matched '%s' → '%s' (score=%.2f)",
                     aff_str[:80], fields["official_name"], ch["score"],
@@ -1038,9 +1170,15 @@ async def call_ror(
                     f"locations.geonames_details.country_code:{country_code}"
                 )
 
-            resp_q = await client.get(base_url, params=query_params)
-            resp_q.raise_for_status()
-            q_data = resp_q.json()
+            async def _fetch_query(params: dict[str, str]) -> dict[str, Any]:
+                async def _go() -> dict[str, Any]:
+                    resp_q = await client.get(base_url, params=params)
+                    resp_q.raise_for_status()
+                    return resp_q.json()
+
+                return await cached_registry_get("ror", base_url, params, _go)
+
+            q_data = await _fetch_query(query_params)
 
             # Retry without country filter if empty
             if not q_data.get("items") and country_code:
@@ -1048,9 +1186,7 @@ async def call_ror(
                     "ROR query returned 0 items for '%s' with country=%s, retrying without filter",
                     name[:60], country_code,
                 )
-                resp_q = await client.get(base_url, params={"query": ror_name})
-                resp_q.raise_for_status()
-                q_data = resp_q.json()
+                q_data = await _fetch_query({"query": ror_name})
 
             items = q_data.get("items") or []
 
@@ -1086,45 +1222,116 @@ async def call_ror(
             expanded_query = expand_abbreviations(ror_name) or ror_name
             exp_lower = expanded_query.strip().lower()
 
-            def _rank_key(item: dict) -> tuple:
-                s = _score_org(expanded_query, item, location_tokens)
-                s2 = _score_org(name, item, location_tokens)
-                score = max(s, s2)
+            def _item_score(item: dict) -> float:
+                return max(
+                    _score_org(expanded_query, item, location_tokens),
+                    _score_org(name, item, location_tokens),
+                )
 
-                # Inspect all name variants for an EXACT match against
-                # the expanded query — that's the strongest signal and
-                # beats any token-subset score.
-                exact_match = 0
+            def _is_exact(item: dict) -> bool:
+                """A name variant equal to the expanded query, verbatim."""
+                return any(
+                    (ne.get("value") or "").strip().lower() == exp_lower
+                    for ne in item.get("names", [])
+                )
+
+            def _token_diff(item: dict) -> int:
+                """How far the display name's token count is from the query's.
+
+                ROR's own weak tiebreaker, and the thing that separates
+                "AstraZeneca" from "AZHC Foundation" when the scorer has
+                saturated at 1.0 for both.
+                """
                 display_name = ""
                 for ne in item.get("names", []):
-                    val = (ne.get("value") or "").strip().lower()
-                    if val == exp_lower:
-                        exact_match = 1
                     if "ror_display" in ne.get("types", []):
                         display_name = ne.get("value") or ""
                 if not display_name and item.get("names"):
                     display_name = item["names"][0].get("value", "")
-
-                # Tiebreaker: prefer display name with closest token
-                # count to the expanded query.
-                token_diff = abs(
+                return abs(
                     len(display_name.split()) - len(expanded_query.split())
                 )
 
-                # (exact_match desc, score desc, token_diff asc)
-                return (exact_match, score, -token_diff)
+            def _rank_key(item: dict) -> tuple:
+                # Fix C(1) — one TOTAL order, sorted ascending:
+                #   (exact desc, score desc, token_diff asc, ROR id asc)
+                #
+                # The first three components are the ranking this function has
+                # always used, in that order; only the ROR id at the end is
+                # new. It was `sorted(items[:10], key=…, reverse=True)`, which
+                # left every full tie in the order ROR answered in, and ROR's
+                # order is not stable between runs. The `[:10]` truncation is
+                # gone too — it was another way for response order to choose
+                # which candidates were even scored, and local scoring costs
+                # nothing next to the call that fetched them.
+                return rank_key(
+                    _item_score(item), item.get("id"),
+                    -int(_is_exact(item)),
+                ) + (_token_diff(item),)
 
-            ranked = sorted(items[:10], key=_rank_key, reverse=True)
+            # `rank_key` puts the id last so the order is total; the token-count
+            # tiebreaker sits between the score and the id, which is where it
+            # has always been, so it is appended here rather than passed as a
+            # prefix (a prefix would rank it ABOVE the score).
+            def _sort_key(item: dict) -> tuple:
+                exact, neg_score, ror_id, tdiff = _rank_key(item)
+                return (exact, neg_score, tdiff, ror_id)
+
+            ranked = sorted(items, key=_sort_key)
             best_org = ranked[0] if ranked else None
-            best_score = 0.0
-            if best_org:
-                best_score = max(
-                    _score_org(expanded_query, best_org, location_tokens),
-                    _score_org(name, best_org, location_tokens),
-                )
+            best_score = _item_score(best_org) if best_org else 0.0
 
             if best_org is None:
                 return _no_match()
+
+            # Fix C(2) — a near-tie is a no-match. Two ROR records this close
+            # are separated by a spelling variant in ROR's own keyspace, not by
+            # evidence about the organisation, and which one ranks higher can
+            # flip when ROR re-indexes. BHS oscillated between two plausible
+            # expansions exactly this way.
+            #
+            # Only when the winner would otherwise HAVE been a match. Two
+            # candidates that are both below the match threshold are both
+            # rejected anyway, and reporting them as an ambiguity would replace
+            # the guard rejection that actually explains the miss (the
+            # distinctive-token cap, say) with one that does not.
+            # Peers only — candidates that NOTHING except the score has
+            # separated from the winner. An exact display-name match, and a
+            # display name whose token count fits the query better, are both
+            # deterministic discriminators that ROR's ranking already applies;
+            # where one of them has spoken, the registry HAS identified one
+            # organisation and the margin has nothing to add. (Same shape as
+            # GLEIF comparing only within one registration-status tier.)
+            #
+            # This matters because ROR's local scorer saturates: it returns
+            # 1.0 for "every significant query token appears as a whole word",
+            # so ties at the ceiling are common and are not evidence of
+            # genuine confusability. Without the tiering, "AstraZeneca" was
+            # refused because "AZHC Foundation" also scored 1.0.
+            _tier = (_is_exact(best_org), _token_diff(best_org))
+            _peers = [
+                i for i in ranked[1:]
+                if (_is_exact(i), _token_diff(i)) == _tier
+            ]
+            if _peers and best_score >= threshold and ambiguity_verdict(
+                [best_score, _item_score(_peers[0])], scale_max=1.0,
+            ):
+                runner_up = _extract_org_fields(_peers[0])
+                best_named = _extract_org_fields(best_org)
+                logger.info(
+                    "ROR: refusing '%s' — '%s' (%s) and '%s' (%s) are within "
+                    "the ambiguity margin; ROR has not identified one org",
+                    name[:60], best_named.get("official_name"),
+                    best_named.get("ror_id"), runner_up.get("official_name"),
+                    runner_up.get("ror_id"),
+                )
+                _note_rejection(
+                    "registry_ambiguity", best_org, best_score,
+                    "within the ambiguity margin of "
+                    f"{runner_up.get('official_name')} "
+                    f"({runner_up.get('ror_id')})",
+                )
+                return _no_match(best_score, refused_by="ambiguous")
 
             org = best_org
             fields = _extract_org_fields(org)
@@ -1146,6 +1353,18 @@ async def call_ror(
                     )
                 return _no_match(score)
 
+            (
+                fields["location_verdict"],
+                fields["location_detail"],
+                fields["location_scope"],
+                fields["location_notes"],
+            ) = _locality(fields)
+            fields["name_match_tier"] = _name_tier(
+                org, [name, expanded_query],
+            )
+            if not _short_name_ok(fields, score, org):
+                return _no_match(score, refused_by="short_name_uncorroborated")
+
             result = {
                 "matched": True,
                 "score": score,
@@ -1155,13 +1374,19 @@ async def call_ror(
                 "country_filter": country_code,
                 "strategy": "query",
             }
-            _ror_cache[cache_key] = result
+            _cache(result)
             logger.info(
                 "ROR query matched '%s' → '%s' (score=%.2f)",
                 name[:60], fields["official_name"], score,
             )
             return result
 
+    except RegistryUnavailableFrozen:
+        # CACHE_FROZEN and nothing recorded for this request. A clean miss,
+        # already traced as `evidence-unavailable-frozen`; NOT cached, because
+        # "we were not allowed to look" is not an answer about the name.
+        logger.info("ROR: frozen cache has no response for '%s'", name[:80])
+        return {"matched": False, "score": 0.0, "guard_rejections": []}
     except httpx.HTTPStatusError as exc:
         logger.error(
             "ROR API HTTP %d for '%s': %s",
@@ -1171,6 +1396,163 @@ async def call_ror(
     except Exception:
         logger.exception("ROR API call failed for '%s'", name[:80])
         return _no_match()
+
+
+def _bare_ror_id(ror_id: str | None) -> str | None:
+    """``https://ror.org/02y3ad647`` → ``02y3ad647``. Accepts either form."""
+    raw = (ror_id or "").strip().rstrip("/")
+    if not raw:
+        return None
+    return raw.rsplit("/", 1)[-1] or None
+
+
+async def call_ror_by_id(
+    ror_id: str,
+    country_code: str | None = None,
+    base_url: str | None = None,
+    *,
+    country: str | None = None,
+    city: str | None = None,
+    state: str | None = None,
+) -> dict[str, Any]:
+    """Resolve a **known ROR ID** to its ROR record, country guard applied.
+
+    The [Wikidata crosswalk lane](`enrichment.wikidata`) is the only caller: a
+    Wikidata item carrying ``P6782`` supplies a lookup key, and this follows it.
+
+    There is no name scoring on this path and that is not a relaxed guard — it
+    is the absence of a comparison to make. ``_compute_name_score`` and the
+    distinctive-/identifier-token guards exist to decide *which* of several
+    search results is the organisation; an identifier names exactly one record,
+    so there is no candidate set to rank. What still applies, and is applied
+    here, is the **country guard**: a US customer record must not take the
+    identity of a same-named organisation in another country, and a stale or
+    wrong Wikidata pointer is exactly how that would happen.
+
+    *country* / *city* / *state* are the record's own location, and are used
+    for exactly one thing: comparing the ROR record's registered locality
+    against it, the way every other ROR path does. Omitting them is safe and
+    only means that comparison has nothing to compare.
+
+    Returns the same result shape as :func:`call_ror` with
+    ``strategy = "by_id"``. Never raises.
+    """
+    identifier = _bare_ror_id(ror_id)
+    if not identifier:
+        return {"matched": False, "score": 0.0, "guard_rejections": []}
+
+    if base_url is None:
+        base_url = os.getenv("ROR_API_BASE", "https://api.ror.org/v2/organizations")
+
+    # Its own cache namespace — a ROR ID is not a name, and the two keyspaces
+    # must not serve each other.
+    cache_key = (f"rorid:{identifier.lower()}", (country_code or "").upper() or None)
+    if cache_key in _ror_cache:
+        return _ror_cache[cache_key]
+    guard_rejections: list[dict[str, Any]] = []
+
+    def _cache(result: dict[str, Any]) -> dict[str, Any]:
+        _ror_cache[cache_key] = result
+        return result
+
+    by_id_url = f"{base_url.rstrip('/')}/{identifier}"
+    try:
+        async with httpx.AsyncClient(
+            timeout=15.0, verify=resolve_tls_verify(),
+        ) as client:
+            logger.info("ROR by-id request: %s", identifier)
+
+            async def _fetch_by_id() -> dict[str, Any]:
+                resp = await client.get(by_id_url)
+                if resp.status_code == 404:
+                    # A pointer to a ROR record that does not exist. Recorded
+                    # as the empty body it is — a 404 IS the registry's answer,
+                    # unlike a 5xx, and re-asking will not change it.
+                    return {}
+                resp.raise_for_status()
+                return resp.json()
+
+            org = await cached_registry_get("ror", by_id_url, None, _fetch_by_id)
+            if not org:
+                logger.info("ROR by-id: %s not found", identifier)
+                return _cache({
+                    "matched": False, "score": 0.0, "guard_rejections": [],
+                })
+    except RegistryUnavailableFrozen:
+        logger.info("ROR by-id: frozen cache has no response for %s", identifier)
+        return {"matched": False, "score": 0.0, "guard_rejections": []}
+    except httpx.HTTPStatusError as exc:
+        logger.error(
+            "ROR by-id HTTP %d for %s", exc.response.status_code, identifier,
+        )
+        return {"matched": False, "score": 0.0, "guard_rejections": []}
+    except Exception:
+        logger.exception("ROR by-id lookup failed for %s", identifier)
+        return {"matched": False, "score": 0.0, "guard_rejections": []}
+
+    if not isinstance(org, dict) or not org.get("id"):
+        return _cache({"matched": False, "score": 0.0, "guard_rejections": []})
+
+    if not _country_ok(org, country_code):
+        names = org.get("names") or [{}]
+        guard_rejections.append({
+            "guard": "ror_country",
+            "candidate_name": (names[0].get("value") if names else None),
+            "candidate_id": org.get("id"),
+            "score": None,
+            "threshold": None,
+            "detail": (
+                f"candidate country {_org_country_code(org) or '?'} != "
+                f"requested {(country_code or '').upper()}"
+            ),
+            "query": identifier,
+        })
+        logger.info(
+            "ROR by-id: rejecting %s — country %s != requested %s",
+            identifier, _org_country_code(org) or "?", country_code,
+        )
+        return _cache({
+            "matched": False, "score": 0.0, "guard_rejections": guard_rejections,
+        })
+
+    fields = _extract_org_fields(org)
+    # Fix D(2) on the crosswalk lane too. This path previously compared no
+    # locality at all, which meant the ONE route that picks an organisation
+    # without ever looking at its name was also the one route whose address
+    # was never checked. It is compared here and, as everywhere else, never
+    # acted on in the client.
+    (
+        fields["location_verdict"],
+        fields["location_detail"],
+        fields["location_scope"],
+        fields["location_notes"],
+    ) = compare_registry_addresses(
+        [{
+            "kind": "registered",
+            "city": fields.get("city"),
+            "region": fields.get("region"),
+            "country": fields.get("country"),
+        }],
+        city=city, region=state, country=country,
+    )
+    result = {
+        "matched": True,
+        # A registry answered with the record its own identifier names. Not
+        # scored — returned. Same claim `registry_exact` makes in provenance.
+        "score": 1.0,
+        "guard_rejections": guard_rejections,
+        **{k: v for k, v in fields.items() if k != "org_names"},
+        "query_used": identifier,
+        "country_filter": country_code,
+        "strategy": "by_id",
+        # No name comparison happened on this path — there was no candidate
+        # set to rank. Below exact tier by construction.
+        "name_match_tier": CROSSWALK_TIER,
+    }
+    logger.info(
+        "ROR by-id matched %s → '%s'", identifier, fields["official_name"],
+    )
+    return _cache(result)
 
 
 class RORClient:
@@ -1187,6 +1569,8 @@ class RORClient:
         country: str | None = None,
         city: str | None = None,
         state: str | None = None,
+        *,
+        record_domain: str | None = None,
     ) -> dict[str, Any]:
         """Look up an organisation name via ROR with location context."""
         return await call_ror(
@@ -1196,4 +1580,20 @@ class RORClient:
             city=city,
             state=state,
             base_url=self._base_url,
+            record_domain=record_domain,
+        )
+
+    async def call_by_id(
+        self,
+        ror_id: str,
+        country_code: str | None = None,
+        *,
+        country: str | None = None,
+        city: str | None = None,
+        state: str | None = None,
+    ) -> dict[str, Any]:
+        """Resolve a known ROR ID, with the country guard unchanged."""
+        return await call_ror_by_id(
+            ror_id, country_code=country_code, base_url=self._base_url,
+            country=country, city=city, state=state,
         )

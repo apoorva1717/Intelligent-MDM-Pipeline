@@ -49,7 +49,8 @@ class _CountryAwareROR(MockRORClient):
         }),
     }
 
-    async def call(self, name, country_code=None, country=None, city=None, state=None):
+    async def call(self, name, country_code=None, country=None, city=None,
+                   state=None, **_ctx):
         key = name.strip().lower()
         for k, (cc, data) in self._DB.items():
             if k in key or key in k:

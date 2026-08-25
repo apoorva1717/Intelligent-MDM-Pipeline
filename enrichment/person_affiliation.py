@@ -27,6 +27,7 @@ from llm.prompts import (
     PERSON_AFFILIATION_USER_PROMPT_TEMPLATE,
 )
 from search.base import SearchClient
+from utils.cache import BatchCache, cached_serp
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,7 @@ async def run_person_affiliation(
     search_client: SearchClient,
     llm_client: OpenAIClient,
     settings: Settings,
+    cache: BatchCache | None = None,
 ) -> PersonAffiliation:
     """Propose the contact's institution + department from web snippets.
 
@@ -121,7 +123,10 @@ async def run_person_affiliation(
     used_query = None
     for q in queries:
         try:
-            hits = await search_client.search(q, num_results=5)
+            # Fix B — through the shared cache like every other lane. This one
+            # called the search client directly, so its results were never
+            # recorded and a second run of a batch re-issued every query.
+            hits = await cached_serp(cache, search_client, q, num_results=5)
         except Exception:
             logger.exception("person_affiliation: SERP failed for %r", q)
             continue
@@ -134,9 +139,15 @@ async def run_person_affiliation(
         logger.info("person_affiliation: no search results for %r", contact)
         return PersonAffiliation()
 
+    # Fix A(3) — the snippet list is evidence injected into a prompt, so it is
+    # ordered by a stable key of its own (the URL) rather than by whatever
+    # order the search API happened to return. Two runs that retrieve the same
+    # five results in a different order previously built two different prompts
+    # and could get two different answers; now they build one prompt.
+    results = sorted(results[:5], key=lambda r: ((r.url or ""), (r.title or "")))
     blob = "\n\n".join(
         f"[{i + 1}] {r.title}\nURL: {r.url}\n{r.snippet}"
-        for i, r in enumerate(results[:5])
+        for i, r in enumerate(results)
     )
     user_prompt = PERSON_AFFILIATION_USER_PROMPT_TEMPLATE.format(
         contact=contact,

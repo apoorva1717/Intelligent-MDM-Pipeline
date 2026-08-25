@@ -1,0 +1,36 @@
+{
+ "domain": "search:abgent",
+ "payload": {
+  "searchinfo": {
+   "search": "ABGENT"
+  },
+  "search": [
+   {
+    "id": "Q4667305",
+    "title": "Q4667305",
+    "pageid": 4459104,
+    "concepturi": "http://www.wikidata.org/entity/Q4667305",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q4667305",
+    "display": {
+     "label": {
+      "value": "Abgent",
+      "language": "en"
+     },
+     "description": {
+      "value": "global biotechnology company based in San Diego, California",
+      "language": "en"
+     }
+    },
+    "label": "Abgent",
+    "description": "global biotechnology company based in San Diego, California",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Abgent"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

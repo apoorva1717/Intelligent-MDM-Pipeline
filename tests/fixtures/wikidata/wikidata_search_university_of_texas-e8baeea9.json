@@ -1,0 +1,138 @@
+{
+ "domain": "search:university of texas",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "University of Texas"
+  },
+  "search": [
+   {
+    "id": "Q49213",
+    "title": "Q49213",
+    "pageid": 51194,
+    "concepturi": "http://www.wikidata.org/entity/Q49213",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q49213",
+    "display": {
+     "label": {
+      "value": "University of Texas at Austin",
+      "language": "en"
+     },
+     "description": {
+      "value": "public university in Austin, Texas, USA",
+      "language": "en"
+     }
+    },
+    "label": "University of Texas at Austin",
+    "description": "public university in Austin, Texas, USA",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "University of Texas at Austin"
+    }
+   },
+   {
+    "id": "Q2140391",
+    "title": "Q2140391",
+    "pageid": 2066281,
+    "concepturi": "http://www.wikidata.org/entity/Q2140391",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q2140391",
+    "display": {
+     "label": {
+      "value": "University of Texas System",
+      "language": "en"
+     },
+     "description": {
+      "value": "public university system in Texas",
+      "language": "en"
+     }
+    },
+    "label": "University of Texas System",
+    "description": "public university system in Texas",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "University of Texas System"
+    }
+   },
+   {
+    "id": "Q2725999",
+    "title": "Q2725999",
+    "pageid": 2619113,
+    "concepturi": "http://www.wikidata.org/entity/Q2725999",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q2725999",
+    "display": {
+     "label": {
+      "value": "University of Texas Southwestern Medical Center",
+      "language": "en"
+     },
+     "description": {
+      "value": "public academic health science center in Dallas, Texas",
+      "language": "en"
+     }
+    },
+    "label": "University of Texas Southwestern Medical Center",
+    "description": "public academic health science center in Dallas, Texas",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "University of Texas Southwestern Medical Center"
+    }
+   },
+   {
+    "id": "Q1230739",
+    "title": "Q1230739",
+    "pageid": 1172030,
+    "concepturi": "http://www.wikidata.org/entity/Q1230739",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q1230739",
+    "display": {
+     "label": {
+      "value": "University of Texas at Arlington",
+      "language": "en"
+     },
+     "description": {
+      "value": "public research university located in Arlington, Texas, United States",
+      "language": "en"
+     }
+    },
+    "label": "University of Texas at Arlington",
+    "description": "public research university located in Arlington, Texas, United States",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "University of Texas at Arlington"
+    }
+   },
+   {
+    "id": "Q2093110",
+    "title": "Q2093110",
+    "pageid": 2019868,
+    "concepturi": "http://www.wikidata.org/entity/Q2093110",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q2093110",
+    "display": {
+     "label": {
+      "value": "University of Texas at El Paso",
+      "language": "en"
+     },
+     "description": {
+      "value": "public research university in El Paso, Texas, United States",
+      "language": "en"
+     }
+    },
+    "label": "University of Texas at El Paso",
+    "description": "public research university in El Paso, Texas, United States",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "University of Texas at El Paso"
+    }
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

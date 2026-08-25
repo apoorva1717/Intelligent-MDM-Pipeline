@@ -1,0 +1,37 @@
+{
+ "domain": "search:kellogg north america",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Kellogg North America"
+  },
+  "search": [
+   {
+    "id": "Q137217268",
+    "title": "Q137217268",
+    "pageid": 130898978,
+    "concepturi": "http://www.wikidata.org/entity/Q137217268",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q137217268",
+    "display": {
+     "label": {
+      "value": "Kellogg North America Company LLC",
+      "language": "en"
+     },
+     "description": {
+      "value": "US business",
+      "language": "en"
+     }
+    },
+    "label": "Kellogg North America Company LLC",
+    "description": "US business",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Kellogg North America Company LLC"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

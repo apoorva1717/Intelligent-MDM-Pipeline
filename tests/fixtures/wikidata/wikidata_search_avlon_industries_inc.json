@@ -1,0 +1,10 @@
+{
+ "domain": "search:avlon industries inc",
+ "payload": {
+  "searchinfo": {
+   "search": "Avlon Industries inc"
+  },
+  "search": [],
+  "success": 1
+ }
+}

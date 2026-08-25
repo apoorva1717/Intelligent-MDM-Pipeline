@@ -1,0 +1,138 @@
+{
+ "domain": "search:aurora",
+ "fetched_at": "2026-08-24",
+ "payload": {
+  "searchinfo": {
+   "search": "Aurora"
+  },
+  "search": [
+   {
+    "id": "Q1066178",
+    "title": "Q1066178",
+    "pageid": 1014787,
+    "concepturi": "http://www.wikidata.org/entity/Q1066178",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q1066178",
+    "display": {
+     "label": {
+      "value": "Aurora",
+      "language": "en"
+     },
+     "description": {
+      "value": "female given name",
+      "language": "en"
+     }
+    },
+    "label": "Aurora",
+    "description": "female given name",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Aurora"
+    }
+   },
+   {
+    "id": "Q168713",
+    "title": "Q168713",
+    "pageid": 169180,
+    "concepturi": "http://www.wikidata.org/entity/Q168713",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q168713",
+    "display": {
+     "label": {
+      "value": "Aurora",
+      "language": "en"
+     },
+     "description": {
+      "value": "1900 Pallada-class cruiser",
+      "language": "en"
+     }
+    },
+    "label": "Aurora",
+    "description": "1900 Pallada-class cruiser",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Aurora"
+    }
+   },
+   {
+    "id": "Q132015",
+    "title": "Q132015",
+    "pageid": 133844,
+    "concepturi": "http://www.wikidata.org/entity/Q132015",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q132015",
+    "display": {
+     "label": {
+      "value": "Aurora",
+      "language": "en"
+     },
+     "description": {
+      "value": "municipality of the Philippines in the province of Zamboanga del Sur",
+      "language": "en"
+     }
+    },
+    "label": "Aurora",
+    "description": "municipality of the Philippines in the province of Zamboanga del Sur",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Aurora"
+    }
+   },
+   {
+    "id": "Q49358",
+    "title": "Q49358",
+    "pageid": 51345,
+    "concepturi": "http://www.wikidata.org/entity/Q49358",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q49358",
+    "display": {
+     "label": {
+      "value": "Aurora",
+      "language": "en"
+     },
+     "description": {
+      "value": "municipality of the Philippines in the province of Isabela",
+      "language": "en"
+     }
+    },
+    "label": "Aurora",
+    "description": "municipality of the Philippines in the province of Isabela",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Aurora"
+    }
+   },
+   {
+    "id": "Q36441",
+    "title": "Q36441",
+    "pageid": 39082,
+    "concepturi": "http://www.wikidata.org/entity/Q36441",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q36441",
+    "display": {
+     "label": {
+      "value": "Aurora Snow",
+      "language": "en"
+     },
+     "description": {
+      "value": "American journalist, pornographic actress and director",
+      "language": "en"
+     }
+    },
+    "label": "Aurora Snow",
+    "description": "American journalist, pornographic actress and director",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Aurora Snow"
+    }
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

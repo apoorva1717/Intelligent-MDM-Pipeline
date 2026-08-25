@@ -329,7 +329,7 @@ class _StubROR:
         self.country_guard_fails = country_guard_fails
 
     async def call(self, name, country_code=None, country=None, city=None,
-                   state=None):
+                   state=None, **_ctx):
         self.calls.append(name)
         if self.country_guard_fails:
             # What the real client returns when the only candidate is in the
@@ -343,7 +343,7 @@ class _StubLEI:
         self.answers = answers
         self.calls: list[str] = []
 
-    async def call(self, name, country_code=None):
+    async def call(self, name, country_code=None, **_ctx):
         self.calls.append(name)
         return self.answers.get(name, {"matched": False, "strategy": "fuzzy",
                                        "score": 0.0})

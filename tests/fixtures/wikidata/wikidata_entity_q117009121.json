@@ -1,0 +1,43 @@
+{
+ "domain": "entity:q117009121",
+ "payload": {
+  "id": "Q117009121",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Biosero"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 4830453,
+        "id": "Q4830453"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://biosero.com",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}
