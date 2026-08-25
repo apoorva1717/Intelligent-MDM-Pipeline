@@ -35,7 +35,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from enrichment.locality import CONSISTENT
+from enrichment.locality import CONSISTENT, CONTRADICTED
 
 #: How close two candidate scores have to be before the registry is treated as
 #: having failed to identify one organisation. On the 0-100 rapidfuzz scale
@@ -222,11 +222,33 @@ SHORT_NAME_TIER = "short_name"
 CROSSWALK_TIER = "crosswalk"
 
 
+#: Legal-form tokens that are one form written two ways, folded to a canonical
+#: member. ``"Huntsman Corp"`` against GLEIF's ``"HUNTSMAN CORPORATION"`` is
+#: not a record naming a different legal entity — it is the same suffix
+#: abbreviated, which is how an SAP operator types it.
+#:
+#: Only abbreviation/expansion of the SAME word is folded. ``inc`` and ``corp``
+#: stay distinct although both name corporations, and ``oy`` stays distinct
+#: from ``oyj`` (private versus public): where the register draws a line
+#: between two forms, so does this. The map exists to stop the tier classifier
+#: penalising an abbreviation it already forgives an OMISSION of — "Huntsman"
+#: alone scores exact against "HUNTSMAN CORPORATION", and it made no sense
+#: that stating the form in short form scored worse than not stating it.
+_LEGAL_FORM_ALIASES: dict[str, str] = {
+    "incorporated": "inc",
+    "corporation": "corp",
+    "company": "co",
+    "limited": "ltd",
+}
+
+
 def _legal_forms(name: str | None) -> frozenset[str]:
-    """The legal-form tokens present in *name*, lowercased."""
+    """The legal-form tokens present in *name*, lowercased and canonicalised."""
     legal = _legal_form_tokens()
     return frozenset(
-        t.lower() for t in _TOKEN_RE.findall(name or "") if t.lower() in legal
+        _LEGAL_FORM_ALIASES.get(t.lower(), t.lower())
+        for t in _TOKEN_RE.findall(name or "")
+        if t.lower() in legal
     )
 
 
@@ -240,10 +262,17 @@ def names_match_verbatim(a: str | None, b: str | None) -> bool:
     * **a legal form one side omits** — "Arkema" against "ARKEMA INC.". The
       legal form is the register's suffix, not a distinguishing token, which is
       the same licence :func:`name_core` and ``_name_match_score`` already
-      operate under.
+      operate under;
+    * **a legal form one side abbreviates** — "Huntsman Corp" against
+      "HUNTSMAN CORPORATION". Forgiving the omission of a suffix while
+      penalising its abbreviation ranked "Huntsman" above "Huntsman Corp" for
+      naming the same entity, which is backwards. See
+      :data:`_LEGAL_FORM_ALIASES`.
 
     Two DIFFERENT legal forms are not forgiven: "Smith Inc" and "Smith LLC" are
-    two legal entities and a register is the authority that says so.
+    two legal entities and a register is the authority that says so. Neither
+    are "Smith Inc" and "Smith Corp" — the fold is abbreviation-to-expansion
+    of one word, never one form to another.
     """
     core_a = [t.lower() for t in name_core(a)]
     core_b = [t.lower() for t in name_core(b)]
@@ -283,3 +312,149 @@ def name_match_tier(
 def is_exact_tier(tier: str | None) -> bool:
     """True only for :data:`EXACT_TIER`. A missing tier is not exact."""
     return tier == EXACT_TIER
+
+
+# ── Do two names name one organisation? ───────────────────────────────────
+#
+# `names_match_verbatim` above answers the STRICT question the tier classifier
+# needs: is this the same string typed twice? A second, looser question is
+# asked in two other places — the page-read corroborator ("does the page name
+# this record's organisation?") and the cross-source gate ("do two registries
+# name one entity?") — and both of them were answering it with a ratio alone.
+#
+# A ratio alone gets one shape wrong, and it is the commonest shape in a
+# customer master: the record carries a brand plus a division or a legal form
+# and the other source carries the brand. "Stryker Orthopaedics" against a
+# page that says "Stryker" scores 51.9; "CORTEVA AGRISCIENCE LLC" against
+# ROR's "Corteva" scores 53.8. `token_sort_ratio` is length-sensitive by
+# design — that is what makes it safe as GLEIF's guard — so the more of the
+# division the record spells out, the lower it scores the agreement.
+#
+# The rule below is the missing one, and it is deliberately narrow.
+
+#: Tokens that carry no organisational identity, from the two lists the
+#: codebase already maintains: the registry legal-form suffixes and the
+#: generic structural words the canonicalisation guard ignores ("the", "and",
+#: "of", "group", "holdings"). Composed rather than re-listed so a form added
+#: to either list is honoured here without a second edit.
+def _noise_tokens() -> frozenset[str]:
+    from utils.text_utils import _GENERIC_COMPANY_WORDS
+
+    return _legal_form_tokens() | frozenset(_GENERIC_COMPANY_WORDS)
+
+
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def distinctive_tokens(name: str | None) -> list[str]:
+    """*name* as an ordered, de-duplicated list of identity-bearing tokens.
+
+    The normalisation is the pipeline's existing one
+    (:func:`enrichment.tier1_ror._normalise_for_tokens`: casefold, dashes and
+    punctuation to spaces, legal suffixes canonicalised to their abbreviation),
+    with :func:`_noise_tokens` then removed. ORDER is preserved because the
+    containment rule below needs to know which token the name LEADS with, and
+    duplicates are dropped so "Johnson & Johnson" is one distinctive token
+    rather than two.
+    """
+    from enrichment.tier1_ror import _normalise_for_tokens
+
+    noise = _noise_tokens()
+    seen: list[str] = []
+    for token in _WORD_RE.findall(_normalise_for_tokens(name or "")):
+        if token in noise or token in seen:
+            continue
+        seen.append(token)
+    return seen
+
+
+def names_agree_by_containment(a: str | None, b: str | None) -> bool:
+    """True when one name's distinctive tokens are a subset of the other's
+    AND the subset keeps the longer name's leading token.
+
+    Direction-agnostic: it does not matter which side carries the division.
+
+    **Why the leading token.** Bare subset containment is too weak, and the
+    case that shows it is "Owens Corning Sales LLC" against "Corning":
+    ``{corning}`` is a subset of ``{owens, corning, sales}``, and Corning
+    Incorporated is a different company from Owens Corning. An organisation
+    name in these registries is head-initial — the brand comes first and the
+    division, the product line or the legal form follows — so the leading
+    distinctive token is the one that says WHICH organisation, and a subset
+    that has dropped it has dropped the identity rather than a qualifier.
+    Keeping it admits "Stryker Orthopaedics" ⊃ "Stryker" and "CORTEVA
+    AGRISCIENCE LLC" ⊃ "Corteva" while still refusing "Owens Corning …" ⊃
+    "Corning" and "Thermo Fisher Scientific" ⊃ "Fisher Scientific".
+
+    A name that shares no distinctive token with the other is refused by the
+    subset test before the leading-token test is reached, which is what keeps
+    a wrong-entity page ("Clara's Restaurant Group" on a Kellogg record) out.
+    """
+    tokens_a, tokens_b = distinctive_tokens(a), distinctive_tokens(b)
+    if not tokens_a or not tokens_b:
+        # Nothing distinctive left on one side. A name made entirely of legal
+        # forms and generic words identifies nothing, and "contained in
+        # everything" is not agreement.
+        return False
+    set_a, set_b = set(tokens_a), set(tokens_b)
+    if set_a <= set_b:
+        subset, longer = set_a, tokens_b
+    elif set_b <= set_a:
+        subset, longer = set_b, tokens_a
+    else:
+        return False
+    return longer[0] in subset
+
+
+def names_agree(a: str | None, b: str | None, threshold: float) -> bool:
+    """True when *a* and *b* name one organisation — the shared answer.
+
+    Two ways to agree, and no third:
+
+    * the existing ratio (:func:`enrichment.tier1_lei._name_match_score` —
+      ``token_sort_ratio``, max of the raw score and the legal-form-stripped
+      score) reaches *threshold*. Unchanged, and still the primary test;
+    * :func:`names_agree_by_containment`.
+
+    Nothing here loosens the ratio: a pair that fails both tests is exactly
+    the pair that failed the ratio before.
+    """
+    from enrichment.tier1_lei import _name_match_score
+
+    if not (a or "").strip() or not (b or "").strip():
+        return False
+    if _name_match_score(a or "", b or "") >= threshold:
+        return True
+    return names_agree_by_containment(a, b)
+
+
+# ── What a contradicted registry address is worth ─────────────────────────
+
+#: The registry agreed with the record, or said nothing. No action.
+LOCATION_ACTION_NONE = "none"
+
+#: Contradicted, but the record states the registry's name verbatim. Traced
+#: as ``registry_location_unconfirmed``; no flag on the row.
+LOCATION_ACTION_TRACE = "unconfirmed"
+
+#: Contradicted on a match the name did not settle. ``registry-location-
+#: mismatch``.
+LOCATION_ACTION_FLAG = "mismatch"
+
+
+def location_check_action(verdict: str | None, tier: str | None) -> str:
+    """The ONE trigger rule, for every registry lane.
+
+    It was written for GLEIF and left ROR and the Wikidata crosswalk deciding
+    the same question their own way, which is how one registry came to flag a
+    head-office/plant difference that the other traced. The rule itself is
+    unchanged — a contradiction is a doubt about WHICH organisation this is
+    only when the name did not settle that question — and it now has one
+    implementation, called with the tier
+    (:func:`name_match_tier`) and the verdict
+    (:func:`enrichment.locality.compare_registry_addresses`) whichever lane
+    produced them.
+    """
+    if verdict != CONTRADICTED:
+        return LOCATION_ACTION_NONE
+    return LOCATION_ACTION_TRACE if is_exact_tier(tier) else LOCATION_ACTION_FLAG

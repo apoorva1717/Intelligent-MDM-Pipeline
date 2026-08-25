@@ -181,6 +181,19 @@ class DomainEvidence:
     serp_url
         URL of that search result — the on-domain check requires it to be on the
         candidate's own domain.
+    stated_websites
+        ``(witness, url)`` pairs: every official website an INDEPENDENT
+        identity system states for the organisation this record was resolved
+        to — ROR's ``links[]`` entries, Wikidata's ``P856`` claims. *witness*
+        is the provenance witness token that system earns
+        (``"registry"`` / ``"wikidata"``). Evidence the pipeline already
+        fetched while resolving the identity; nothing here goes to the
+        network.
+    page_identity
+        The page served BY the candidate domain states this organisation's
+        own name (condition 5). Unlike the four above this arrives late — the
+        page read runs after the guard has judged the candidate — so it is
+        passed on a second call rather than being available on the first.
     """
     name1: str | None = None
     email: str | None = None
@@ -188,6 +201,8 @@ class DomainEvidence:
     serp_title: str | None = None
     serp_h1: str | None = None
     serp_url: str | None = None
+    stated_websites: tuple[tuple[str, str], ...] = ()
+    page_identity: bool = False
 
 
 @dataclass(frozen=True)
@@ -196,14 +211,22 @@ class DomainDecision:
 
     ``domain`` / ``website_url`` are what the caller writes (both ``None`` on a
     rejection). ``verified_by`` names the ownership condition that carried it:
-    ``registry`` | ``email`` | ``name`` | ``serp`` — or ``unguarded`` when
+    ``registry`` | ``witness_registry`` | ``witness_wikidata`` | ``name`` |
+    ``email`` | ``serp`` | ``page`` — or ``unguarded`` when
     ``DOMAIN_OWNERSHIP_GUARD_ENABLED`` is off.
+
+    ``witness`` names the independent system whose stated official website
+    matched, on the two ``witness_*`` conditions only. It is what separates
+    ``web:{domain}:verified+wikidata`` from ``web:{domain}:verified+registry``
+    downstream, so the decision carries it rather than the caller re-deriving
+    it.
     """
     domain: str | None = None
     website_url: str | None = None
     verified_by: str | None = None
     rejected: bool = False
     candidate: str | None = None
+    witness: str | None = None
 
     @property
     def accepted(self) -> bool:
@@ -269,6 +292,38 @@ def _significant_tokens(name1: str | None) -> set[str]:
     }
 
 
+def stated_website_witness(
+    evidence: DomainEvidence, domain: str | None,
+) -> str | None:
+    """Condition 1b — an INDEPENDENT system states this very domain.
+
+    Returns the witness token (``"registry"`` / ``"wikidata"``) of the first
+    stated official website whose registrable domain equals the candidate's,
+    or ``None``.
+
+    The comparison is on the registrable stem, through the same
+    :func:`canonicalise_domain` every other value in this module goes through,
+    so ``https://www.jnj.com/`` stated against a candidate ``jnj.com`` is an
+    agreement and not a string difference. That is the whole condition: the
+    registry or knowledge base that identified the organisation names the same
+    website the web path found, and two systems that never consulted each
+    other agreeing is exactly what a witness IS.
+
+    Why this outranks the name-similarity condition: name similarity is one
+    string comparison against a domain label it cannot segment, and it is the
+    condition this module documents as carrying the least weight. An
+    independent statement of the official website is not a similarity at all —
+    it is a second source, and provenance says so (``verified+witness`` rather
+    than ``provisional``).
+    """
+    if not domain:
+        return None
+    for witness, url in evidence.stated_websites or ():
+        if canonicalise_domain(url) == domain:
+            return witness or None
+    return None
+
+
 def has_on_domain_evidence(evidence: DomainEvidence, domain: str | None) -> bool:
     """Condition 4 — the candidate came from a search result **on that domain**
     whose page title or H1 names the organisation.
@@ -323,6 +378,13 @@ def resolve_domain(
     1. **Registry provenance** — the candidate came from a ROR record that
        passed the country guard, or a GLEIF record that passed name
        verification. Sufficient on its own.
+    1b. **An independent witness states this website** — the ROR record or the
+       Wikidata item the record was resolved to publishes an official website
+       whose registrable domain IS the candidate's
+       (:func:`stated_website_witness`). Two systems agreeing, so the value
+       reaches ``verified`` with the witness named. Ranked directly below
+       registry provenance and above every scored condition: it is a second
+       source, not a better similarity.
     2. **Name similarity** — ``token_sort_ratio`` at or above the threshold.
        Checked before the email so a well-matched candidate is never clobbered
        by an unrelated address on the record (a distributor's mailbox).
@@ -332,6 +394,16 @@ def resolve_domain(
        organisation's domain better than a search result does
        (``meridianlabs.ai``).
     4. **On-domain search evidence** — the candidate's own page names the org.
+    5. **Page identity** — the page served BY the candidate domain states this
+       organisation's name and does not place it in a different state or
+       country (``evidence.page_identity``, decided by
+       :mod:`enrichment.page_corroborator`). Last, and deliberately: a page
+       fetched from the domain it vouches for is ONE source, not two, so it
+       accepts at ``provisional`` and never at ``verified``. It is still the
+       best evidence available about a candidate that reached none of the four
+       above — the site itself, asked directly — and refusing to consult it
+       while flagging the record "verify this domain" was asking a reviewer to
+       do by hand the one check the pipeline had declined to do.
 
     None of the above → ``domain`` and ``website_url`` stay empty and
     ``rejected`` is set, so the caller can raise ``domain-unverified``.
@@ -345,12 +417,15 @@ def resolve_domain(
 
     threshold, guard_enabled = _settings_defaults(threshold, guard_enabled)
 
-    def accept(domain: str, verified_by: str) -> DomainDecision:
+    def accept(
+        domain: str, verified_by: str, *, witness: str | None = None,
+    ) -> DomainDecision:
         return DomainDecision(
             domain=domain,
             website_url=website_url_for(domain),
             verified_by=verified_by,
             candidate=candidate,
+            witness=witness,
         )
 
     if evidence.registry:
@@ -359,6 +434,10 @@ def resolve_domain(
     if not guard_enabled:
         # A/B kill switch: canonicalisation still applies, ownership does not.
         return accept(candidate, "unguarded")
+
+    witness = stated_website_witness(evidence, candidate)
+    if witness:
+        return accept(candidate, f"witness_{witness}", witness=witness)
 
     if name_similarity(evidence.name1, candidate) >= threshold:
         return accept(candidate, "name")
@@ -369,6 +448,9 @@ def resolve_domain(
 
     if has_on_domain_evidence(evidence, candidate):
         return accept(candidate, "serp")
+
+    if evidence.page_identity:
+        return accept(candidate, "page")
 
     return DomainDecision(rejected=True, candidate=candidate)
 
@@ -383,9 +465,18 @@ def resolve_domain(
 #: claim — which is exactly why the scale travels with the value.
 _VERIFIED_BY_SCALE: dict[str, str] = {
     "registry": REGISTRY_EXACT,
+    # A registry or knowledge base STATED this website. The claim is an
+    # identifier-grade one — an equality between two canonicalised domains,
+    # not a ratio — which is what `REGISTRY_EXACT` means here as well.
+    "witness_registry": REGISTRY_EXACT,
+    "witness_wikidata": REGISTRY_EXACT,
     "name": FUZZY_RATIO,
     "email": DETERMINISTIC,
     "serp": DETERMINISTIC,
+    # The page read's own name comparison. It is a ratio-or-containment
+    # answer, and the score the corroborator measured travels on the
+    # provenance event's `evidence_ref` rather than in this scale.
+    "page": DETERMINISTIC,
     "unguarded": DETERMINISTIC,
 }
 
@@ -432,6 +523,19 @@ def write_domain(
             "source_url": candidate_url,
             "verified_by": decision.verified_by,
         }
+        if decision.witness:
+            # WHICH independent system agreed. `situation_for` reads this to
+            # pick `+registry` or `+wikidata`; a reviewer reads it to know
+            # who to go and ask.
+            ref["witness"] = decision.witness
+            ref["witness_url"] = next(
+                (
+                    url for w, url in (evidence.stated_websites or ())
+                    if w == decision.witness
+                    and canonicalise_domain(url) == decision.domain
+                ),
+                None,
+            )
         if registry_identifier:
             ref["registry_id"] = registry_identifier
         if decision.verified_by == "email":

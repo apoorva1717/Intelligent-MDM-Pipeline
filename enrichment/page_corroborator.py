@@ -29,10 +29,16 @@ challenge or a timeout means we could not look, and "could not look" must never
 be scored as either outcome.
 
 **No new similarity machinery.** Name comparison reuses
+:func:`enrichment.registry_match.names_agree`, which is
 :func:`enrichment.tier1_lei._name_match_score` — ``token_sort_ratio``, taken as
 the max of the raw score and the score with legal-form suffixes stripped — at
-the threshold that guard already uses. See :data:`PAGE_NAME_MATCH_THRESHOLD`
-in ``config.py`` for the derivation.
+the threshold that guard already uses, OR normalised token-set containment.
+See :data:`PAGE_NAME_MATCH_THRESHOLD` in ``config.py`` for the derivation of
+the threshold and ``registry_match`` for the containment rule. The containment
+half is what stops a site that trades under the brand while the record carries
+brand-plus-division ("Stryker" for "Stryker Orthopaedics") reading as a
+different organisation; the same function answers the same question for the
+cross-source gate, so the two cannot drift.
 """
 
 from __future__ import annotations
@@ -46,6 +52,7 @@ from typing import Any
 from urllib.parse import urljoin
 
 from enrichment.locality import compare_locality
+from enrichment.registry_match import names_agree
 from enrichment.tier1_lei import _name_match_score
 from llm.openai_client import OpenAIClient
 from llm.prompts import (
@@ -403,16 +410,72 @@ def compare(
     often a brand-vs-legal-name variant ("AquaPhoenix" for "AquaPhoenix
     Scientific, Inc.") than a wrong site.
     """
-    score = _name_match_score(name1 or "", statement.stated_org_name or "")
+    stated = statement.stated_org_name or ""
+    score = _name_match_score(name1 or "", stated)
     location, detail, scope = compare_location(
         statement, city=city, region=region,
         country=country, postal_code=postal_code,
     )
-    if score < threshold:
+    # The ratio OR containment — one shared answer, see
+    # `enrichment.registry_match.names_agree`. The SCORE is still reported
+    # unchanged on the trace line, because it is the evidence behind the
+    # verdict and a containment agreement that scored 51.9 is exactly the
+    # thing a reviewer of this fix needs to be able to see.
+    if not names_agree(name1 or "", stated, threshold):
         return NAME_MISMATCH, score, location, detail, scope
     if location == "contradicted":
         return CONTRADICTED, score, location, detail, scope
     return CORROBORATED, score, location, detail, scope
+
+
+#: The granularities at which a stated place may decide a domain — take one
+#: back, or refuse to accept one.
+#:
+#: Measured, not assumed. Two cities are routinely one organisation's plant and
+#: its head office: KLA states Milpitas and the record says Santa Clara, both
+#: California; Houston and Baytown are both Texas. Two states or two countries
+#: are not. The chemspeed batch measured the same thing from the other end —
+#: requiring region-or-country before withdrawing a domain left the one true
+#: positive standing and dropped all four false ones — and the SAME floor
+#: governs acceptance here, because "the page places this organisation
+#: somewhere else" is one claim and it cannot be strong enough to take a domain
+#: back while being too weak to withhold one, or the reverse.
+#:
+#: This is the page read's own floor. The registry comparator reaches the same
+#: answer by a different route (a city difference inside an agreeing region is
+#: downgraded to a note before the verdict) because it holds a SET of addresses
+#: and can see the region agree; the page read holds one stated place.
+ACTIONABLE_LOCATION_SCOPES: frozenset[str] = frozenset({"region", "country"})
+
+
+def location_decides(corroboration: "Corroboration") -> bool:
+    """True when the page's stated place disagrees at an actionable
+    granularity — the single predicate both the accept and the withdraw rule
+    in ``Orchestrator._corroborate_domain`` are written against."""
+    return (
+        corroboration.location == "contradicted"
+        and corroboration.location_scope in ACTIONABLE_LOCATION_SCOPES
+    )
+
+
+def page_identifies_record(corroboration: "Corroboration") -> bool:
+    """True when the page at the candidate domain states THIS organisation.
+
+    The page-identity ownership condition, in one place: the reader extracted
+    an identity, that identity is name-consistent with the record
+    (:func:`enrichment.registry_match.names_agree`), and the page does not
+    place the organisation in a different state or country.
+
+    A fetch that failed can never satisfy this — ``fetch_unavailable`` carries
+    no statement and is not one of the two outcomes below — which is the
+    "a block is never evidence, for or against" rule holding at the accept
+    site as well as at the withdraw site.
+    """
+    return (
+        corroboration.outcome in (CORROBORATED, CONTRADICTED)
+        and corroboration.name_consistent
+        and not location_decides(corroboration)
+    )
 
 
 # ---------------------------------------------------------------------------

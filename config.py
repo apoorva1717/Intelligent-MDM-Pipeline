@@ -139,6 +139,7 @@ OPTIONAL_VARS_WITH_DEFAULTS = {
     "PAGE_EXTRACT_FEEDS_RETRY": "false",
     # Wikidata crosswalk lane (enrichment/wikidata.py).
     "WIKIDATA_ENABLED": "true",
+    "WIKIDATA_DOMAIN_CORROBORATION": "true",
     "WIKIDATA_API_BASE": "https://www.wikidata.org/w/api.php",
     "WIKIDATA_TIMEOUT_SECONDS": "10",
     "WIKIDATA_MAX_RETRIES": "2",
@@ -372,6 +373,27 @@ class Settings:
     # `tests/test_wikidata.py::TestTheLaneIsAPureInsert`.
     wikidata_enabled: bool = field(
         default_factory=lambda: _bool(os.getenv("WIKIDATA_ENABLED"), default=True)
+    )
+    # The lane's SECOND role, added by the domain-witness calibration. The
+    # crosswalk lane proper never runs on a record that already holds a
+    # registry identifier — a register outranks a wiki, and a record with an
+    # identity has nothing to gain from a pointer to one. It does have
+    # something to gain from the item's `P856`: an independent statement of
+    # the organisation's official website, which is the one piece of evidence
+    # that can verify a candidate domain a name comparison cannot reach
+    # (an acronym host, a contraction, a brand domain).
+    #
+    # So on a registry-resolved record the lane runs in a CORROBORATION-only
+    # mode: the gauntlet is unchanged, and the only thing retained is the
+    # website claim. Nothing is written, no pointer is followed, no name is
+    # proposed. It costs one search plus one entity fetch against a free
+    # public API, and it is a flag rather than unconditional because it IS a
+    # call the pipeline did not previously make — set it false to A/B the
+    # domain-witness path back out.
+    wikidata_domain_corroboration: bool = field(
+        default_factory=lambda: _bool(
+            os.getenv("WIKIDATA_DOMAIN_CORROBORATION"), default=True,
+        )
     )
     # The MediaWiki Action API. The SPARQL endpoint is deliberately NOT used
     # anywhere in this lane: it is separately rate-limited, frequently

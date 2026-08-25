@@ -437,6 +437,9 @@ class TestConsequences:
     async def test_a_name_difference_alone_never_withdraws(
         self, name1, stated, city, region,
     ):
+        """The domain survives — and since the containment rule these four
+        read as what they are: the page stating the same organisation under
+        a longer or shorter form of its name."""
         orch, result, record = _record_with_candidate("acme.com", name1=name1)
         # The record's own place, matching the batch these rows came from.
         record = EnrichmentRecord(
@@ -452,12 +455,13 @@ class TestConsequences:
         })
         await orch._corroborate_domain(record, result)
 
-        assert result["_page_corroboration"]["outcome"] == NAME_MISMATCH
-        # Reported, not acted on.
+        assert result["_page_corroboration"]["outcome"] == CORROBORATED
+        # The invariant this test was written for, unchanged.
         assert result["domain"] == "acme.com"
         assert orch._page_counts["withdrawn"] == 0
-        assert orch._page_counts["mismatch_not_withdrawn"] == 1
-        assert stated in result["_domain_page_note"]
+        # And the score is still below the ratio threshold — containment, not
+        # a loosened threshold, is what carried every one of these.
+        assert result["_page_corroboration"]["name_score"] < 88.0
 
     @pytest.mark.asyncio
     async def test_the_withdrawal_note_reaches_the_flag_reason(self):

@@ -783,20 +783,50 @@ def _extract_org_fields(org: dict[str, Any]) -> dict[str, Any]:
 
     country = None
     # The registered locality. Fix D(2) compares it against the record's
-    # city/state with the same comparator the page read uses; ROR keeps it on
-    # the primary location's geonames details.
+    # city/state with the same comparator the page read uses.
+    #
+    # EVERY location ROR publishes, not just the first. ROR's `locations[]` is
+    # a list and a multi-site organisation genuinely carries several — the
+    # aggregating comparator is built to take a SET, and handing it one member
+    # of a set is how a record naming a real site of the organisation gets
+    # reported as contradicting "the" registered address. GLEIF's two blocks
+    # were given to the comparator for exactly this reason; ROR's list was
+    # still being truncated to `locations[0]`, so the two registries were
+    # answering the same question from different amounts of evidence.
+    #
+    # The flat `city` / `region` / `country` keys still name the PRIMARY
+    # location, unchanged: they are output fields and telemetry, and the
+    # comparison reads `addresses`.
     city = region = None
-    if org.get("locations"):
-        geo = org["locations"][0].get("geonames_details", {}) or {}
-        country = geo.get("country_name")
-        city = (geo.get("name") or "").strip() or None
-        region = (
-            (geo.get("country_subdivision_name") or "").strip()
-            or (geo.get("country_subdivision_code") or "").strip()
-            or None
-        )
+    addresses: list[dict[str, Any]] = []
+    for index, location in enumerate(org.get("locations") or []):
+        geo = (location or {}).get("geonames_details", {}) or {}
+        entry = {
+            "kind": "registered" if index == 0 else "location",
+            "city": (geo.get("name") or "").strip() or None,
+            "region": (
+                (geo.get("country_subdivision_name") or "").strip()
+                or (geo.get("country_subdivision_code") or "").strip()
+                or None
+            ),
+            "country": geo.get("country_name"),
+        }
+        if index == 0:
+            country, city, region = entry["country"], entry["city"], entry["region"]
+        if not any(v for k, v in entry.items() if k != "kind"):
+            continue
+        # A duplicate would double-count one statement in the trace without
+        # changing the verdict — the same de-duplication GLEIF's two blocks get.
+        if any(
+            {k: v for k, v in entry.items() if k != "kind"}
+            == {k: v for k, v in seen.items() if k != "kind"}
+            for seen in addresses
+        ):
+            continue
+        addresses.append(entry)
 
     return {
+        "addresses": addresses,
         "ror_id": org["id"],
         "official_name": display_name,
         "city": city,
@@ -930,19 +960,14 @@ async def call_ror(
         something is Fix C(3) below, where a short name with a contradicting
         locality has nothing left to stand on.
 
-        ROR publishes ONE primary location, so the address set has one member
-        — but it goes through the same aggregating comparator GLEIF's two do,
-        so the two registries cannot drift apart on the granularity rule (a
-        city difference inside an agreeing region is a note, not a
-        contradiction).
+        EVERY location ROR publishes, through the same aggregating comparator
+        GLEIF's two addresses go through, so the two registries cannot drift
+        apart either on the granularity rule (a city difference inside an
+        agreeing region is a note, not a contradiction) or on how much of what
+        the registry says gets consulted.
         """
         return compare_registry_addresses(
-            [{
-                "kind": "registered",
-                "city": fields.get("city"),
-                "region": fields.get("region"),
-                "country": fields.get("country"),
-            }],
+            fields.get("addresses") or [],
             city=city, region=state, country=country,
         )
 
@@ -1527,12 +1552,7 @@ async def call_ror_by_id(
         fields["location_scope"],
         fields["location_notes"],
     ) = compare_registry_addresses(
-        [{
-            "kind": "registered",
-            "city": fields.get("city"),
-            "region": fields.get("region"),
-            "country": fields.get("country"),
-        }],
+        fields.get("addresses") or [],
         city=city, region=state, country=country,
     )
     result = {

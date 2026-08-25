@@ -64,6 +64,7 @@ from enrichment.provenance import (
 )
 from enrichment.unchanged_state import UNCHANGED_CONFIRMED, UNCHANGED_VERIFIED
 from utils.name_slots import DEPT_SLOTS, NAME_SLOT_LABELS, NAME_SLOTS
+from utils.text_utils import is_admin_unit
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +299,11 @@ _EVIDENCE_KEYS: tuple[str, ...] = (
     "_ev_source_conflict",
     "_ev_source_conflict_fields",
     "_ev_registry_location_mismatch",
+    # Fix 3 — the OPPOSITE finding: two registries named one organisation.
+    # Popped here with the rest so it cannot reach the response model; it
+    # raises no flag (an agreement is not a triage signal), and the finding
+    # itself lives on the `source_agreement` trace line.
+    "_ev_registry_agreement",
 )
 
 
@@ -717,6 +723,27 @@ def compute_flags(result: dict[str, Any]) -> None:
     if result.get("department_domain"):
         corroborated.add("name2")
 
+    # An administrative desk in Name 2 — "Accounts Payable", "Procurement
+    # Services", "Central Purchasing" — is not a claim about the organisation
+    # that anything could verify. There is no registry entry, no web presence
+    # and no page for the accounts-payable desk of a chemicals company: the
+    # phrase names WHERE IN the customer an invoice goes, not a unit whose
+    # existence is in question. `search_term_2` is "ADMIN" for exactly these
+    # rows, and the department-domain probe already skips them before it
+    # spends a fetch (`orchestrator` §5a); flagging afterwards asks a reviewer
+    # to confirm what the pipeline itself declined to look for.
+    #
+    # Unlike `department_domain` above, this clears BOTH name2 doubts, not
+    # only `unverified-inference`. `department_domain` answers "does this unit
+    # exist here" and leaves "is it spelled the way the institution spells it"
+    # open; an admin desk has no institutional spelling to be wrong about.
+    admin_name2 = is_admin_unit(
+        (result.get("name2_enriched") or "").strip()
+        or (result.get("name2_original") or "").strip()
+    )
+    if admin_name2:
+        corroborated.add("name2")
+
     inferred: set[str] = set()
     for field in sorted(_evidence_free_fields(result, evidence)):
         if field in registry_named or field in corroborated:
@@ -754,6 +781,10 @@ def compute_flags(result: dict[str, Any]) -> None:
     marker_low: set[str] = set()
     for field in sorted(evidence.get("_ev_low_conf_unchanged") or ()):
         if field in registry_named or field in inferred:
+            continue
+        # The admin-desk rule above, applied to the other half of the same
+        # doubt. See `admin_name2`.
+        if admin_name2 and field == "name2":
             continue
         if not result.get(f"{field}_enriched"):
             # An empty input field that stayed empty. Nothing to review.

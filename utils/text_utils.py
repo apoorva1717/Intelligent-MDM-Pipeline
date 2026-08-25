@@ -1301,26 +1301,81 @@ _ADMIN_PREFIXES = (
     "division of ", "div of ", "div. ",
 )
 
+#: Generic organisational words that carry no meaning of their own in a unit
+#: name. "Procurement" and "Procurement Services" are one desk; so are
+#: "Accounts Payable" and "Accounts Payable Department". Stripped from the END
+#: repeatedly, so "Billing Services Department" reduces to "billing".
+_ADMIN_SUFFIX_WORDS = frozenset({
+    "services", "service", "department", "departments", "dept", "office",
+    "offices", "team", "teams", "group", "unit", "units", "division",
+    "div", "desk", "section", "center", "centre", "centres", "centers",
+})
 
-def is_admin_unit(text: str | None) -> bool:
-    """True when *text* names an administrative / back-office desk (accounts
-    payable, finance, billing, procurement, treasury, …). English only.
+#: Generic qualifiers that scope a desk without changing which desk it is —
+#: "Central Purchasing" and "Corporate Finance" are the purchasing and finance
+#: desks. Stripped from the FRONT, repeatedly.
+_ADMIN_QUALIFIERS = frozenset({
+    "central", "centralised", "centralized", "corporate", "global",
+    "regional", "main", "general", "shared", "group",
+})
 
-    ``'Accounts Payable'``   → True
-    ``'Office of Finance'``   → True
-    ``'Office of Research'``   → False
+
+def _admin_token_stem(token: str) -> str:
+    """A token with a trailing plural "s" removed, so "accounts" and "account"
+    — and "payables" and "payable" — are one word. Two-letter tokens are left
+    alone: "ap" and "ar" are the abbreviations themselves."""
+    if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
+        return token[:-1]
+    return token
+
+
+def _admin_canonical(text: str) -> str:
+    """*text* reduced to the words that say WHICH desk it is.
+
+    Leading "Office of"/"Department of", leading generic qualifiers, trailing
+    generic organisational words, punctuation, and plurals all removed. What
+    is left is compared against :data:`_ADMIN_UNIT_TERMS` in the same reduced
+    form, so the vocabulary states each desk once instead of once per spelling
+    a source system happens to use.
     """
-    if not text or not text.strip():
-        return False
     t = text.strip().lower()
     for pref in _ADMIN_PREFIXES:
         if t.startswith(pref):
             t = t[len(pref):].strip()
             break
     t = re.sub(r"[^a-z/& ]", " ", t)
-    t = re.sub(r"\s+", " ", t).strip()
-    if t in _ADMIN_UNIT_TERMS:
-        return True
-    if t in {"a/p", "a/r"}:
-        return True
-    return False
+    words = [w for w in t.split() if w]
+    while len(words) > 1 and words[0] in _ADMIN_QUALIFIERS:
+        words = words[1:]
+    while len(words) > 1 and words[-1] in _ADMIN_SUFFIX_WORDS:
+        words = words[:-1]
+    return " ".join(_admin_token_stem(w) for w in words)
+
+
+#: The vocabulary in the same reduced form the input is reduced to, built once.
+_ADMIN_UNIT_STEMS = frozenset(
+    _admin_canonical(term) for term in _ADMIN_UNIT_TERMS
+) | {"a/p", "a/r"}
+
+
+def is_admin_unit(text: str | None) -> bool:
+    """True when *text* names an administrative / back-office desk (accounts
+    payable, finance, billing, procurement, treasury, …). English only.
+
+    Matched on the words that say WHICH desk it is: a leading "Office of",
+    a leading generic qualifier, a trailing generic organisational word and a
+    plural are all removed first, so the vocabulary states each desk once
+    rather than once per spelling an SAP operator used.
+
+    ``'Accounts Payable'``            → True
+    ``'Accounts Payable Department'`` → True
+    ``'Account Payable'``             → True
+    ``'Procurement Services'``        → True
+    ``'Central Purchasing'``          → True
+    ``'Office of Finance'``           → True
+    ``'Office of Research'``          → False
+    ``'Oncology Lab'``                → False
+    """
+    if not text or not text.strip():
+        return False
+    return _admin_canonical(text) in _ADMIN_UNIT_STEMS

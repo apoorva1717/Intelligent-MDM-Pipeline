@@ -95,6 +95,38 @@ def normalise_country(value: str | None) -> str:
     return (country_to_iso_code(text) or text).lower()
 
 
+#: An ISO 3166-2 subdivision code: the country, a hyphen, and the subdivision
+#: ("US-TX", "GB-ENG", "DE-BY"). GLEIF writes regions this way, ROR's
+#: ``country_subdivision_code`` sometimes does, and an SAP record carries the
+#: bare code — three spellings of one place.
+#:
+#: The pattern is deliberately narrow. Stripping at the LAST hyphen instead
+#: would turn "Nord-Pas-de-Calais" into "Calais" and "Provence-Alpes-Côte
+#: d'Azur" into "Côte d'Azur", inventing a region nobody named; anchoring on
+#: two leading letters and a short alphanumeric tail matches the ISO shape and
+#: nothing else. A region whose own name happens to be hyphenated is left
+#: exactly as written.
+_ISO_SUBDIVISION_RE = re.compile(r"^([a-z]{2})-([a-z0-9]{1,3})$", re.IGNORECASE)
+
+
+def strip_subdivision_prefix(value: str | None) -> str:
+    """``"US-TX"`` → ``"TX"``; anything that is not an ISO 3166-2 code is
+    returned unchanged.
+
+    Lives here, beside the comparison it exists to serve, rather than at the
+    point each registry response is parsed. A prefix stripped at ONE parse site
+    normalises one lane and leaves every other caller comparing "us-tx" against
+    "texas" — which is the defect this function was extracted for: the record
+    matched to LEI 3YTEJFW18LGIUQ2N5J61 (legal address US-DE, headquarters
+    US-TX) against a record stating TX. Whoever hands a region to
+    :func:`normalise_region` now gets the same answer, whichever spelling of
+    the region they happen to hold.
+    """
+    text = (value or "").strip()
+    match = _ISO_SUBDIVISION_RE.match(text)
+    return match.group(2) if match else text
+
+
 def region_label(value: str | None) -> str:
     """*value* rendered for a human: "DE" becomes "Delaware".
 
@@ -102,20 +134,27 @@ def region_label(value: str | None) -> str:
     record says NJ", and on a US batch "DE" is Delaware far more often than it
     is Germany — a reviewer should not have to work that out. Only used for
     prose; the comparison itself runs on :func:`normalise_region`.
+
+    The ISO prefix is dropped here too, so the prose quotes the region the
+    comparison actually ran on. A reason reading "states region US-TX" invites
+    a reviewer to wonder whether the mismatch IS the prefix.
     """
-    text = (value or "").strip()
+    text = strip_subdivision_prefix(value)
     expanded = US_REGION_CODES.get(text.strip(". ").lower())
     return f"{text} ({expanded})" if expanded and expanded.lower() != text.lower() else text
 
 
 def normalise_region(value: str | None) -> str:
-    """A US region normalised so "CA" and "California" compare equal.
+    """A region normalised so "US-TX", "TX" and "Texas" compare equal.
 
-    Without this, `San Francisco, California` on a page "contradicts"
+    Without the US map, `San Francisco, California` on a page "contradicts"
     `San Francisco, CA` on the record — measured on the chemspeed batch, where
-    it produced a false contradiction on Anresco Laboratories.
+    it produced a false contradiction on Anresco Laboratories. Without the ISO
+    strip in front of it, a registry writing "US-TX" contradicts a record
+    saying "TX", which is one place spelled two ways and no disagreement at
+    all — see :func:`strip_subdivision_prefix`.
     """
-    text = _norm(value).strip(". ")
+    text = _norm(strip_subdivision_prefix(value)).strip(". ")
     if not text:
         return ""
     # The map's values are title-cased ("ca" -> "California"); both sides of

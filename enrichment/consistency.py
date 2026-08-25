@@ -58,8 +58,12 @@ import logging
 from typing import Any
 
 from enrichment.flags import REGISTRY_LOCATION_MISMATCH, SOURCE_CONFLICT
-from enrichment.locality import CONTRADICTED
-from enrichment.registry_match import is_exact_tier
+from enrichment.registry_match import (
+    LOCATION_ACTION_FLAG,
+    LOCATION_ACTION_TRACE,
+    location_check_action,
+    names_agree,
+)
 from enrichment.tier1_lei import _name_match_score
 
 logger = logging.getLogger(__name__)
@@ -76,6 +80,7 @@ SOURCE_KEYS: tuple[str, ...] = (
     "_src_name_web",
     "_src_locality_ror",
     "_src_locality_gleif",
+    "_src_stated_websites",
 )
 
 #: Source → the output fields that source authored, nulled when it loses.
@@ -91,12 +96,24 @@ def _clean(value: Any) -> str:
 
 
 def _agrees(a: str, b: str, threshold: float) -> bool:
-    """True when two source-side names name the same organisation."""
+    """True when two source-side names name the same organisation.
+
+    :func:`enrichment.registry_match.names_agree` — the ratio this gate has
+    always used, OR normalised token-set containment. The containment half is
+    Fix 3: the two registries do not answer the same question about a name.
+    GLEIF returns the FORMAL LEGAL name and ROR returns the BRAND, and
+    "CORTEVA AGRISCIENCE LLC" against "Corteva" scores 53.8 on a
+    length-sensitive ratio — a same-entity agreement that this gate was
+    reading as a contradiction, and acting on by deleting the ROR id, the ROR
+    domain and the ROR acronym from a record whose two sources agreed.
+
+    Absence is still not conflict: with one side empty there is nothing to
+    disagree about, the same rule the locality comparator applies to a missing
+    address.
+    """
     if not a or not b:
-        # Nothing to disagree about. Absence is not conflict — the same rule
-        # the locality comparator applies to a missing address.
         return True
-    return _name_match_score(a, b) >= threshold
+    return names_agree(a, b, threshold)
 
 
 def apply_cross_source_gate(
@@ -125,6 +142,18 @@ def apply_cross_source_gate(
         ror_name and gleif_name
         and not _agrees(ror_name, gleif_name, threshold)
     )
+
+    if ror_name and gleif_name and not registry_conflict:
+        # Fix 3 — the OTHER outcome of the same comparison, and the one this
+        # gate had no name for. Two registers, queried independently, naming
+        # one organisation is a double-witness confirmation: both identifiers
+        # stay on the record and the name keeps the provenance its own
+        # registry earned (`gleif:verified` — a registry-authored value is
+        # already `verified`, so there is no new state to invent and none is
+        # invented here). What was missing was the RECORD of it, because
+        # "the gate did nothing" and "the gate found the two sources agreed"
+        # left identical evidence behind and only one of them is a finding.
+        _record_agreement(result, ror_name, gleif_name, record_name)
 
     if registry_conflict:
         # Between two registries, the one whose name is closer to what the
@@ -165,6 +194,39 @@ def apply_cross_source_gate(
             record_name=record_name,
         )
     return None
+
+
+#: Records where two registries independently named one organisation. A batch
+#: counter for the same reason `_location_unconfirmed` is one: it answers a
+#: question about the population ("how often do the two registers corroborate
+#: each other?"), which no single row can answer.
+_registry_agreements = 0
+
+
+def registry_agreement_count() -> int:
+    """Records where ROR and GLEIF independently named one organisation."""
+    return _registry_agreements
+
+
+def _record_agreement(
+    result: Any, ror_name: str, gleif_name: str, record_name: str,
+) -> None:
+    """Note a two-registry agreement. Changes no field; writes one trace line."""
+    global _registry_agreements
+    _registry_agreements += 1
+    result["_ev_registry_agreement"] = (
+        f"GLEIF identifies it as {gleif_name!r} and ROR as {ror_name!r}"
+    )
+    line = {
+        "record_id": result.get("record_id"),
+        "step": "source_agreement",
+        "gleif_entity": gleif_name,
+        "ror_entity": ror_name,
+        "record_name": record_name,
+        "score": _name_match_score(ror_name, gleif_name),
+    }
+    logger.info(line)
+    trace_logger.info(json.dumps(line, default=str))
 
 
 def _ror_web_fields(result: Any) -> tuple[str, ...]:
@@ -267,8 +329,9 @@ def registry_location_unconfirmed_count() -> int:
 
 def reset_consistency_counters() -> None:
     """Zero the batch counters (per batch / between tests)."""
-    global _location_unconfirmed
+    global _location_unconfirmed, _registry_agreements
     _location_unconfirmed = 0
+    _registry_agreements = 0
 
 
 def apply_registry_location_check(result: Any) -> dict[str, Any] | None:
@@ -316,7 +379,8 @@ def apply_registry_location_check(result: Any) -> dict[str, Any] | None:
         info = result.get(key)
         if not isinstance(info, dict):
             continue
-        if info.get("verdict") != CONTRADICTED:
+        action = location_check_action(info.get("verdict"), info.get("tier"))
+        if action not in (LOCATION_ACTION_TRACE, LOCATION_ACTION_FLAG):
             for note in info.get("notes") or []:
                 quiet.append({"registry": registry, "note": note})
             continue
@@ -330,7 +394,10 @@ def apply_registry_location_check(result: Any) -> dict[str, Any] | None:
             "name_match_tier": tier,
             "notes": info.get("notes") or [],
         }
-        if is_exact_tier(tier):
+        # THE trigger, for every lane. `location_check_action` is the one
+        # implementation; this loop no longer knows the rule, only how to act
+        # on its answer. See `enrichment.registry_match`.
+        if action == LOCATION_ACTION_TRACE:
             _location_unconfirmed += 1
             line["step"] = "registry_location_unconfirmed"
             logger.info(line)
@@ -370,6 +437,20 @@ def record_registry_identity(
     key = "gleif" if registry.lower() in ("gleif", "lei") else "ror"
     if name and str(name).strip():
         result[f"_src_name_{key}"] = str(name).strip()
+    # The official website the registry STATES for this entity — ROR's
+    # `links[]`, already parsed into `website` by the client. Retained rather
+    # than consumed at the point the domain is first proposed, because the
+    # domain the web paths find is not proposed until finalisation and this
+    # claim has to still be on the record when it is: it is the evidence
+    # behind `web:{domain}:verified+registry`. GLEIF publishes no website
+    # field, so this is a no-op on that lane.
+    stated = str(res.get("website") or "").strip()
+    if stated:
+        websites = list(result.get("_src_stated_websites") or ())
+        entry = ("registry", stated)
+        if entry not in websites:
+            websites.append(entry)
+        result["_src_stated_websites"] = websites
     result[f"_src_locality_{key}"] = {
         "verdict": res.get("location_verdict"),
         "detail": res.get("location_detail"),

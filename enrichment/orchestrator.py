@@ -90,6 +90,7 @@ from enrichment.consistency import (
     apply_cross_source_gate,
     apply_registry_location_check,
     record_registry_identity,
+    registry_agreement_count,
     registry_location_unconfirmed_count,
     reset_consistency_counters,
 )
@@ -104,7 +105,9 @@ from enrichment.page_corroborator import (
     PARKED,
     Corroboration,
     corroborate,
+    location_decides,
     operating_name_provenance,
+    page_identifies_record,
 )
 from enrichment.wikidata import (
     AMBIGUOUS as WIKIDATA_AMBIGUOUS,
@@ -1459,6 +1462,34 @@ def _domain_evidence_name1(result: dict[str, Any]) -> str | None:
     return None
 
 
+def _domain_witnesses(result: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+    """Every official website an INDEPENDENT system states for this record's
+    organisation, as ``(witness, url)`` pairs.
+
+    Two sources, both of them evidence the pipeline has already fetched while
+    resolving the identity — no call is made here and none is added anywhere:
+
+    * ``registry`` — the ``links[]`` website of the ROR record the match
+      landed on, retained by
+      :func:`enrichment.consistency.record_registry_identity` at every point a
+      registry match is accepted;
+    * ``wikidata`` — the ``P856`` official-website claim of the item the
+      crosswalk lane matched, stashed by the lane.
+
+    The claims are ordered registry-first so that when both agree the stronger
+    witness is the one provenance names.
+    """
+    witnesses: list[tuple[str, str]] = []
+    for witness, url in result.get("_src_stated_websites") or ():
+        entry = (str(witness), str(url))
+        if entry not in witnesses:
+            witnesses.append(entry)
+    stated = str(result.get("_wikidata_website") or "").strip()
+    if stated and ("wikidata", stated) not in witnesses:
+        witnesses.append(("wikidata", stated))
+    return tuple(witnesses)
+
+
 def _apply_domain(
     result: dict[str, Any],
     candidate_url: str | None,
@@ -1470,6 +1501,7 @@ def _apply_domain(
     settings: Settings | None = None,
     producer_chain: tuple[str, ...] = ("website_resolver",),
     tier: int | None = None,
+    page_identity: bool = False,
 ) -> DomainDecision:
     """Route one candidate URL through the single ``domain`` write path.
 
@@ -1498,6 +1530,8 @@ def _apply_domain(
         serp_title=serp_title,
         serp_h1=serp_h1,
         serp_url=serp_url or candidate_url,
+        stated_websites=_domain_witnesses(result),
+        page_identity=page_identity,
     )
     decision = write_domain(
         result,
@@ -1805,7 +1839,7 @@ class Orchestrator:
         attempts; `flag_cleared` and `withdrawn` count the two consequences."""
         return {
             "attempted": 0, "flag_cleared": 0, "withdrawn": 0,
-            "mismatch_not_withdrawn": 0,
+            "mismatch_not_withdrawn": 0, "domain_accepted": 0,
             CORROBORATED: 0, CONTRADICTED: 0, NAME_MISMATCH: 0,
             FETCH_UNAVAILABLE: 0, NO_IDENTITY: 0, PARKED: 0,
         }
@@ -1833,6 +1867,12 @@ class Orchestrator:
             "crosswalk_registry_hit": 0, "superseded_flagged": 0,
             "witness_only": 0, "domain_corroborated": 0,
             "domain_disagree": 0,
+            # The corroboration-only pass on registry-resolved records:
+            # how often it ran, and how often it came back with a website
+            # claim to compare. Kept apart from `queried`/`matched`, which
+            # measure the crosswalk lane, so neither number is diluted by
+            # the other's population.
+            "corroboration_queried": 0, "corroboration_matched": 0,
         }
 
     @staticmethod
@@ -1943,6 +1983,7 @@ class Orchestrator:
             summary.page_mismatch_not_withdrawn = (
                 self._page_counts["mismatch_not_withdrawn"]
             )
+            summary.page_domains_accepted = self._page_counts["domain_accepted"]
             # Wikidata crosswalk lane. Maintained unconditionally, like the
             # page-read counters: WIKIDATA_TRACE gates the per-record JSON
             # line, not the aggregates, so a measurement run cannot end up
@@ -1970,6 +2011,7 @@ class Orchestrator:
             summary.registry_location_unconfirmed = (
                 registry_location_unconfirmed_count()
             )
+            summary.registry_agreement = registry_agreement_count()
             summary.evidence_network_calls_by_namespace = dict(
                 sorted(self._evidence_cache.network_calls_by_namespace.items())
             )
@@ -3235,6 +3277,15 @@ class Orchestrator:
             identifier=ror_res["ror_id"],
             rule_id="wikidata:crosswalk-ror",
         )
+        # Fix D — what ROR says this organisation is called, where it is
+        # registered, and which website it states. The crosswalk lane was the
+        # one registry route that never recorded any of it, so the ONE route
+        # that picks an organisation without reading its name was also the one
+        # whose address was never checked against the record's. The client had
+        # already done the comparison; nothing was listening.
+        record_registry_identity(
+            result, "ROR", ror_res, name=ror_res.get("official_name"),
+        )
         _write(
             result, "ror_id", ror_res["ror_id"],
             registry_evidence(
@@ -3322,6 +3373,10 @@ class Orchestrator:
             identifier=lei_res.get("lei_id"),
             rule_id="wikidata:crosswalk-lei",
         )
+        # Fix D — as on the ROR crosswalk above, and for the same reason.
+        record_registry_identity(
+            result, "GLEIF", lei_res, name=lei_res.get("legal_name"),
+        )
         _write(
             result, "lei_id", lei_res.get("lei_id"),
             registry_evidence(
@@ -3379,6 +3434,84 @@ class Orchestrator:
             "domain_corroborated": False,
         }
 
+    async def _retain_wikidata_website(
+        self, record: EnrichmentRecord, result: dict[str, Any],
+    ) -> None:
+        """The lane's corroboration-only pass, for a record that ALREADY holds
+        a registry identity.
+
+        The crosswalk lane returns early on such a record and is right to: a
+        register outranks a wiki and a resolved record has no pointer to
+        gain. What it does have to gain is the item's ``P856`` — an
+        independent statement of the organisation's official website, and the
+        only evidence that can verify a candidate domain the name comparator
+        structurally cannot reach. An acronym host, a contraction of the name,
+        a brand domain: the ownership guard documents all three as unreachable
+        by name similarity, and every one of them is settled by a second
+        source naming the same website.
+
+        What this method may do is exactly one thing: stash the claim. It
+        follows no pointer, writes no name, proposes no ``operating_name``,
+        and touches no field. The gauntlet is the lane's own, unchanged, so a
+        film, a foreign namesake or a low-scoring label is refused here for
+        the same reasons it is refused there — and a refused item leaves
+        nothing behind, so the guard is exactly as strict as it was.
+
+        Runs before the website paths propose a candidate, because that is
+        when the claim has to be on the record; the comparison itself is
+        :meth:`_corroborate_domain_from_wikidata`, deferred to after them.
+
+        Skipped when the domain the record carries already came FROM a
+        registry: a website the register itself supplied has nothing to gain
+        from a second statement of the same fact, and the call would buy
+        nothing.
+        """
+        settings = self._settings
+        if not (settings.wikidata_enabled and settings.wikidata_domain_corroboration):
+            return
+        if not (result.get("ror_id") or result.get("lei_id")):
+            return          # the crosswalk lane's own population
+        if result.get("_wikidata_qid") or result.get("_wikidata_website"):
+            return          # the lane already ran on this record
+        if (result.get("domain_verified_by") or "") == "registry":
+            return
+        name = (result.get("name1_enriched") or record.name1 or "").strip()
+        if not name:
+            return
+
+        counts = self._wikidata_counts
+        counts["corroboration_queried"] += 1
+        try:
+            outcome = await resolve_wikidata(
+                record_id=record.record_id,
+                name=name,
+                city=record.city,
+                region=record.state,
+                client=self._wikidata_client,
+                threshold=settings.lei_name_match_threshold,
+                trace=settings.wikidata_trace,
+            )
+        except Exception as exc:  # noqa: BLE001 — never fail a record
+            counts["unavailable"] += 1
+            logger.warning(
+                "[%s] Wikidata corroboration raised (non-fatal): %s",
+                record.record_id, exc,
+            )
+            return
+
+        item = outcome.item
+        if not outcome.matched or item is None or not item.website:
+            return
+        counts["corroboration_matched"] += 1
+        result["_wikidata_website"] = item.website
+        logger.info({
+            "record_id": record.record_id,
+            "step": "wikidata_website_retained",
+            "qid": item.qid,
+            "website": item.website,
+            "resolved_by": "ROR" if result.get("ror_id") else "GLEIF",
+        })
+
     def _corroborate_domain_from_wikidata(self, result: dict[str, Any]) -> None:
         """Compare the item's ``P856`` with the record's candidate domain.
 
@@ -3394,7 +3527,11 @@ class Orchestrator:
         stale, and a wiki field is not grounds to withdraw a domain the
         ownership guard accepted.
         """
-        stated = result.pop("_wikidata_website", None)
+        # Read, not popped: the same claim is the witness evidence the domain
+        # ownership guard reads (`_domain_witnesses`), and this method runs
+        # after the guard has already judged the candidate. `finalise` drops
+        # the key.
+        stated = result.get("_wikidata_website")
         if not stated:
             return
         accepted = (result.get("domain") or "").strip()
@@ -3434,6 +3571,10 @@ class Orchestrator:
         # website paths propose a candidate and before finalise decides whether
         # to raise `domain-unverified`.
         await self._retry_tier1_after_canonicalisation(record, result)
+        # The Wikidata website claim for a record the registries resolved —
+        # retained here, BEFORE a candidate domain exists, because that is
+        # when the lane can still be asked. See `_retain_wikidata_website`.
+        await self._retain_wikidata_website(record, result)
         await self._maybe_resolve_website_bc(record, result, cache)
         # Defensive: every path that writes a website now writes the matching
         # domain through _apply_domain, so the two can no longer diverge. Kept
@@ -3528,9 +3669,33 @@ class Orchestrator:
         statement = corroboration.statement
         stated = statement.stated_org_name if statement else None
 
-        if corroboration.outcome == CORROBORATED:
+        if page_identifies_record(corroboration):
             # The reviewer's question — "does this site belong to this
-            # organisation?" — has been answered by the site itself.
+            # organisation?" — has been answered by the site itself, so the
+            # answer is written to the field rather than only to the flag.
+            #
+            # This is the fifth ownership condition, and closing the open item
+            # `corroborator_report.md` recorded. The three earlier conditions
+            # ask whether some OTHER evidence ties the candidate to the record;
+            # this one asks the site. Refusing to consult it while flagging the
+            # row "verify this domain" asked a reviewer to do by hand the one
+            # check the pipeline had already run and then discarded. It accepts
+            # at `provisional` and never at `verified` — a page fetched from
+            # the domain it vouches for is one source, not two.
+            #
+            # A candidate the guard ALREADY accepted is untouched:
+            # `_apply_domain` returns the standing decision while `domain` is
+            # set, so this can only ever fill an empty field.
+            if not (result.get("domain") or "").strip():
+                decision = _apply_domain(
+                    result,
+                    corroboration.source_url or f"https://{candidate}",
+                    settings=self._settings,
+                    producer_chain=("page_read",),
+                    page_identity=True,
+                )
+                if decision.domain:
+                    self._page_counts["domain_accepted"] += 1
             if result.pop("_domain_unverified", None) is not None:
                 result["domain_rejected"] = False
                 self._page_counts["flag_cleared"] += 1
@@ -3568,6 +3733,7 @@ class Orchestrator:
             return
 
         if corroboration.outcome == NAME_MISMATCH:
+            # not name-consistent — the accept above did not fire.
             note = f"its page states {stated!r}"
             if statement and statement.stated_city:
                 note += f" in {statement.stated_city}"
@@ -3588,10 +3754,7 @@ class Orchestrator:
             # drops all four false ones. City alone is not enough: a plant and
             # a head office in one state (Houston / Baytown, TX) are one
             # company.
-            elsewhere = (
-                corroboration.location == "contradicted"
-                and corroboration.location_scope in ("region", "country")
-            )
+            elsewhere = location_decides(corroboration)
             if accepted and elsewhere:
                 self._withdraw_domain(result, accepted, corroboration, name1)
                 self._page_counts["withdrawn"] += 1
@@ -5200,8 +5363,12 @@ class Orchestrator:
             # alike — so the three counters partition the kept domains.
             if r.domain_verified_by == "registry":
                 summary.domain_from_registry += 1
+            elif (r.domain_verified_by or "").startswith("witness_"):
+                summary.domain_from_witness += 1
             elif r.domain_verified_by == "email":
                 summary.domain_from_email += 1
+            elif r.domain_verified_by == "page":
+                summary.domain_from_page += 1
             elif r.domain_verified_by is not None:
                 summary.domain_from_serp += 1
             if r.domain_rejected:

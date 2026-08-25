@@ -47,7 +47,11 @@ from typing import Any
 import httpx
 from rapidfuzz import fuzz
 
-from enrichment.locality import compare_registry_addresses
+from enrichment.locality import (
+    CONSISTENT,
+    compare_registry_addresses,
+    strip_subdivision_prefix,
+)
 from enrichment.registry_match import (
     CROSSWALK_TIER,
     ambiguity_verdict,
@@ -159,9 +163,10 @@ def _address(address: dict[str, Any] | None, kind: str) -> dict[str, Any] | None
     would only make the aggregate look like it had more evidence than it has.
     """
     address = address or {}
-    region = (address.get("region") or "").strip()
-    if "-" in region:
-        region = region.rsplit("-", 1)[-1]
+    # "US-TX" is the ISO 3166-2 code for the region the record calls "TX".
+    # The rule is shared with the comparator rather than spelled out here, so
+    # a lane that never reaches this parser still compares the two as equal.
+    region = strip_subdivision_prefix(address.get("region"))
     out = {
         "kind": kind,
         "country": (address.get("country") or "").strip() or None,
@@ -209,12 +214,24 @@ def _record_fields(record: dict[str, Any]) -> dict[str, Any]:
     # The flat legal-address keys are unchanged and still the LEGAL address:
     # `country` is the country guard's input and must keep meaning the country
     # GLEIF filters on. The set above is what the locality comparison reads.
-    region = (legal_address.get("region") or "").strip()
-    if "-" in region:
-        region = region.rsplit("-", 1)[-1]
+    region = strip_subdivision_prefix(legal_address.get("region"))
+    # Every name GLEIF publishes for the entity, for the tier classifier —
+    # parity with ROR, which has always ranked the record against every name
+    # variant in `names[]` rather than the display name alone. A record that
+    # states a registered trading name verbatim has named this entity exactly
+    # as surely as one that states the legal name, and classifying it "fuzzy"
+    # made the location advisory fire on a match the name had settled.
+    entity_names: list[str] = [legal_name] if legal_name else []
+    for block in ("otherNames", "transliteratedOtherNames"):
+        for entry in entity.get(block) or []:
+            value = ((entry or {}).get("name") or "").strip()
+            if value and value not in entity_names:
+                entity_names.append(value)
+
     return {
         "lei_id": record.get("id"),
         "legal_name": legal_name,
+        "entity_names": entity_names,
         "status": entity.get("status"),
         "country": legal_address.get("country"),
         "city": (legal_address.get("city") or "").strip() or None,
@@ -232,6 +249,25 @@ def _record_fields(record: dict[str, Any]) -> dict[str, Any]:
         "legal_form_id": legal_form.get("id"),
         "legal_form_other": legal_form.get("other"),
     }
+
+
+def _region_agrees(
+    fields: dict[str, Any], city: str | None, state: str | None,
+) -> bool:
+    """True when the record's locality agrees with ANY registered address.
+
+    The same set and the same comparator the locality verdict is built from —
+    ``legalAddress`` and ``headquartersAddress`` both — so selection and the
+    advisory can never disagree about where the registry says an entity is.
+    ``False`` when the record states no region: silence is not agreement, and
+    a record without a region ranks its candidates exactly as before.
+    """
+    if not (state or "").strip():
+        return False
+    verdict, _, _, _ = compare_registry_addresses(
+        fields.get("addresses") or [], city=city, region=state,
+    )
+    return verdict == CONSISTENT
 
 
 def _best_verified_candidate(
@@ -295,8 +331,16 @@ def _best_verified_candidate(
         if not fields.get("lei_id") or not fields.get("legal_name"):
             continue
         if want_country:
+            # BOTH addresses, for the same reason the locality comparison
+            # reads both: an entity incorporated abroad and headquartered in
+            # the record's country is in that country, and the legal address
+            # alone says otherwise. Agreement with either one is agreement.
+            cand_countries = {
+                (a.get("country") or "").strip().upper()
+                for a in (fields.get("addresses") or [])
+            } or {(fields.get("country") or "").strip().upper()}
             cand_country = (fields.get("country") or "").strip().upper()
-            if cand_country != want_country:
+            if want_country not in cand_countries:
                 logger.info(
                     "GLEIF: rejecting '%s' (LEI=%s) — country %s != requested %s",
                     fields.get("legal_name"), fields.get("lei_id"),
@@ -310,8 +354,9 @@ def _best_verified_candidate(
                         "score": None,
                         "threshold": threshold,
                         "detail": (
-                            f"candidate country {cand_country or '?'} != "
-                            f"requested {want_country}"
+                            "no registered address in the requested country "
+                            f"({'/'.join(sorted(c for c in cand_countries if c)) or '?'} "
+                            f"!= {want_country})"
                         ),
                         "query": name,
                     })
@@ -321,6 +366,7 @@ def _best_verified_candidate(
         near_misses.append((
             score, fields.get("lei_id") or "",
             fields.get("status") == "ACTIVE",
+            _region_agrees(fields, city, state),
         ))
         if score < threshold:
             # The name-verification guard. GLEIF's own search returns confident
@@ -339,8 +385,23 @@ def _best_verified_candidate(
                 })
             continue
         is_active = 1 if (fields.get("status") == "ACTIVE") else 0
+        # The record's region against BOTH registered addresses, as a
+        # DISCRIMINATOR among candidates the name guard already passed.
+        # Name verification is the gate; where two entities are both plausible
+        # by name, the one the registry places where the record is, is the one
+        # the record means. "Cargill, Incorporated" and "Cargill Foundation"
+        # are both Cargill by name; only one of them is where the record says.
+        # Ranked BELOW registration status and ABOVE score, because every
+        # candidate here has already cleared the name threshold — and it is
+        # inert when the record states no region, so a record without one
+        # ranks exactly as it did before.
+        region_agrees = 1 if _region_agrees(fields, city, state) else 0
         verified.append(
-            (rank_key(score, fields["lei_id"], -is_active), fields, score),
+            (
+                rank_key(score, fields["lei_id"], -is_active, -region_agrees),
+                fields,
+                score,
+            ),
         )
 
     if not verified:
@@ -356,12 +417,19 @@ def _best_verified_candidate(
     winner_id = verified[0][1].get("lei_id") or ""
     winner_score = verified[0][2]
     winner_active = verified[0][1].get("status") == "ACTIVE"
+    winner_agrees = _region_agrees(verified[0][1], city, state)
     # Same registration status only. An inactive entity is not a plausible
     # alternative reading of an active one — the registry HAS distinguished
     # them — so it cannot make the active winner ambiguous.
+    # A candidate the registry places somewhere the record is not cannot make
+    # an otherwise-identified winner ambiguous: the region has already told
+    # the two apart, which is what asking it during selection is FOR. When the
+    # winner has no region agreement to stand on, nothing is excluded and the
+    # rule is exactly as strict as it was.
     others = [
-        (sc, lei) for sc, lei, active in near_misses
+        (sc, lei) for sc, lei, active, agrees in near_misses
         if lei != winner_id and active == winner_active
+        and not (winner_agrees and not agrees)
     ]
     if others and ambiguity_verdict([winner_score, max(others)[0]]):
         first = verified[0][1]
@@ -405,7 +473,7 @@ def _best_verified_candidate(
     # advisory about a match that might be the wrong organisation, and a
     # verbatim name match is not that match — see `registry_match`.
     fields["name_match_tier"] = name_match_tier(
-        [name], [fields.get("legal_name")],
+        [name], fields.get("entity_names") or [fields.get("legal_name")],
     )
 
     # Fix C(3).

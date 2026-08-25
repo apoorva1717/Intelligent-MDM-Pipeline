@@ -689,6 +689,12 @@ class EnrichmentSummary(BaseModel):
     # state or country, so the accepted domain was reported and kept rather
     # than withdrawn. Almost always a brand-vs-legal-name variant.
     page_mismatch_not_withdrawn: int = 0
+    #: Domains the page read ACCEPTED — the candidate had reached no other
+    #: ownership condition and the site itself named the record's
+    #: organisation. Distinct from `page_flags_cleared`, which counts the
+    #: flag withdrawals: a record whose domain the guard had already accepted
+    #: clears its flag without this counter moving.
+    page_domains_accepted: int = 0
     # Wikidata crosswalk lane (enrichment/wikidata.py). `matched`, `no_match`,
     # `ambiguous` and `unavailable` partition `queried` — every invocation ends
     # in exactly one. `type_rejected` / `country_rejected` are diagnostics that
@@ -716,6 +722,13 @@ class EnrichmentSummary(BaseModel):
     # in no way — Wikidata may be stale, and a wiki field is not grounds to
     # withdraw a domain the ownership guard accepted.
     wikidata_domain_disagree: int = 0
+    # The lane's corroboration-only pass on records the registries already
+    # resolved: how often it ran, and how often it returned a `P856` to
+    # compare against the candidate domain. Separate from `wikidata_queried` /
+    # `wikidata_matched`, which measure the crosswalk lane on the disjoint
+    # population of records that hold no registry identifier.
+    wikidata_corroboration_queried: int = 0
+    wikidata_corroboration_matched: int = 0
     # Records whose provisional routing_type disagreed with the record_type the
     # evidence finally supported — i.e. tiers were gated on the wrong type.
     # Surfaced, not corrected: re-running those records is a separate decision.
@@ -747,13 +760,30 @@ class EnrichmentSummary(BaseModel):
     # a rise in the flag is the normal case getting more common, not a
     # regression. See `enrichment/consistency.py`.
     registry_location_unconfirmed: int = 0
+    # Records where ROR and GLEIF, queried independently, named one
+    # organisation. The other outcome of the same comparison that raises
+    # `source-conflict`, and a batch number for the same reason: it answers
+    # "how often do the two registers corroborate each other?", which no
+    # single row can answer. Raises no flag — an agreement is a finding, not
+    # a triage signal. See `enrichment/consistency.py`.
+    registry_agreement: int = 0
     # Domain ownership guard telemetry (utils/domain_resolver.py). The three
     # `domain_from_*` counters partition the records that kept a domain by the
     # evidence that carried it; `domain_from_serp` covers every web-derived
     # domain (name similarity or on-domain search evidence).
     domain_from_registry: int = 0
+    # A candidate an INDEPENDENT system's stated official website confirmed —
+    # a ROR `links[]` entry or a Wikidata `P856` claim naming the same
+    # registrable domain the web path found. Separate from `domain_from_
+    # registry`, which is a domain the registry SUPPLIED: this one is a domain
+    # two systems agree on, and it is the only web-derived domain that reaches
+    # `verified` in the provenance column.
+    domain_from_witness: int = 0
     domain_from_email: int = 0
     domain_from_serp: int = 0
+    # Accepted because the page served BY the candidate stated this
+    # organisation's own name (the page-identity ownership condition).
+    domain_from_page: int = 0
     domain_rejected_unverified: int = 0
     tier2a_population_count: int = 0
     tier2a_verification_count: int = 0

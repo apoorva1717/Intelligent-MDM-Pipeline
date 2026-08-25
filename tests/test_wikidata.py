@@ -907,6 +907,11 @@ class TestTheLaneIsAPureInsert:
             return False
 
         without._wikidata_crosswalk = _absent
+        # BOTH entry points. The lane gained a second one — the
+        # corroboration-only pass that retains `P856` on a record the
+        # registries already resolved — and a pure-insert baseline that
+        # excised only the first would stop being a baseline.
+        without._retain_wikidata_website = _absent
         without._corroborate_domain_from_wikidata = lambda result: None
         baseline = await without.enrich_batch(copy.deepcopy(_BATCH), options)
 

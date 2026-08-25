@@ -711,3 +711,89 @@ class TestRenderAndRetract:
         })
         assert flags.retract(result, [flags.LOW_CONFIDENCE_UNCHANGED], "name1") == ()
         assert result.flag_codes == [flags.LOW_CONFIDENCE_UNCHANGED]
+
+
+class TestAnAdminDeskInName2NeedsNoVerification:
+    """"Accounts Payable" is not a claim anything could check.
+
+    A department in Name 2 normally carries a real doubt: the pipeline may
+    have inferred a unit that does not exist, or spelled it differently from
+    the institution. An administrative desk carries neither. There is no
+    registry entry, no web presence and no page for the accounts-payable desk
+    of a chemicals company — the phrase names where in the customer an invoice
+    goes, not a unit whose existence is in question.
+
+    The pipeline already knows this in two other places: `search_term_2` is
+    "ADMIN" for exactly these rows, and the department-domain probe skips them
+    before it spends a fetch. Flagging afterwards asked a reviewer to confirm
+    what the pipeline itself had declined to look for.
+    """
+
+    ADMIN = [
+        "Accounts Payable", "Account Payable", "Accounts Payable Department",
+        "Procurement Services", "Central Purchasing", "Purchasing Dept",
+        "Billing Services", "Office of Finance", "AP", "Shared Services",
+    ]
+    NOT_ADMIN = [
+        "Oncology Lab", "Department of Chemistry", "Materials Science",
+        "Office of Research", "Analytical Services",
+    ]
+
+    @pytest.mark.parametrize("name2", ADMIN)
+    def test_an_inferred_admin_desk_is_not_flagged(self, name2):
+        """Tier 3 wrote it and nothing corroborates it — and it still does not
+        flag, because there is nothing there to corroborate."""
+        out = _finalised(
+            {"name1": "Acme Chemicals", "name2": name2},
+            name1_enriched="Acme Chemicals",
+            name2_enriched=name2.upper(),
+            _ev_tier3_wrote=("name2",),
+        )
+        assert flags.UNVERIFIED_INFERENCE not in (out.get("flag_codes") or [])
+        assert "name2" not in (out.get("flagged_fields") or [])
+
+    @pytest.mark.parametrize("name2", NOT_ADMIN)
+    def test_a_real_unit_is_still_flagged(self, name2):
+        """The twin of the case above with one thing changed: Name 2 names a
+        unit whose existence IS a question. The doubt is unchanged."""
+        out = _finalised(
+            {"name1": "Acme Chemicals", "name2": name2},
+            name1_enriched="Acme Chemicals",
+            name2_enriched=name2.upper() + " GROUP",
+            _ev_tier3_wrote=("name2",),
+        )
+        assert flags.UNVERIFIED_INFERENCE in (out.get("flag_codes") or [])
+
+    def test_the_low_confidence_half_is_cleared_too(self):
+        """`department_domain` clears only `unverified-inference` — it says the
+        unit exists, not that the record spells it the institution's way. An
+        admin desk has no institutional spelling to be wrong about, so the
+        admin rule clears both halves of the doubt."""
+        out = _finalised(
+            {"name1": "Acme Chemicals", "name2": "Accounts Payable"},
+            name1_enriched="Acme Chemicals",
+            name2_enriched="Accounts Payable",
+            _ev_low_conf_unchanged=["name2"],
+        )
+        assert "name2" not in (out.get("flagged_fields") or [])
+
+    def test_a_non_admin_unit_keeps_its_low_confidence(self):
+        out = _finalised(
+            {"name1": "Acme Chemicals", "name2": "Oncology Lab"},
+            name1_enriched="Acme Chemicals",
+            name2_enriched="Oncology Lab",
+            _ev_low_conf_unchanged=["name2"],
+        )
+        assert "name2" in (out.get("flagged_fields") or [])
+
+    def test_name1_doubts_are_untouched_by_an_admin_name2(self):
+        """The rule is scoped to Name 2. A record whose NAME 1 is unverifiable
+        still says so, whatever sits in the department slot."""
+        out = _finalised(
+            {"name1": "Acme Chemicals", "name2": "Accounts Payable"},
+            name1_enriched="Acme Chemicals International",
+            name2_enriched="Accounts Payable",
+            _ev_tier3_wrote=("name1",),
+        )
+        assert flags.UNVERIFIED_INFERENCE in (out.get("flag_codes") or [])
+        assert "name1" in (out.get("flagged_fields") or [])

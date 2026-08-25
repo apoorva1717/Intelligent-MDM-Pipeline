@@ -1333,6 +1333,279 @@ class TestTheRegistryLocationTriggerIsAConjunction:
         assert result.lei_id == "LEI0000000000000001"
         assert REGISTRY_LOCATION_MISMATCH not in result.flag_codes
 
+    # ── region as a selection input ──────────────────────────────────────
+    @pytest.mark.asyncio
+    async def test_region_picks_between_two_candidates_the_name_cannot(
+        self, monkeypatch,
+    ):
+        """Two entities, one name, two states — the record's region decides.
+
+        Name verification is a GATE: both of these clear it, and neither is
+        more "exact" than the other. What tells them apart is that the
+        registry puts one of them where the record is. Asking the region only
+        AFTER a winner was picked meant the coin-flip happened first and the
+        region was left to complain about the result.
+        """
+        records = [
+            _lei_record("LEI000000000000000A", "CARGILL INCORPORATED",
+                        city="Minneapolis", region="US-MN"),
+            _lei_record("LEI000000000000000B", "CARGILL INCORPORATED",
+                        city="Dayton", region="US-OH"),
+        ]
+
+        def handler(request):
+            if request.url.path.endswith("/lei-records"):
+                return httpx.Response(200, json={"data": records})
+            return httpx.Response(200, json={"data": []})
+
+        _patch_registry(monkeypatch, tier1_lei, handler)
+        clear_lei_cache()
+        res = await tier1_lei.call_lei(
+            "Cargill Incorporated", country_code="US",
+            city="Dayton", state="OH",
+        )
+        assert res["matched"] is True
+        assert res["lei_id"] == "LEI000000000000000B"
+        assert res["location_verdict"] == "consistent"
+
+    @pytest.mark.asyncio
+    async def test_the_headquarters_region_can_be_what_agrees(
+        self, monkeypatch,
+    ):
+        """Both addresses count in selection, exactly as in the verdict.
+
+        The candidate that wins is incorporated in Delaware like everything
+        else and OPERATES from the record's state; the loser is wholly in
+        another one. Reading the legal address alone would rank them equal
+        and fall through to the LEI tiebreak.
+        """
+        records = [
+            _lei_record("LEI000000000000000A", "ACME POLYMERS INCORPORATED",
+                        city="Albany", region="US-NY"),
+            _lei_record("LEI000000000000000Z", "ACME POLYMERS INCORPORATED",
+                        city="Wilmington", region="US-DE",
+                        hq_city="Houston", hq_region="US-TX"),
+        ]
+
+        def handler(request):
+            if request.url.path.endswith("/lei-records"):
+                return httpx.Response(200, json={"data": records})
+            return httpx.Response(200, json={"data": []})
+
+        _patch_registry(monkeypatch, tier1_lei, handler)
+        clear_lei_cache()
+        res = await tier1_lei.call_lei(
+            "Acme Polymers Incorporated", country_code="US",
+            city="Houston", state="TX",
+        )
+        # Z sorts last on the LEI tiebreak and wins anyway, on its headquarters.
+        assert res["lei_id"] == "LEI000000000000000Z"
+
+    @pytest.mark.asyncio
+    async def test_a_record_without_a_region_ranks_exactly_as_before(
+        self, monkeypatch,
+    ):
+        """Silence is not agreement. A record stating no region must leave the
+        order it had, or this becomes a behaviour change on every row that
+        happens to have an empty Region cell."""
+        records = [
+            _lei_record("LEI000000000000000A", "ACME POLYMERS INCORPORATED",
+                        city="Albany", region="US-NY"),
+            _lei_record("LEI000000000000000B", "ACME POLYMERS INCORPORATED",
+                        city="Houston", region="US-TX"),
+        ]
+
+        def handler(request):
+            if request.url.path.endswith("/lei-records"):
+                return httpx.Response(200, json={"data": records})
+            return httpx.Response(200, json={"data": []})
+
+        _patch_registry(monkeypatch, tier1_lei, handler)
+        clear_lei_cache()
+        res = await tier1_lei.call_lei(
+            "Acme Polymers Incorporated", country_code="US",
+            city=None, state=None,
+        )
+        # Two identical names at one score, and no region to tell them apart:
+        # the ambiguity rule refuses both, exactly as it did before region
+        # entered selection. Region RESOLVES a near-tie; it never creates one,
+        # and it never rescues a tie it cannot speak to.
+        assert res["matched"] is False
+
+    @pytest.mark.asyncio
+    async def test_the_country_guard_accepts_a_headquarters_in_country(
+        self, monkeypatch,
+    ):
+        """The guard reads both addresses for the same reason the verdict
+        does. An entity incorporated abroad and headquartered in the record's
+        country IS in that country."""
+        records = [_lei_record(
+            "LEI000000000000000C", "NORDIC POLYMERS INCORPORATED",
+            country="NL", city="Amsterdam",
+            hq_country="US", hq_city="Houston", hq_region="US-TX",
+        )]
+
+        def handler(request):
+            if request.url.path.endswith("/lei-records"):
+                return httpx.Response(200, json={"data": records})
+            return httpx.Response(200, json={"data": []})
+
+        _patch_registry(monkeypatch, tier1_lei, handler)
+        clear_lei_cache()
+        res = await tier1_lei.call_lei(
+            "Nordic Polymers Incorporated", country_code="US",
+            city="Houston", state="TX",
+        )
+        assert res["matched"] is True
+        assert res["lei_id"] == "LEI000000000000000C"
+
+    # ── region normalisation ─────────────────────────────────────────────
+    def test_an_iso_subdivision_code_is_the_same_region_as_the_bare_code(self):
+        """"US-TX" is how GLEIF writes the region an SAP record calls "TX"."""
+        from enrichment.locality import normalise_region
+
+        assert normalise_region("US-TX") == normalise_region("TX")
+        assert normalise_region("US-TX") == normalise_region("Texas")
+        assert normalise_region("US-DE") == normalise_region("Delaware")
+
+    def test_the_iso_strip_lives_in_the_comparator_not_one_parse_site(self):
+        """The prefix arrives from more than one direction.
+
+        GLEIF's parser is not the only way a region reaches the comparator —
+        ROR falls back to ``country_subdivision_code`` and a record's own
+        state field is whatever its source system wrote. A strip applied at
+        one parse site normalises one lane and leaves the others comparing
+        "us-tx" against "texas", so it is applied inside `normalise_region`
+        and both directions are pinned here.
+        """
+        from enrichment.locality import CONSISTENT, compare_registry_addresses
+
+        # Registry prefixed, record bare.
+        verdict, _, _, _ = compare_registry_addresses(
+            [{"kind": "registered", "city": "Houston", "region": "US-TX",
+              "country": "US"}],
+            city="Houston", region="TX", country="US",
+        )
+        assert verdict == CONSISTENT
+
+        # Record prefixed, registry bare.
+        verdict, _, _, _ = compare_registry_addresses(
+            [{"kind": "registered", "city": "Houston", "region": "TX",
+              "country": "US"}],
+            city="Houston", region="US-TX", country="US",
+        )
+        assert verdict == CONSISTENT
+
+    def test_a_hyphenated_region_name_is_not_a_prefixed_code(self):
+        """Stripping at the last hyphen would invent regions.
+
+        "Nord-Pas-de-Calais" is a region's NAME, not a country and a
+        subdivision, and cutting it to "Calais" would compare it equal to a
+        city. Only the ISO shape — two letters, a hyphen, a short tail — is
+        treated as a prefix.
+        """
+        from enrichment.locality import strip_subdivision_prefix
+
+        assert strip_subdivision_prefix("Nord-Pas-de-Calais") == "Nord-Pas-de-Calais"
+        assert strip_subdivision_prefix("Provence-Alpes-Côte d'Azur") == (
+            "Provence-Alpes-Côte d'Azur"
+        )
+        assert strip_subdivision_prefix("US-TX") == "TX"
+        assert strip_subdivision_prefix("GB-ENG") == "ENG"
+
+    def test_the_reason_prose_quotes_the_stripped_region(self):
+        """A reason reading "states region US-TX" invites a reviewer to wonder
+        whether the prefix IS the mismatch."""
+        from enrichment.locality import region_label
+
+        assert region_label("US-DE") == "DE (Delaware)"
+        assert region_label("US-TX") == "TX (Texas)"
+
+    # ── the reported LEI, verbatim ───────────────────────────────────────
+    #: HUNTSMAN INTERNATIONAL LLC as GLEIF publishes it: incorporated in
+    #: Wilmington DE, operating from Houston TX. The address pair that the
+    #: check used to read half of, kept here under its real identifier so the
+    #: regression is findable by the LEI a reviewer would quote.
+    _HUNTSMAN_LEI = "3YTEJFW18LGIUQ2N5J61"
+
+    @classmethod
+    def _huntsman(cls):
+        return _lei_record(
+            cls._HUNTSMAN_LEI, "HUNTSMAN INTERNATIONAL LLC",
+            city="WILMINGTON", region="US-DE",
+            hq_city="Houston", hq_region="US-TX",
+        )
+
+    @classmethod
+    def _huntsman_handler(cls, monkeypatch):
+        records = [cls._huntsman()]
+
+        def handler(request):
+            if request.url.path.endswith("/lei-records"):
+                return httpx.Response(200, json={"data": records})
+            return httpx.Response(200, json={"data": []})
+
+        _patch_registry(monkeypatch, tier1_lei, handler)
+        clear_lei_cache()
+
+    @pytest.mark.asyncio
+    async def test_the_reported_lei_corroborates_a_texas_record(
+        self, monkeypatch,
+    ):
+        """The reported defect: a TX record on this LEI flagged
+        "GLEIF states region DE".
+
+        GLEIF states BOTH — DE where the entity is incorporated and TX where
+        it is. The record agreeing with either one is agreement, and the ISO
+        subdivision code the registry writes ("US-TX") is the same region as
+        the bare code the record carries ("TX").
+        """
+        self._huntsman_handler(monkeypatch)
+        res = await tier1_lei.call_lei(
+            "Huntsman International LLC", country_code="US",
+            city="Houston", state="TX",
+        )
+        assert res["matched"] is True
+        assert res["location_verdict"] == "consistent"
+
+        result = await _run(
+            _orch(ror=_StubROR(None), lei=_StubLEI(res)),
+            name1="Huntsman International LLC", city="Houston", state="TX",
+        )
+        assert result.lei_id == self._HUNTSMAN_LEI
+        assert REGISTRY_LOCATION_MISMATCH not in result.flag_codes
+
+    @pytest.mark.asyncio
+    async def test_the_reported_lei_on_an_ohio_record_is_traced_not_flagged(
+        self, monkeypatch,
+    ):
+        """The same entity against a record in a third state. Neither
+        registered address is Ohio, so the locality IS contradicted — but the
+        record states the registry's name verbatim, so which company this is
+        was never the question. Trace, no flag."""
+        from enrichment.consistency import (
+            registry_location_unconfirmed_count,
+            reset_consistency_counters,
+        )
+
+        self._huntsman_handler(monkeypatch)
+        res = await tier1_lei.call_lei(
+            "Huntsman International LLC", country_code="US",
+            city="Toledo", state="OH",
+        )
+        assert res["matched"] is True
+        assert res["location_verdict"] == "contradicted"
+        assert res["name_match_tier"] == "exact"
+
+        reset_consistency_counters()
+        result = await _run(
+            _orch(ror=_StubROR(None), lei=_StubLEI(res)),
+            name1="Huntsman International LLC", city="Toledo", state="OH",
+        )
+        assert result.lei_id == self._HUNTSMAN_LEI
+        assert REGISTRY_LOCATION_MISMATCH not in result.flag_codes
+        assert registry_location_unconfirmed_count() == 1
+
     def test_a_city_difference_inside_an_agreeing_region_is_a_note(self):
         """Altria: SUFFOLK on the legal address, RICHMOND on the
         headquarters, both Virginia, and the record says Richmond VA. Two
@@ -1411,6 +1684,85 @@ class TestTheRegistryLocationTriggerIsAConjunction:
         from enrichment.registry_match import EXACT_TIER, name_match_tier
 
         assert name_match_tier(["Arkema"], ["ARKEMA INC."]) == EXACT_TIER
+
+    def test_an_abbreviated_legal_form_is_still_exact(self):
+        """"Huntsman Corp" against "HUNTSMAN CORPORATION" is one name.
+
+        The rule already forgave a legal form a record OMITS, so "Huntsman"
+        alone scored exact against "HUNTSMAN CORPORATION" while "Huntsman
+        Corp" scored fuzzy — stating the suffix in the form an SAP operator
+        types it ranked BELOW not stating it at all. On record 13017466
+        (Longview TX) that wrong tier was the whole reason the row wore
+        `registry-location-mismatch`.
+        """
+        from enrichment.registry_match import EXACT_TIER, name_match_tier
+
+        assert name_match_tier(
+            ["Huntsman Corp"], ["HUNTSMAN CORPORATION"],
+        ) == EXACT_TIER
+        assert name_match_tier(["Widget Co"], ["WIDGET COMPANY"]) == EXACT_TIER
+        assert name_match_tier(
+            ["Vestas Inc"], ["VESTAS INCORPORATED"],
+        ) == EXACT_TIER
+
+    def test_the_abbreviation_fold_never_crosses_two_forms(self):
+        """Corp and Inc both name corporations and are still two forms.
+
+        The fold is abbreviation-to-expansion of ONE word. Where the register
+        draws a line between two forms, so does the tier.
+        """
+        from enrichment.registry_match import FUZZY_TIER, name_match_tier
+
+        assert name_match_tier(["Smith Inc"], ["Smith Corp"]) == FUZZY_TIER
+        assert name_match_tier(["Nordic Oy"], ["NORDIC OYJ"]) == FUZZY_TIER
+
+    @pytest.mark.asyncio
+    async def test_record_13017466_keeps_its_lei_without_the_advisory(
+        self, monkeypatch,
+    ):
+        """The reported row, end to end.
+
+        HUNTSMAN CORPORATION states Wilmington DE on BOTH addresses, so the
+        locality genuinely is contradicted against a record in Longview TX —
+        this is not a case the two-address rule rescues. What was wrong was
+        the tier: the record names the entity verbatim, so the contradiction
+        is geography and belongs in the trace, not on the row.
+        """
+        from enrichment.consistency import (
+            registry_location_unconfirmed_count,
+            reset_consistency_counters,
+        )
+
+        records = [_lei_record(
+            "5299000V56320A7RIQ67", "HUNTSMAN CORPORATION",
+            city="WILMINGTON", region="US-DE",
+            hq_city="WILMINGTON", hq_region="US-DE",
+        )]
+
+        def handler(request):
+            if request.url.path.endswith("/lei-records"):
+                return httpx.Response(200, json={"data": records})
+            return httpx.Response(200, json={"data": []})
+
+        _patch_registry(monkeypatch, tier1_lei, handler)
+        clear_lei_cache()
+        res = await tier1_lei.call_lei(
+            "Huntsman Corp", country_code="US",
+            city="Longview", state="TX",
+        )
+        assert res["matched"] is True
+        # Both blocks name one place, so the set holds one address.
+        assert res["location_verdict"] == "contradicted"
+        assert res["name_match_tier"] == "exact"
+
+        reset_consistency_counters()
+        result = await _run(
+            _orch(ror=_StubROR(None), lei=_StubLEI(res)),
+            name1="Huntsman Corp", city="Longview", state="TX",
+        )
+        assert result.lei_id == "5299000V56320A7RIQ67"
+        assert REGISTRY_LOCATION_MISMATCH not in result.flag_codes
+        assert registry_location_unconfirmed_count() == 1
 
     def test_two_different_legal_forms_are_not_exact(self):
         """A register is the authority that says Smith Inc and Smith LLC are

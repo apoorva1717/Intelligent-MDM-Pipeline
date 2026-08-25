@@ -728,12 +728,22 @@ _CORROBORATION_WITNESSES: dict[str, str] = {
 }
 
 #: `domain_ownership` conditions that constitute an INDEPENDENT witness for
-#: the domain (hard rule 4). `name` and `serp` are deliberately absent: a
-#: string comparison against the record's own Name 1, and a page fetched from
-#: the very domain it is being asked to corroborate, are each one source.
+#: the domain (hard rule 4). `name`, `serp` and `page` are deliberately
+#: absent: a string comparison against the record's own Name 1, and a page
+#: fetched from the very domain it is being asked to corroborate, are each ONE
+#: source — `page` most explicitly of all, which is why the page-identity
+#: ownership condition accepts a domain at `provisional` and never carries it
+#: to `verified`.
+#:
+#: The two `witness_*` conditions are the opposite case and the reason this
+#: map exists: a registry's `links[]` or a Wikidata `P856` claim stating the
+#: same website the web path found is a SECOND system agreeing, reached
+#: without consulting the first.
 _DOMAIN_WITNESSES: dict[str, str] = {
     "email": WITNESS_DOMAIN,
     "registry": WITNESS_REGISTRY,
+    "witness_registry": WITNESS_REGISTRY,
+    "witness_wikidata": WITNESS_WIKIDATA,
 }
 
 
