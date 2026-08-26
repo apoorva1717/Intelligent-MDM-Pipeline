@@ -190,6 +190,7 @@ from utils.domain_resolver import (
     write_domain,
 )
 from utils.text_utils import (
+    UNIT_SLOT_RANK,
     canonical_is_spelling_variant,
     canonical_preserves_identity,
     canonicalise_unit_name,
@@ -203,6 +204,7 @@ from utils.text_utils import (
     is_granular_unit,
     looks_like_research_institution,
     normalise_case,
+    ordered_unit_word,
     smart_title_case,
     strip_address_fragments,
     strip_parentheticals,
@@ -1215,6 +1217,67 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
                 kind="transform",
             ),
         )
+
+    # Unit ordering across the department slots: a division is written above a
+    # department ("Division of Animal Health" in Name 2, "Department of
+    # Agriculture" in Name 3), whichever order the tiers happened to fill the
+    # slots in. See `utils.text_utils.UNIT_SLOT_RANK` for the convention.
+    #
+    # Only the slots holding one of those two constructions take part, and they
+    # are reordered among THEMSELVES — a slot holding anything else (a branch, a
+    # lab, an overflow fragment) keeps the position the packing above gave it,
+    # so the rule can never reshuffle a block it has no opinion about. Equal
+    # ranks keep their relative order (a stable sort), so two divisions stay in
+    # the order the tiers produced.
+    #
+    # Runs AFTER the dedup/pack — reordering the survivors of a packed block,
+    # never around the holes a duplicate left — and BEFORE the changed flags,
+    # the registry-name bookkeeping and `compute_flags`, all of which describe
+    # a slot and would otherwise describe the value that used to be in it.
+    ordered_slots = [
+        slot for slot in DEPT_SLOTS
+        if ordered_unit_word(result.get(f"{slot}_enriched"))
+    ]
+    if len(ordered_slots) > 1:
+        current = [result.get(f"{slot}_enriched") for slot in ordered_slots]
+        # The permutation, not the sorted values: it is what says where each
+        # value CAME FROM, which is what the registry bookkeeping below needs.
+        # The index is the tiebreak, so the sort is stable.
+        order = sorted(
+            range(len(current)),
+            key=lambda i: (UNIT_SLOT_RANK[ordered_unit_word(current[i])], i),
+        )
+        if order != sorted(order):
+            for dest, source in enumerate(order):
+                field = f"{ordered_slots[dest]}_enriched"
+                if current[source] == result.get(field):
+                    continue
+                # A transform, not a write, for the same reason the packing
+                # above is one: the rule decides which slot a value sits in,
+                # never what the value is. Attribution stays with whatever
+                # produced the value.
+                _write(
+                    result, field, current[source],
+                    deterministic_evidence(
+                        "dept-slot-unit-order",
+                        producer="finalise",
+                        evidence_ref={"replaced": result.get(field)},
+                        kind="transform",
+                    ),
+                )
+            # Registry ownership follows the value, exactly as it does through
+            # the UC 0 repack: a ROR-spelled unit is still ROR-spelled in its
+            # new slot, and the casing pass must keep skipping it there.
+            registry_named = set(result.get("_registry_name_fields") or ())
+            if registry_named & set(ordered_slots):
+                result["_registry_name_fields"] = (
+                    registry_named.difference(ordered_slots)
+                    | {
+                        ordered_slots[dest]
+                        for dest, source in enumerate(order)
+                        if ordered_slots[source] in registry_named
+                    }
+                )
 
     # Compute all changed flags.
     #

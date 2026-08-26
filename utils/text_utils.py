@@ -841,6 +841,47 @@ def is_specific_unit_construction(text: str | None) -> bool:
     return False
 
 
+# Unit words the name block is ORDERED on, most-senior slot first. The block
+# writes the division above the department: "State Of Ohio" / "Division of
+# Animal Health" / "Department of Agriculture", never the other way round.
+# This is a slot-layout convention of this data, not a claim about which unit
+# encloses which — it fixes where each value is written, never what it says.
+# A value built on neither word is not ordered by this rule and keeps the slot
+# it already has.
+_ORDERED_UNIT_WORDS: tuple[str, ...] = ("Division", "Department")
+
+
+def ordered_unit_word(text: str | None) -> str | None:
+    """Return the unit word *text* is built on, or None.
+
+    Both constructions count, because a slot can hold either: the canonical
+    prefix form ("Division of Animal Health") and the suffix form the
+    canonicaliser leaves alone on a granular unit ("Animal Health Division").
+    Abbreviations are expanded first, so "Div Of Animal Health" answers
+    "Division".
+
+        "Division of Animal Health"   -> "Division"
+        "Animal Health Div"           -> "Division"
+        "Dept Of Agriculture"         -> "Department"
+        "Ohio Veterinary Laboratory"  -> None
+    """
+    if not text or not text.strip():
+        return None
+    cleaned = (expand_abbreviations(text) or text).strip()
+    for word in _ORDERED_UNIT_WORDS:
+        if re.match(rf"^{word}\s+(?:of|for)\s+\S", cleaned, re.IGNORECASE):
+            return word
+        if re.match(rf"^\S.*\s+{word}\b\.?$", cleaned, re.IGNORECASE):
+            return word
+    return None
+
+
+#: Rank of each ordered unit word — lower sits in the higher (earlier) slot.
+UNIT_SLOT_RANK: dict[str, int] = {
+    word: index for index, word in enumerate(_ORDERED_UNIT_WORDS)
+}
+
+
 # Truncated / abbreviated department subjects that must NOT be reordered into
 # a fabricated "Department of <X>" (e.g. "Biomed" → there is no "Department of
 # Biomed"; the real unit is Biomedical Engineering/Sciences/etc.). When the

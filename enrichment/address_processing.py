@@ -45,6 +45,7 @@ from enrichment.preprocess import (
     _PHONE_RE,
     _URL_RE,
     _extract_addresses,
+    _site_fragment,
     _street_person_name,
 )
 from enrichment.provenance import deterministic_evidence
@@ -1001,6 +1002,17 @@ async def process_address(
         _name_val = _dept_values.get(_name_field)
         if not (_name_val and _name_val.strip()):
             continue
+        # A bare campus / site label ("Sarasota Campus") is a street line, not
+        # a department — the same routing preprocessing applies, repeated here
+        # for a value a later tier put back into the name block.
+        _site = _site_fragment(_name_val)
+        if _site:
+            _target = next((k for k in _slot_order if not slots[k]), None)
+            if _target is not None:
+                slots[_target] = _scrub_street(_clean(_site)) or _site
+                res.name_overrides[_name_field] = None
+                _dept_values[_name_field] = None
+                continue
         _addrs, _cleaned = _extract_addresses(_name_val)
         if not _addrs:
             continue

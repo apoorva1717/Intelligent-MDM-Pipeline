@@ -731,6 +731,46 @@ def _location_fragment(text: str | None) -> str | None:
     return stripped if _LOCATION_FRAGMENT_RE.match(stripped) else None
 
 
+# A campus / site label sitting in a name field — "Sarasota Campus", "West
+# Campus", "Golden Colorado Campus", "Oxford Science Park". A campus says
+# WHERE the organisation sits, not which part of it this record is, so it is
+# an address line and belongs in a street slot, never in the Name block.
+#
+# The designator must be the TRAILING word, with one to three qualifying words
+# in front of it. That is what separates a site label from a department that
+# merely happens to sit on a campus ("Campus Health Services", "Campus Store",
+# "North Campus Research Complex"), which stays a Name value.
+_SITE_DESIGNATOR = (
+    r"Campus|Science\s+Park|Research\s+Park|Technology\s+Park|Business\s+Park"
+)
+_SITE_FRAGMENT_RE = re.compile(
+    rf"^(?:[\w&'’\-\.]+\s+){{1,3}}(?:{_SITE_DESIGNATOR})$", re.IGNORECASE,
+)
+
+
+def _site_fragment(text: str | None) -> str | None:
+    """Return the trimmed value when *text* is a bare campus / science-park
+    site label ("Sarasota Campus"), else None.
+
+    A value carrying a house number or a street type ("1700 Campus Dr",
+    "Campus Box 7212") is a street line the address extractor already routes,
+    and a value with a department signal is a unit of the organisation — both
+    return None.
+    """
+    if not text or not text.strip():
+        return None
+    stripped = re.sub(r"\s+", " ", text.strip())
+    if "," in stripped or "|" in stripped:
+        return None
+    if re.match(r"^\d", stripped):
+        return None
+    if _DEPT_KEYWORDS_RE.search(stripped) or _DEPT_LEAD_RE.match(stripped):
+        return None
+    if _segment_is_address(stripped) or _named_building(stripped):
+        return None
+    return stripped if _SITE_FRAGMENT_RE.match(stripped) else None
+
+
 def _named_building(text: str | None) -> str | None:
     """Return the trimmed value when *text* is a named building, else None."""
     if not text or not text.strip():
@@ -1369,12 +1409,14 @@ def preprocess_record(
 
     # ---------------------------------------------------------------
     # Location fragment → street slot. A name slot that is purely address
-    # sub-locations ("Wing C", "Annex D Pod 2") is moved verbatim to the
-    # first empty street slot — it is an address, not a department. Runs
-    # before contact/dept logic so the descriptors are not misread.
+    # sub-locations ("Wing C", "Annex D Pod 2") or a bare campus / site label
+    # ("Sarasota Campus", "Oxford Science Park") is moved verbatim to the first
+    # empty street slot — it says where the organisation sits, not which part
+    # of it this record is. Runs before contact/dept logic so the descriptors
+    # are not misread as a department.
     # ---------------------------------------------------------------
     for slot in DEPT_SLOTS:
-        frag = _location_fragment(getattr(res, slot))
+        frag = _location_fragment(getattr(res, slot)) or _site_fragment(getattr(res, slot))
         if not frag:
             continue
         target = _first_empty_street_slot(res)
