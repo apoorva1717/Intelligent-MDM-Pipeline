@@ -903,6 +903,21 @@ def _repack_merged_name_block(result: dict[str, Any]) -> None:
         raise_after(result, OVERFLOW, NAME_SLOTS)
 
 
+def _same_name_text(a: Any, b: Any) -> bool:
+    """True when two name values are the same text.
+
+    Whitespace and case only — this asks "is this still the value that was put
+    here", not "do these name the same thing", so it must not accept a
+    rewording. `None` on either side is never a match.
+    """
+    if not (a and str(a).strip()) or not (b and str(b).strip()):
+        return False
+    return (
+        re.sub(r"\s+", " ", str(a).strip()).casefold()
+        == re.sub(r"\s+", " ", str(b).strip()).casefold()
+    )
+
+
 def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     """Apply empty-string guards and compute changed flags.
 
@@ -916,6 +931,17 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
         val = result.get(field)
         if val is not None and not str(val).strip():
             result.transform(field, None, rule_id="bug5:empty-string-guard")
+
+    # Name slots that still hold the value preprocessing fetched out of a
+    # street field. Read HERE, at the top, because the passes below rewrite
+    # these fields in place — by the time the unit canonicaliser runs, the
+    # value can no longer be compared against what the router placed. A slot a
+    # tier has since answered for is not in this set: the tier's value is the
+    # authority on its own wording, whatever it was before.
+    _names_from_street = {
+        slot for slot, placed in (result.get("_names_from_street") or {}).items()
+        if _same_name_text(result.get(f"{slot}_enriched"), placed)
+    }
 
     # Item 6c: a department slot that was blank in the input and was
     # populated ONLY by Tier 3 (LLM inference) is a guess. Require high
@@ -1019,9 +1045,16 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # "Department of Chemistry".
     # UC 5 scope: never canonicalise granular units (lab/group/
     # centre/facility) — leave them verbatim.
+    # A street-sourced slot is canonicalised even when the value is granular.
+    # UC 5 leaves a granular unit verbatim so the pipeline never rewords a
+    # department someone typed into the name block — but nobody typed this one
+    # there. It carries the address line's wording and casing ("Center For Def
+    # Scnce Studies"), and shipping that verbatim is not respecting an input,
+    # it is exporting an address line as a name.
     for field in DEPT_ENRICHED_FIELDS:
         val = result.get(field)
-        if val and not is_granular_unit(val):
+        slot = field[: -len("_enriched")]
+        if val and (slot in _names_from_street or not is_granular_unit(val)):
             canonical = canonicalise_unit_name(val)
             if canonical and canonical != val:
                 result.transform(
@@ -1425,6 +1458,7 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     result["duration_ms"] = int((time.monotonic() - start) * 1000)
     # Strip transient non-schema keys before pydantic validation.
     result.pop("_preprocess_cleared", None)
+    result.pop("_names_from_street", None)
     result.pop("_dba_values", None)
     result.pop("_pp_name1", None)
     result.pop("_uc0_merged", None)
@@ -4649,6 +4683,18 @@ class Orchestrator:
                         ),
                     )
             result["_preprocess_cleared"] = preprocess_cleared
+            # Name slots preprocessing filled from a STREET field, mapped to
+            # the value it put there. Not name data anyone supplied — the
+            # routers lifted it out of an address line — so finalise() holds
+            # it to the same normalisation as any other name it wrote, rather
+            # than to the "leave what was supplied alone" rule. The value
+            # travels with the slot so finalise() can tell a street-sourced
+            # value still standing from one a tier has since replaced.
+            result["_names_from_street"] = {
+                slot: getattr(pre, slot)
+                for slot in pre.names_from_street
+                if getattr(pre, slot, None)
+            }
             # Names where UC 11 rewrote a DBA variant. The preprocessed
             # value IS the canonical form — record it so finalise() can
             # restore it if any downstream tier (company_canonical,

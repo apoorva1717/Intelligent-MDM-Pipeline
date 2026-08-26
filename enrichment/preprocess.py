@@ -95,6 +95,15 @@ class PreprocessResult:
     # Name 1 empty. The orchestrator uses this to run a person-affiliation
     # web lookup so the discovered institution + department can be fetched.
     name1_was_person: bool = False
+    # Name slots holding a value one of the street→name routers fetched out of
+    # a STREET field, rather than a value supplied in the name block. Resolved
+    # from `street_sourced_values` at the very end of preprocess_record, once
+    # UC 14 packing and the UC 12 dedupe have settled which slot holds what.
+    names_from_street: set[str] = field(default_factory=set)
+    # The values those routers moved, recorded as each one fires. Values and
+    # not slot names, because the packing moves a value between slots — a slot
+    # recorded at routing time would name the wrong value by the end.
+    street_sourced_values: list[str] = field(default_factory=list)
 
     def note(self, uc: int, reason: str) -> None:
         if uc not in self.use_cases:
@@ -1649,6 +1658,7 @@ def preprocess_record(
                     setattr(res, dept_target, name1)
             res.name1 = org
             res.note(16, f"organisation in {slot} promoted to Name 1 ({org!r})")
+        _mark_from_street(res, org)
         setattr(res, slot, None)
         break
 
@@ -1678,6 +1688,7 @@ def preprocess_record(
             dept_name = _smart_title_case(dept)
             setattr(res, target, dept_name)
             setattr(res, slot, None)
+            _mark_from_street(res, dept_name)
             res.note(16, f"department in {slot} moved to {target} ({dept_name!r})")
 
     # ---------------------------------------------------------------
@@ -2095,6 +2106,20 @@ def preprocess_record(
                 setattr(res, lower, None)
                 break
 
+    # ---------------------------------------------------------------
+    # Resolve the street-sourced VALUES the routers recorded to the slots that
+    # ended up holding them. Last, because everything above — the person /
+    # organisation promotion, UC 14's leftward pack, UC 12's dedupe — can move
+    # a value into a different slot or drop it entirely, and a value that no
+    # longer sits anywhere in the block must not mark a slot.
+    # ---------------------------------------------------------------
+    if res.street_sourced_values:
+        sourced = {v.lower() for v in res.street_sourced_values}
+        for slot in NAME_SLOTS:
+            val = getattr(res, slot)
+            if val and re.sub(r"\s+", " ", val.strip()).lower() in sourced:
+                res.names_from_street.add(slot)
+
     return res
 
 
@@ -2111,6 +2136,22 @@ def _first_empty_name_slot(res: PreprocessResult) -> str | None:
         if not (val and val.strip()):
             return slot
     return None
+
+
+def _mark_from_street(res: PreprocessResult, value: str | None) -> None:
+    """Record that *value* was fetched out of a street field.
+
+    The name block is where a name someone typed lives; a value that reaches it
+    through one of the street→name routers is only there because the pipeline
+    put it there, and it still carries the address line's own wording and
+    casing. Downstream that difference decides how the value may be rewritten —
+    see :func:`enrichment.orchestrator.finalise`, which canonicalises a
+    street-sourced unit name that UC 5 would otherwise leave exactly as
+    supplied.
+    """
+    v = re.sub(r"\s+", " ", value.strip()) if value and value.strip() else ""
+    if v:
+        res.street_sourced_values.append(v)
 
 
 def _street_is_org_name(value: str | None) -> bool:
@@ -2374,6 +2415,7 @@ def _route_org_parts_to_names(res: "PreprocessResult", parts: list[str], slot: s
         )
         idx = inst_idx if inst_idx is not None else 0
         res.name1 = remaining.pop(idx)
+        _mark_from_street(res, res.name1)
         res.note(16, f"institution from {slot} → name1 ({res.name1!r})")
     for part in remaining:
         target = _first_empty_name_slot(res)
@@ -2386,6 +2428,7 @@ def _route_org_parts_to_names(res: "PreprocessResult", parts: list[str], slot: s
             res.note(16, f"name slots full — segment left for review: {part!r}")
             continue
         setattr(res, target, part)
+        _mark_from_street(res, part)
         res.note(16, f"street segment {part!r} from {slot} → {target}")
 
 
