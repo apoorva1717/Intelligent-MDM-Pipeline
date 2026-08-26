@@ -179,18 +179,48 @@ class TestVerifiedMatchWritesOfficialName:
 
     @pytest.mark.asyncio
     async def test_official_name_wins_over_a_fuller_input(self):
-        """ROR's name for the matched entity ships even when the SAP input
-        carried an extra parent qualifier. The match is verified; the registry
-        is the authority on the entity's name."""
-        ror = _StubROR({"usda agricultural research service": _ror_org(
+        """ROR's name for the matched entity ships even when the SAP input was
+        fuller than the registry's. The match is verified; the registry is the
+        authority on the entity's name.
+
+        The input here is a campus qualifier, not a parent organisation. That
+        distinction is the subject of
+        ``test_parent_acronym_is_expanded_not_dropped`` below: a qualifier is
+        the registry's to overwrite, an owning organisation is not.
+        """
+        ror = _StubROR({"mayo clinic jacksonville": _ror_org(
             ror_id="https://ror.org/02d2m2044",
-            official_name="Agricultural Research Service",
-            domain="ars.usda.gov", website="https://www.ars.usda.gov",
+            official_name="Mayo Clinic in Florida",
+            domain="mayoclinic.org", website="https://www.mayoclinic.org",
+        )})
+        r = await _run(_orch(ror), name1="Mayo Clinic Jacksonville",
+                       city="Jacksonville", state="Florida")
+        assert r.ror_id == "https://ror.org/02d2m2044"
+        assert r.name1_enriched == "Mayo Clinic in Florida"
+
+    @pytest.mark.asyncio
+    async def test_parent_acronym_is_expanded_not_dropped(self):
+        """A parent organisation's acronym is expanded into Name 1 and its unit
+        moved to Name 2 — it is never deleted.
+
+        This case used to read as "an extra parent qualifier the registry is
+        entitled to overwrite", and shipped "Agricultural Research Service"
+        with no USDA anywhere in the row. But "USDA" is not a fuller spelling
+        of the Agricultural Research Service; it is the department that owns
+        it, and `utils.name_slots` gives an organisation and its units separate
+        slots precisely so both can ship. Preprocessing performs the split, so
+        ROR is queried with the organisation and never sees the compound.
+        """
+        ror = _StubROR({"united states department of agriculture": _ror_org(
+            ror_id="https://ror.org/01na82s61",
+            official_name="United States Department of Agriculture",
+            domain="usda.gov", website="https://www.usda.gov",
         )})
         r = await _run(_orch(ror), name1="USDA Agricultural Research Service",
                        city="Beltsville", state="Maryland")
-        assert r.ror_id == "https://ror.org/02d2m2044"
-        assert r.name1_enriched == "Agricultural Research Service"
+        assert r.ror_id == "https://ror.org/01na82s61"
+        assert r.name1_enriched == "United States Department of Agriculture"
+        assert r.name2_enriched == "Agricultural Research Service"
 
     @pytest.mark.asyncio
     async def test_ror_id_never_ships_beside_a_different_name(self):

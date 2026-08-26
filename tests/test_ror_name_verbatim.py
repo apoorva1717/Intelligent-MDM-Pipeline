@@ -84,12 +84,21 @@ class TestCampusCityStripInteraction:
             official="California State University, Long Beach",
         ) == "California State University, Long Beach"
 
-    def test_usda_official_name_wins(self):
-        # Fix 4: ROR matched the Agricultural Research Service and verified it.
-        # The input carried the parent department's acronym as a qualifier;
-        # the registry's official name for the matched entity is what ships.
+    def test_official_name_wins_when_input_says_less(self):
+        # Fix 4: ROR matched the Agricultural Research Service and verified it,
+        # so the registry's official name for the matched entity is what ships
+        # — the abbreviated input form does not survive beside a verified id.
+        #
+        # Note what this test is NOT saying. It reaches _name1_decision
+        # directly, with the organisation ALREADY resolved to the entity ROR
+        # matched. A compound "USDA Agricultural Research Service" never gets
+        # this far intact: preprocessing splits the owning department into
+        # Name 1 and the service into Name 2 first
+        # (tests/test_parent_org_expansion.py). Reading this test as licence to
+        # drop a parent organisation is what shipped rows whose only trace of
+        # the USDA was the ars.usda.gov domain.
         assert _name1_decision(
-            "USDA Agricultural Research Service", street="", city="Beltsville",
+            "Agricultural Research Svc", street="", city="Beltsville",
             state="Maryland", zipc="20705",
             official="Agricultural Research Service",
         ) == "Agricultural Research Service"

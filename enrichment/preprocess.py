@@ -37,6 +37,7 @@ from utils.name_slots import (
     NAME_SLOTS,
 )
 from utils.text_utils import (
+    PARENT_ORG_ACRONYMS,
     canonicalise_unit_name,
     is_granular_unit,
     is_logistics_location,
@@ -446,6 +447,8 @@ def _syllabic_dash_abbrev(value: str | None) -> str | None:
     Technology") — so it is not silently kept as-is. Else None."""
     if not value or not value.strip():
         return None
+    if _parent_org_split(value):
+        return None  # a parent + unit, not an abbreviation of anything
     dash = _dash_acronym_full(re.sub(r"\s+", " ", value.strip()))
     if dash and not dash[2]:
         return (
@@ -453,6 +456,85 @@ def _syllabic_dash_abbrev(value: str | None) -> str | None:
             f"{dash[1]!r} — review"
         )
     return None
+
+
+# A leading single token followed by a dash: "USDA - Kerrville MLRA Office".
+# Deliberately narrower than `_DASH_ACRONYM_RE` — the parent must be the FIRST
+# side. "Kerrville MLRA Office - USDA" is not how master data writes ownership,
+# and accepting it would let a trailing acronym pull an unrelated unit into the
+# organisation slot.
+_PARENT_DASH_RE = re.compile(r"^\s*([A-Za-z][A-Za-z.&]*)\s*[-‐-―]\s*(.+?)\s*$")
+
+
+def _parent_org_acronym(token: str) -> str | None:
+    """The official full name for *token* when it is a known parent-org
+    acronym, else None. Case- and punctuation-insensitive ("U.S.D.A.")."""
+    letters = re.sub(r"[^A-Za-z]", "", token).upper()
+    return PARENT_ORG_ACRONYMS.get(letters) if letters else None
+
+
+def _parent_org_split(value: str | None) -> tuple[str, str] | None:
+    """Split "<parent acronym> <unit>" into (expanded parent, unit), else None.
+
+    "USDA - Kerrville MLRA Office"   → ("United States Department of Agriculture",
+                                        "Kerrville MLRA Office")
+    "NASA Ames Research Center"      → ("National Aeronautics and Space
+                                        Administration", "Ames Research Center")
+
+    Name 1 in these values holds two different things: the organisation that
+    owns the record and the unit inside it. `utils.name_slots` gives each its
+    own slot — Name 1 the organisation, Names 2..N the units — so the split is
+    what the block was already shaped for.
+
+    Returns None when the two sides are the SAME entity written twice ("FDA -
+    Food and Drug Administration"). That is a redundant restatement, not
+    ownership, and :func:`_strip_redundant_acronym` resolves it to the full
+    form. The check is deliberately both ways round — against the acronym's
+    own expansion and against the initials of the tail — so neither "USDA -
+    United States Department of Agriculture" nor "FDA - Food & Drug
+    Administration" is mistaken for a parent and its child.
+    """
+    if not value or not value.strip():
+        return None
+    v = re.sub(r"\s+", " ", value.strip())
+
+    m = _PARENT_DASH_RE.match(v)
+    if m:
+        head, tail = m.group(1), m.group(2)
+    else:
+        parts = v.split()
+        if len(parts) < 2:
+            return None  # a bare acronym is the organisation, with no unit
+        head, tail = parts[0], " ".join(parts[1:])
+
+    full = _parent_org_acronym(head)
+    if not full:
+        return None
+    tail = tail.strip(" ,;-")
+    if not tail:
+        return None
+    if tail.lower() == full.lower() or _acronym_matches_phrase(head, tail):
+        return None
+    return full, tail
+
+
+def _insert_dept_value(res: "PreprocessResult", value: str) -> list[str]:
+    """Insert *value* at the head of the department block, shifting the values
+    already there down one slot. Returns whatever was pushed off the end.
+
+    Existing values are re-laid-out packed, so a block with a gap in it closes
+    the gap on the way through rather than spending a slot on it. UC 14 packs
+    the block again later; doing it here too is what keeps a gap from being
+    the reason a real value overflows.
+    """
+    current = [
+        v.strip() for slot in DEPT_SLOTS
+        if (v := getattr(res, slot)) and v.strip()
+    ]
+    packed = [value, *current]
+    for slot, val in zip(DEPT_SLOTS, [*packed, *([None] * len(DEPT_SLOTS))]):
+        setattr(res, slot, val)
+    return packed[len(DEPT_SLOTS):]
 
 
 def _strip_redundant_acronym(value: str | None) -> str | None:
@@ -471,6 +553,13 @@ def _strip_redundant_acronym(value: str | None) -> str | None:
     if not value or not value.strip():
         return value
     v = re.sub(r"\s+", " ", value.strip())
+
+    # A known parent organisation and one of its units is not a name written
+    # twice — nothing here is redundant, and the acronym must survive. Handled
+    # by the parent split in `preprocess_record`; this guard also covers the
+    # second caller (the pipe splitter), which has no such step.
+    if _parent_org_split(v):
+        return value
 
     # Dash form: "ACRO - Full" / "Full - ACRO". Always resolve to the full form
     # (an abbreviation and its full form must never coexist in Name 1). The
@@ -1359,6 +1448,42 @@ def preprocess_record(
         if collapsed != val:
             setattr(res, slot, collapsed)
             res.note(12, f"repeated phrase collapsed in {slot} (was {val!r})")
+
+    # ---------------------------------------------------------------
+    # Parent organisation + sub-unit. When Name 1 leads with the acronym of a
+    # known parent organisation followed by one of its units ("USDA -
+    # Kerrville MLRA Office", "NASA Ames Research Center"), the field holds two
+    # things: the organisation that owns the record and the unit inside it.
+    # Expand the acronym into Name 1 — the organisation slot — and move the
+    # unit into the department block, where the dept tiers look for it.
+    #
+    # Runs BEFORE the dedupe below, which reads any short leading token beside
+    # a longer phrase as a restatement of it and deletes the token. That is
+    # right when the two name one entity and wrong here: it shipped
+    # "Kerrville MLRA Office" for a USDA field office and "Ames Research
+    # Center" for a NASA centre, with the owning agency nowhere in the row.
+    # ---------------------------------------------------------------
+    if res.name1 and res.name1.strip():
+        split = _parent_org_split(res.name1)
+        if split:
+            parent, unit = split
+            original = res.name1
+            res.name1 = parent
+            overflow = _insert_dept_value(res, unit)
+            res.note(
+                14,
+                f"parent organisation expanded into name1 (was {original!r}); "
+                f"unit {unit!r} moved to the department block",
+            )
+            for lost in overflow:
+                # The block is full. Say which value was pushed out rather
+                # than losing it silently — the unit that prompted the split
+                # is the one thing that must not be dropped, so it goes in at
+                # the head and whatever sat in the last slot is what reports.
+                res.flags.append(
+                    f"name-block-overflow: {lost!r} dropped to make room for "
+                    f"the unit split out of name1"
+                )
 
     # ---------------------------------------------------------------
     # Name 1 acronym + full-form dedupe. When Name 1 carries BOTH an

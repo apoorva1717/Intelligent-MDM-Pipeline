@@ -247,6 +247,55 @@ _FORCE_TITLE_SHORT = {
     "INC", "LTD", "CO", "BAY", "NEW", "OLD", "SUN", "OAK", "BIG", "RED",
     "SKY", "SEA", "AIR", "SON", "TWO", "ONE", "KEY", "TOP", "BOX",
 }
+# ---------------------------------------------------------------------------
+# Parent-organisation acronyms
+# ---------------------------------------------------------------------------
+# Acronyms that name a PARENT organisation whose sub-units are routinely
+# prefixed with them in SAP master data ("USDA - Kerrville MLRA Office",
+# "NASA Ames Research Center"). The value is the organisation's official full
+# name.
+#
+# This map answers a question no heuristic can: is the short token an
+# abbreviation OF the rest of the value, or the name of a DIFFERENT
+# organisation that owns it? "CALIBR - California Institute for Biomedical
+# Research" is the first (one entity, written twice); "USDA - Kerrville MLRA
+# Office" is the second (a department and one of its field offices). Both look
+# identical to `_acronym_matches_phrase` — neither acronym is an initialism of
+# the phrase beside it — so `preprocess._strip_redundant_acronym` used to drop
+# the acronym in both cases. Dropping it is right for CALIBR and loses the
+# owning organisation for USDA.
+#
+# Membership here is therefore a deliberate assertion, not a lookup table of
+# convenience: an entry says "this token names an organisation in its own
+# right". Only add an acronym whose dominant use is as a parent prefix. Two
+# kinds are deliberately EXCLUDED:
+#   * ambiguous short forms that collide with ordinary words or postal codes
+#     ("VA" is both Veterans Affairs and Virginia, "ARS" and "NPS" are short
+#     enough to collide with unrelated initialisms);
+#   * organisations that are normally written as the acronym and are not
+#     parents of prefixed units ("CERN", "EMSL", "IEEE") — expanding those
+#     would replace the name people actually use.
+PARENT_ORG_ACRONYMS: dict[str, str] = {
+    "USDA": "United States Department of Agriculture",
+    "NASA": "National Aeronautics and Space Administration",
+    "NOAA": "National Oceanic and Atmospheric Administration",
+    "NIH": "National Institutes of Health",
+    "FDA": "Food and Drug Administration",
+    "CDC": "Centers for Disease Control and Prevention",
+    "EPA": "United States Environmental Protection Agency",
+    "USGS": "United States Geological Survey",
+    "NSF": "National Science Foundation",
+    "NIST": "National Institute of Standards and Technology",
+    "FAA": "Federal Aviation Administration",
+    "NRCS": "Natural Resources Conservation Service",
+    "USACE": "United States Army Corps of Engineers",
+    "DOE": "United States Department of Energy",
+    "HHS": "United States Department of Health and Human Services",
+    "CNRS": "Centre National de la Recherche Scientifique",
+    "CSIRO": "Commonwealth Scientific and Industrial Research Organisation",
+}
+
+
 # Longer tokens (≥4 letters, vowel-bearing) that should stay uppercase.
 _KEEP_UPPER_ACRONYMS = {
     "NASA", "NOAA", "NIH", "FDA", "USDA", "EMSL", "IEEE",
@@ -261,7 +310,71 @@ _KEEP_UPPER_ACRONYMS = {
     "UCSF", "UCSD", "UCLA", "UCSB", "UCSC", "SUNY", "CUNY", "UMASS",
     "UPENN", "UCONN",
 }
+# Every parent-org acronym is by definition an acronym, so it keeps its casing
+# too. Folded in rather than duplicated: one edit to PARENT_ORG_ACRONYMS is
+# enough, and the two lists can never disagree about whether "USDA" is a word.
+_KEEP_UPPER_ACRONYMS |= set(PARENT_ORG_ACRONYMS)
 _VOWELS = set("AEIOU")
+
+# Consonant clusters that can BEGIN an English syllable. Used by the
+# pronounceability test below; "Y" counts as a vowel throughout, which makes
+# the test conservative ("XYLOS", "MYRRH" read as words, not acronyms).
+_VALID_ONSETS = {
+    "BL", "BR", "CH", "CL", "CR", "CZ", "DR", "DV", "DW", "FL", "FR", "GH",
+    "GL", "GN", "GR", "KL", "KN", "KR", "KV", "MN", "PF", "PH", "PL", "PN",
+    "PR", "PS", "QU", "RH", "SC", "SH", "SK", "SL", "SM", "SN", "SP", "SQ",
+    "ST", "SV", "SW", "SZ", "TH", "TR", "TS", "TW", "TZ", "VL", "VR", "WH",
+    "WR", "ZH", "ZL",
+    "SCH", "SCR", "SHR", "SPH", "SPL", "SPR", "STR", "THR",
+}
+
+
+# Consonant runs that a borrowed proper noun opens with. English has no
+# three-consonant onset outside `_VALID_ONSETS`, but names carried into
+# English do — and mangling a surname is worse than leaving one acronym
+# title-cased, so these are checked as PREFIXES rather than whole runs
+# ("SCH" clears "SCHM" in Schmidt, "MC" clears "MCK" in McKay).
+_NAME_ONSET_PREFIXES = ("SCH", "MAC", "MC")
+
+
+def _unpronounceable(letters: str) -> bool:
+    """True when *letters* (upper-case) cannot open an English syllable, and so
+    cannot be a word however many vowels it carries.
+
+    The allowlist above can only ever hold the acronyms someone has already
+    hit. This rule generalises for the common case: an acronym's letters are
+    the initials of unrelated words, so it routinely opens with a consonant run
+    no word could ("MLRA", "NRLF", "SPTF"). A word cannot — every English onset
+    is one consonant or one of the clusters in `_VALID_ONSETS`.
+
+    Deliberately narrow, in three ways, because the cost of a false positive
+    (a mangled surname) is higher than the cost of a false negative (an acronym
+    that needs an allowlist entry):
+
+    * only 3-5 letters — the band where a token is ambiguous at all. Longer
+      all-caps tokens are overwhelmingly words or names ("SCHNEIDER",
+      "MCDONALD"), and an acronym that long usually reads as one anyway;
+    * only runs of THREE or more consonants. Two is where the borrowed proper
+      nouns live ("DVORAK", "SVEN", "TSANG") and an onset list is a weaker
+      guarantee there than the allowlist already is;
+    * never after a name-onset prefix, so the German and Gaelic families that
+      genuinely do open with three consonants are left alone.
+
+    Not a claim about pronounceable acronyms: "NASA" and "MESA" are
+    indistinguishable by this test and both read as words, which is exactly
+    what `_KEEP_UPPER_ACRONYMS` is still for.
+    """
+    if not (3 <= len(letters) <= 5):
+        return False
+    if letters.startswith(_NAME_ONSET_PREFIXES):
+        return False
+    run = ""
+    for ch in letters:
+        if ch in _VOWELS or ch == "Y":
+            break
+        run += ch
+    return len(run) >= 3 and run not in _VALID_ONSETS
+
 
 # Whole-token known mixed forms — checked case-insensitively before the
 # heuristics so a hyphenated proper noun whose segments would misfire is emitted
@@ -298,6 +411,12 @@ def _case_segment(seg: str) -> str:
         return seg  # short → assume acronym: IBM, MRI, LLC, USA, HCA
     if len(letters) <= 5 and not (set(upper) & _VOWELS):
         return seg  # no-vowel 4-5 char acronym: MGMT, PLLC
+    if _unpronounceable(upper):
+        # Vowel-bearing but unsayable: "MLRA", "NRLF". Before this rule an
+        # ALL-CAPS field lower-cased every acronym that was not in the
+        # allowlist by name, so "USDA - KERRVILLE MLRA OFFICE" shipped
+        # "Kerrville Mlra Office".
+        return seg
     return _mc_name(seg.capitalize())
 
 
@@ -547,6 +666,14 @@ def _case_core(core: str, *, mode: str, first: bool) -> str:
         letter_count = len(letters)
         # Vowel-less short token: an acronym, not a word (IBM, MRI, PLLC).
         if letter_count <= 5 and not (set(upper) & _VOWELS):
+            return core
+        # Vowel-bearing but unsayable: "MLRA", "NRLF". Applied in both modes —
+        # a token no English word could open is not a word in a street line
+        # either. `smart_title_case` carries the same rule; the two casing
+        # paths must agree, or a value lands cased differently depending on
+        # which one reached it. That is exactly how "USDA - KERRVILLE MLRA
+        # OFFICE" kept "MLRA" in Name 1 and shipped "Mlra" from Name 2.
+        if _unpronounceable(upper):
             return core
         # Name fields keep the existing short-token default — a <=3-letter
         # token in an organisation name is an acronym (HCA, UCI, IBM) unless
