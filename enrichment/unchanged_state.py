@@ -136,9 +136,11 @@ def resolve(result: Any) -> UnchangedOutcome | None:
 
     * Name 1 was **rewritten** — a tier authored the shipped value, so none of
       the three states describe it.
-    * The record **never reached Tier 1** — a UC 0 overflow or an opaque-code
-      short-circuit returns from Stage 0, before anything was asked about the
-      organisation's identity. All three states are verdicts on an attempt to
+    * The record **never reached Tier 1** — an opaque-code short-circuit
+      returns from Stage 0, before anything was asked about the organisation's
+      identity. (A UC 0 overflow no longer returns there: the split is merged
+      and the merged name IS put to Tier 1, so those records are judged by the
+      three states like any other.) All three states are verdicts on an attempt to
       establish the name, and "unresolved" in particular reads "nothing came
       back", which would be a false account of a question never put. Those
       records carry their own structural code (`overflow`, `opaque-code`) and

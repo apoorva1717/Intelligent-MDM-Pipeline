@@ -206,14 +206,30 @@ The Orchestrator processes each record through a sequential pipeline (Stage 0 ->
 3. LLM returns `is_overflow` (boolean), `confidence` (high/medium/low), and `reasoning`
 
 **Outcome:**
-- If overflow detected with medium or high confidence: the record is **immediately flagged** and returned. No further tiers run. The flag reason explains the overflow so a human can correct the SAP field split.
+- If overflow detected with medium or high confidence: the split is **repaired**. The run is merged back into the one value SAP's columns cut it out of, the name block is packed leftward, and the pipeline continues on that value — every tier, exactly as for a record that arrived whole.
 - If not overflow: pipeline continues normally.
 
-**The early return still finalises.** "No further tiers run" means no *enrichment* runs — it never meant the record skips finalisation. The return goes through `_finalise_and_return`, the single funnel, so an overflow record gets the same address stage and the same [finalisation rules](#finalization) as every other row: the empty-string guard, abbreviation expansion, unit canonicalisation and — since Fix 5 — [output casing](#rule-7--output-casing-normalisation). Its Name 1 and Name 2 are still the input values, split exactly as SAP had them; they are just cased. Row 33 of the demo batch ("Adams Air" + "HYDRAULICS INC") ships as "Adams Air" + "Hydraulics Inc", flagged, with no `ror_id` and no tier attempted.
+**File:** `enrichment/name_repack.py` — the two halves of the repair, run at opposite ends of the pipeline.
 
-Normalisation is applied here for the same reason it is applied everywhere else: a reviewer comparing an overflow row against the rest of the workbook should not have to discount a casing difference that says nothing about the record. Casing adds and removes nothing, so it cannot obscure the split the reviewer is being asked to fix.
+#### The merge, before enrichment
 
-**Why stop early?** If Name1 + Name2 is one org name, running Tier 1 on just Name1 would match the wrong entity (e.g., searching ROR for "Adams Air" instead of "Adams Air Hydraulics Inc").
+`merge_split_runs` joins each reported run with a single space and packs the survivors leftward. Consecutive pairs **chain**: a name that spilled Name 1 → Name 2 → Name 3 is reported as two pairs and merges into one value, not two. Blank slots break a run, and a pair the check did not report is left alone — "Stanford University" + "Department of Genetics" is two values and stays two.
+
+The merged block replaces the record's names for the rest of the run. The `*_original` columns are captured **before** the merge and still hold exactly what SAP supplied, which is what the `*_changed` flags and the response's original columns keep reporting.
+
+#### The rewrite, after enrichment
+
+`_repack_merged_name_block` (in `finalise`) cuts the settled names back into pieces of at most **32 characters** and lays them across the block again. The cut is taken at the field width and then retreated to the last word boundary that fits, so a piece never ends mid-word; a single token longer than the column is the one case with no boundary to retreat to and is cut where the column ends. Pieces fill from Name 1 down **in order**, and two different values never share a slot — the tail of the organisation name cannot absorb the head of a department.
+
+Where it sits in `finalise` is the whole of the correctness. It runs *after* every rule that reads a name as a name — canonicalisation, abbreviation expansion, the cross-source gate, the [search-term derivation](#search-terms), the classifier, all of which match against a whole name and none of which would recognise a 32-character piece of one — and *before* the [output casing](#rule-7--output-casing-normalisation), which is per-field and character-preserving, so a piece cases exactly as the whole did.
+
+A piece with no slot left to go to is **flagged, never silently dropped**: it raises the same `overflow` code preprocessing raises when it runs out of slots, because it is the same defect — content the SAP field split cannot place. The organisation name is served first, so what gets squeezed out is always the lowest-priority unit.
+
+**Only a merged record is repacked.** A record that arrived whole keeps the slot layout the pipeline gave it, however long its Name 1 is; widening the rewrite to every row would re-split names that ship correctly today.
+
+**No code for having been split.** A repaired split is not something a reviewer has to act on, so a merged record carries only the flags its own enrichment earned. Row 33 of the demo batch ("Adams Air" + "HYDRAULICS INC") now ships as Name 1 = "Adams Air Hydraulics Inc" with Name 2 empty, having been put to Tier 1 under the merged name.
+
+**Why merge rather than stop?** Running Tier 1 on Name 1 alone matches the wrong entity or nothing at all — ROR has no "Adams Air", and "Massachusetts Institute" is not MIT. The earlier behaviour (flag the row, pass both fragments through untouched) resolved nothing: the reviewer was handed back exactly what they supplied, and every downstream identifier was left empty. Merging turns the fragments into a name a registry can actually match, and the 32-character rewrite puts the answer back in the shape SAP expects.
 
 ---
 
@@ -286,7 +302,7 @@ SAP exports sometimes place organisation/department names in a Street field (wit
 Routing rules:
 - The **institution** always takes Name 1 when Name 1 is empty (`_looks_like_institution`); sub-units (`Division of…`, `… Branch`, `Center for…`) fill Name 2+.
 - A **bare location fragment** that is neither an address nor an org (e.g. "Queens Campus") goes to the next empty **street** slot, not a Name field.
-- **Overflow is flagged, never silently dropped** — when org segments exceed the five Name slots (or location fragments exceed the street slots), a `name-slots-full` / `street-slots-full` signal is raised, which finalisation turns into the `overflow` flag code. It is the same defect UC 0 detects from the other end: content the SAP field split could not place.
+- **Overflow is flagged, never silently dropped** — when org segments exceed the five Name slots (or location fragments exceed the street slots), a `name-slots-full` / `street-slots-full` signal is raised, which finalisation turns into the `overflow` flag code. It is the same defect [UC 0's rewrite](#stage-0-name1-overflow-check-uc-0) raises when a piece of a repacked name has no slot left: content the SAP field split could not place.
 
 #### Address Sub-Location Extraction (Floor / Room / c-o)
 
@@ -844,7 +860,7 @@ After all tiers have run, the finalization step applies a set of deterministic r
 
 Before this rule, casing was applied by whatever happened to touch a field. `smart_title_case()` ran on Name 1 and nowhere else, and it is a **whole-string** rule — it refuses any value that is not entirely upper-case. Everything else was cased by accident or not at all. On a 500-record run, **342 output values shipped fully upper-case**: 230 cities ("GAINESVILLE"), 107 streets ("MAIN ST"), a PO box. Values the street-suffix map had *partly* corrected shipped half-cased — `STREET_TYPE_ABBREVIATIONS` rewrote "DR" to "Dr" and left the rest, giving "500 TECH Dr MS-4". The same run after the rule leaves **4**, and two of those are deliberate acronyms (`ABX-CRO`, `UCSF`).
 
-**One function, every exit path.** A record can leave the orchestrator four ways: the normal return, the [UC 0 overflow early return](#stage-0-name1-overflow-check-uc-0), the `_enrich_single` error path, and the batch-level fail-safe in `enrich_batch` that builds a result for a record whose task raised outright. The first three funnel through `_finalise_and_return` → `finalise`, which calls the normaliser last. The fourth never reaches `finalise` — it is the one path that was genuinely skipping finalisation — and calls the normaliser directly.
+**One function, every exit path.** A record can leave the orchestrator three ways: the normal return (which a [UC 0 merged record](#stage-0-name1-overflow-check-uc-0) takes like any other), the `_enrich_single` error path, and the batch-level fail-safe in `enrich_batch` that builds a result for a record whose task raised outright. The first two funnel through `_finalise_and_return` → `finalise`, which calls the normaliser last. The third never reaches `finalise` — it is the one path that was genuinely skipping finalisation — and calls the normaliser directly.
 
 **Where it runs in `finalise`.** Last, after the changed flags, after `derive_search_terms`, after `_classify_record`, and before the transient `_`-prefixed keys are stripped. Those three consumers therefore see exactly the values they saw before this rule existed: casing decides nothing, flags nothing, and changes no tier's behaviour. It runs before the strip because `_registry_name_fields` is what tells it which names not to touch.
 
@@ -1635,7 +1651,7 @@ One case is not derivable and is read from the tier's marker instead: the **depa
 | `dept-via-lab` | UC 13 fired: Name 2 was a granular unit and the parent department was **inferred from the lab's page**, not read from a stated department | `name2`, `name3` |
 | `name3-not-demoted` | UC 13 fired but every slot below Name 2 was already populated, so the lab name could not be moved down | `name2`…`name5` |
 | `person-unresolved` | A person was detected in Name 1 and their affiliation could not be resolved | `name1` |
-| `overflow` | UC 0, or preprocessing ran out of name/street slots — one value split across several SAP fields | the overflowing pair (e.g. `name3`, `name4`); the whole name block when preprocessing ran out of slots |
+| `overflow` | preprocessing ran out of name/street slots, or UC 0's rewrite had a piece with no slot left — content the SAP field split could not place. **Not** raised for a split UC 0 repaired | the overflowing pair (e.g. `name3`, `name4`); the whole name block when preprocessing ran out of slots |
 | `opaque-code` | UC 10: Name 1 holds an internal code, not a name (preprocessing clears these from Name 2-5 but never from Name 1) | `name1` |
 | `domain-unverified` | The candidate website failed every ownership condition, so nothing was written — see [§2b](#2b--ownership-guard-domain_ownership_guard_enabled-default-on) | `domain` |
 | `email-conflict` | An email found in the record differs from a populated email field | `email` |
@@ -2545,6 +2561,7 @@ enrichment_api/
 │   ├── classifier.py             # THE record_type authority — ranked evidence, decided once in finalise
 │   ├── elf_codes.py              # ISO 20275 legal-form codes split by commercial character (generated)
 │   ├── overflow_check.py         # UC 0: adjacent-name-pair overflow detection
+│   ├── name_repack.py            # UC 0: merge a split run; rewrite at 32 chars
 │   ├── tier1_ror.py              # Tier 1: ROR API client, scoring, child matching, acronym expansion
 │   ├── tier1_lei.py              # Tier 1 (company): GLEIF/LEI registry client + verification guard
 │   ├── wikidata.py               # Stage 2c: crosswalk lane — registry pointer or single witness, never an authority
@@ -2636,7 +2653,7 @@ Adds request logging with unique IDs, timing headers (`X-Request-ID`, `X-Duratio
 
 ### `enrichment/orchestrator.py` — Pipeline Controller
 
-The heart of the system. The `Orchestrator` class coordinates the full pipeline for each record: overflow check -> preprocessing -> Tier 1 -> Tier 2 -> Tier 3 -> finalization. Manages async concurrency via `asyncio.Semaphore`. Contains the `finalise()` function with all post-processing rules.
+The heart of the system. The `Orchestrator` class coordinates the full pipeline for each record: overflow check (and merge) -> preprocessing -> Tier 1 -> Tier 2 -> Tier 3 -> finalization. Manages async concurrency via `asyncio.Semaphore`. Contains the `finalise()` function with all post-processing rules.
 
 ### `enrichment/preprocess.py` — Deterministic Cleanup
 
@@ -2690,7 +2707,7 @@ Specializes in normalizing company names with geographic context. Used when Tier
 
 ### `enrichment/overflow_check.py` — Overflow Detection
 
-LLM-based check for Name1+Name2 being a single split organization name. Early-exit mechanism that prevents mis-enrichment of overflow records.
+LLM-based check for an adjacent name pair being a single split organization name. Decides *whether* a pair is one value; `enrichment/name_repack.py` is what merges the run before enrichment and writes the settled name back across the columns after it.
 
 ### `enrichment/website_resolver.py` — Website Resolution (Paths B/C)
 

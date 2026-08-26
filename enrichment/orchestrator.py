@@ -39,6 +39,11 @@ from enrichment.address_processing import (
 from enrichment.batch_consensus import apply_batch_consensus
 from enrichment.company_canonical import run_company_canonical
 from enrichment.lab_resolver import run_lab_resolver
+from enrichment.name_repack import (
+    NAME_FIELD_WIDTH,
+    merge_split_runs,
+    repack_name_block,
+)
 from enrichment.overflow_check import run_overflow_check_block
 from enrichment.person_affiliation import run_person_affiliation
 from enrichment.search_terms import (
@@ -57,7 +62,7 @@ from enrichment.preprocess import (
 )
 from dedup.signatures import normalize_key
 from enrichment.classifier import TypeEvidence, classify
-from enrichment.flags import compute_flags
+from enrichment.flags import OVERFLOW, compute_flags, raise_after
 from enrichment.liveness import (
     gleif_verdict as liveness_gleif_verdict,
     probe_ror_status as liveness_probe_ror_status,
@@ -174,6 +179,7 @@ from utils.name_slots import (
     DEPT_SLOTS,
     ENRICHED_NAME_FIELDS,
     NAME_SLOTS,
+    RECORD_NAME_FIELDS,
 )
 from utils.domain_resolver import (
     DomainDecision,
@@ -809,6 +815,91 @@ def _raise_unattributed_flag(result: Any, fields: list[str]) -> None:
     result["flag_reason"] = f"{existing}; {prose}" if existing else prose
 
 
+def _repack_merged_name_block(result: dict[str, Any]) -> None:
+    """UC 0, second half — write a merged name block back across the slots.
+
+    Runs only for a record whose block was merged before enrichment (see the
+    UC 0 branch in ``_enrich_single``). Every settled name value is cut into
+    pieces of at most ``NAME_FIELD_WIDTH`` characters at a word boundary, and
+    the pieces fill the block from Name 1 down in order — so the organisation
+    name takes the slots it needs and the department slots take what is left.
+
+    Placement in ``finalise`` is the whole of the correctness here. It runs:
+
+    * AFTER every rule that reads a name as a name — canonicalisation,
+      abbreviation expansion, the cross-source gate, the search-term
+      derivation, the classifier. All of those match against a whole name, and
+      a 32-character piece of one is not one.
+    * BEFORE the output casing, which is per-field and character-preserving,
+      so a piece cases exactly as the whole did.
+
+    A piece with no slot left to go to is dropped and the record is flagged.
+    That is the same defect ``overflow`` already names from the other end —
+    content the SAP field split cannot place — so it raises the same code
+    rather than a new one, late, through :func:`enrichment.flags.raise_after`.
+    """
+    merged_runs = (result.get("_uc0_merged") or {}).get("runs")
+    if not merged_runs:
+        return
+
+    values = [result.get(f"{slot}_enriched") for slot in NAME_SLOTS]
+    packed, dropped, origin = repack_name_block(values)
+    if packed == values and not dropped:
+        return
+
+    for index, slot in enumerate(NAME_SLOTS):
+        field = f"{slot}_enriched"
+        if packed[index] == result.get(field):
+            continue
+        # A transform: the rewrite decides which slot each piece of the name
+        # sits in, never what the name is. Attribution stays with whatever
+        # produced the value — a ROR-verified name stays ROR-verified after
+        # being cut across two columns.
+        _write(
+            result, field, packed[index],
+            deterministic_evidence(
+                "uc0:name-block-repacked",
+                producer="finalise",
+                evidence_ref={
+                    "merged_runs": merged_runs,
+                    "width": NAME_FIELD_WIDTH,
+                    "replaced": result.get(field),
+                },
+                kind="transform",
+            ),
+        )
+
+    # Registry ownership follows the value. Both halves of a name ROR spelled
+    # are still ROR's spelling, and the casing pass below must skip them for
+    # the same reason it skipped the whole.
+    registry_named = result.get("_registry_name_fields") or set()
+    if registry_named:
+        result["_registry_name_fields"] = {
+            NAME_SLOTS[dest] for dest, source in origin.items()
+            if NAME_SLOTS[source] in registry_named
+        }
+
+    # Re-derived, not left standing: the flags computed earlier describe the
+    # pre-rewrite slots, and after the rewrite a slot holds a different value
+    # from the one that was compared against its original.
+    for index, slot in enumerate(NAME_SLOTS):
+        enriched = packed[index]
+        original = result.get(f"{slot}_original")
+        result[f"{slot}_changed"] = bool(
+            enriched
+            and enriched != original
+            and str(enriched).casefold() != str(original or "").casefold()
+        )
+
+    if dropped:
+        logger.info({
+            "record_id": result.get("record_id"),
+            "step": "uc0_repack_dropped",
+            "dropped": dropped,
+        })
+        raise_after(result, OVERFLOW, NAME_SLOTS)
+
+
 def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     """Apply empty-string guards and compute changed flags.
 
@@ -943,6 +1034,14 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
 
     preprocess_cleared = result.get("_preprocess_cleared") or set()
 
+    # UC 0 — the block the pipeline actually ran on. On a merged record the
+    # input block no longer maps slot-for-slot onto the output: Name 2's
+    # fragment is part of Name 1's value now, and the slots below it moved up
+    # when the block was packed. Restoring `name2_original` here would put the
+    # fragment back and ship it twice, so the merged block is what a merged
+    # record passes through. Empty for every record that arrived intact.
+    merged_names = (result.get("_uc0_merged") or {}).get("names") or {}
+
     # Passthrough: if no tier enriched a department slot but the record had
     # one, retain the original value — UNLESS preprocessing deliberately
     # cleared the field (e.g. extracted an email, address, contact
@@ -950,7 +1049,10 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # but must also respect preprocessing's decision to empty a field.
     for field in DEPT_SLOTS:
         if result.get(f"{field}_enriched") is None and field not in preprocess_cleared:
-            orig = result.get(f"{field}_original")
+            orig = (
+                merged_names.get(field) if merged_names
+                else result.get(f"{field}_original")
+            )
             if orig and str(orig).strip():
                 # The input value IS the producer here. Attributing it to the
                 # record itself is what separates "nothing found it, so the
@@ -960,7 +1062,12 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
                     deterministic_evidence(
                         "passthrough:input-retained",
                         producer="input",
-                        evidence_ref={"input_field": f"{field}_original"},
+                        evidence_ref={
+                            "input_field": (
+                                f"{field}:merged" if merged_names
+                                else f"{field}_original"
+                            ),
+                        },
                     ),
                 )
 
@@ -1206,6 +1313,11 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # `routing_type`, never `record_type`.
     _classify_record(result)
 
+    # UC 0, second half. Last of the rules that move name content, and after
+    # every rule that reads a name as a whole. No-ops on a record whose block
+    # was not merged, which is every record that arrived intact.
+    _repack_merged_name_block(result)
+
     # Output casing, last. It runs AFTER the changed flags, the classifier and
     # the search-term derivation, so those three see exactly the values they
     # saw before this rule existed: casing decides nothing and flags nothing.
@@ -1251,6 +1363,7 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     result.pop("_preprocess_cleared", None)
     result.pop("_dba_values", None)
     result.pop("_pp_name1", None)
+    result.pop("_uc0_merged", None)
     # One per department slot — set by _apply_tier3, read by finalise().
     for _slot in DEPT_SLOTS:
         result.pop(f"_{_slot}_from_tier3", None)
@@ -4316,12 +4429,25 @@ class Orchestrator:
             # ── UC 0: name overflow check ────────────────────────────
             # One LLM call per adjacent name pair. If any upper Name +
             # the Name below it read as ONE continuous organisation
-            # name, flag the record and return immediately — no other
-            # tier runs, no auto-correction. Flagged records go to
-            # manual review. Pairs whose two values are identical
-            # (case/whitespace-normalised) are skipped inside the check:
-            # two equal strings are duplicates, not an overflow split,
-            # and UC 12 dedup in preprocess handles them.
+            # name, the split is REPAIRED: the run is joined back into
+            # the one value the SAP columns cut it out of, the block is
+            # packed leftward, and enrichment proceeds on that value
+            # like any other record's. `finalise` writes the settled
+            # names back across the block in column-width pieces (see
+            # `_repack_merged_name_block`).
+            #
+            # This used to pass the fragments through untouched and flag
+            # the row. It resolved nothing: "US Army" / "Corps of
+            # Engineers" is two strings no registry can match, and the
+            # reviewer was handed back exactly what they supplied. The
+            # merged name is one a registry CAN match, so the record now
+            # earns its flags from its enrichment like every other row
+            # and carries no code for having been split.
+            #
+            # Pairs whose two values are identical (case/whitespace-
+            # normalised) are skipped inside the check: two equal
+            # strings are duplicates, not an overflow split, and UC 12
+            # dedup in preprocess handles them.
             block_names = {slot: getattr(record, slot, None) for slot in NAME_SLOTS}
             overflow = await run_overflow_check_block(
                 record_id=record.record_id,
@@ -4329,37 +4455,42 @@ class Orchestrator:
                 llm_client=self._llm_client,
             )
             if overflow.is_overflow:
+                merged, merged_runs = merge_split_runs(
+                    block_names, overflow.pairs,
+                )
                 logger.info({
                     "record_id": record.record_id,
-                    "step": "uc0_overflow_flagged",
+                    "step": "uc0_overflow_merged",
                     "fields": overflow.fields,
                     "confidence": overflow.confidence,
                     "reasoning": overflow.reasoning,
+                    "merged_runs": merged_runs,
+                    "merged_names": {
+                        slot: value for slot, value in merged.items() if value
+                    },
                 })
-                # Pass through originals untouched. Flag only.
-                for slot in NAME_SLOTS:
-                    value = block_names.get(slot)
-                    if value and value.strip():
-                        _write(
-                            result, f"{slot}_enriched", value.strip(),
-                            deterministic_evidence(
-                                "uc0:overflow-passthrough",
-                                producer="input", tier=1,
-                                evidence_ref={
-                                    "overflow_fields": list(
-                                        overflow.fields or (),
-                                    ),
-                                },
-                            ),
-                        )
-                result["routing_type"] = "unknown"
-                result["tier_used"] = 1
-                result["source"] = "pattern_match"
-                result["confidence"] = overflow.confidence
-                result["enrichment_status"] = "unresolved"
-                result["_ev_overflow"] = overflow.fields
-                result["use_cases_triggered"] = [0]
-                return await self._finalise_and_return(result, start, record, cache)
+                # The rest of the pipeline reads the record, not the
+                # original block, so the merge is made once, here. The
+                # `*_original` values in `result` were captured by
+                # `_init_result` BEFORE this and still hold what SAP
+                # supplied — which is what the `*_changed` flags and the
+                # response's original columns must keep reporting.
+                record = record.model_copy(update={
+                    field: merged[slot]
+                    for slot, field in zip(NAME_SLOTS, RECORD_NAME_FIELDS)
+                })
+                # Read twice in finalise: by the department passthrough,
+                # which must restore the MERGED block rather than the raw
+                # `*_original` fragments a merge consumed, and by
+                # `_repack_merged_name_block`. Only a merged record is
+                # repacked; a record that arrived whole keeps the slot
+                # layout the pipeline gave it.
+                result["_uc0_merged"] = {
+                    "runs": [list(run) for run in merged_runs],
+                    "names": dict(merged),
+                }
+                if 0 not in result["use_cases_triggered"]:
+                    result["use_cases_triggered"].append(0)
 
             # ── PREPROCESS (UC 6, 7, 8, 9): deterministic cleanup ─────
             # Pulls emails, addresses, contact-person names, and AP

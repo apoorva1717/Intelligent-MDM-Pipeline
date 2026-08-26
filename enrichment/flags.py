@@ -547,6 +547,63 @@ def render(
     }
 
 
+def raise_after(result: Any, code: str, fields: Iterable[str]) -> bool:
+    """Add *code*, scoped to *fields*, to an already-flagged result.
+
+    The mirror of :func:`retract`, for the other case rule 1 cannot cover: a
+    decision that can only be taken after ``compute_flags`` has run, because
+    it depends on something ``compute_flags`` itself feeds. UC 0's name-block
+    rewrite is the one such decision — the pieces are laid back across the
+    slots only after the classifier and the search-term derivation have read
+    the whole names, and whether a piece was left without a slot is not known
+    until then.
+
+    Re-renders through :func:`render` rather than appending prose by hand, so
+    the added code lands in ``_CODE_ORDER`` position and reads identically to
+    the same code raised inside ``compute_flags``. Returns whether anything
+    changed; a code already scoped to every one of *fields* is a no-op.
+    """
+    # Mapping access first: `compute_flags` publishes the flag columns with
+    # `result.update(...)`, so on the dict-like record `finalise` works with
+    # they are KEYS. `retract`'s caller (batch consensus) holds the pydantic
+    # `EnrichmentResult`, where they are attributes. This is called from both
+    # sides of that boundary, so it reads and writes through whichever the
+    # object actually offers.
+    read = (
+        result.get if callable(getattr(result, "get", None))
+        else (lambda key, default=None: getattr(result, key, default))
+    )
+    scopes: dict[str, Iterable[str]] = {
+        existing: set(scoped or ())
+        for existing, scoped in (read("flag_scopes", None) or {}).items()
+    }
+    wanted = set(fields or ())
+    if wanted and wanted <= set(scopes.get(code) or ()):
+        return False
+    scopes.setdefault(code, set())
+    scopes[code] = set(scopes[code]) | wanted
+
+    rendered = render(
+        scopes,
+        dict(read("flag_details", None) or {}),
+        dict(read("flag_notes", None) or {}),
+        list(read("flag_low_confidence", None) or ()),
+    )
+    if callable(getattr(result, "update", None)):
+        result.update(rendered)
+    else:
+        for key, value in rendered.items():
+            setattr(result, key, value)
+    logger.info({
+        "record_id": read("record_id", None),
+        "step": "flag_raised_late",
+        "code": code,
+        "fields": _sorted_fields(wanted),
+        "flag_codes": rendered["flag_codes"],
+    })
+    return True
+
+
 def retract(result: Any, codes: Iterable[str], field: str) -> tuple[str, ...]:
     """Withdraw *codes* from *field*'s scope on an already-flagged result.
 

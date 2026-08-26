@@ -10,8 +10,9 @@ value the street-suffix map had partly corrected shipped half-cased as
 The rule these tests pin:
 
 * one normaliser, `normalise_output_fields`, invoked on every exit path —
-  the normal path through `finalise`, the UC 0 overflow early return that runs
-  no tiers, and the batch-level fail-safe that never reaches `finalise` at all;
+  the normal path through `finalise`, the UC 0 merged-name-block path whose
+  slots are rewritten after the classifier has run, and the batch-level
+  fail-safe that never reaches `finalise` at all;
 * casing is decided TOKEN by token, so a partly-corrected value is finished
   rather than skipped;
 * casing changes letter case and nothing else — no apostrophe, comma, period,
@@ -65,7 +66,8 @@ class _EmptyLLM:
 
 class _OverflowLLM:
     """Answers the UC 0 overflow prompt with a confident "yes" and every other
-    prompt with nothing, so a record stops at Stage 0."""
+    prompt with nothing, so a record's name block is merged at Stage 0 and
+    then runs the tiers with no LLM help."""
 
     async def extract_json(self, system, user, **k):
         if "overflow" in system.lower() or "one continuous" in system.lower():
@@ -290,27 +292,29 @@ class TestChangedFlags:
 
 class TestExitPaths:
     @pytest.mark.asyncio
-    async def test_uc0_overflow_early_return_is_normalised(self):
+    async def test_uc0_merged_name_block_is_normalised(self):
         """Row 33: "Adams Air" + "HYDRAULICS INC" is the README's own UC 0
-        example. The record still stops at Stage 0 — flagged, no tier run —
-        and it is now cased on the way out."""
+        example. The split is repaired rather than reported — the two
+        fragments are one name, so they are merged, the tiers are asked about
+        that name, and the settled value is written back across the block and
+        cased on the way out."""
         ror = _CountingROR()
         r = await _run(
             _orch(ror=ror, llm=_OverflowLLM()),
             name1="Adams Air", name2="HYDRAULICS INC",
             street1="450 INDUSTRIAL WAY", city="GAINESVILLE",
         )
-        # Still flagged as an overflow — only the reason text changed.
-        assert r.flag_for_review is True
-        assert r.flag_codes == ["overflow"]
-        assert r.flagged_fields == ["name1", "name2"]
-        assert r.record_type == "unknown"
-        # No tier ran.
-        assert ror.queries == []
-        assert r.ror_id is None and r.lei_id is None
-        # ...and the record is normalised anyway.
-        assert r.name1_enriched == "Adams Air"
-        assert r.name2_enriched == "Hydraulics Inc"
+        # Tier 1 ran, and it was asked about the MERGED name — the whole
+        # point of the merge. "Adams Air" alone matches nothing.
+        assert ror.queries == ["Adams Air HYDRAULICS INC"]
+        # 24 characters, so it fits one column and Name 2 empties.
+        assert r.name1_enriched == "Adams Air Hydraulics Inc"
+        assert r.name2_enriched is None
+        # No code for having been split: a repaired split is not something a
+        # reviewer has to act on, so the record carries only what its own
+        # enrichment earned — here, the unresolved-name doubt.
+        assert "overflow" not in (r.flag_codes or [])
+        # ...and the rest of the record is normalised as always.
         assert r.street_cleaned == "450 Industrial Way"
         assert r.city == "Gainesville"
 

@@ -1,10 +1,17 @@
-"""UC 0 — Flag a name field overflowing into the one below it.
+"""UC 0 — Detect a name field overflowing into the one below it.
 
 One LLM call per adjacent name pair, zero SerpAPI. Runs as the very first
 step of the pipeline. If the LLM judges an upper Name + the Name below it
-to read as one continuous organisation name, the record is flagged for
-manual review and NO further enrichment runs (per spec: "flag only, never
-auto-correct").
+to read as one continuous organisation name, the run is REPAIRED rather
+than merely reported: :func:`enrichment.name_repack.merge_split_runs` joins
+the fragments back into the one name they were cut from, enrichment runs on
+that name like any other record's, and the settled result is written back
+across the block in column-width pieces.
+
+This module only decides *whether* a pair is one value. It does not merge,
+does not rewrite, and raises no flag of its own — a repaired split is not a
+defect the reviewer has to act on, so a merged record carries only the flags
+its enrichment earns.
 
 The check is not specific to Name 1 / Name 2. The SAP field split can drop
 a continuation into any slot boundary — a long institution name spilling
@@ -66,6 +73,16 @@ class OverflowBlockResult:
     @property
     def reasoning(self) -> str:
         return " | ".join(o.reasoning for o in self.overflows if o.reasoning)
+
+    @property
+    def pairs(self) -> list[tuple[str, ...]]:
+        """The ``(upper, lower)`` slot pair of each overflowing pair.
+
+        What :func:`enrichment.name_repack.merge_split_runs` consumes: the
+        flat ``fields`` list below loses which slot continues into which,
+        and two separate spills are not one four-slot name.
+        """
+        return [o.fields for o in self.overflows if len(o.fields) == 2]
 
     @property
     def fields(self) -> list[str]:
