@@ -92,6 +92,9 @@ from utils.cache import BatchCache  # noqa: E402
 from tests.mocks.ror_mock import MockRORClient  # noqa: E402
 from tests.mocks.lei_mock import MockLEIClient  # noqa: E402
 from tests.mocks.page_mock import MockPageFetcher  # noqa: E402
+import time  # noqa: E402
+from enrichment.orchestrator import finalise  # noqa: E402
+from tests.conftest import make_record  # noqa: E402
 
 
 class _RedirectPF(MockPageFetcher):
@@ -300,3 +303,96 @@ class TestNewsroomHostNeverWins:
         assert not any(
             h in u for u in pf.fetched for h in ("news.mit.edu", "media.mit.edu")
         )
+
+
+# ---------------------------------------------------------------------------
+# A department domain that reduces to the organisation's own domain
+# ---------------------------------------------------------------------------
+
+class TestNeverDuplicatesTheOrgDomain:
+    """`department_domain` must never ship the Domain column verbatim.
+
+    Stage 2b stores the FULL URL of a path-hosted department page, and
+    `finalise` then strips the path (`canonicalise_host`). When that page sits
+    on the institution's own registrable domain — "boston.gov/departments/
+    city-clerk", "nasa.gov/ames/space-biosciences" — the stripped value is the
+    institution domain again: it names the unit not at all, and its mere
+    presence corroborates Name 2 out of `unverified-inference`.
+    """
+
+    @_pytest.mark.asyncio
+    async def test_stage_2b_skips_a_page_on_the_base_domain(self):
+        url = "https://mit.edu/departments/chemistry"
+        pf = _StoryPF({url: "MIT Department of Chemistry"})
+        st = Settings()
+        o = Orchestrator(st, mock_clients={
+            "ror": MockRORClient(st), "lei": MockLEIClient(st),
+            "search": _SerpStub([SearchResult(
+                title="MIT Department of Chemistry", url=url, snippet="")]),
+            "page_fetcher": pf,
+            "llm": type("L", (), {
+                "extract_json": staticmethod(lambda *a, **k: {}),
+                "aclose": staticmethod(lambda: None)})(),
+        })
+        result = _probe_result()
+        await o._probe_department_url("R1", result, BatchCache())
+        assert result["department_domain"] is None
+
+    @_pytest.mark.asyncio
+    async def test_stage_2b_still_accepts_a_path_on_a_subdomain(self):
+        # clas.ufl.edu/chemistry stays distinct from ufl.edu once the path is
+        # stripped, so the §5e/2b behaviour is unchanged for it.
+        url = "https://clas.mit.edu/chemistry"
+        pf = _StoryPF({
+            url: "MIT Department of Chemistry",
+            "https://clas.mit.edu/": "MIT College of Liberal Arts",
+        })
+        st = Settings()
+        o = Orchestrator(st, mock_clients={
+            "ror": MockRORClient(st), "lei": MockLEIClient(st),
+            "search": _SerpStub([SearchResult(
+                title="MIT Department of Chemistry", url=url, snippet="")]),
+            "page_fetcher": pf,
+            "llm": type("L", (), {
+                "extract_json": staticmethod(lambda *a, **k: {}),
+                "aclose": staticmethod(lambda: None)})(),
+        })
+        result = _probe_result()
+        await o._probe_department_url("R1", result, BatchCache())
+        assert result["department_domain"] == url
+
+    @_pytest.mark.parametrize("stored", [
+        "https://nasa.gov/ames/space-biosciences",
+        "https://www.nasa.gov/",
+        "nasa.gov",
+    ])
+    def test_finalise_drops_a_value_that_canonicalises_to_the_domain(self, stored):
+        # Emit-point guard: whatever route wrote it, a value whose host is the
+        # organisation domain is dropped before flags and search terms read it.
+        out = finalise(make_record(
+            record_id="R1",
+            routing_type="research_institution",
+            record_type="research_institution",
+            domain="nasa.gov",
+            name1_enriched="NASA Ames Research Center",
+            name2_enriched="Space Biosciences Research",
+            department_domain=stored,
+        ), time.monotonic())
+        assert out["department_domain"] is None
+        # …and search_term_2 no longer falls back to the institution handle:
+        # with the duplicate in place the department column read "NASA", the
+        # same value search_term_1 already carries.
+        assert out["search_term_1"] == "NASA"
+        assert out["search_term_2"] != "NASA"
+
+    def test_finalise_keeps_a_real_department_subdomain(self):
+        out = finalise(make_record(
+            record_id="R2",
+            routing_type="research_institution",
+            record_type="research_institution",
+            domain="mit.edu",
+            name1_enriched="Massachusetts Institute of Technology",
+            name2_enriched="Department of Chemistry",
+            department_domain="chemistry.mit.edu",
+        ), time.monotonic())
+        assert out["department_domain"] == "https://chemistry.mit.edu"

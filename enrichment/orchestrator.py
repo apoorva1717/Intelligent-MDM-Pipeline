@@ -1372,6 +1372,34 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     )
     apply_registry_location_check(result)
 
+    # A "department domain" that reduces to the organisation's own domain is
+    # not a department domain. `canonicalise_host` below strips the path, so a
+    # stage-2b winner hosted on the base itself
+    # ("boston.gov/departments/city-clerk") would ship as "https://boston.gov"
+    # — a verbatim copy of the Domain column, naming the institution a second
+    # time and the unit not at all. Every other probe stage already refuses a
+    # base host (`_host_of` returns None for it); this makes stage 2b agree at
+    # the emit point, and also catches the §5e case where the resolved probe
+    # base is a subdomain and so never equalled `domain` inside the probe.
+    #
+    # Placed BEFORE compute_flags and derive_search_terms, the two readers that
+    # would otherwise act on the duplicate: the value corroborates name2 out of
+    # `unverified-inference` (flags §corroborated) purely by being non-null,
+    # and `_dept_domain_to_search_term` would derive search_term_2 from the
+    # institution host ("nasa" for Space Biosciences Research).
+    _dept_raw = (result.get("department_domain") or "").strip()
+    if _dept_raw:
+        _dept_host = canonicalise_host(_dept_raw)
+        if not _dept_host or _dept_host == (
+            result.get("domain") or ""
+        ).strip().lower():
+            logger.info(
+                "[%s] department_domain dropped: %r reduces to the "
+                "organisation domain %r",
+                result.get("record_id"), _dept_raw, result.get("domain"),
+            )
+            result["department_domain"] = None
+
     # THE flag decision, taken once, here. Every name, contact and domain
     # field above has settled and the `*_changed` flags are computed, so the
     # codes describe the state the record ended in rather than the tiers that
@@ -2749,6 +2777,7 @@ class Orchestrator:
         # (a shallow department landing page beats a deep dated sub-page) before
         # verifying — so an archived event URL no longer ties a landing page.
         path_candidates: list[tuple[int, str, int]] = []
+        org_domain = (result.get("domain") or "").strip().lower()
         for idx, sr in enumerate(serp_results):
             try:
                 parsed = urlparse(sr.url)
@@ -2758,6 +2787,16 @@ class Orchestrator:
             if host.startswith("www."):
                 host = host[4:]
             if not (host == base or host.endswith("." + base)):
+                continue
+            if host == org_domain:
+                # The path is the only thing distinguishing this candidate
+                # from the institution itself, and `finalise` strips it — so
+                # the winner would ship as the Domain column verbatim. Skip
+                # rather than short-circuit the probe on a value that cannot
+                # survive canonicalisation. Compared against the record's
+                # `domain`, not `base`: when §5e resolved the base to a
+                # subdomain (gc.cuny.edu) a page at that host DOES stay
+                # distinct from the registrable domain and is kept.
                 continue
             if _host_prefix_is_generic(host, base):
                 continue  # newsroom/admin host — the path can't redeem it
