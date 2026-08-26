@@ -49,6 +49,8 @@ from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
+from rapidfuzz import fuzz
+
 from dedup.candidates import strip_legal_suffix
 from dedup.models import DedupRow
 from dedup.signatures import derive_block_id, normalize_key
@@ -294,6 +296,43 @@ def _donor_rank(index: int, result: "EnrichmentResult") -> tuple[int, int, int]:
     return (-id_count, int(result.tier_used or 3), index)
 
 
+def _supplied_names(members: list["EnrichmentResult"]) -> list[str]:
+    """Every Name 1 the group's records actually arrived with.
+
+    Read back out of each record's provenance log, which is where the input
+    passthrough is recorded — a finalised `EnrichmentResult` carries no
+    `name1_original`. A member whose log has no input event contributes
+    nothing; a group where none does yields an empty list, and the election
+    falls through to the tie-breaks below it.
+    """
+    supplied: list[str] = []
+    for member in members:
+        log = log_from_dicts(
+            member.provenance, member.provenance_rejected,
+            member.provenance_rejected_omitted,
+        )
+        original = log.original_value("name1_enriched")
+        if original and str(original).strip():
+            supplied.append(str(original))
+    return supplied
+
+
+def _input_affinity(form: str, supplied: list[str]) -> int:
+    """How well *form* represents the names the group was supplied with.
+
+    Summed similarity against every original, not just the one belonging to
+    the record that produced *form*: the question is which surface form best
+    stands for what the batch actually said, and a form is answering for the
+    whole group once it is elected. Scored on the same
+    `token_sort_ratio` the rest of the pipeline matches names with, and
+    rounded so the sort key is integral and cannot turn on a float.
+    """
+    return round(sum(
+        fuzz.token_sort_ratio(form.lower(), original.lower())
+        for original in supplied
+    ))
+
+
 def _consensus_name_form(
     members: list["EnrichmentResult"],
     indices: list[int],
@@ -309,8 +348,21 @@ def _consensus_name_form(
 
     The modal form wins, because the batch's own majority spelling is evidence
     and "which legal form is more correct" is not a judgement this pass is
-    entitled to make. Ties break on the earliest tier, then batch order, so the
-    election is deterministic. Returns None when the group already agrees.
+    entitled to make.
+
+    **Ties break on closeness to the supplied names.** A tie means the batch
+    has no majority spelling, so the rule that decides it should still be one
+    about the data rather than about row order — and the demo batch showed what
+    happens when it is not. The Coastal trio spells one company three ways, no
+    two records enrich to the same form, and the old tie-break (earliest tier,
+    then batch order) elected `Coastal Diagnostics Inc.` — a string none of the
+    three records was supplied with, taken from the first row purely because it
+    was first. Preferring the form closest to what the customer actually typed
+    elects `Coastal Diagnostics, Inc` instead, which one of them typed
+    verbatim. Tier and batch order remain below it, so the election is still
+    total and deterministic when a group has no originals to compare against.
+
+    Returns None when the group already agrees.
     """
     forms: dict[str, tuple[int, int, int]] = {}
     for index, member in zip(indices, members):
@@ -322,8 +374,15 @@ def _consensus_name_form(
                        min(first, index))
     if len(forms) < 2:
         return None
-    return min(forms.items(),
-               key=lambda kv: (-kv[1][0], kv[1][1], kv[1][2]))[0]
+    supplied = _supplied_names(members)
+    return min(
+        forms.items(),
+        key=lambda kv: (
+            -kv[1][0],                            # modal count first
+            -_input_affinity(kv[0], supplied),    # then closest to the input
+            kv[1][1], kv[1][2],                   # then tier, then batch order
+        ),
+    )[0]
 
 
 def _consensus_values(

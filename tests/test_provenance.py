@@ -46,6 +46,8 @@ from enrichment.provenance import (
     assert_admissible,
     comparable,
     confidence_band,
+    deterministic_evidence,
+    log_from_dicts,
     derived_scalar,
     deterministic_evidence,
     inherited_evidence,
@@ -653,3 +655,53 @@ class TestStateless:
             # …and the donor's own scale travels with it, so the receiving
             # record can tell registry evidence from an LLM's self-report.
             assert event.evidence_ref["donor_confidence_scale"] == "registry_exact"
+
+
+class TestOriginalValue:
+    """`original_value` answers "what did this field arrive holding" from the
+    log, so nothing has to carry a `*_original` alongside the result. Batch
+    consensus is the caller: after `finalise` the supplied Name 1 exists
+    nowhere else on an `EnrichmentResult`, and the name-form election needs it
+    to tell a spelling a customer typed from one a tier composed.
+    """
+
+    def test_it_returns_the_value_the_record_arrived_with(self):
+        record = _record(name1="COASTAL DIAGNOSTICS")
+        record.write("name1_enriched", "COASTAL DIAGNOSTICS",
+                     deterministic_evidence("input-passthrough",
+                                            producer="input"))
+        record.write("name1_enriched", "Coastal Diagnostics, Inc.",
+                     tier3_evidence())
+        assert record.provenance.original_value("name1_enriched") == \
+            "COASTAL DIAGNOSTICS"
+
+    def test_later_writes_never_move_it(self):
+        record = _record(name1="Uni Stuttgart")
+        record.write("name1_enriched", "Uni Stuttgart",
+                     deterministic_evidence("input-passthrough",
+                                            producer="input"))
+        for value in ("Universitat Stuttgart", "University of Stuttgart"):
+            record.write("name1_enriched", value, tier3_evidence())
+        assert record.provenance.original_value("name1_enriched") == \
+            "Uni Stuttgart"
+
+    def test_a_field_with_no_events_has_no_original(self):
+        record = _record(name1="MIT")
+        assert record.provenance.original_value("name1_enriched") is None
+
+    def test_a_field_the_pipeline_populated_from_nothing_has_no_original(self):
+        """An absent value is not a spelling, so it is not offered as one."""
+        record = _record(name1="MIT")
+        record.write("name2_enriched", "Department of Physics", tier3_evidence())
+        assert record.provenance.original_value("name2_enriched") is None
+
+    def test_it_reads_through_a_round_trip_of_the_log(self):
+        """Batch consensus rebuilds the log from the serialised events rather
+        than holding the record, so the answer has to survive that."""
+        record = _record(name1="Coastal Diagnostics, Inc")
+        record.write("name1_enriched", "Coastal Diagnostics, Inc",
+                     deterministic_evidence("input-passthrough",
+                                            producer="input"))
+        rebuilt = log_from_dicts(record.provenance.as_dicts(), [], {})
+        assert rebuilt.original_value("name1_enriched") == \
+            "Coastal Diagnostics, Inc"
