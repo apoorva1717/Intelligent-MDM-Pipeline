@@ -83,7 +83,7 @@ from utils.cache import (
 # ---------------------------------------------------------------------------
 
 class _NoSearch:
-    async def search(self, q, num_results=5):
+    async def search(self, q, num_results=5, *, country=None):
         return []
 
 
@@ -309,7 +309,7 @@ class TestPromptsCarryNothingNondeterministic:
             def __init__(self, results):
                 self.results = results
 
-            async def search(self, q, num_results=5):
+            async def search(self, q, num_results=5, *, country=None):
                 return list(self.results)
 
         prompts: list[str] = []
@@ -582,7 +582,7 @@ class TestCacheFrozenIsAnEvaluationControl:
         batch = BatchCache(shared_serp=SerpCache(disk=store))
 
         class _Boom:
-            async def search(self, q, num_results=5):
+            async def search(self, q, num_results=5, *, country=None):
                 raise AssertionError("a frozen run must not reach the network")
 
         with caplog.at_level("INFO"):
@@ -608,7 +608,7 @@ class TestCacheFrozenIsAnEvaluationControl:
         batch = BatchCache(shared_serp=SerpCache(disk=frozen))
 
         class _Boom:
-            async def search(self, q, num_results=5):
+            async def search(self, q, num_results=5, *, country=None):
                 raise AssertionError("should have been served from the cache")
 
         assert len(await cached_serp(batch, _Boom(), "acme labs")) == 1

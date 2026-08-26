@@ -224,7 +224,9 @@ class _ListSearchClient:
         self._results = results
         self.calls: list[str] = []
 
-    async def search(self, query: str, num_results: int = 5) -> list[SearchResult]:
+    async def search(
+        self, query: str, num_results: int = 5, *, country: str | None = None,
+    ) -> list[SearchResult]:
         self.calls.append(query)
         return self._results[:num_results]
 
@@ -573,7 +575,7 @@ class _QuoteAwareSearch:
         self._u = unquoted_results
         self.calls: list[str] = []
 
-    async def search(self, query, num_results=5):
+    async def search(self, query, num_results=5, *, country=None):
         self.calls.append(query)
         return (self._q if '"' in query else self._u)[:num_results]
 
@@ -607,3 +609,155 @@ class TestPathBRetry:
         )
         assert res.url == "https://www.verdox.com"
         assert len(client.calls) == 1  # no retry
+
+
+# ---------------------------------------------------------------------------
+# Country gate — the record's country vs the candidate's ccTLD
+# ---------------------------------------------------------------------------
+
+class TestPathBCountryGate:
+    """The guard the SERP layer never had.
+
+    Every other Path B test asks whether the NAME fits the host. A
+    multinational's name fits its host in every country it trades in, so name
+    tests cannot separate a US subsidiary's record from the parent's Belgian
+    site — only the country can.
+    """
+
+    # The live case: a Texas record for a Unilever research subsidiary matched
+    # unilever.be on the token "unilever", because it IS a Unilever site.
+    def test_foreign_cctld_not_selected(self):
+        res = select_website_from_serp(
+            "Unilever Trumbull Research Services Inc",
+            [_sr("Unilever Belgium", "https://www.unilever.be/")],
+            record_type="research_institution",
+            country="US",
+        )
+        assert res.url is None
+        assert res.confidence == "none"
+
+    def test_matching_cctld_selected(self):
+        res = select_website_from_serp(
+            "Unilever Belgium",
+            [_sr("Unilever Belgium", "https://www.unilever.be/")],
+            record_type="company",
+            country="BE",
+        )
+        assert res.url == "https://www.unilever.be"
+
+    def test_gtld_never_gated(self):
+        # .com carries no country claim, so the gate has nothing to say and the
+        # candidate is judged on name evidence exactly as before.
+        res = select_website_from_serp(
+            "Unilever Trumbull Research Services Inc",
+            [_sr("Unilever", "https://www.unilever.com/")],
+            record_type="company",
+            country="US",
+        )
+        assert res.url == "https://www.unilever.com"
+
+    def test_worldwide_cctld_never_gated(self):
+        # .ai is Anguilla on paper. Gating it would be a false positive on one
+        # of the commonest TLDs a US company could pick.
+        res = select_website_from_serp(
+            "Verdox",
+            [_sr("Verdox", "https://www.verdox.ai/")],
+            record_type="company",
+            country="US",
+        )
+        assert res.url == "https://www.verdox.ai"
+
+    def test_gate_off_restores_previous_selection(self):
+        # country=None is the kill switch's shape: the same input that the
+        # gate rejects above is selected again.
+        res = select_website_from_serp(
+            "Unilever Trumbull Research Services Inc",
+            [_sr("Unilever Belgium", "https://www.unilever.be/")],
+            record_type="research_institution",
+            country=None,
+        )
+        assert res.url == "https://www.unilever.be"
+
+    def test_domestic_candidate_wins_over_foreign_one(self):
+        # The gate removes candidates from eligibility rather than reordering
+        # them, so a foreign result ranked FIRST cannot displace a domestic one.
+        res = select_website_from_serp(
+            "Acme Instruments",
+            [
+                _sr("Acme Instruments GmbH", "https://www.acme-instruments.de/"),
+                _sr("Acme Instruments", "https://www.acmeinstruments.com/"),
+            ],
+            record_type="company",
+            country="US",
+        )
+        assert res.url == "https://www.acmeinstruments.com"
+
+    def test_unreadable_record_country_fails_open(self):
+        # A country string the ISO map cannot read makes no claim, so it must
+        # not manufacture a rejection.
+        res = select_website_from_serp(
+            "Unilever Belgium",
+            [_sr("Unilever Belgium", "https://www.unilever.be/")],
+            record_type="company",
+            country="Ruritania",
+        )
+        assert res.url == "https://www.unilever.be"
+
+    @pytest.mark.asyncio
+    async def test_path_c_is_gated_too(self):
+        # Path B rejecting a foreign candidate is what MAKES Path C run, so a
+        # gate covering only Path B would hand the same domain back through the
+        # fallback it opened.
+        class _LLM:
+            async def extract_json(self, system, user):
+                return {"website_url": "https://www.unilever.be/"}
+
+        res = await infer_website_via_llm(
+            record_id="R", name1="Unilever Trumbull Research Services Inc",
+            city=None, state="TX", country="US", llm_client=_LLM(),
+        )
+        assert res.url is None
+
+    @pytest.mark.asyncio
+    async def test_path_c_gate_off_keeps_the_answer(self):
+        class _LLM:
+            async def extract_json(self, system, user):
+                return {"website_url": "https://www.unilever.be/"}
+
+        res = await infer_website_via_llm(
+            record_id="R", name1="Unilever Trumbull Research Services Inc",
+            city=None, state="TX", country="US", llm_client=_LLM(),
+            country_gate=False,
+        )
+        assert res.url == "https://www.unilever.be/"
+
+    @pytest.mark.asyncio
+    async def test_serp_path_end_to_end_falls_through(self):
+        client = _QuoteAwareSearch(
+            quoted_results=[_sr("Unilever Belgium", "https://www.unilever.be/")],
+            unquoted_results=[_sr("Unilever Belgium", "https://www.unilever.be/")],
+        )
+        res = await resolve_website_via_serp(
+            record_id="R", name1="Unilever Trumbull Research Services Inc",
+            city=None, state="TX", country="US",
+            record_type="research_institution",
+            search_client=client, cache=BatchCache(),
+        )
+        assert res.url is None
+
+    @pytest.mark.asyncio
+    async def test_country_gate_flag_off_leaves_query_country_intact(self):
+        # The kill switch turns off the DISQUALIFIER, not the country's other
+        # job: the query still carries it.
+        client = _QuoteAwareSearch(
+            quoted_results=[_sr("Unilever Belgium", "https://www.unilever.be/")],
+            unquoted_results=[],
+        )
+        res = await resolve_website_via_serp(
+            record_id="R", name1="Unilever Trumbull Research Services Inc",
+            city=None, state="TX", country="US",
+            record_type="research_institution",
+            search_client=client, cache=BatchCache(), country_gate=False,
+        )
+        assert res.url == "https://www.unilever.be"
+        assert "US" in client.calls[0]

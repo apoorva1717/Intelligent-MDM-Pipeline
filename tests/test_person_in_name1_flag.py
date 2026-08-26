@@ -28,7 +28,7 @@ class _NoMatchROR(MockRORClient):
 
 
 class _NoResultSearch:
-    async def search(self, query, num_results=5):
+    async def search(self, query, num_results=5, *, country=None):
         return []
 
 

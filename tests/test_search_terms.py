@@ -166,7 +166,10 @@ class TestDeriveSearchTerms:
             "source_url": None,
         }
         st1, _ = derive_search_terms(result)
-        assert st1 == "MASSACHUSETTS INSTITUTE"
+        # Two terms: the head, plus the first token that narrows the search.
+        # "Institute" is a structural word and is stepped over, so the second
+        # slot goes to Technology.
+        assert st1 == "MASSACHUSETTS TECHNOLOGY"
 
     def test_falls_back_to_original_sap_term_when_underivable(self):
         # Lowercase single-word name → no acronym, no domain → keep the
@@ -278,7 +281,8 @@ class TestDeriveSearchTerms:
             "department_domain": None,
         }
         _, st2 = derive_search_terms(result)
-        assert st2 == "EARTH PLANETARY SCIENCES"
+        # Capped at two terms; "Sciences" is the third.
+        assert st2 == "EARTH PLANETARY"
 
     def test_search_term_2_fallback_two_words_chemistry(self):
         result = {
@@ -340,7 +344,7 @@ class TestDeriveSearchTerms:
         _, st2 = derive_search_terms(result)
         assert st2 is None
 
-    def test_whole_name_kept_when_it_fits_the_field(self):
+    def test_name_handle_is_capped_at_two_terms(self):
         result = {
             "_ror_acronym": None,
             "domain": None,
@@ -351,6 +355,7 @@ class TestDeriveSearchTerms:
             "source_url": None,
         }
         st1, _ = derive_search_terms(result)
-        # The whole name fits the 32-char field, so it is kept whole — a
-        # truncated "INTERNATIONAL BUSINESS" is a worse search handle.
-        assert st1 == "INTERNATIONAL BUSINESS MACHINES"
+        # Two terms. The head is kept even though "International" is a scope
+        # word on its own — an organisation name is head-initial, so the
+        # leading token is the one that says which organisation.
+        assert st1 == "INTERNATIONAL BUSINESS"

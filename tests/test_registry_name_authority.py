@@ -62,7 +62,7 @@ from utils.text_utils import _ABBREV_MAP, expand_abbreviations
 # ---------------------------------------------------------------------------
 
 class _NoSearch:
-    async def search(self, q, num_results=5):
+    async def search(self, q, num_results=5, *, country=None):
         return []
 
 

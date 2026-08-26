@@ -96,6 +96,7 @@ from typing import Any, Optional, Tuple
 
 from dedup.signatures import normalize_key
 from search.base import SearchUnavailable
+from utils.text_utils import country_to_iso_code
 
 logger = logging.getLogger(__name__)
 
@@ -686,6 +687,21 @@ class SerpCache:
         return len(self._store)
 
 
+def _serp_geo_enabled() -> bool:
+    """Whether the record's country is sent to the search provider.
+
+    Read per call rather than captured at import: the setting is a kill switch,
+    and a switch that only takes effect on a restart is not one. Failing open
+    (True) on any settings problem keeps a search issuing rather than silently
+    reverting to the un-localised behaviour this exists to replace.
+    """
+    try:
+        from config import get_settings  # local — utils must not import config
+        return bool(get_settings().serp_country_localisation_enabled)
+    except Exception:  # noqa: BLE001
+        return True
+
+
 async def cached_serp(
     cache: "BatchCache | None",
     search_client: Any,
@@ -712,6 +728,14 @@ async def cached_serp(
     the search at all — returns ``[]`` and records **nothing**. Any other
     exception propagates: each caller has its own idea of what a failed lane
     means, and swallowing them here would flatten that.
+
+    *country* now reaches the provider as well as the cache key. It used to do
+    only the latter, which meant two records in different countries were filed
+    under different keys for a search that had been issued identically — the
+    key promised a distinction the request never made. Normalisation to an ISO
+    alpha-2 code happens HERE rather than in each client, so every provider
+    receives the same well-formed value or nothing, and the RAW string stays
+    the cache key so existing entries keep resolving.
     """
     if cache is not None:
         hit = cache.get_serp(query, country)
@@ -721,7 +745,11 @@ async def cached_serp(
             return []
     note_network_call("serp")
     try:
-        results = await search_client.search(query, num_results=num_results)
+        results = await search_client.search(
+            query,
+            num_results=num_results,
+            country=country_to_iso_code(country) if _serp_geo_enabled() else None,
+        )
     except SearchUnavailable:
         # The search could not be executed. NOT recorded: a dropped connection
         # is not evidence that the organisation has no web presence, and this

@@ -11,12 +11,22 @@ person initials); once enrichment has settled Name 1/2, the domain and
 the registry acronym, re-deriving from those is strictly better than
 echoing what the input happened to carry.
 
+Both terms are capped at **two terms**. A search term is something you
+type into a search box, and past two words a handle stops being a query
+and starts being a copy of the name — "Kellogg Battle Creek MI Plant"
+retrieves nothing that "Kellogg" does not. Which two is not a
+truncation: the head is kept (an organisation name is head-initial, so
+the leading token says which organisation), and the second slot goes to
+the first token that actually narrows the search, stepping over legal
+forms, structural words, facility words, corporate scaffolding, place
+names and anything the record's own address already states. An `&`
+joining the two is kept and counts as neither — "Procter & Gamble" is
+two terms, and P&G is what people search.
+
 ``search_term_1`` mirrors *name1* (an institution). Institutions
 typically have well-known acronyms (MIT, UCLA, NASA), so the rule is
 acronym-first, domain second, and — when neither exists — a handle
-derived from the enriched Name 1 itself: the whole name when it fits
-the 32-char field ("University of Florida"), otherwise its leading
-significant words.
+derived from the enriched Name 1 itself.
 
 ``search_term_2`` mirrors *name2* (a department / unit / lab). Units
 rarely have well-known acronyms, so the rule is instead a
@@ -37,6 +47,7 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
+from enrichment.locality import US_REGION_CODES
 from utils.text_utils import (
     acronym_matches_name,
     is_admin_unit,
@@ -64,6 +75,12 @@ _GENERIC_PATH_SEGMENTS = {
 _PAREN_ACRONYM_RE = re.compile(r"\(([A-Z][A-Z0-9&\-]{1,9})\)\s*$")
 
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9&\-]*")
+
+# Same as `_WORD_RE` but also matches a standalone "&". `_WORD_RE` requires a
+# leading letter, so the ampersand in "Procter & Gamble" never reached
+# `derive_acronym`'s loop at all — the acronym came out PG because the token
+# was invisible, not because it was rejected.
+_WORD_OR_AMP_RE = re.compile(r"&|[A-Za-z][A-Za-z0-9&\-]*")
 
 # Two-part public-suffix TLDs that must be stripped together. Mirrors
 # the set used by utils.text_utils.extract_domain so a "registrable
@@ -159,9 +176,20 @@ def derive_acronym(name: str | None) -> str | None:
     # uppercase letter. Mixed-case names like "Massachusetts institute
     # of Technology" would otherwise produce "MT" — a misleading
     # half-acronym.
+    #
+    # `&` is the one stopword that SURVIVES, because it is part of the
+    # acronym people actually search: "Procter & Gamble" is P&G, not PG, and
+    # "Johnson & Johnson" is J&J. It is emitted only between two initials —
+    # a leading or trailing ampersand is punctuation, not a letter of the
+    # handle — and it never counts towards the two-initial minimum, so
+    # "Smith & Co" is still rejected for having one significant word.
     initials: list[str] = []
-    for token in _WORD_RE.findall(name):
+    pending_amp = False
+    for token in _WORD_OR_AMP_RE.findall(name):
         if not token:
+            continue
+        if token == "&":
+            pending_amp = bool(initials)
             continue
         if token.lower() in _ACRONYM_STOPWORDS:
             continue
@@ -170,9 +198,12 @@ def derive_acronym(name: str | None) -> str | None:
             continue
         if not first.isupper():
             return None
+        if pending_amp:
+            initials.append("&")
+            pending_amp = False
         initials.append(first.upper())
 
-    if len(initials) < 2:
+    if len([c for c in initials if c != "&"]) < 2:
         return None
     return "".join(initials)
 
@@ -366,7 +397,9 @@ def _first_two_significant_words(text: str | None) -> str | None:
     if not text or not text.strip():
         return None
     words: list[str] = []
-    for tok in re.findall(r"[A-Za-z]+", text):
+    # `[A-Za-z]+` used to be the pattern here, which split "P&G" into two
+    # words and threw the ampersand away. `&` is part of the handle.
+    for tok in re.findall(r"[A-Za-z][A-Za-z0-9&\-]*", text):
         if tok.lower() in _TERM2_STOPWORDS:
             continue
         words.append(tok)
@@ -391,33 +424,40 @@ def _name1_text_handle(name1: str) -> str | None:
     """A searchable handle derived from the enriched Name 1 — the fallback
     for search_term_1 when no acronym and no domain exist.
 
-    Legal-entity suffixes are dropped, then the **whole name is kept when
-    it fits** the 32-char field. Keeping the connecting words is what makes
-    the handle searchable: ``University of Florida`` is a query, ``University
-    Florida`` is not. Only a name that overflows the field drops its
-    stopwords and is filled greedily to the width.
+    Legal-entity suffixes are dropped and the rest is handed on WHOLE. The
+    two-term cap in `_normalise_term` does the shortening, and it has to see
+    every word to choose between them: filling greedily to 32 chars here first
+    cut "Massachusetts Institute of Technology" down to "Massachusetts
+    Institute" before the cap could tell that Technology was the half worth
+    keeping and Institute was not.
 
     ``'Verdox, Inc.'``                            → ``'Verdox'``
     ``'Applied Thin Films, Inc.'``                → ``'Applied Thin Films'``
     ``'University of Florida'``                   → ``'University of Florida'``
-    ``'Massachusetts Institute of Technology'``   → ``'Massachusetts Institute'``
+    ``'Massachusetts Institute of Technology'``   → ``'Massachusetts Institute of Technology'``
     """
     words: list[str] = []
     for raw in name1.split():
         tok = raw.strip(" ,.;:()[]{}\"'")
         # Punctuation-only tokens ("/", "-", "–") separate words, they are
         # not words: "Bayer U.S. – Crop Science" must not carry the dash.
+        # `&` is the exception — it is not punctuation between two names, it
+        # is part of the name ("Procter & Gamble"), and dropping it here is
+        # what turned that handle into "PROCTER GAMBLE".
+        if tok == "&":
+            if words:
+                words.append(tok)
+            continue
         if not tok or not any(c.isalnum() for c in tok):
             continue
         if tok.lower() in _ST1_LEGAL_SUFFIXES:
             continue
         words.append(tok)
+    while words and words[-1] == "&":
+        words.pop()          # a trailing "&" joins nothing
     if not words:
         return None
-    whole = " ".join(words)
-    if len(whole) <= 32:
-        return whole
-    return _fill_to_width(whole, 32) or _truncate_word_boundary(whole, 32)
+    return " ".join(words) or None
 
 
 def _truncate_word_boundary(s: str, width: int = 32) -> str:
@@ -431,14 +471,255 @@ def _truncate_word_boundary(s: str, width: int = 32) -> str:
     return s[:idx].rstrip()
 
 
-def _normalise_term(term: str | None) -> str | None:
+# ---------------------------------------------------------------------------
+# Which tokens actually identify an organisation
+# ---------------------------------------------------------------------------
+#
+# A search term is something you can type into a search box and get this
+# organisation back. Two things follow, and both are decided by one question
+# asked of each token — *does this word narrow the search to this record?*
+#
+#   * the two-term cap (`_cap_to_two_terms`) keeps the head plus the first
+#     token that does narrow it, so "Toyota Technical Center USA" searches as
+#     TOYOTA TECHNICAL rather than carrying a facility word and a country;
+#   * a phrase where NO token narrows it names nothing at all
+#     (`has_identifying_token`), which is why "Central Receiving" and
+#     "Corporate Headquarters" now produce an empty Search Term 2 instead of
+#     shipping the words a thousand other records also carry.
+#
+# The head is exempt from the test. An organisation name in these registries
+# is head-initial — the brand first, the division / product line / legal form
+# after — the same property `registry_match.names_agree_by_containment` is
+# built on, so the leading token is the one that says WHICH organisation even
+# when the word itself is a common one ("General Mills", "Global Technical").
+
+#: Words naming a building or an activity that happens inside one. Every site
+#: has receiving, stores and a headquarters; none of them says whose site it is.
+_FACILITY_WORDS: frozenset[str] = frozenset({
+    "headquarters", "headquarter", "hq", "plant", "plants", "site", "sites",
+    "works", "facility", "facilities", "campus", "warehouse", "warehousing",
+    "depot", "dock", "docks", "terminal", "interplant", "receiving",
+    "shipping", "stores", "store", "storeroom", "stockroom", "manufacturing",
+    "production", "distribution", "logistics", "maintenance", "assembly",
+    "packaging", "annex", "building", "bldg", "premises", "warehouses",
+})
+
+#: Corporate scaffolding and scope qualifiers. "Solutions", "Operations" and
+#: "Corporate" attach to any company at all, so they cannot pick one out.
+#: "Service"/"Services" is deliberately NOT here — it is half of real unit
+#: names ("Food Service"), and an admin service desk is already caught earlier
+#: by `is_admin_unit`.
+_GENERIC_CORPORATE_WORDS: frozenset[str] = frozenset({
+    "corporate", "central", "main", "global", "international", "worldwide",
+    "national", "regional", "operations", "operation", "solutions", "systems",
+    "partners", "holdings", "enterprises", "ventures", "group", "groups",
+    "affiliates", "subsidiary", "subsidiaries", "general", "sales",
+    "miscellaneous", "misc", "other", "various", "unknown",
+})
+
+#: Place words that are place words in every record. Two-letter US state codes
+#: are NOT here — "GE", "GM", "HP", "BD" and "LG" are two-letter organisations,
+#: and `in` / `or` / `me` / `de` are ordinary words as often as they are
+#: Indiana, Oregon, Maine and Delaware. A state ABBREVIATION is only read as
+#: one when the record's own address says so (`_record_geo_tokens`).
+_GEO_WORDS: frozenset[str] = frozenset(
+    {
+        "usa", "us", "america", "americas", "canada", "canadian", "mexico",
+        "europe", "european", "asia", "asian", "pacific", "africa",
+        "north", "south", "east", "west",
+        "northern", "southern", "eastern", "western", "midwest",
+    }
+    # Full US state names are unambiguous in a way the codes are not.
+    | {name.lower() for name in US_REGION_CODES.values()}
+)
+
+
+def _record_geo_tokens(result: dict[str, Any]) -> frozenset[str]:
+    """Tokens that merely repeat the record's OWN address.
+
+    "Kellogg Battle Creek MI Plant" carries a city, a state abbreviation and a
+    facility word, and the record already states all three in its address
+    columns. A handle that repeats them has spent its two terms saying where
+    the mail goes instead of who the organisation is, so the address is read
+    once here and the words it contains stop counting as identifying.
+
+    This is what lets the state ABBREVIATION be recognised without guessing:
+    `MI` is Michigan in this handle because this record's region says Michigan,
+    not because two letters were assumed to be a state code.
+    """
+    out: set[str] = set()
+    for key in ("city", "region", "country_region_key"):
+        value = (result.get(key) or "").strip().lower()
+        if not value:
+            continue
+        for tok in re.findall(r"[A-Za-z]{2,}", value):
+            out.add(tok)
+        # A region given as a code also blocks the state's full name, and
+        # vice versa, so "MI" and "Michigan" behave identically.
+        expanded = US_REGION_CODES.get(value.strip(". "))
+        if expanded:
+            out.add(value.strip(". "))
+            out.update(re.findall(r"[A-Za-z]{2,}", expanded.lower()))
+    return frozenset(out)
+
+
+#: Words that JOIN two terms rather than being one. A connector between the
+#: two chosen terms is kept and counts as neither, so "University of Florida"
+#: and "Procter & Gamble" are two-term handles, not three.
+#:
+#: They also change what the token after them means. A place name in trailing
+#: position is an address — "Nucor Steel Florida" is a Florida site of Nucor
+#: Steel — but a place name after "of" is part of the name itself: the
+#: University OF Florida is not a Florida branch of some University. So a
+#: token directly after "of"/"for" identifies, whatever list it appears on.
+_CONNECTORS: frozenset[str] = frozenset({"&", "of", "for"})
+
+#: Function words that carry no identity. `_TERM2_STOPWORDS` covers the
+#: articles and conjunctions; these are the prepositions and connectives that
+#: turn up in SAP free text ("Interplant Site Off E", "Bldg 4 Per Contract").
+_FUNCTION_WORDS: frozenset[str] = frozenset({
+    "off", "out", "per", "via", "plus", "from", "with", "by", "into", "onto",
+    "over", "under", "near", "upon", "than", "then", "also", "etc", "and/or",
+    "no", "not", "new", "old", "all", "any", "its",
+})
+
+
+def _token_key(token: str) -> str:
+    """The comparable form of a handle token — lowercased, outer punctuation
+    removed. `&` survives because it is part of the handle, not punctuation."""
+    return token.strip(" .,;:()[]{}\"'").lower()
+
+
+def is_identifying_token(
+    token: str,
+    geo: "frozenset[str] | None" = None,
+    *,
+    after_connector: bool = False,
+) -> bool:
+    """True when *token* narrows a search to this organisation.
+
+    False for legal forms, structural unit words, facility words, corporate
+    scaffolding, place words, the record's own address, bare stopwords, and
+    anything with no letters in it (a lone "&" or a stray "E").
+
+    *after_connector* marks a token that directly follows "of" or "for", which
+    exempts it from every vocabulary above except the empty checks. See
+    `_CONNECTORS`: "Florida" is an address in "Nucor Steel Florida" and the
+    name itself in "University of Florida", and the connector is what tells
+    the two apart.
+    """
+    key = _token_key(token)
+    if not key or not any(c.isalpha() for c in key):
+        return False
+    if len(key) == 1:
+        return False
+    if after_connector:
+        return True
+    return not (
+        key in _ST1_LEGAL_SUFFIXES
+        or key in _UNIT_KEYWORDS
+        or key in _FACILITY_WORDS
+        or key in _GENERIC_CORPORATE_WORDS
+        or key in _GEO_WORDS
+        or key in _TERM2_STOPWORDS
+        or key in _FUNCTION_WORDS
+        or key in (geo or frozenset())
+    )
+
+
+def has_identifying_token(
+    text: str | None, geo: "frozenset[str] | None" = None,
+) -> bool:
+    """True when *text* contains at least one token that names something.
+
+    "Central Receiving", "Corporate Headquarters" and "Stores" contain none:
+    every word is a qualifier or a facility function, and the phrase describes
+    a loading bay rather than naming a unit. Shipping one as a search term
+    hands a reviewer a query that matches every large employer in the country.
+    """
+    if not text or not text.strip():
+        return False
+    tokens = text.split()
+    return any(
+        is_identifying_token(
+            tok, geo,
+            after_connector=i > 0 and _token_key(tokens[i - 1]) in ("of", "for"),
+        )
+        for i, tok in enumerate(tokens)
+    )
+
+
+def _cap_to_two_terms(
+    text: str, geo: "frozenset[str] | None" = None,
+) -> str | None:
+    """Reduce *text* to at most two terms: the head, plus the first token after
+    it that identifies something.
+
+    The head is taken as-is (see the head-initial note above); leading articles
+    and legal forms are stepped over to find it. The second term is the first
+    IDENTIFYING token, so the scaffolding between them is skipped rather than
+    occupying the slot — "Novartis Institute Biomedical" reaches NOVARTIS
+    BIOMEDICAL, not NOVARTIS INSTITUTE. When nothing after the head identifies
+    anything, the head stands alone: "Kellogg North America" is KELLOGG,
+    because NORTH is not the half of that name worth searching.
+
+    An `&` that JOINS the two chosen terms is kept — "Procter & Gamble" is one
+    two-term handle, not three terms — and counts towards neither.
+
+        'Toyota Technical Center USA'      → 'Toyota Technical'
+        'Robert Bosch Fuel Systems'        → 'Robert Bosch'
+        'Kellogg North America'            → 'Kellogg'
+        'Procter & Gamble'                 → 'Procter & Gamble'
+        'The Goodyear Tire & Rubber Co'    → 'Goodyear Tire'
+    """
+    tokens = [t for t in text.split() if t.strip()]
+    # Step over articles and legal forms to find the head. `_ARTICLES` is not
+    # a separate set: "the" is already a stopword everywhere else here.
+    head_idx = None
+    for i, tok in enumerate(tokens):
+        key = _token_key(tok)
+        if not key or not any(c.isalpha() for c in key):
+            continue
+        if key in _TERM2_STOPWORDS or key in _ST1_LEGAL_SUFFIXES:
+            continue
+        head_idx = i
+        break
+    if head_idx is None:
+        return None
+
+    head = tokens[head_idx]
+    for j in range(head_idx + 1, len(tokens)):
+        prev = _token_key(tokens[j - 1]) if j > 0 else ""
+        if not is_identifying_token(
+            tokens[j], geo, after_connector=prev in ("of", "for"),
+        ):
+            continue
+        # A connector is kept only when it sits directly between the two terms
+        # being joined. "Massachusetts Institute of Technology" drops its "of"
+        # because the word before it is Institute, not the head.
+        if prev in _CONNECTORS and j - 1 == head_idx + 1:
+            return f"{head} {tokens[j - 1]} {tokens[j]}"
+        return f"{head} {tokens[j]}"
+    return head
+
+
+def _normalise_term(
+    term: str | None, geo: "frozenset[str] | None" = None,
+) -> str | None:
     """Terminal normalisation applied to BOTH search terms: strip, collapse
-    internal whitespace, uppercase, truncate to 32 chars on a word boundary
-    (SAP SORT1/SORT2 width)."""
+    internal whitespace, **cap at two terms**, uppercase, truncate to 32 chars
+    on a word boundary (SAP SORT1/SORT2 width).
+
+    The cap lives here because this is the one function both chains pass
+    through, so neither can grow a third term by adding a branch. It is a cap,
+    not a truncation: `_cap_to_two_terms` chooses WHICH two, and the 32-char
+    width remains as the field's own hard limit behind it.
+    """
     if not term or not term.strip():
         return None
-    s = re.sub(r"\s+", " ", term.strip()).upper()
-    return _truncate_word_boundary(s, 32) or None
+    s = re.sub(r"\s+", " ", term.strip())
+    s = _cap_to_two_terms(s, geo) or s
+    return _truncate_word_boundary(s.upper(), 32) or None
 
 
 def _fill_to_width(text: str | None, width: int = 32) -> str | None:
@@ -449,6 +730,15 @@ def _fill_to_width(text: str | None, width: int = 32) -> str | None:
     out: list[str] = []
     length = 0
     for tok in re.findall(r"[A-Za-z0-9&\-]+", text):
+        # `&` is in `_TERM2_STOPWORDS` — correctly, for the acronym and
+        # overlap tests that set was written for — but here it is part of the
+        # handle: dropping it turned "Truck & Bus" into "TRUCK BUS". Kept only
+        # between two words, never leading, and trimmed if nothing follows.
+        if tok == "&":
+            if out:
+                out.append(tok)
+                length += 2
+            continue
         if tok.lower() in _TERM2_STOPWORDS:
             continue
         add = len(tok) + (1 if out else 0)
@@ -456,6 +746,8 @@ def _fill_to_width(text: str | None, width: int = 32) -> str | None:
             break
         out.append(tok)
         length += add
+    while out and out[-1] == "&":
+        out.pop()
     return " ".join(out) if out else None
 
 
@@ -630,7 +922,18 @@ def _derive_search_term_1(result: dict[str, Any]) -> str | None:
 def _derive_search_term_2(result: dict[str, Any]) -> str | None:
     """search_term_2 chain: admin override → subdomain acronym → Name 2 phrase
     (filled to 32) → department-domain host → None, with DBA and field-swap
-    guards on Name 2."""
+    guards on Name 2.
+
+    A Name 2 that identifies nothing returns None rather than a handle. Every
+    large site has a central receiving bay, a corporate headquarters and a
+    stores desk, so those words describe where a delivery goes and never which
+    unit the record is — and a search term that matches every large employer
+    in the country is worse than an empty field, because the empty field does
+    not claim to have found something. `has_identifying_token` is the test;
+    the admin override above it still runs first, so an accounts-payable desk
+    keeps its ADMIN handle instead of being emptied.
+    """
+    geo = _record_geo_tokens(result)
     domain = (result.get("domain") or "").strip() or None
     # Enriched Name 2 only. finalise() has already retained the input value in
     # the enriched slot wherever no tier changed it, so a blank enriched slot
@@ -653,6 +956,13 @@ def _derive_search_term_2(result: dict[str, Any]) -> str | None:
     # 0. Admin override (accounts payable, finance, billing, …).
     if name2 and is_admin_unit(name2):
         return "ADMIN"
+
+    # 0b. A phrase built entirely from facility and scaffolding words names no
+    #     unit. Checked after the admin override, which recognises a real desk,
+    #     and before the acronym and phrase branches, so neither can rebuild a
+    #     handle out of words that were just found to identify nothing.
+    if name2 and not has_identifying_token(name2, geo):
+        name2 = ""
 
     dept_domain = (result.get("department_domain") or "").strip() or None
 
@@ -699,8 +1009,7 @@ def derive_search_terms(
     search_term_1 (institution handle):
         1. result["_ror_acronym"]     (currency-checked in tier1_ror)
         2. strip_tld(result["domain"])
-        3. handle derived from the enriched Name 1 (whole name when it fits
-           32 chars, else its leading significant words) — never from
+        3. handle derived from the enriched Name 1 — never from
            name1_original, so a record whose Name 1 output is null gets no
            search term either
         4. None
@@ -713,11 +1022,15 @@ def derive_search_terms(
         3. department_domain host prefix / TLD-stripped host, unless that
            segment is itself a structural or generic word
         4. None
-        (guards: UC 11 DBA and institution-in-Name-2 field swap block Name 2)
+        (guards: UC 11 DBA and institution-in-Name-2 field swap block Name 2;
+         a Name 2 with no identifying token at all — "Central Receiving",
+         "Corporate Headquarters", "Stores" — is emptied before the chain runs)
 
-    Both terms then pass terminal normalisation: uppercase, trimmed, ≤32 chars.
+    Both terms then pass terminal normalisation: capped at two terms
+    (`_cap_to_two_terms`), uppercased, trimmed, ≤32 chars.
     """
+    geo = _record_geo_tokens(result)
     return (
-        _normalise_term(_derive_search_term_1(result)),
-        _normalise_term(_derive_search_term_2(result)),
+        _normalise_term(_derive_search_term_1(result), geo),
+        _normalise_term(_derive_search_term_2(result), geo),
     )

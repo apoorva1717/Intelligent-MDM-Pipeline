@@ -264,6 +264,28 @@ class Settings:
             os.getenv("DOMAIN_OWNERSHIP_GUARD_ENABLED"), default=True
         )
     )
+    # Country gate: refuse a candidate whose ccTLD places it in a country other
+    # than the record's (`utils.domain_resolver.country_conflict`). Separate
+    # from the ownership guard because it answers a different question — the
+    # guard asks "can this domain be tied to the organisation", the gate asks
+    # "can it be this record's site at all" — and a multinational passes the
+    # first while failing the second (`unilever.be` for a US record).
+    # Feature-flagged so it can be A/B disabled like the guard above.
+    domain_country_gate_enabled: bool = field(
+        default_factory=lambda: _bool(
+            os.getenv("DOMAIN_COUNTRY_GATE_ENABLED"), default=True
+        )
+    )
+    # Send the record's country to the search provider as a geo parameter
+    # (SerpAPI `gl`), so the SERP is ranked for that country instead of the
+    # provider's default. The country was already collected and already part of
+    # the SERP cache key; it was never part of the request. Off restores the
+    # un-localised search exactly.
+    serp_country_localisation_enabled: bool = field(
+        default_factory=lambda: _bool(
+            os.getenv("SERP_COUNTRY_LOCALISATION_ENABLED"), default=True
+        )
+    )
 
     # Fuzzy matching
     fuzzy_match_threshold: int = field(

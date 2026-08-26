@@ -64,7 +64,7 @@ class _FakeSearch:
     def __init__(self, hits):
         self._hits = hits
 
-    async def search(self, query, num_results=5):
+    async def search(self, query, num_results=5, *, country=None):
         return self._hits
 
 

@@ -33,6 +33,7 @@ from llm.prompts import (
 )
 from search.base import SearchClient, SearchResult
 from utils.cache import BatchCache, cached_serp
+from utils.domain_resolver import country_conflict
 from utils.text_utils import acronym_matches_name, extract_domain
 
 logger = logging.getLogger(__name__)
@@ -190,6 +191,23 @@ def _domain_introduces_foreign_brand(name1: str, url: str) -> bool:
     return False
 
 
+def _wrong_country(url: str, country: str | None) -> str | None:
+    """The country a candidate's ccTLD claims when it contradicts *country*.
+
+    The guard the SERP layer never had. Every other test here asks whether the
+    NAME fits the host, and a multinational's name fits its host in every
+    country it trades in: "Unilever Trumbull Research Services Inc" (US, TX)
+    passes `_distinctive_in_host` against `unilever.be` on the token
+    "unilever", because it genuinely is a Unilever site. Only the country
+    separates it from the record's.
+
+    ``country`` of ``None`` disables the test — that is how the orchestrator
+    turns the gate off (`DOMAIN_COUNTRY_GATE_ENABLED=false`) without a second
+    parameter travelling beside it.
+    """
+    return country_conflict(extract_domain(url), country)
+
+
 def _candidate_key(sr: SearchResult) -> str:
     """The canonical id of a SERP candidate, for Fix C(1)'s tiebreak.
 
@@ -286,6 +304,7 @@ def _assemble_path_b_trace(
     chosen: WebsiteResolution,
     error: str | None = None,
     attempt: str = "quoted",
+    country: str | None = None,
 ) -> dict:
     """Build the per-candidate Path B trace record.
 
@@ -302,6 +321,7 @@ def _assemble_path_b_trace(
         if sr.url and _URL_RE.match(sr.url)
         and not _is_blacklisted(sr.url)
         and _name_overlap(name1, sr)
+        and not _wrong_country(sr.url, country)
     ]
     ranks: dict[int, int] = {}
     chosen_sr: SearchResult | None = None
@@ -332,6 +352,7 @@ def _assemble_path_b_trace(
             "matched_token": None,
             "matched_in": None,
             "foreign_label": None,
+            "domain_country": None,
             "rank": None,
             "chosen": False,
         }
@@ -342,8 +363,14 @@ def _assemble_path_b_trace(
             entry["rejected_by"] = "blacklist"
         else:
             token, where = _overlap_detail(name1, sr, host)
+            claimed = _wrong_country(sr.url, country)
             if token is None:
                 entry["rejected_by"] = "name_overlap"
+            elif claimed:
+                entry["matched_token"] = token
+                entry["matched_in"] = where
+                entry["domain_country"] = claimed
+                entry["rejected_by"] = "country_mismatch"
             else:
                 entry["matched_token"] = token
                 entry["matched_in"] = where
@@ -366,6 +393,7 @@ def _assemble_path_b_trace(
         "record_type": record_type,
         "query": query,
         "num_results": num_results,
+        "record_country": country,
         "results_returned": len(results),
         "candidates": candidates,
         "chosen_url": chosen.url,
@@ -382,8 +410,17 @@ def select_website_from_serp(
     name1: str,
     results: list[SearchResult],
     record_type: str | None = None,
+    *,
+    country: str | None = None,
 ) -> WebsiteResolution:
     """Pick the best official-website candidate from ranked SERP results.
+
+    *country* is the record's own country. A candidate whose ccTLD places it
+    somewhere else is not eligible at all — not demoted, not accepted at low
+    confidence — because the question it fails is not "how good a match is
+    this" but "could this be the record's site". Country-neutral TLDs and
+    worldwide ccTLDs are unaffected (:func:`_wrong_country`); passing ``None``
+    disables the test and restores the previous behaviour exactly.
 
     Confidence rules:
       * Research institution: first non-blacklisted, name-overlapping hit;
@@ -401,6 +438,7 @@ def select_website_from_serp(
         if sr.url and _URL_RE.match(sr.url)
         and not _is_blacklisted(sr.url)
         and _name_overlap(name1, sr)
+        and not _wrong_country(sr.url, country)
     ]
     if not valid:
         return WebsiteResolution()
@@ -481,6 +519,7 @@ async def resolve_website_via_serp(
     *,
     prefetched_results: list[SearchResult] | None = None,
     trace: bool = False,
+    country_gate: bool = True,
 ) -> WebsiteResolution:
     """Path B: find the official site for *name1* via SERP.
 
@@ -496,13 +535,26 @@ async def resolve_website_via_serp(
     emitted on the ``enrichment.trace.website`` logger. Tracing is read-only:
     the resolution is computed exactly as before and the trace is assembled
     from the same results afterwards.
+
+    *country* does two separate jobs here and they must not be confused. It
+    shapes the QUERY and (via ``cached_serp``) the provider's geo ranking,
+    which is a hint the provider may ignore; and when *country_gate* is on it
+    also DISQUALIFIES candidates whose ccTLD contradicts it, which is a
+    decision this module takes itself. ``country_gate=False`` turns off only
+    the second — the query keeps its country either way.
     """
     num_results = 10
     if not name1 or not name1.strip():
         return WebsiteResolution()
 
+    # The one value the gate reads. Held separately from `country` so the
+    # kill switch cannot accidentally strip the country out of the query too.
+    gate_country = country if country_gate else None
+
     if prefetched_results is not None:
-        chosen = select_website_from_serp(name1, prefetched_results, record_type)
+        chosen = select_website_from_serp(
+            name1, prefetched_results, record_type, country=gate_country,
+        )
         logger.info(
             "[%s] website Path B (reused SERP): url=%s confidence=%s",
             record_id, chosen.url, chosen.confidence,
@@ -512,6 +564,7 @@ async def resolve_website_via_serp(
                 record_id=record_id, name1=name1, record_type=record_type,
                 query="(reused Tier 2B SERP results)", num_results=num_results,
                 results=prefetched_results, chosen=chosen, attempt="quoted",
+                country=gate_country,
             )))
         return chosen
 
@@ -533,10 +586,12 @@ async def resolve_website_via_serp(
                     record_id=record_id, name1=name1, record_type=record_type,
                     query=query, num_results=num_results, results=[],
                     chosen=WebsiteResolution(), error=f"serp_call_failed: {exc}",
-                    attempt=attempt,
+                    attempt=attempt, country=gate_country,
                 )))
             return WebsiteResolution()
-        chosen = select_website_from_serp(name1, results, record_type)
+        chosen = select_website_from_serp(
+            name1, results, record_type, country=gate_country,
+        )
         logger.info(
             "[%s] website Path B (%s): query=%r url=%s confidence=%s",
             record_id, attempt, query[:80], chosen.url, chosen.confidence,
@@ -545,7 +600,7 @@ async def resolve_website_via_serp(
             trace_logger.info(json.dumps(_assemble_path_b_trace(
                 record_id=record_id, name1=name1, record_type=record_type,
                 query=query, num_results=num_results, results=results,
-                chosen=chosen, attempt=attempt,
+                chosen=chosen, attempt=attempt, country=gate_country,
             )))
         return chosen
 
@@ -591,6 +646,7 @@ async def infer_website_via_llm(
     llm_client: OpenAIClient,
     *,
     trace: bool = False,
+    country_gate: bool = True,
 ) -> WebsiteResolution:
     """Path C: ask the LLM for an organisation's official website.
 
@@ -602,6 +658,12 @@ async def infer_website_via_llm(
     When *trace* is True, a single JSON diagnostic record is emitted on the
     ``enrichment.trace.website`` logger (inputs, raw response, sentinel/URL-
     shape outcome, final value). Read-only — behaviour is unchanged.
+
+    The country gate applies here too, and has to. Path B rejecting a foreign
+    candidate is exactly what makes Path C run, so a gate that covered only
+    Path B would hand the same domain back through the fallback it opened.
+    The prompt already states the country; this is what happens when the model
+    answers past it.
     """
     if not name1 or not name1.strip():
         return WebsiteResolution()
@@ -657,6 +719,18 @@ async def infer_website_via_llm(
         )
         _emit(raw_response=raw_response, treated_as_sentinel=treated_as_sentinel,
               url_shape_ok=False, final_value=None)
+        return WebsiteResolution()
+
+    claimed = _wrong_country(raw, country) if country_gate else None
+    if claimed:
+        logger.info(
+            "[%s] website Path C: LLM proposed %s for %r — rejected, its ccTLD "
+            "places it in %s and the record is in %s",
+            record_id, raw, name1[:60], claimed, country,
+        )
+        _emit(raw_response=raw_response, treated_as_sentinel=treated_as_sentinel,
+              url_shape_ok=True, final_value=None,
+              rejected_by="country_mismatch", domain_country=claimed)
         return WebsiteResolution()
 
     logger.info(

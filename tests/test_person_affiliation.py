@@ -28,7 +28,7 @@ class _FakeSearch:
         self._results = results or []
         self.queries: list[str] = []
 
-    async def search(self, query, num_results=5):
+    async def search(self, query, num_results=5, *, country=None):
         self.queries.append(query)
         return self._results
 
@@ -120,7 +120,7 @@ class TestRunPersonAffiliation:
     @pytest.mark.asyncio
     async def test_search_error_is_swallowed(self):
         class _BoomSearch:
-            async def search(self, query, num_results=5):
+            async def search(self, query, num_results=5, *, country=None):
                 raise RuntimeError("network down")
         out = await run_person_affiliation(
             contact="Jane Smith", city="Boston", region="MA", country="US",

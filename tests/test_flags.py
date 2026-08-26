@@ -40,7 +40,7 @@ from tests.mocks.page_mock import MockPageFetcher
 # ---------------------------------------------------------------------------
 
 class _NoSearch:
-    async def search(self, q, num_results=5):
+    async def search(self, q, num_results=5, *, country=None):
         return []
 
 

@@ -111,8 +111,19 @@ _GENERIC_RESULTS = [
 class MockSearchClient(SearchClient):
     """Mock search client returning deterministic results based on query content."""
 
-    async def search(self, query: str, num_results: int = 5) -> list[SearchResult]:
-        """Return mock results based on domain, institution name, or org name."""
+    async def search(
+        self,
+        query: str,
+        num_results: int = 5,
+        *,
+        country: str | None = None,
+    ) -> list[SearchResult]:
+        """Return mock results based on domain, institution name, or org name.
+
+        *country* is accepted to satisfy the `SearchClient` contract and
+        ignored: the fixtures are keyed on query content, so honouring it would
+        mean inventing per-country result sets the tests do not assert on.
+        """
         query_lower = query.lower()
         results: list[dict[str, str]] = []
 

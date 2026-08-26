@@ -488,6 +488,98 @@ A failed search is **not** recorded. `search.base.SearchUnavailable` distinguish
 
 ---
 
+### 1.19a · Country gate — the record's country vs the candidate's ccTLD (`utils/domain_resolver.country_conflict`)
+
+> **Post-baseline.** Like §1.17–§1.19, this documents code added *after* the commit pinned in this
+> document's header.
+
+**The negative it was derived from.** Record `13044666`, "Unilever Trumbull Research Services Inc",
+US / TX, routed `research_institution`. Path B's query was
+`"Unilever Trumbull Research Services Inc" official website US`; the candidate it selected was
+`unilever.be`. Every guard in `select_website_from_serp` passed it, correctly: `_name_overlap` on
+"unilever", `_distinctive_in_host` on the same token after `research` and `services` are dropped as
+generic, `_domain_introduces_foreign_brand` clean because the label has no hyphen to split. The
+candidate genuinely **is** a Unilever site. Nothing in the pipeline compared it to the country the
+record states, so the only fact that distinguished the parent's Belgian site from a Texas
+subsidiary's record was the one fact never consulted.
+
+The ownership guard then rejected it (§1.16's conditions), so the field stayed empty — but the
+rejected candidate was written into the `domain-unverified` reason as
+*"confirm unilever.be before using it"*, which is how the defect surfaced: as a suggestion.
+
+**Why the existing conditions cannot cover this.** Name similarity is the condition that would
+accept `unilever.be`, and it accepts it *because the name is right*. A multinational's name matches
+its site in every country it trades in, so no threshold on a name comparison separates the two —
+the same property that makes condition 3 work is what makes it blind here.
+
+| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
+|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
+| `DOMAIN_COUNTRY_GATE_ENABLED` | `true` | bool (env) | `config.py` (`Settings.domain_country_gate_enabled`); `.env.example` | `website_resolver.select_website_from_serp` / `infer_website_via_llm` (eligibility), `domain_resolver.resolve_domain` (disqualifier) | n/a | `false` → candidates are judged exactly as before; the country still shapes the query and the geo parameter, only the disqualifier stops | Feature flag on the `LEI_LOOKUP_ENABLED` / `DOMAIN_OWNERSHIP_GUARD_ENABLED` pattern, so the gate can be A/B disabled without touching the query (`config.py`) |
+| `SERP_COUNTRY_LOCALISATION_ENABLED` | `true` | bool (env) | `config.py` (`Settings.serp_country_localisation_enabled`); `.env.example` | `utils.cache.cached_serp` → `SearchClient.search(country=…)` → SerpAPI `gl` | n/a | `false` → the un-localised search this replaced: every record ranked from the provider's default locale | The country was already collected and already part of the SERP cache key (`utils.cache.serp_key`) but never part of the request, so the key promised a distinction the request had not made. `gl` is a **ranking** parameter, not a filter — the gate below does not depend on the provider honouring it |
+| ccTLD detection rule | a TLD of exactly two letters | rule (inline) | `domain_resolver.country_conflict` | as above | n/a | n/a | ICANN has never delegated a two-character gTLD, and every ccTLD string **is** the ISO 3166-1 alpha-2 code of its country. The country a domain claims is therefore derivable without a 249-entry table, and everything longer (`.com`, `.org`, `.pharmacy`, an IDN's `xn--…` form) is country-neutral by construction |
+| `_GENERIC_USE_CCTLDS` | 16 labels (`io`, `ai`, `co`, `me`, `tv`, `cc`, `ly`, `sh`, `gg`, `fm`, `to`, `ac`, `su`, `st`, `am`, `im`) | frozenset | `utils/domain_resolver.py` | `country_conflict` | Fewer ccTLDs treated as worldwide → more foreign-domain rejections, and false positives on generically-sold TLDs | More ccTLDs exempted → a genuinely foreign site passes | These are sold and used worldwide and their letters no longer state a location. `.io` is the British Indian Ocean Territory and `.ai` is Anguilla on paper; rejecting a US company's `.ai` site as foreign would be a false positive on one of the commonest TLDs it could pick |
+| `_CCTLD_TO_ISO` | `{uk: GB}` | dict | `utils/domain_resolver.py` | `country_conflict` | n/a | Dropping it makes every `.uk` domain conflict with every `GB` record | `.uk` is the common ccTLD whose letters differ from its ISO code, and `country_to_iso_code` normalises "UK" / "United Kingdom" / "England" / "Scotland" to `GB`. Both sides have to reach one code before they can be compared at all |
+| `_EU_MEMBER_STATES` | 27 codes | frozenset | `utils/domain_resolver.py` | `country_conflict` | n/a | n/a | `.eu` is supranational: not neutral — a US organisation has no claim to one — but it names no single country either, so it is read as "any member state" and conflicts only outside the union |
+| Fail-open rule | an unreadable country, an unreadable TLD, or no country ⇒ **no conflict** | rule | `country_conflict` | as above | n/a | n/a | The gate rejects candidates, so an unrecognised country string must never manufacture a conflict. A record that states no country this module can read makes no claim, and there is no claim to contradict |
+
+**Exemptions, and why each one is exempt.** The gate applies to conditions 3, 5 and 6 of §1.16 and
+to neither 1, 2 nor 4:
+
+| Condition | Gated? | Why |
+|-----------|--------|-----|
+| 1 · Registry provenance | **no** | ROR/GLEIF *stating* the website is a fact about the organisation, not a guess about it. A US-registered subsidiary whose registry record names a `.de` site is reporting something true |
+| 2 · Stated-website witness | **no** | The same claim from an independent system. A witness under provenance hard rule 4 outranks a geographic heuristic |
+| 3 · Name similarity | **yes** | The condition the defect passed through, and the one that cannot see the difference |
+| 4 · Email domain | **no** | It does not attribute the candidate — it *discards* it for a domain the record already carries. Gating it would take away a rescue rather than prevent an error |
+| 5 · On-domain SERP evidence | **yes** | The foreign site's own page names the organisation, because it is the same organisation in another country |
+| 6 · Page identity | **yes** | As above, and already `provisional` by construction |
+
+**Where it is applied, and why in two places.** Eligibility in `select_website_from_serp` (a
+mismatched candidate is removed from `valid`, not demoted — the question it fails is not "how good
+a match is this" but "could this be the record's site"), and again as a disqualifier in
+`resolve_domain`, which is the chokepoint every `_apply_domain` caller passes through. Path C is
+gated for a specific reason: Path B rejecting a foreign candidate is exactly what *makes* Path C
+run, so a gate covering only Path B would hand the same domain back through the fallback it opened.
+
+**Flag consequence.** A country rejection raises **no** `domain-unverified` flag, and this is the
+one behavioural change a reviewer sees. The code means "a candidate was found and a human has to
+decide about it"; a country rejection leaves nothing to decide, since a ccTLD in another country is
+a fact rather than a doubt. The rejection is still recorded in full as a provenance event
+(`rule_id: domain-country-gate`, `DETERMINISTIC`, carrying `domain_country` and `record_country`),
+so the decision is auditable without being pushed at a person — and `domain_rejected` is still set,
+so it still blocks later candidates exactly as before. Rejections on the ownership conditions are
+unchanged and still name the candidate (`rejected_by: conditions`).
+
+
+### 1.19b · Search terms — two terms, the ampersand, and phrases that identify nothing (`enrichment/search_terms.py`)
+
+> **Post-baseline.** Like §1.17–§1.19a, this documents code added *after* the commit pinned in this
+> document's header.
+
+**What a search term is for.** It is a string a person types into a search box to get this
+organisation back. Three defects all came from the derivation optimising for something else —
+fitting the 32-char SAP field — and the field width turning out to be a much weaker constraint than
+the question the term is supposed to answer.
+
+| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
+|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
+| Term cap | **2** terms | int (rule) | `search_terms._cap_to_two_terms` | `search_terms._normalise_term` — the one function BOTH chains pass through, so neither can grow a third term by adding a branch | Longer handles; past two words a term stops being a query and becomes a copy of the name (`KELLOGG BATTLE CREEK MI PLANT` retrieves nothing `KELLOGG` does not) | A single term loses the qualifier that separates same-head records (`DOW CHEMICAL` vs `DOW`) | **DERIVED FROM THE BATCH.** 20 of 92 shipped Search Term 1 values carried three or more words, and in every one the extra words were an address, a legal form, a facility word or corporate scaffolding — never the part that identifies. The width was doing the cutting (32 chars, on a word boundary), which is why `MASSACHUSETTS INSTITUTE` survived and `Technology` did not: an arbitrary boundary, not a choice about which half says more |
+| Which two | head + first **identifying** token | rule | `search_terms._cap_to_two_terms` | as above | n/a | n/a | The head is kept unconditionally: an organisation name in these registries is head-initial — the same property `registry_match.names_agree_by_containment` is built on — so the leading token says WHICH organisation even when the word is a common one (`General Mills`, `Global Technical`). The second slot goes to the first token that narrows the search, **stepping over** scaffolding rather than letting it occupy the slot, which is what turns `Novartis Institute Biomedical` into `NOVARTIS BIOMEDICAL`. When nothing after the head identifies anything the head stands alone — `Kellogg North America` is `KELLOGG`, because `NORTH` is not the half worth searching |
+| `_FACILITY_WORDS` | 30 words (`headquarters`, `receiving`, `stores`, `plant`, `site`, `manufacturing`, `interplant`, …) | frozenset | `enrichment/search_terms.py` | `is_identifying_token` | More words treated as facility → shorter handles, more empty Search Term 2 | Facility words reach the output and occupy a term slot | Every large site has a receiving bay, a headquarters and a stores desk. The words name a building or an activity inside one; none says *whose* building |
+| `_GENERIC_CORPORATE_WORDS` | 26 words (`corporate`, `operations`, `solutions`, `systems`, `partners`, `holdings`, `global`, …) | frozenset | `enrichment/search_terms.py` | `is_identifying_token` | as above | as above | These attach to any company at all. `Service`/`Services` is deliberately **excluded** — it is half of real unit names (`Food Service`), and an admin service desk is already caught upstream by `is_admin_unit` |
+| `_GEO_WORDS` | direction / continent / country words **+ full US state names** | frozenset | `enrichment/search_terms.py` | `is_identifying_token` | Place names crowd out identity | An address occupies a term slot | Two-letter state codes are deliberately **absent**: `GE`, `GM`, `HP`, `BD` and `LG` are two-letter organisations, and `in` / `or` / `me` / `de` are ordinary words at least as often as they are Indiana, Oregon, Maine and Delaware. A state abbreviation is read as one only when the record's own address says so (row below) |
+| `_record_geo_tokens` | the record's `city`, `region`, `country_region_key` | rule | `enrichment/search_terms.py` | `is_identifying_token`, per record | n/a | n/a | **The address is already in the address columns.** A handle repeating it has spent its two terms saying where the mail goes instead of who the organisation is. This is also what lets the abbreviation be recognised without guessing: `MI` is Michigan in `Kellogg Battle Creek MI Plant` because *this record's* region says Michigan, not because two letters were assumed to be a state code. Code and full name are interchangeable in both directions |
+| `_CONNECTORS` | `{&, of, for}` | frozenset | `enrichment/search_terms.py` | `_cap_to_two_terms`, `is_identifying_token` | n/a | Without them `University of Florida` caps to `UNIVERSITY`, and `Procter & Gamble` reads as three terms | A connector joins two terms into one handle and counts as neither, so `UNIVERSITY OF FLORIDA` and `PROCTER & GAMBLE` are two-term values. It is kept **only** when it sits directly between the two chosen terms, which is why `Massachusetts Institute of Technology` drops its `of` (the word before it is Institute, not the head). Connectors also change what the token after them MEANS: a trailing place name is an address (`Nucor Steel Florida` is a Florida site of Nucor Steel) but a place name after `of` is the name itself (the University *of* Florida is not a Florida branch of some University), so a token directly after `of`/`for` identifies whatever list it appears on |
+| Ampersand | preserved | rule | `derive_acronym`, `_name1_text_handle`, `_fill_to_width`, `_first_two_significant_words` | as above | n/a | n/a | **Three independent sites dropped it**, which is why it disappeared from every path: `_WORD_RE` requires a leading letter so a standalone `&` never reached `derive_acronym`'s loop at all (`Procter & Gamble` → `PG`); `_name1_text_handle` filtered it as a non-alphanumeric token (→ `PROCTER GAMBLE`); and `_fill_to_width` filtered it as a member of `_TERM2_STOPWORDS` (→ `TRUCK BUS`). It is part of the handle people search — P&G, J&J, AT&T — and is kept only between two words, never leading or trailing, where it is punctuation again |
+| Empty when nothing identifies | rule | rule | `search_terms.has_identifying_token` | `_derive_search_term_2` step 0b | n/a | Facility phrases ship as unit handles | A phrase built entirely from qualifiers and facility functions — `Central Receiving`, `Corporate Headquarters`, `Stores`, `Interplant Site Off E` — describes where a delivery goes and names no unit. A search term matching every large employer in the country is **worse** than an empty field, because the empty field does not claim to have found something. Runs after the `is_admin_unit` override, so a real admin desk keeps its `ADMIN` handle, and before the acronym and phrase branches, so neither can rebuild a handle from words just found to identify nothing. **Search Term 1 is not subject to it** — Name 1 is the organisation, and a company legitimately named "Central Stores Ltd" must keep a handle rather than have the pipeline rule that its name is not a name |
+
+**Consequence for the 32-char width (§1 row "Search-term width").** It is now a backstop rather than
+the operative rule: the two-term cap binds first in every observed case. `_name1_text_handle` no
+longer shortens at all — it hands the whole cleaned name to the cap, because a greedy 32-char fill
+had already cut `Massachusetts Institute of Technology` down to `Massachusetts Institute` before the
+cap could tell that `Technology` was the half worth keeping.
+
+
 ### 1.20 · Provenance Scheme B — the exported grammar (`enrichment/confidence.py`)
 
 > **Post-baseline.** Like §1.17–§1.19, this documents code added *after* the commit pinned in this
@@ -675,6 +767,8 @@ service — the Wikidata lane adds none, because the Action API needs no authent
 | `GLEIF_TIMEOUT_SECONDS` | `15` | no | `.env` / Application Settings | Nothing | `config.py:89`, `:190` |
 | `LEI_NAME_MATCH_THRESHOLD` | `88` | no | `.env` / Application Settings | Nothing | `config.py:90`, `:196` |
 | `RETRY_TRACE` | `false` | no | `.env` / Application Settings | Nothing — Stage 5 behaves identically; only the `enrichment.trace.retry` JSON lines are not emitted | `config.py` (`OPTIONAL_VARS_WITH_DEFAULTS`, `Settings.retry_trace`); `enrichment/orchestrator._emit_retry_trace` |
+| `DOMAIN_COUNTRY_GATE_ENABLED` | `true` | no | `.env` / Application Settings | Nothing — the country gate stays on (§1.19a) | `config.py` (`Settings.domain_country_gate_enabled`); `utils/domain_resolver.resolve_domain`, `enrichment/website_resolver` |
+| `SERP_COUNTRY_LOCALISATION_ENABLED` | `true` | no | `.env` / Application Settings | Nothing — the record country still reaches the provider as SerpAPI `gl` | `config.py` (`Settings.serp_country_localisation_enabled`); `utils/cache.cached_serp`; `search/serpapi_client` |
 | `PAGE_CORROBORATION_ENABLED` | `true` | no | `.env` / Application Settings | Nothing — the page-read step stays on | `config.py` (`Settings.page_corroboration_enabled`); `enrichment/orchestrator._corroborate_domain` |
 | `PAGE_NAME_MATCH_THRESHOLD` | `88` | no | `.env` / Application Settings | Nothing | `config.py` (`Settings.page_name_match_threshold`); `enrichment/page_corroborator.compare` |
 | `PAGE_READ_TIMEOUT_SECONDS` | `8` | no | `.env` / Application Settings | Nothing | `config.py` (`Settings.page_read_timeout_seconds`); `search/page_fetcher.PageFetcher.fetch_page_result` |

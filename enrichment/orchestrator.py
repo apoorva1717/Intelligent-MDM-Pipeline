@@ -1532,6 +1532,11 @@ def _apply_domain(
         serp_url=serp_url or candidate_url,
         stated_websites=_domain_witnesses(result),
         page_identity=page_identity,
+        # The record's own country, for the guard's country disqualifier. Read
+        # from the result rather than taken as a parameter: every caller of
+        # this function already has the result and none of them had a reason
+        # to know the gate exists.
+        country=result.get("country_region_key"),
     )
     decision = write_domain(
         result,
@@ -1545,6 +1550,9 @@ def _apply_domain(
         guard_enabled=(
             settings.domain_ownership_guard_enabled if settings else None
         ),
+        country_gate_enabled=(
+            settings.domain_country_gate_enabled if settings else None
+        ),
         # The tier that was running when the candidate was decided. Falls back
         # to the record's current tier rather than being left unstated: a
         # domain accepted during Tier 1 and one accepted during the Tier 2B
@@ -1553,9 +1561,11 @@ def _apply_domain(
     )
     if decision.rejected and not decision.domain:
         logger.info(
-            "[%s] domain rejected as unverified: candidate=%s name1=%r",
+            "[%s] domain rejected as unverified: candidate=%s name1=%r "
+            "rejected_by=%s record_country=%s",
             result.get("record_id"), decision.candidate,
-            (evidence.name1 or "")[:60],
+            (evidence.name1 or "")[:60], decision.rejected_by,
+            evidence.country,
         )
     return decision
 
@@ -2083,6 +2093,7 @@ class Orchestrator:
             search_client=self._search_client,
             cache=cache,
             trace=self._settings.website_trace,
+            country_gate=self._settings.domain_country_gate_enabled,
         )
         if serp_res.url:
             decision = _apply_domain(
@@ -2109,6 +2120,7 @@ class Orchestrator:
             country=record.country,
             llm_client=self._llm_client,
             trace=self._settings.website_trace,
+            country_gate=self._settings.domain_country_gate_enabled,
         )
         if llm_res.url:
             # Path C has no search evidence to offer — an LLM-inferred URL

@@ -27,7 +27,7 @@ from tests.mocks.lei_mock import MockLEIClient
 
 
 class _NoSearch:
-    async def search(self, q, num_results=5):
+    async def search(self, q, num_results=5, *, country=None):
         return []
 
 

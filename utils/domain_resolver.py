@@ -47,7 +47,7 @@ from enrichment.provenance import (
     Evidence,
 )
 from enrichment.tier1_ror import _normalise_for_tokens
-from utils.text_utils import extract_domain
+from utils.text_utils import country_to_iso_code, extract_domain
 
 # Flag code raised when a candidate domain fails every ownership condition.
 DOMAIN_UNVERIFIED_CODE = "domain-unverified"
@@ -159,6 +159,90 @@ def domain_label(domain: str | None) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Country gate
+# ---------------------------------------------------------------------------
+
+# A TLD of exactly two letters is a ccTLD, and the ccTLD string IS the ISO
+# 3166-1 alpha-2 code of the country it belongs to. ICANN has never delegated a
+# two-character gTLD, so the country a domain claims is derivable without a
+# 249-entry table: anything longer (`.com`, `.org`, `.pharmacy`, an IDN's
+# `xn--…` form) is country-neutral by construction and is never gated.
+#
+# Why gate at all: the SERP layer validates a candidate on a name token in the
+# host, and a multinational's name matches its site in every country it
+# operates in. "Unilever Trumbull Research Services Inc" (US, TX) matched
+# `unilever.be` on the token "unilever" — a real Unilever site, in the wrong
+# country, for a Connecticut research subsidiary. Nothing downstream compared
+# the two, because nothing downstream knew the record had a country.
+
+#: ccTLDs sold and used worldwide, whose letters no longer say anything about
+#: where an organisation sits. `.io` is the British Indian Ocean Territory and
+#: `.ai` is Anguilla on paper; rejecting a US company's `.ai` site as foreign
+#: would be a false positive on one of the most common TLDs it could pick.
+_GENERIC_USE_CCTLDS: frozenset[str] = frozenset({
+    "io", "ai", "co", "me", "tv", "cc", "ly", "sh", "gg", "fm", "to",
+    "ac", "su", "st", "am", "im",
+})
+
+#: ccTLDs whose letters differ from the ISO code of the country they serve.
+#: `.uk` is the common one — ISO 3166-1 assigns GB, which is also what
+#: :func:`utils.text_utils.country_to_iso_code` normalises "UK", "England" and
+#: "Scotland" to, so the two sides have to be brought onto the same code
+#: before they can be compared at all.
+_CCTLD_TO_ISO: dict[str, str] = {"uk": "GB"}
+
+#: `.eu` is supranational: not neutral — a US organisation has no claim to one
+#: — but it does not name a single country either, so it is read as "any EU
+#: member state" and conflicts only with a record outside the union.
+_EU_MEMBER_STATES: frozenset[str] = frozenset({
+    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR",
+    "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK",
+    "SI", "ES", "SE",
+})
+
+
+def domain_tld(domain: str | None) -> str | None:
+    """The last label of *domain* — `uni-stuttgart.de` → `de`, `example.co.uk`
+    → `uk`. Callers pass a registrable domain, so the public suffix's own last
+    label is what comes back, which is exactly the ccTLD when there is one."""
+    if not domain:
+        return None
+    tld = domain.rsplit(".", 1)[-1].strip().lower()
+    return tld or None
+
+
+def country_conflict(domain: str | None, country: str | None) -> str | None:
+    """The country a candidate domain's ccTLD claims, when that CONTRADICTS
+    the record's own country. ``None`` when the two agree or when neither side
+    makes a claim.
+
+    Fails open on every unknown, and deliberately so — this rejects candidates,
+    so an unrecognised country string or an unfamiliar TLD must not manufacture
+    a conflict::
+
+        country_conflict("unilever.be", "US")  → "BE"    (a US record)
+        country_conflict("unilever.com", "US") → None    (gTLD — neutral)
+        country_conflict("basf.de", "DE")      → None    (agrees)
+        country_conflict("example.ai", "US")   → None    (worldwide ccTLD)
+        country_conflict("example.eu", "US")   → "EU"    (outside the union)
+        country_conflict("example.eu", "BE")   → None    (a member state)
+        country_conflict("unilever.be", None)  → None    (nothing to contradict)
+    """
+    tld = domain_tld(domain)
+    if not tld or len(tld) != 2 or tld in _GENERIC_USE_CCTLDS:
+        return None
+    record_iso = country_to_iso_code(country)
+    if not record_iso:
+        # The record does not state a country this module can read. There is
+        # no claim to contradict, so there is no conflict to report.
+        return None
+    if tld == "eu":
+        return None if record_iso in _EU_MEMBER_STATES else "EU"
+    claimed = _CCTLD_TO_ISO.get(tld, tld.upper())
+    return None if claimed == record_iso else claimed
+
+
+# ---------------------------------------------------------------------------
 # Evidence / decision types
 # ---------------------------------------------------------------------------
 
@@ -194,6 +278,14 @@ class DomainEvidence:
         own name (condition 5). Unlike the four above this arrives late — the
         page read runs after the guard has judged the candidate — so it is
         passed on a second call rather than being available on the first.
+    country
+        The record's own country, in any form ``country_to_iso_code`` reads.
+        Not an ownership condition — a DISQUALIFIER: a candidate whose ccTLD
+        places it in a different country cannot be this record's site, so it
+        is refused before the scored conditions get to argue for it
+        (:func:`country_conflict`). Left ``None`` to disable the gate for this
+        call, which is how ``DOMAIN_COUNTRY_GATE_ENABLED=false`` restores the
+        previous behaviour exactly.
     """
     name1: str | None = None
     email: str | None = None
@@ -203,6 +295,7 @@ class DomainEvidence:
     serp_url: str | None = None
     stated_websites: tuple[tuple[str, str], ...] = ()
     page_identity: bool = False
+    country: str | None = None
 
 
 @dataclass(frozen=True)
@@ -220,11 +313,19 @@ class DomainDecision:
     ``web:{domain}:verified+wikidata`` from ``web:{domain}:verified+registry``
     downstream, so the decision carries it rather than the caller re-deriving
     it.
+
+    ``rejected_by`` is the mirror of ``verified_by`` on the failing side:
+    ``conditions`` when every ownership condition simply came up short, or
+    ``country`` when the candidate was disqualified before they were consulted.
+    The two are not the same outcome and must not read as one — a candidate the
+    guard could not tie to the record is worth a reviewer's look, and a
+    candidate in the wrong country is not.
     """
     domain: str | None = None
     website_url: str | None = None
     verified_by: str | None = None
     rejected: bool = False
+    rejected_by: str | None = None
     candidate: str | None = None
     witness: str | None = None
 
@@ -351,16 +452,26 @@ def has_on_domain_evidence(evidence: DomainEvidence, domain: str | None) -> bool
 # The chokepoint
 # ---------------------------------------------------------------------------
 
-def _settings_defaults(threshold: float | None, guard_enabled: bool | None):
-    if threshold is not None and guard_enabled is not None:
-        return threshold, guard_enabled
+def _settings_defaults(
+    threshold: float | None,
+    guard_enabled: bool | None,
+    country_gate_enabled: bool | None = None,
+):
+    if (
+        threshold is not None
+        and guard_enabled is not None
+        and country_gate_enabled is not None
+    ):
+        return threshold, guard_enabled, country_gate_enabled
     from config import get_settings  # local import — avoids an import cycle
     settings = get_settings()
     if threshold is None:
         threshold = settings.domain_name_match_threshold
     if guard_enabled is None:
         guard_enabled = settings.domain_ownership_guard_enabled
-    return threshold, guard_enabled
+    if country_gate_enabled is None:
+        country_gate_enabled = settings.domain_country_gate_enabled
+    return threshold, guard_enabled, country_gate_enabled
 
 
 def resolve_domain(
@@ -369,9 +480,19 @@ def resolve_domain(
     *,
     threshold: float | None = None,
     guard_enabled: bool | None = None,
+    country_gate_enabled: bool | None = None,
 ) -> DomainDecision:
     """Canonicalise *candidate_url* and decide whether it may be attributed to
     this organisation. The only place ``domain`` / ``website_url`` are decided.
+
+    Before any of that, a **country disqualifier**: when the candidate's ccTLD
+    places it in a country other than the record's (:func:`country_conflict`),
+    the scored conditions are not consulted at all. Registry provenance and an
+    independent witness are exempt — those are an authoritative source SAYING
+    this is the organisation's site, and a US-registered subsidiary whose
+    registry record names a ``.de`` site is stating a fact, not guessing. The
+    email condition is exempt too, because it does not attribute the candidate:
+    it replaces the candidate with a domain the record itself carries.
 
     Precedence, first hit wins:
 
@@ -407,6 +528,9 @@ def resolve_domain(
 
     None of the above → ``domain`` and ``website_url`` stay empty and
     ``rejected`` is set, so the caller can raise ``domain-unverified``.
+    ``rejected_by`` separates the two ways that happens (``conditions`` vs
+    ``country``), because only one of them leaves a domain worth a reviewer's
+    time.
     Attaching an unrelated company's website is worse than an empty field,
     because it reads as successful enrichment.
     """
@@ -415,7 +539,9 @@ def resolve_domain(
     if not candidate:
         return DomainDecision()
 
-    threshold, guard_enabled = _settings_defaults(threshold, guard_enabled)
+    threshold, guard_enabled, country_gate_enabled = _settings_defaults(
+        threshold, guard_enabled, country_gate_enabled,
+    )
 
     def accept(
         domain: str, verified_by: str, *, witness: str | None = None,
@@ -439,20 +565,36 @@ def resolve_domain(
     if witness:
         return accept(candidate, f"witness_{witness}", witness=witness)
 
-    if name_similarity(evidence.name1, candidate) >= threshold:
+    # The country disqualifier. Everything below this line reasons about the
+    # CANDIDATE, and a candidate whose ccTLD sits in another country is not
+    # this record's site however well its label scores — which is the whole
+    # failure: a multinational's name matches its site in every country it
+    # operates in, so name similarity is the one test that cannot catch this.
+    conflict = (
+        country_conflict(candidate, evidence.country)
+        if country_gate_enabled else None
+    )
+
+    if not conflict and name_similarity(evidence.name1, candidate) >= threshold:
         return accept(candidate, "name")
 
+    # Exempt from the disqualifier: this does not attribute the candidate at
+    # all, it discards it in favour of a domain the record already carries.
     from_email = email_domain(evidence.email)
     if from_email:
         return accept(from_email, "email")
 
-    if has_on_domain_evidence(evidence, candidate):
+    if not conflict and has_on_domain_evidence(evidence, candidate):
         return accept(candidate, "serp")
 
-    if evidence.page_identity:
+    if not conflict and evidence.page_identity:
         return accept(candidate, "page")
 
-    return DomainDecision(rejected=True, candidate=candidate)
+    return DomainDecision(
+        rejected=True,
+        rejected_by="country" if conflict else "conditions",
+        candidate=candidate,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -490,6 +632,7 @@ def write_domain(
     registry_identifier: str | None = None,
     threshold: float | None = None,
     guard_enabled: bool | None = None,
+    country_gate_enabled: bool | None = None,
     tier: int | None = None,
 ) -> DomainDecision:
     """Decide a candidate domain and write it through ``record.write``.
@@ -509,6 +652,7 @@ def write_domain(
     decision = resolve_domain(
         candidate_url, evidence,
         threshold=threshold, guard_enabled=guard_enabled,
+        country_gate_enabled=country_gate_enabled,
     )
 
     if decision.domain:
@@ -567,13 +711,33 @@ def write_domain(
         record.pop("_domain_unverified", None)
     elif decision.rejected:
         record["domain_rejected"] = True
+        by_country = decision.rejected_by == "country"
+        conflict = (
+            country_conflict(decision.candidate, evidence.country)
+            if by_country else None
+        )
         # The rejected candidate itself, not a bare marker: the flag reason
         # names the domain a reviewer has to go and confirm, and this is the
         # only place that still knows which one it was.
-        record["_domain_unverified"] = decision.candidate or True
+        #
+        # A country rejection raises NO flag. `domain-unverified` means "a
+        # candidate was found and a human has to decide about it", and there is
+        # nothing here to decide: the candidate is in a different country,
+        # which is a fact, not a doubt. Telling a reviewer to "confirm
+        # unilever.be before using it" for a Texas record asks them to redo work
+        # the pipeline has already finished, and names a domain that must not be
+        # used in a sentence that reads as a suggestion — which is how this was
+        # found. The rejection is still recorded in full below, so the decision
+        # is auditable without being pushed at a person.
+        if not by_country:
+            record["_domain_unverified"] = decision.candidate or True
         record.reject(
             "domain", decision.candidate, GUARD_DOMAIN_OWNERSHIP,
             reason=(
+                f"candidate is in a different country: its ccTLD places "
+                f"{decision.candidate} in {conflict}, the record is in "
+                f"{country_to_iso_code(evidence.country)}"
+                if by_country else
                 "no ownership condition held: not from a registry, name "
                 "similarity below threshold, no non-generic email domain, "
                 "and no on-domain search evidence"
@@ -581,15 +745,33 @@ def write_domain(
             evidence=Evidence(
                 producer_chain=producer_chain,
                 tier=tier,
-                confidence_scale=FUZZY_RATIO,
-                confidence_value=name_similarity(
-                    evidence.name1, decision.candidate,
+                # A country rejection is not a scored one — nothing was
+                # measured and fell short, the candidate was disqualified — so
+                # it is filed as the deterministic fact it is rather than
+                # carrying a similarity ratio that had no part in the outcome.
+                confidence_scale=DETERMINISTIC if by_country else FUZZY_RATIO,
+                confidence_value=(
+                    1.0 if by_country
+                    else name_similarity(evidence.name1, decision.candidate)
                 ),
                 evidence_ref={
                     "source_url": candidate_url,
                     "claimed_for": evidence.name1,
+                    **(
+                        {
+                            "rejected_by": "country",
+                            "domain_country": conflict,
+                            "record_country": country_to_iso_code(
+                                evidence.country,
+                            ),
+                        }
+                        if by_country else {}
+                    ),
                 },
-                rule_id="domain-ownership-guard",
+                rule_id=(
+                    "domain-country-gate" if by_country
+                    else "domain-ownership-guard"
+                ),
             ),
         )
     return decision

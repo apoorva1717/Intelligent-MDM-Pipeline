@@ -106,7 +106,7 @@ class _RedirectPF(MockPageFetcher):
 
 
 class _NoSearch:
-    async def search(self, q, num_results=5):
+    async def search(self, q, num_results=5, *, country=None):
         return []
 
 
@@ -195,7 +195,7 @@ class _SerpStub:
     def __init__(self, results):
         self._results = results
 
-    async def search(self, q, num_results=5):
+    async def search(self, q, num_results=5, *, country=None):
         return list(self._results)
 
 

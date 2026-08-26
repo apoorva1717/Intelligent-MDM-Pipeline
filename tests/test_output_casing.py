@@ -51,7 +51,7 @@ from utils.text_utils import normalise_case
 # ---------------------------------------------------------------------------
 
 class _NoSearch:
-    async def search(self, q, num_results=5):
+    async def search(self, q, num_results=5, *, country=None):
         return []
 
 

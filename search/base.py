@@ -34,6 +34,23 @@ class SearchClient(ABC):
     """Abstract base for web search providers."""
 
     @abstractmethod
-    async def search(self, query: str, num_results: int = 5) -> list[SearchResult]:
-        """Execute a web search and return organic results."""
+    async def search(
+        self,
+        query: str,
+        num_results: int = 5,
+        *,
+        country: str | None = None,
+    ) -> list[SearchResult]:
+        """Execute a web search and return organic results.
+
+        *country* is the record's country as an ISO 3166-1 alpha-2 code,
+        already normalised by `utils.cache.cached_serp` — providers never see a
+        raw "United States" / "USA" / blank. It asks the provider to rank
+        results FOR that country; a provider with no such control ignores it.
+
+        It is a ranking hint, not a filter, and no caller may treat it as one:
+        the country a returned domain actually belongs to is decided
+        downstream by `utils.domain_resolver.country_conflict`, which does not
+        depend on any provider honouring this.
+        """
         ...

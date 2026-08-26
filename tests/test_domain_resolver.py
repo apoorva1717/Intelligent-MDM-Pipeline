@@ -19,6 +19,7 @@ from utils.domain_resolver import (  # noqa: E402
     DomainEvidence,
     canonicalise_domain,
     canonicalise_host,
+    country_conflict,
     email_domain,
     is_generic_email_domain,
     name_similarity,
@@ -332,3 +333,172 @@ class TestNameSimilarity:
     def test_missing_inputs_score_zero(self):
         assert name_similarity(None, "example.com") == 0.0
         assert name_similarity("Example", None) == 0.0
+
+
+class TestCountryGate:
+    """A candidate whose ccTLD places it in another country is disqualified
+    before the ownership conditions are consulted.
+
+    The conditions cannot catch this on their own: name similarity is the one
+    that would have accepted `unilever.be`, and it accepts it precisely BECAUSE
+    the name is right. Only the country distinguishes the parent's Belgian site
+    from a Texas subsidiary's record.
+    """
+
+    @staticmethod
+    def _r(candidate, gate=True, **evidence):
+        return resolve_domain(
+            candidate,
+            DomainEvidence(**evidence),
+            threshold=THRESHOLD,
+            guard_enabled=True,
+            country_gate_enabled=gate,
+        )
+
+    def test_name_match_does_not_rescue_a_foreign_candidate(self):
+        # Name similarity would carry this: "Unilever" against the label
+        # "unilever" is an exact token match.
+        d = self._r("https://www.unilever.be/", name1="Unilever", country="US")
+        assert d.domain is None
+        assert d.rejected is True
+        assert d.rejected_by == "country"
+        assert d.candidate == "unilever.be"
+
+    def test_same_country_name_match_still_accepted(self):
+        d = self._r("https://www.unilever.be/", name1="Unilever", country="BE")
+        assert d.domain == "unilever.be"
+        assert d.verified_by == "name"
+
+    def test_gtld_unaffected(self):
+        d = self._r("https://www.unilever.com/", name1="Unilever", country="US")
+        assert d.domain == "unilever.com"
+
+    def test_registry_provenance_is_exempt(self):
+        # ROR/GLEIF STATING the website is a fact about the organisation, not a
+        # guess about it — a US-registered subsidiary whose registry record
+        # names a .de site is reporting something true.
+        d = self._r(
+            "https://www.basf.de/", name1="BASF Corporation",
+            country="US", registry="ROR",
+        )
+        assert d.domain == "basf.de"
+        assert d.verified_by == "registry"
+
+    def test_stated_website_witness_is_exempt(self):
+        d = self._r(
+            "https://www.unilever.be/", name1="Unilever Trumbull Research",
+            country="US",
+            stated_websites=(("wikidata", "https://www.unilever.be/"),),
+        )
+        assert d.domain == "unilever.be"
+        assert d.verified_by == "witness_wikidata"
+
+    def test_email_condition_still_rescues_the_record(self):
+        # The email path does not attribute the candidate — it DISCARDS it for
+        # a domain the record already carries — so the disqualifier must not
+        # take that rescue away.
+        d = self._r(
+            "https://www.unilever.be/", name1="Meridian Labs",
+            country="US", email="orders@meridianlabs.com",
+        )
+        assert d.domain == "meridianlabs.com"
+        assert d.verified_by == "email"
+
+    def test_on_domain_serp_evidence_does_not_rescue(self):
+        d = self._r(
+            "https://www.unilever.be/about",
+            name1="Unilever Trumbull Research Services",
+            country="US",
+            serp_url="https://www.unilever.be/about",
+            serp_title="Unilever Trumbull Research Services",
+        )
+        assert d.domain is None
+        assert d.rejected_by == "country"
+
+    def test_page_identity_does_not_rescue(self):
+        d = self._r(
+            "https://www.unilever.be/", name1="Unilever",
+            country="US", page_identity=True,
+        )
+        assert d.domain is None
+        assert d.rejected_by == "country"
+
+    def test_gate_off_restores_the_previous_answer(self):
+        d = self._r(
+            "https://www.unilever.be/", name1="Unilever",
+            country="US", gate=False,
+        )
+        assert d.domain == "unilever.be"
+        assert d.verified_by == "name"
+
+    def test_no_country_on_the_record_fails_open(self):
+        d = self._r("https://www.unilever.be/", name1="Unilever", country=None)
+        assert d.domain == "unilever.be"
+
+    def test_ordinary_rejection_still_reads_as_conditions(self):
+        # The two rejection routes must stay distinguishable — one leaves a
+        # domain worth a reviewer's time and the other does not.
+        d = self._r("https://delta.com/", name1="Delta Analytical", country="US")
+        assert d.rejected is True
+        assert d.rejected_by == "conditions"
+
+
+class TestCountryConflict:
+    @pytest.mark.parametrize(
+        "domain, country, expected",
+        [
+            ("unilever.be", "US", "BE"),        # the live case
+            ("unilever.be", "BE", None),
+            ("unilever.com", "US", None),       # gTLD — no country claim
+            ("example.org", "DE", None),
+            ("basf.de", "Germany", None),       # country name, not a code
+            ("bbc.co.uk", "GB", None),          # .uk ↔ ISO GB
+            ("bbc.co.uk", "United Kingdom", None),
+            ("bbc.co.uk", "US", "GB"),
+            ("example.ai", "US", None),         # worldwide ccTLD
+            ("example.io", "DE", None),
+            ("example.co", "US", None),
+            ("example.eu", "BE", None),         # member state
+            ("example.eu", "US", "EU"),
+            ("example.de", "Ruritania", None),  # unreadable country → open
+            ("example.de", None, None),
+            (None, "US", None),
+            ("example.pharmacy", "US", None),   # long gTLD
+        ],
+    )
+    def test_conflicts(self, domain, country, expected):
+        assert country_conflict(domain, country) == expected
+
+
+class TestCountryRejectionRaisesNoReviewFlag:
+    """`domain-unverified` means "a candidate was found and a human has to
+    decide about it". A country rejection is a fact, not a doubt — there is
+    nothing for a reviewer to decide, so no flag is raised and no domain is
+    named in prose a reviewer could read as a suggestion."""
+
+    @staticmethod
+    def _write(candidate, **evidence):
+        from enrichment.provenance import EnrichedRecord
+        from utils.domain_resolver import write_domain
+
+        rec = EnrichedRecord({})
+        decision = write_domain(
+            rec, candidate, DomainEvidence(**evidence),
+            threshold=THRESHOLD, guard_enabled=True, country_gate_enabled=True,
+        )
+        return rec, decision
+
+    def test_country_rejection_sets_no_unverified_marker(self):
+        rec, decision = self._write(
+            "https://www.unilever.be/", name1="Unilever", country="US",
+        )
+        assert decision.rejected_by == "country"
+        assert rec.get("_domain_unverified") in (None, False)
+        assert rec["domain_rejected"] is True   # still blocks later candidates
+
+    def test_ordinary_rejection_still_names_the_candidate(self):
+        rec, decision = self._write(
+            "https://delta.com/", name1="Delta Analytical", country="US",
+        )
+        assert decision.rejected_by == "conditions"
+        assert rec["_domain_unverified"] == "delta.com"

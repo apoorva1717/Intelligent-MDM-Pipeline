@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from enrichment.search_terms import derive_search_terms
+from enrichment.search_terms import derive_acronym, derive_search_terms
 from enrichment.tier1_ror import _extract_org_fields
 from utils.text_utils import acronym_matches_name, is_admin_unit, name_initials
 
@@ -65,7 +65,7 @@ class TestSearchTerm2:
         (_st(name2_enriched="Department of Neuroscience"), "NEUROSCIENCE"),
         (_st(name2_enriched="Division of MPP"), "MPP"),
         (_st(name2_enriched="Earth and Planetary Sciences"),
-         "EARTH PLANETARY SCIENCES"),
+         "EARTH PLANETARY"),
     ])
     def test_st2(self, result, expected):
         assert derive_search_terms(result)[1] == expected
@@ -93,8 +93,10 @@ class TestTerminalNormalisation:
         r = _st(name2_enriched="  organic process chemistry and analytical "
                                "technology development  ")
         _st1, st2 = derive_search_terms(r)
-        assert st2 == "ORGANIC PROCESS CHEMISTRY"
+        # The two-term cap now binds long before the 32-char field width does.
+        assert st2 == "ORGANIC PROCESS"
         assert st2 == st2.strip() and st2 == st2.upper() and len(st2) <= 32
+        assert len(st2.split()) <= 2
 
     def test_accepted_imperfection_sustainable(self):
         r = _st(name2_enriched="Institute of Sustainable and Environmental Chemistry")
@@ -182,21 +184,26 @@ class TestDerivedAfterEnrichmentOnly:
 
 class TestName1DerivedHandle:
     """Rule 3: no acronym and no domain → a handle derived from the name that
-    still reads as something you would type into a search box."""
+    still reads as something you would type into a search box — and, since it
+    has to BE a query rather than a copy of the name, at most two terms."""
 
     @pytest.mark.parametrize("name1,expected", [
-        # The whole name is kept when it fits the 32-char field — dropping the
-        # connectives would make the handle unsearchable.
+        # An "of" joins two terms into one handle and counts as neither, so
+        # this is two terms and not three. It also makes Florida part of the
+        # name rather than an address, which is why it survives at all.
         ("University of Florida", "UNIVERSITY OF FLORIDA"),
-        ("Applied Thin Films, Inc.", "APPLIED THIN FILMS"),
         ("Verdox, Inc.", "VERDOX"),
         ("Mussel Polymers, Inc.", "MUSSEL POLYMERS"),
-        ("Atlantic Testing Labs", "ATLANTIC TESTING LABS"),
         ("NovaBio", "NOVABIO"),
-        # Over the field width → stopwords dropped, filled to the boundary.
-        ("Massachusetts Institute of Technology", "MASSACHUSETTS INSTITUTE"),
+        # Third term dropped.
+        ("Applied Thin Films, Inc.", "APPLIED THIN"),
+        # "Labs" is a structural word; there is no third term to promote.
+        ("Atlantic Testing Labs", "ATLANTIC TESTING"),
+        # Structural words are stepped over rather than occupying the second
+        # slot: Technology and Standards say more than Institute does.
+        ("Massachusetts Institute of Technology", "MASSACHUSETTS TECHNOLOGY"),
         ("National Institute of Standards and Technology",
-         "NATIONAL INSTITUTE STANDARDS"),
+         "NATIONAL STANDARDS"),
     ])
     def test_handle(self, name1, expected):
         assert derive_search_terms(_st(name1_enriched=name1))[0] == expected
@@ -244,3 +251,183 @@ class TestName2StructuralWordsDropped:
         r = _st(name2_enriched=None,
                 department_domain="dept.example.edu", domain="example.edu")
         assert derive_search_terms(r)[1] is None
+
+
+class TestAmpersandSurvives:
+    """`&` is part of the handle, not punctuation between two names.
+
+    Three separate places dropped it — the acronym loop never saw it (its
+    regex required a leading letter), the Name 1 handle discarded it as a
+    non-alphanumeric token, and `_fill_to_width` filtered it as a stopword —
+    so "Procter & Gamble" reached the output as PROCTER GAMBLE and its
+    acronym as PG. P&G is what people actually search.
+    """
+
+    @pytest.mark.parametrize("name1,expected", [
+        ("Procter & Gamble", "PROCTER & GAMBLE"),
+        ("Johnson & Johnson", "JOHNSON & JOHNSON"),
+        ("Bausch & Lomb", "BAUSCH & LOMB"),
+        # Already one token — nothing to join, nothing to lose.
+        ("P&G", "P&G"),
+        ("AT&T", "AT&T"),
+    ])
+    def test_name1_handle_keeps_it(self, name1, expected):
+        assert derive_search_terms(_st(name1_enriched=name1))[0] == expected
+
+    @pytest.mark.parametrize("name,expected", [
+        ("Procter & Gamble", "P&G"),
+        ("Johnson & Johnson", "J&J"),
+        ("Bausch & Lomb", "B&L"),
+        # No ampersand → unchanged.
+        ("International Business Machines", "IBM"),
+        ("Massachusetts Institute of Technology", "MIT"),
+    ])
+    def test_acronym_keeps_it(self, name, expected):
+        assert derive_acronym(name) == expected
+
+    def test_ampersand_does_not_count_as_a_term(self):
+        # "Procter & Gamble" is TWO terms joined by a connector, so the cap
+        # must not read it as three and drop Gamble.
+        st1 = derive_search_terms(_st(name1_enriched="Procter & Gamble"))[0]
+        assert st1 == "PROCTER & GAMBLE"
+
+    def test_ampersand_survives_in_name2(self):
+        r = _st(name1_enriched="General Motors", name2_enriched="Truck & Bus")
+        assert derive_search_terms(r)[1] == "TRUCK & BUS"
+
+    def test_leading_or_trailing_ampersand_is_dropped(self):
+        # An ampersand joining nothing is punctuation again.
+        r = _st(name1_enriched="Verdox &")
+        assert derive_search_terms(r)[0] == "VERDOX"
+
+
+class TestTwoTermCap:
+    """A search term is something you type into a search box. Past two words a
+    handle stops being a query and becomes a copy of the name."""
+
+    @pytest.mark.parametrize("name1,city,region,expected", [
+        # The record's own address is not part of its identity: the city, the
+        # state abbreviation and the facility word all come off, and Kellogg
+        # is what is left worth searching.
+        ("Kellogg Battle Creek MI Plant", "Battle Creek", "MI", "KELLOGG"),
+        # Trailing place names, with no help from the address columns.
+        ("Nucor Steel Florida", "", "", "NUCOR STEEL"),
+        ("Dow Chemical USA", "", "", "DOW CHEMICAL"),
+        ("Sanofi Vaccines US", "", "", "SANOFI VACCINES"),
+        ("LG Chemistry Michigan", "", "", "LG CHEMISTRY"),
+        # NOTHING after the head identifies anything, so the head stands
+        # alone. "KELLOGG NORTH" would be worse than "KELLOGG", not better.
+        ("Kellogg North America", "", "", "KELLOGG"),
+        # Corporate scaffolding in the second slot is stepped over.
+        ("General Mills Operations", "", "", "GENERAL MILLS"),
+        ("Owens Corning Sales", "", "", "OWENS CORNING"),
+        ("Roche Sequencing Solutions", "", "", "ROCHE SEQUENCING"),
+        ("Robert Bosch Fuel Systems", "", "", "ROBERT BOSCH"),
+        ("Halliburton Technology Partners", "", "", "HALLIBURTON TECHNOLOGY"),
+        # Facility and structural words likewise.
+        ("Toyota Technical Center USA", "", "", "TOYOTA TECHNICAL"),
+        ("Novartis Institute Biomedical", "", "", "NOVARTIS BIOMEDICAL"),
+        # Ordinary three-word names keep their first two.
+        ("Nestle Purina Pet Care", "", "", "NESTLE PURINA"),
+        ("Saint-Gobain Ceramic Materials", "", "", "SAINT-GOBAIN CERAMIC"),
+    ])
+    def test_st1_capped(self, name1, city, region, expected):
+        r = _st(name1_enriched=name1)
+        r["city"], r["region"] = city, region
+        assert derive_search_terms(r)[0] == expected
+
+    @pytest.mark.parametrize("name1", [
+        "Schlumberger Technology", "Northrop Grumman", "Stryker Orthopaedics",
+        "Corteva Agriscience", "Bayer Pharmaceuticals", "Medtronic Minimed",
+        "Sherwin-Williams", "Pfizer", "Apple", "Dow",
+    ])
+    def test_already_short_names_are_untouched(self, name1):
+        assert derive_search_terms(_st(name1_enriched=name1))[0] == name1.upper()
+
+    def test_head_is_kept_even_when_the_word_is_a_common_one(self):
+        # An organisation name is head-initial, so the leading token says
+        # WHICH organisation even when it would fail the test on its own.
+        # Dropping it would leave "MILLS", which names nobody.
+        r = _st(name1_enriched="General Mills Operations")
+        assert derive_search_terms(r)[0] == "GENERAL MILLS"
+
+    def test_place_after_of_is_part_of_the_name(self):
+        # "Nucor Steel Florida" is a Florida site of Nucor Steel; the
+        # University OF Florida is not a Florida branch of some University.
+        # The connector is the whole difference.
+        assert derive_search_terms(
+            _st(name1_enriched="University of Florida"))[0] == "UNIVERSITY OF FLORIDA"
+        assert derive_search_terms(
+            _st(name1_enriched="Bank of America"))[0] == "BANK OF AMERICA"
+        assert derive_search_terms(
+            _st(name1_enriched="Nucor Steel Florida"))[0] == "NUCOR STEEL"
+
+    def test_records_own_state_name_and_code_behave_alike(self):
+        for region in ("MI", "Michigan"):
+            r = _st(name1_enriched="Acme Polymers Michigan")
+            r["region"] = region
+            assert derive_search_terms(r)[0] == "ACME POLYMERS"
+
+    def test_st2_is_capped_too(self):
+        r = _st(name1_enriched="KLA-Tencor", name2_enriched="VLSI Standards Inc")
+        assert derive_search_terms(r)[1] == "VLSI STANDARDS"
+        r = _st(name1_enriched="J&J", name2_enriched="J&J Regenerative Therapeutics")
+        assert derive_search_terms(r)[1] == "J&J REGENERATIVE"
+
+    def test_no_term_ever_exceeds_two_words(self):
+        for name in [
+            "Kellogg Battle Creek MI Plant",
+            "National Institute of Standards and Technology",
+            "The Goodyear Tire & Rubber Company",
+            "Toyota Technical Center USA",
+        ]:
+            st1 = derive_search_terms(_st(name1_enriched=name))[0]
+            # A connector ("of", "&") joins two terms and is not one itself.
+            words = [w for w in st1.split() if w not in ("OF", "FOR", "&")]
+            assert len(words) <= 2, f"{name} -> {st1}"
+
+
+class TestPhraseThatIdentifiesNothing:
+    """Every large site has a central receiving bay, a corporate headquarters
+    and a stores desk. Those words describe where a delivery goes, never which
+    unit the record is — and a search term matching every large employer in the
+    country is worse than an empty field, because the empty field does not
+    claim to have found something."""
+
+    @pytest.mark.parametrize("name2", [
+        "Central Receiving",
+        "Corporate Headquarters",
+        "Stores",
+        "Manufacturing",
+        "Central Warehouse",
+        "Main Plant",
+        "Shipping Dock",
+        "Interplant Site Off E",
+        "Distribution Center",
+    ])
+    def test_emptied(self, name2):
+        r = _st(name1_enriched="Dow Chemical", name2_enriched=name2)
+        assert derive_search_terms(r)[1] is None
+
+    @pytest.mark.parametrize("name2,expected", [
+        # One identifying token is enough to keep the phrase.
+        ("Food Service Systems", "FOOD SERVICE"),
+        ("Abbott Nutrition", "ABBOTT NUTRITION"),
+        ("Global Technical", "GLOBAL TECHNICAL"),
+        ("Truck & Bus", "TRUCK & BUS"),
+        # The existing chain is untouched: structural words still strip and
+        # the admin override still fires before this test runs.
+        ("Department of Chemistry", "CHEMISTRY"),
+        ("Analytical Sciences Division", "ANALYTICAL SCIENCES"),
+        ("Accounts Payable", "ADMIN"),
+    ])
+    def test_real_units_survive(self, name2, expected):
+        r = _st(name1_enriched="Acme", name2_enriched=name2)
+        assert derive_search_terms(r)[1] == expected
+
+    def test_search_term_1_is_not_subject_to_this_rule(self):
+        # The rule guards the UNIT slot. Name 1 is the organisation, and a
+        # company legitimately named "Central Stores Ltd" must keep a handle
+        # rather than have the pipeline decide its name is not a name.
+        r = _st(name1_enriched="Central Stores Ltd")
+        assert derive_search_terms(r)[0] is not None
