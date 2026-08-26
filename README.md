@@ -606,6 +606,10 @@ Batch-summary counters, maintained unconditionally (like the page-read counters,
 | `wikidata_superseded_flagged` | `entity-superseded` raised |
 | `wikidata_witness_only` | Matched with no registry pointer |
 | `wikidata_domain_corroborated` / `wikidata_domain_disagree` | `P856` against the record's candidate domain |
+| `liveness_checked` | Records that reached the liveness lane with a name to ask about — the denominator |
+| `liveness_flagged` | Records that came out with `entity-superseded`. Counts RECORDS |
+| `liveness_ror_queried` | The lane's entire network cost: one ROR query per distinct (name, country) in the batch |
+| `liveness_ror_flagged` / `liveness_gleif_flagged` / `liveness_redirect_flagged` | Findings by source. These deliberately do **not** partition `liveness_flagged` — a record can be caught by more than one source, and each statement is separately true — so their sum is `>= liveness_flagged` |
 
 **Measured** on the 100-row chemspeed US SMB batch: see `wikidata_lane_report.md`. The expected yield on a population of private US small and mid-size businesses is **low**, and the report states the real numbers rather than tuning the gauntlet to raise them.
 
@@ -1059,6 +1063,148 @@ Containment does **not** feed the [registry tier classifier](#cross-source-consi
 
 **Telemetry.** `page_reads_attempted`, `page_corroborated`, `page_contradicted`, `page_name_mismatch`, `page_fetch_unavailable`, `page_no_identity`, `page_parked`, `page_domains_withdrawn`, `page_domains_accepted`, `page_flags_cleared`. One JSON line per attempt on `enrichment.trace.page`.
 
+### Stage 5c: Liveness — does this organisation still exist?
+
+Every other lane answers **"which entity is this?"**. This one answers **"does
+that entity still exist?"**, and the two are independent questions.
+
+That independence is why the lane exists. Supersession detection used to live
+entirely inside the [Wikidata crosswalk](#stage-2c-wikidata-crosswalk-lane),
+whose precondition is that ROR **and** GLEIF have both missed — so the pipeline
+asked whether an organisation was gone *exclusively of records it had failed to
+identify*, while acquisition is a property of entities that identify **easily**.
+The better a record resolved, the less likely it was to be asked.
+
+**Celgene Corporation is the case that exposed it.** Bristol-Myers Squibb
+absorbed it in 2019. Traced through the pre-lane pipeline:
+
+```
+input "Celgene Corp"
+  ├─ preprocess       "Celgene Corporation" → "Celgene Corp"
+  ├─ ROR              query → 0 results; affiliation → 10 hits, none chosen   miss
+  ├─ GLEIF strategy A filter[legalName]="Celgene Corp"                        miss
+  ├─ GLEIF strategy B fuzzycompletions → CELGENE CORPORATION
+  │                   4SIHMF0MOSTTL8CD0X64, name score 100.0                  MATCH
+  │                   entity.status = ACTIVE
+  └─ Wikidata lane    precondition: not (ror_id or lei_id) → False            SKIPPED
+```
+
+Every stage was behaving correctly. `Celgene Corporation` *is* the record's true
+identity, and the registry hit is exactly what suppressed the only check that
+would have noticed. The record shipped enriched, high-confidence and unflagged.
+So the lane runs from `_finalise_and_return` — the one point every path through
+the waterfall converges on, **after** identity is settled, on every record,
+whatever resolved it.
+
+#### The three sources
+
+Each was chosen by measuring its **flag rate against the whole registry**, not
+by how plausible it sounds in the spec. Counts taken live on 2026-08-26.
+
+| Signal | Population | Flag rate | Used |
+|---|---|---|---|
+| ROR `status=inactive` | 1,683 / 137,398 | **1.2%** | **yes** |
+| GLEIF `entity.status=INACTIVE` | 249,972 / 3,412,502 | 7.3% | **yes** |
+| GLEIF `registration.status=RETIRED` | 250,388 | 7.3% | **yes** |
+| Cross-organisation redirect | — | low | **yes** |
+| GLEIF `registration.status=LAPSED` | 1,193,113 | **35.0%** | no |
+| GLEIF `registration.status=MERGED` | **0** | 0% | (empty) |
+| ROR `status=withdrawn` | 1,417 | 1.0% | no |
+
+**The exclusions are the load-bearing part.**
+
+- **`LAPSED` is the tempting one and it is not a signal.** Celgene *is* LAPSED,
+  and an acquirer abandoning a subsidiary's renewal is a real pattern — but 35%
+  of every LEI on file is LAPSED, and `ACTIVE + LAPSED` (Celgene's exact state)
+  accounts for 1,193,112 of those 1,193,113 records. It means nobody paid the
+  renewal fee. Raising on it would flag a third of every record that resolves to
+  an LEI, which is indistinguishable from having no flag.
+- **`MERGED` is the field you would reach for first and GLEIF holds zero
+  records in it.** Accepted, because it costs nothing and is unambiguous if
+  GLEIF ever populates it; it is not a signal today.
+- **`ANNULLED` and ROR `withdrawn` are excluded for one shared reason.** Neither
+  says an organisation ceased to exist — both retract a *registry record*
+  (issued in error, or deduplicated). ROR's withdrawn entries make this plain:
+  their `successor` relationships point at labels character-identical to their
+  own name, because they are merged duplicates.
+
+#### ROR: one query, because search hides what we are looking for
+
+ROR omits non-active organisations from its default index, which is why the main
+lane cannot see them — `?query=Celgene` returns **zero** rows, and
+`affiliation=Celgene Corporation, Summit, NJ` returns ten unrelated companies
+with none `chosen`. The record exists and holds the whole answer:
+
+```
+GET /v2/organizations/0527yg379
+  status: inactive
+  relationships: [{type: successor, label: "Bristol-Myers Squibb (United States)"}]
+```
+
+`all_status=` is the only thing that puts it in a result set. The probe scores
+the **entire** field, active candidates included, and judges the winner: a name
+that matches a live organisation better than a dead one has not identified the
+dead one. Scoring is `tier1_ror._score_org` at `ROR_CONFIDENCE_THRESHOLD` — the
+main lane's scorer at the main lane's threshold — with the query taken in two
+forms, raw and legal-suffix-stripped, exactly as `_name_match_score` already
+does for GLEIF. (ROR's token-subset rule requires every query token of four
+characters or more to appear in the candidate, so `"Celgene Corp"` against ROR's
+`"Celgene (United States)"` scores **0.457** and misses on the strength of the
+word "Corp". Stripped, it is **1.0**.)
+
+#### Redirect: the only signal that needs no registry at all
+
+`celgene.com` serves `https://www.bms.com/`. The organisation's own website now
+belongs to somebody else, and no registry is involved — this is the only source
+in the lane that fires on a company in neither ROR nor GLEIF.
+
+A cross-domain redirect has a second, innocent reading, which is why the name
+check is here rather than the flag being raised on the redirect alone: an
+organisation that simply **moved** also redirects, and ROR's stale `dur.ac.uk`
+→ live `durham.ac.uk` is the case `_resolve_probe_base` was written for. The two
+are separated by whether the landing domain still names the same organisation:
+
+| record | start | final | stem score | reading |
+|---|---|---|---|---|
+| Celgene Corp | celgene.com | bms.com | 0.0 | **superseded** |
+| Mellanox Technologies | mellanox.com | nvidia.com | 14.8 | **superseded** |
+| Horizon Therapeutics | horizontherapeutics.com | amgen.com | 16.7 | **superseded** |
+| Alexion Pharmaceuticals | alexionpharma.com | alexion.com | 70.0 | moved |
+| Durham University | dur.ac.uk | durham.ac.uk | 66.7 | moved |
+
+The band between 16.7 and 66.7 is empty and
+`LIVENESS_REDIRECT_NAME_THRESHOLD` defaults to **60**, inside that gap and far
+from either wall. It is the lane's one new threshold, and no existing one fits:
+`LEI_NAME_MATCH_THRESHOLD` (88) would call Alexion and Durham different
+organisations, and reporting a university that renamed its domain as dissolved
+is precisely the false positive this check has to not make.
+
+**Absence of a redirect is not evidence of anything.** An acquirer routinely
+keeps the acquired brand's site up — `monsanto.com` still serves Monsanto years
+after Bayer — so this check has low recall by construction and can never support
+a completeness claim. Of twelve acquired companies tested, three redirected.
+
+#### What the lane does not do
+
+It raises `entity-superseded` and nothing else. No name is rewritten to the
+successor, no identifier or domain is touched, no `enrichment_status` changes —
+which legal entity a customer record should point at after an acquisition
+depends on contracts and open orders this service cannot see. A disabled flag, a
+failed probe or a frozen cache therefore costs a flag and never a value, and the
+lane is closed at its own boundary as well as inside each source: `_enrich_single`
+turns any escaping exception into an error record, so a lane that let one through
+would cost the record its entire enrichment to save a flag.
+
+Where the crosswalk lane also fired, both reasons are rendered. A `P576`
+dissolution date and a ROR `inactive` are independent statements, and which lane
+happened to run first must not decide which one the reviewer sees.
+
+**Verified against the live registries**, 2026-08-26 — Celgene flagged by ROR
+*and* redirect; Mellanox and Horizon Therapeutics by redirect; Pfizer,
+Bristol-Myers Squibb, Amgen and Durham University all clean.
+
+---
+
 ### Stage 6: Batch consensus
 
 **File:** `enrichment/batch_consensus.py` · **Entry point:** `apply_batch_consensus` · **Called from:** `Orchestrator.enrich_batch`
@@ -1495,7 +1641,7 @@ One case is not derivable and is read from the tier's marker instead: the **depa
 | `email-conflict` | An email found in the record differs from a populated email field | `email` |
 | `multiple-contacts` | The contact field names more than one person and Tier 2A could not act | `contact`, `name2` |
 | `unverified-inference` | Tier 3 **wrote** a value, at any confidence — see [Tier 3](#stage-4-tier-3--llm-inference-last-resort) | the field(s) Tier 3 wrote |
-| `entity-superseded` | The [Wikidata crosswalk lane](#stage-2c-wikidata-crosswalk-lane) matched an item carrying `P576` (dissolved) or `P1366` (replaced by). The name is **not** rewritten to the successor — that is a business decision — so the reason names the successor's label and QID, or the dissolution date, and stops. Raised whatever the crosswalk then found | `name1` |
+| `entity-superseded` | The organisation the record names no longer exists. Raised by the [liveness lane](#stage-5c-liveness--does-this-organisation-still-exist) from any of three sources — a ROR `status: inactive`, a GLEIF `entity.status=INACTIVE` / `registration.status=RETIRED`, or a website that redirects to a domain naming a **different** organisation — and by the [Wikidata crosswalk lane](#stage-2c-wikidata-crosswalk-lane) on an item carrying `P576` (dissolved) or `P1366` (replaced by). The name is **not** rewritten to the successor — that is a business decision — so the reason names what was found and stops. Every source that fired is named, not just the first | `name1` |
 | `source-conflict` | Two sources named this organisation and named **different** organisations, and the [cross-source gate](#cross-source-consistency-fix-d) acted: the lower-priority source's fields were removed. The reason names both entities. Raised only when something was actually withdrawn, so the code always describes a change visible in the record | `name1`, plus `domain` when the withdrawn source supplied it |
 | `registry-location-mismatch` | A ROR or GLEIF match whose **registered locality contradicts** the record's city/state. The match is *kept* — a company relocating within one country is ordinary — and the reason names both places | `address` |
 

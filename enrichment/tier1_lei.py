@@ -233,6 +233,17 @@ def _record_fields(record: dict[str, Any]) -> dict[str, Any]:
         "legal_name": legal_name,
         "entity_names": entity_names,
         "status": entity.get("status"),
+        # The liveness pair. `status` above is GLEIF's statement about the
+        # ORGANISATION and is already used to rank candidates; this is its
+        # statement about the REGISTRATION, and the two disagree in a way that
+        # matters — Celgene Corporation is entity.status=ACTIVE and
+        # registration.status=LAPSED. Carried, not judged: which values mean
+        # the entity is gone (and, emphatically, which do not) is
+        # `enrichment.liveness`'s decision, measured against the whole
+        # register rather than read off the spec.
+        "registration_status": (
+            (attrs.get("registration") or {}).get("status")
+        ),
         "country": legal_address.get("country"),
         "city": (legal_address.get("city") or "").strip() or None,
         "region": region or None,

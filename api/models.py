@@ -715,6 +715,16 @@ class EnrichmentSummary(BaseModel):
     wikidata_crosswalk_lei: int = 0
     wikidata_crosswalk_registry_hit: int = 0
     wikidata_superseded_flagged: int = 0
+    # Liveness lane (enrichment/liveness.py). `checked` is the denominator;
+    # the three `*_flagged` counters count FINDINGS and may overlap, so their
+    # sum is >= `flagged`, which counts RECORDS. `ror_queried` is the lane's
+    # entire network cost.
+    liveness_checked: int = 0
+    liveness_flagged: int = 0
+    liveness_ror_queried: int = 0
+    liveness_ror_flagged: int = 0
+    liveness_gleif_flagged: int = 0
+    liveness_redirect_flagged: int = 0
     # A match with no registry pointer: `operating_name` at most, never Name 1.
     wikidata_witness_only: int = 0
     wikidata_domain_corroborated: int = 0

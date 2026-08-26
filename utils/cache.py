@@ -784,6 +784,18 @@ class BatchCache:
         # subdomain-aware) so the department probe costs one resolution per
         # institution, not one per stage.
         self._resolved_host: dict[str, str] = {}
+        # The raw FINAL URL of a website's redirect chain, shared by the two
+        # callers that need it: the department probe (which wants the host)
+        # and the liveness lane (which wants the registrable domain). Kept
+        # apart from `_resolved_host` above because that one stores a
+        # *computed base*, and a second caller deriving something different
+        # from it would be reading a decision rather than the evidence. A
+        # resolution that failed is cached as None — a dead host must not be
+        # re-fetched once per stage.
+        self._resolved_final: dict[str, str | None] = {}
+        # Per-batch memo for the liveness lane's ROR status probe, keyed on
+        # (name, country): one query per distinct organisation in the batch.
+        self._liveness_ror: dict[tuple[str, str | None], Any] = {}
 
     # -- Resolved institution host (department probe base) --------------------
 
@@ -792,6 +804,29 @@ class BatchCache:
 
     def set_resolved_host(self, key: str, value: str) -> None:
         self._resolved_host[(key or "").strip().lower()] = value
+
+    # -- Resolved final URL (redirect chain endpoint) -------------------------
+
+    def has_resolved_final(self, key: str) -> bool:
+        """True once resolution has been ATTEMPTED — including a failure."""
+        return (key or "").strip().lower() in self._resolved_final
+
+    def get_resolved_final(self, key: str) -> str | None:
+        return self._resolved_final.get((key or "").strip().lower())
+
+    def set_resolved_final(self, key: str, value: str | None) -> None:
+        self._resolved_final[(key or "").strip().lower()] = value
+
+    # -- Liveness ROR status probe -------------------------------------------
+
+    def has_liveness_ror(self, key: tuple[str, str | None]) -> bool:
+        return key in self._liveness_ror
+
+    def get_liveness_ror(self, key: tuple[str, str | None]) -> Any:
+        return self._liveness_ror.get(key)
+
+    def set_liveness_ror(self, key: tuple[str, str | None], value: Any) -> None:
+        self._liveness_ror[key] = value
 
     # -- SERP ----------------------------------------------------------------
     #

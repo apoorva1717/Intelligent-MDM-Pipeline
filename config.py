@@ -147,6 +147,10 @@ OPTIONAL_VARS_WITH_DEFAULTS = {
     "WIKIDATA_FIXTURE_DIR": "tests/fixtures/wikidata",
     "WIKIDATA_FIXTURE_REPLAY_ONLY": "false",
     "WIKIDATA_TRACE": "false",
+    "LIVENESS_ENABLED": "true",
+    "LIVENESS_ROR_PROBE_ENABLED": "true",
+    "LIVENESS_REDIRECT_CHECK_ENABLED": "true",
+    "LIVENESS_REDIRECT_NAME_THRESHOLD": "60",
     "MOCK_EXTERNAL_CALLS": "false",
     "ENV": "production",
     "LOG_LEVEL": "INFO",
@@ -465,6 +469,44 @@ class Settings:
     # run does not have to remember to turn this on to get its numbers.
     wikidata_trace: bool = field(
         default_factory=lambda: _bool(os.getenv("WIKIDATA_TRACE"), default=False)
+    )
+
+    # ── Liveness lane (enrichment/liveness.py) ───────────────────────────
+    # "Does the organisation this record names still exist?", asked after
+    # identity is settled rather than as a consolation prize for not
+    # resolving one. Feature flag, following WIKIDATA_ENABLED: with it off
+    # no probe is made, no redirect is followed, and the lane can only ever
+    # have ADDED an `entity-superseded` flag, so the output is identical to
+    # a build without it.
+    liveness_enabled: bool = field(
+        default_factory=lambda: _bool(os.getenv("LIVENESS_ENABLED"), default=True)
+    )
+    # The ROR half, separately switchable because it is the only part of the
+    # lane that costs a network call: one query per distinct (name, country)
+    # in the batch. ROR's default index omits non-active organisations, so
+    # this re-asks with `all_status=` — the only way to see the record that
+    # holds the answer.
+    liveness_ror_probe_enabled: bool = field(
+        default_factory=lambda: _bool(
+            os.getenv("LIVENESS_ROR_PROBE_ENABLED"), default=True,
+        )
+    )
+    # The redirect half. Free: it reuses the resolution the department probe
+    # already performs and shares its BatchCache entry.
+    liveness_redirect_check_enabled: bool = field(
+        default_factory=lambda: _bool(
+            os.getenv("LIVENESS_REDIRECT_CHECK_ENABLED"), default=True,
+        )
+    )
+    # Above this, a cross-domain redirect is a MOVE and is ignored; below it,
+    # the landing domain names a different organisation. The one new number in
+    # the lane, and the only one no existing threshold could supply — see
+    # `enrichment.liveness.redirect_verdict` for the measured 16.7/66.7 gap it
+    # sits inside and for why LEI_NAME_MATCH_THRESHOLD (88) cannot be reused.
+    liveness_redirect_name_threshold: float = field(
+        default_factory=lambda: float(
+            os.getenv("LIVENESS_REDIRECT_NAME_THRESHOLD", "60")
+        )
     )
 
     # Concurrency

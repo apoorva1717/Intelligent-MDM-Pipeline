@@ -58,6 +58,12 @@ from enrichment.preprocess import (
 from dedup.signatures import normalize_key
 from enrichment.classifier import TypeEvidence, classify
 from enrichment.flags import compute_flags
+from enrichment.liveness import (
+    gleif_verdict as liveness_gleif_verdict,
+    probe_ror_status as liveness_probe_ror_status,
+    redirect_verdict as liveness_redirect_verdict,
+    render_detail as liveness_render_detail,
+)
 from enrichment.confidence import (
     SOURCE_INPUT,
     ProvenanceGrammarError,
@@ -1276,6 +1282,11 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     result.pop("_gleif_sub_category", None)
     result.pop("_gleif_legal_form_id", None)
     result.pop("_gleif_legal_form_other", None)
+    # The liveness pair. Dropped here like the classification evidence above,
+    # and for the same reason: `_check_liveness` has already read them by the
+    # time `finalise` runs, and neither is part of the response.
+    result.pop("_gleif_entity_status", None)
+    result.pop("_gleif_registration_status", None)
     return result
 
 
@@ -1396,6 +1407,13 @@ def _record_gleif_evidence(result: dict[str, Any], lei_res: dict[str, Any]) -> N
     result["_gleif_sub_category"] = lei_res.get("sub_category")
     result["_gleif_legal_form_id"] = lei_res.get("legal_form_id")
     result["_gleif_legal_form_other"] = lei_res.get("legal_form_other")
+    # The liveness pair, for `enrichment.liveness.gleif_verdict`. Carried on
+    # the same transient convention and for the same reason as the fields
+    # above: the values are already in the response the match was verified
+    # against, so reading them costs nothing, and judging them here would put
+    # a registry-semantics decision in a carrier function.
+    result["_gleif_entity_status"] = lei_res.get("status")
+    result["_gleif_registration_status"] = lei_res.get("registration_status")
 
 
 def _classify_record(result: dict[str, Any]) -> None:
@@ -1809,6 +1827,7 @@ class Orchestrator:
         self._page_counts: dict[str, int] = self._new_page_counts()
         # Per-batch Wikidata crosswalk telemetry (reset in enrich_batch).
         self._wikidata_counts: dict[str, int] = self._new_wikidata_counts()
+        self._liveness_counts: dict[str, int] = self._new_liveness_counts()
 
         # Page reads, keyed on domain and recorded to disk. Process-level like
         # the SERP cache — two records naming the same organisation cost one
@@ -1852,6 +1871,26 @@ class Orchestrator:
             "mismatch_not_withdrawn": 0, "domain_accepted": 0,
             CORROBORATED: 0, CONTRADICTED: 0, NAME_MISMATCH: 0,
             FETCH_UNAVAILABLE: 0, NO_IDENTITY: 0, PARKED: 0,
+        }
+
+    @staticmethod
+    def _new_liveness_counts() -> dict[str, int]:
+        """Fresh per-batch liveness counters.
+
+        ``checked`` is the denominator: records that reached the lane with a
+        name to ask about. The three ``*_flagged`` counters deliberately do NOT
+        partition ``flagged`` — a record can be caught by more than one source
+        at once, and each of those statements is separately true and separately
+        worth measuring. ``flagged`` counts RECORDS; the other three count
+        FINDINGS, so their sum is ``>= flagged`` by design.
+
+        ``ror_queried`` is the lane's whole network cost, and sits below
+        ``checked`` by however much the per-batch memo saved.
+        """
+        return {
+            "checked": 0, "flagged": 0,
+            "ror_queried": 0, "ror_flagged": 0,
+            "gleif_flagged": 0, "redirect_flagged": 0,
         }
 
     @staticmethod
@@ -1915,6 +1954,7 @@ class Orchestrator:
         self._tier1_retry_counts = self._new_tier1_retry_counts()
         self._page_counts = self._new_page_counts()
         self._wikidata_counts = self._new_wikidata_counts()
+        self._liveness_counts = self._new_liveness_counts()
         self._evidence_cache.network_calls = 0
         self._evidence_cache.network_calls_by_namespace.clear()
         cache = BatchCache(shared_serp=self._serp_cache)
@@ -2000,6 +2040,9 @@ class Orchestrator:
             # with silently-zero numbers because a flag was forgotten.
             for _key, _value in self._wikidata_counts.items():
                 setattr(summary, f"wikidata_{_key}", _value)
+            # Liveness lane, on the same unconditional footing.
+            for _key, _value in self._liveness_counts.items():
+                setattr(summary, f"liveness_{_key}", _value)
             # Lookups the normalised cache key served that the old lowercased
             # key would have missed — i.e. API calls Step 1 saved outright.
             summary.routing_type_mismatch_count = sum(
@@ -2129,6 +2172,31 @@ class Orchestrator:
             # ownership guard, so its provenance is not itself a doubt.
             _apply_domain(result, llm_res.url, settings=self._settings)
 
+    async def _resolve_final_url_cached(
+        self, website: str, cache: BatchCache,
+    ) -> str | None:
+        """Follow *website*'s redirect chain once, memoised for the batch.
+
+        Two callers want this and want different things from it: the
+        department probe needs the landing HOST (§5e/§5f), the liveness lane
+        needs its registrable DOMAIN. Resolving once and letting each derive
+        its own answer is why this returns the raw final URL rather than
+        either of those — a second caller reading the first's computed base
+        would be consuming a decision instead of the evidence behind it.
+
+        A failed resolution is cached as ``None`` and not retried: a host that
+        did not answer for the probe will not answer for the liveness check
+        either, and re-asking would cost one dead connection per stage.
+        """
+        if cache.has_resolved_final(website):
+            return cache.get_resolved_final(website)
+        try:
+            final = await self._page_fetcher.resolve_final_url(website)
+        except Exception:  # noqa: BLE001 — a redirect failure is never fatal
+            final = None
+        cache.set_resolved_final(website, final)
+        return final
+
     async def _resolve_probe_base(
         self, result: dict[str, Any], registrable: str, cache: BatchCache,
     ) -> str:
@@ -2153,10 +2221,7 @@ class Orchestrator:
             return cached
 
         base = registrable
-        try:
-            final = await self._page_fetcher.resolve_final_url(website)
-        except Exception:
-            final = None
+        final = await self._resolve_final_url_cached(website, cache)
         if final:
             host = (urlparse(final).hostname or "").lower()
             for pref in ("www.", "web."):
@@ -3569,6 +3634,132 @@ class Orchestrator:
             "agrees": agrees,
         })
 
+    async def _check_liveness(
+        self,
+        record: EnrichmentRecord,
+        result: dict[str, Any],
+        cache: BatchCache,
+    ) -> None:
+        """Ask whether the organisation this record names still exists.
+
+        Runs from :meth:`_finalise_and_return`, which is the one place every
+        path through the waterfall converges — and that placement is the point
+        of the lane, not an implementation convenience. The pipeline's only
+        previous supersession check lives inside the Wikidata crosswalk, whose
+        precondition is that ROR *and* GLEIF both missed; so it asked "is this
+        entity gone?" exclusively of records it had failed to identify, while
+        acquisition is a property of entities that identify *easily*. Celgene
+        Corporation resolves through GLEIF at 100.0 and was never asked.
+
+        Adds at most an ``entity-superseded`` flag. It writes no name, no
+        identifier and no domain, never withdraws a value another stage wrote,
+        and cannot change ``enrichment_status`` — so a lane failure, a disabled
+        flag or a frozen cache can only cost a flag, and the record is
+        otherwise byte-identical to a build without the lane.
+
+        See :mod:`enrichment.liveness` for the three sources, and for the
+        measured flag rates behind which registry states count as death.
+        """
+        if not self._settings.liveness_enabled:
+            return
+        try:
+            await self._check_liveness_inner(record, result, cache)
+        except Exception as exc:  # noqa: BLE001 — a lane must never fail a record
+            # Closed at the lane's own boundary, not only inside the probe.
+            # `_enrich_single` catches everything and turns it into an error
+            # record, so an exception escaping here would cost the record its
+            # entire enrichment to save a flag — the exact inversion the lane
+            # is documented not to make. Every source guards itself as well;
+            # this catches the paths between them.
+            logger.warning(
+                "[%s] liveness lane raised (non-fatal): %s",
+                record.record_id, exc,
+            )
+
+    async def _check_liveness_inner(
+        self,
+        record: EnrichmentRecord,
+        result: dict[str, Any],
+        cache: BatchCache,
+    ) -> None:
+        """The lane proper. See :meth:`_check_liveness` for the contract."""
+        settings = self._settings
+
+        counts = self._liveness_counts
+        name = str(
+            result.get("name1_enriched") or getattr(record, "name1", "") or "",
+        ).strip()
+        if not name:
+            return
+        counts["checked"] += 1
+        findings = []
+
+        # ── GLEIF: no call; the fields came back with the match ───────────
+        gleif = liveness_gleif_verdict(
+            result.get("_gleif_entity_status"),
+            result.get("_gleif_registration_status"),
+        )
+        if gleif is not None:
+            counts["gleif_flagged"] += 1
+            findings.append(gleif)
+
+        # ── ROR: one query per distinct (name, country) in the batch ──────
+        if settings.liveness_ror_probe_enabled:
+            country_code = result.get("_tier1_country_code") or country_to_iso_code(
+                getattr(record, "country", None),
+            )
+            key = (name.strip().lower(), country_code)
+            if cache.has_liveness_ror(key):
+                ror = cache.get_liveness_ror(key)
+            else:
+                counts["ror_queried"] += 1
+                ror, _org, _score = await liveness_probe_ror_status(
+                    name,
+                    country_code=country_code,
+                    threshold=settings.ror_confidence_threshold,
+                )
+                cache.set_liveness_ror(key, ror)
+            if ror is not None:
+                counts["ror_flagged"] += 1
+                findings.append(ror)
+
+        # ── Redirect: free, on the resolution the probe already made ──────
+        if settings.liveness_redirect_check_enabled:
+            website = str(
+                result.get("_website_raw") or result.get("website_url") or "",
+            ).strip()
+            domain = result.get("domain")
+            if website and domain:
+                final = await self._resolve_final_url_cached(website, cache)
+                redirect = liveness_redirect_verdict(
+                    name, domain, final,
+                    threshold=settings.liveness_redirect_name_threshold,
+                )
+                if redirect is not None:
+                    counts["redirect_flagged"] += 1
+                    findings.append(redirect)
+
+        detail = liveness_render_detail(findings)
+        if not detail:
+            return
+
+        # Never an overwrite. The Wikidata crosswalk raises the same evidence
+        # key on the records it reaches, and a `P576` dissolution date and a
+        # ROR `inactive` are two independent statements — the reviewer should
+        # see both, and which lane happened to run first must not decide which
+        # one survives.
+        existing = str(result.get("_ev_entity_superseded") or "").strip()
+        parts = [p for p in (existing, detail) if p]
+        result["_ev_entity_superseded"] = "; ".join(dict.fromkeys(parts))
+        counts["flagged"] += 1
+        logger.info({
+            "record_id": record.record_id,
+            "step": "liveness_entity_superseded",
+            "name1": name,
+            "sources": sorted({f.source for f in findings}),
+            "detail": detail,
+        })
+
     async def _finalise_and_return(
         self,
         result: dict[str, Any],
@@ -3606,6 +3797,11 @@ class Orchestrator:
         # read withdraws is not then mined for department URLs.
         await self._corroborate_domain(record, result)
         await self._probe_department_url(record.record_id, result, cache)
+        # After the probe, so the redirect resolution it may already have made
+        # is warm and this costs nothing extra; before `finalise`, because
+        # `compute_flags` runs in there and is what turns the evidence key into
+        # the `entity-superseded` flag.
+        await self._check_liveness(record, result, cache)
         await self._run_address_stage(result, record)
         result = finalise(result, start)
         self._emit_retry_trace(record, result)
