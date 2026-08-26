@@ -287,22 +287,41 @@ class TestFinaliseEmitsCanonicalFields:
         return finalise(make_record(**fields), time.monotonic())
 
     def test_department_domain_loses_its_path_but_keeps_its_subdomain(self):
+        # The path goes; the subdomain — which is what names the unit — stays.
+        out = self._finalise(
+            name2_enriched="Department of Radiation Oncology",
+            department_domain=(
+                "https://rad-onc.medschool.umich.edu/patients/referrals"
+            ),
+        )
+        assert out["department_domain"] == "https://rad-onc.medschool.umich.edu"
+
+    def test_a_path_page_on_a_host_that_names_no_unit_is_dropped(self):
+        # §5i. `canonicalise_host` drops the path, and "medschool" is the
+        # medical school, not the Department of Radiation Oncology — the host
+        # that would ship names the wrong unit. Before §5i this emitted
+        # "https://medschool.umich.edu".
         out = self._finalise(
             name2_enriched="Department of Radiation Oncology",
             department_domain=(
                 "https://medschool.umich.edu/departments/radiation-oncology"
             ),
         )
-        assert out["department_domain"] == "https://medschool.umich.edu"
+        assert out["department_domain"] is None
 
     @pytest.mark.parametrize(
-        "host",
-        ["be.mit.edu", "chemistry.stanford.edu", "physics.stanford.edu",
-         "chem.yale.edu", "physics.yale.edu"],
+        "host, name2",
+        [
+            ("be.mit.edu", "Department of Biological Engineering"),
+            ("chemistry.stanford.edu", "Department of Chemistry"),
+            ("physics.stanford.edu", "Department of Physics"),
+            ("chem.yale.edu", "Department of Chemistry"),
+            ("physics.yale.edu", "Department of Physics"),
+        ],
     )
-    def test_department_subdomains_are_untouched(self, host):
+    def test_department_subdomains_are_untouched(self, host, name2):
         out = self._finalise(
-            name2_enriched="Department of Chemistry", department_domain=host,
+            name2_enriched=name2, department_domain=host,
         )
         assert out["department_domain"] == f"https://{host}"
 

@@ -312,6 +312,31 @@ _GENERIC_HOST_PREFIXES = {
     "giving", "apply", "admissions", "visit", "map", "maps", "about",
     "portal", "login", "auth", "sso", "help", "status", "sitemap",
     "archive", "archives",
+    # Cross-cutting *services* an institution runs for every one of its
+    # units. Each publishes a page PER department — a repository collection,
+    # a catalogue entry, a library subject guide, an award citation — so the
+    # page verifies and the path carries the department name, while the host
+    # names the service. §5i drops most of these on its own (the host labels
+    # carry no unit needle); listing them stops the probe a stage earlier,
+    # before a verification fetch is spent.
+    "digitalcommons", "scholarworks", "scholarcommons", "scholarship",
+    "repository", "repositories", "commons", "dspace", "eprints",
+    "catalog", "catalogue", "bulletin", "courses", "coursecatalog",
+    "libguides", "guides", "libanswers",
+    "facultyhonors", "awards", "profiles", "experts",
+    "research", "researchguides", "publications", "scholar",
+    "canvas", "blackboard", "moodle", "elearning", "online",
+    "registrar", "bursar", "procurement", "purchasing",
+    "tickets", "bookstore", "dining",
+    "webmail", "forms", "docs", "hub", "connect",
+    # Deliberately NOT listed, though each is a service host at some
+    # institutions: `finance`, `athletics`, `sports`, `housing`, `honors`,
+    # `extension`, `foundation`. Every one of them also names a real unit
+    # somewhere — a business school's Department of Finance, a city's
+    # Department of Housing, an Honors College, a land-grant university's
+    # Cooperative Extension — and this list is a hard veto, unlike §5i, which
+    # asks whether the host matches THIS record's Name 2 and so refuses them
+    # only for the records they do not name.
 }
 
 # Registrable domains that are third-party platforms — never represent
@@ -323,6 +348,24 @@ _THIRD_PARTY_DOMAINS = {
     "amazon.com", "indeed.com", "glassdoor.com", "pubmed.gov",
     "ncbi.nlm.nih.gov", "nih.gov", "doi.org", "academia.edu",
     "github.com", "github.io", "medium.com", "substack.com",
+    # Blogging / site builders. A unit's account on one of these carries the
+    # unit's name in the SUBDOMAIN, so §5i alone would accept
+    # "nationwidechildrenshospital.tumblr.com" as a hospital department's web
+    # home; the registrable domain is what disqualifies it.
+    "tumblr.com", "wordpress.com", "blogspot.com", "weebly.com",
+    "wixsite.com", "squarespace.com", "webflow.io", "notion.site",
+    "pinterest.com", "flickr.com", "vimeo.com", "issuu.com",
+    "eventbrite.com", "meetup.com", "tiktok.com", "threads.net",
+    # Third-party directories that profile institutions. They rank well for
+    # "<department> <institution>" and their pages genuinely describe the
+    # unit — but the host belongs to the directory, not the institution.
+    "collegeboard.org", "usnews.com", "niche.com", "petersons.com",
+    "ratemyprofessors.com", "gradschools.com", "unigo.com",
+    "crunchbase.com", "zoominfo.com", "dnb.com", "bloomberg.com",
+    "yelp.com", "mapquest.com", "healthgrades.com", "vitals.com",
+    "orcid.org", "semanticscholar.org", "jstor.org", "arxiv.org",
+    "biorxiv.org", "sciencedirect.com", "springer.com", "wiley.com",
+    "nature.com", "elsevier.com",
 }
 
 
@@ -493,6 +536,112 @@ def _score_dept_candidate(
     if any(n in title_lower for n in needles):
         score += 1
     return score
+
+
+def _label_matches_needle(label: str, needle: str) -> bool:
+    """`_seg_matches_needle`, tightened for a *host label*.
+
+    A 2–3 character needle is an acronym, and `_seg_matches_needle` accepts it
+    anywhere inside the label — which is right for an acronym-shaped label
+    (`cs` in `csail`, `sm` in `csm`) and wrong for a long one: "gh" (Global
+    Health) is inside "brigham" and "ear" (Eye and Ear) is inside "research".
+    Against a label longer than an acronym, a short needle has to lead it.
+    """
+    if len(needle) < 4 and len(label) > 6:
+        return label.startswith(needle)
+    return _seg_matches_needle(label, needle)
+
+
+def _dept_needles(name2: str | None) -> set[str]:
+    """The unit-naming needles for *name2* — significant tokens plus the
+    acronym, the same derivation the probe stages run on their own input.
+
+    Factored out so :func:`_host_names_the_unit` judges a host against exactly
+    what the probe was looking for, from `finalise` as well as from inside the
+    probe. The acronym is added in both its raw and its letters-only form:
+    `derive_acronym` keeps an ampersand ("Science & Mathematics" → "S&M"), and
+    a host spells the same acronym without it (`csm.rowan.edu`).
+    """
+    name2 = (name2 or "").strip()
+    if not name2:
+        return set()
+    core = extract_dept_core(name2) or name2
+    cleaned = clean_name2_phrase(core) or core
+    needles = _significant_dept_tokens(cleaned)
+    acronym = derive_acronym(cleaned)
+    if acronym and len(acronym) >= 2:
+        needles.add(acronym.lower())
+        letters = re.sub(r"[^a-z]", "", acronym.lower())
+        if len(letters) >= 2:
+            needles.add(letters)
+    return needles
+
+
+def _host_names_the_unit(
+    host: str, org_domain: str | None, needles: set[str],
+) -> bool:
+    """§5i — True when *host* itself names the unit.
+
+    ``department_domain`` ships as a bare host: `canonicalise_host` drops the
+    path, so the host is the whole of what the column says. A host earns the
+    column only by carrying a unit needle in a label of its own —
+
+    * a label below the registrable domain (`chem.ufl.edu`,
+      `heb.fas.harvard.edu`, `chemistry.gc.cuny.edu`); or
+    * the registrable label itself, but only when that registrable domain is
+      NOT the organisation's — a unit with its own domain names itself there
+      (`hbs.edu`), while a parent brand's homepage does not
+      (`massgeneralbrigham.org` for a Brigham and Women's department).
+
+    This is the host test `_score_dept_candidate` already applies for the
+    scored stages (1 and 2), stated at the emit point so the stages that
+    accept a candidate *without* scoring it (2b, 3) cannot ship a host the
+    scored stages would have refused. Those stages accept on evidence that
+    does not survive into the column — the department in a URL *path*, or on
+    the page body — which is how a repository (`digitalcommons.usf.edu`), a
+    course catalogue (`catalog.smu.edu`), a library guide
+    (`libguides.csun.edu`), an awards page (`facultyhonors.umich.edu`) and a
+    third-party directory (`bigfuture.collegeboard.org`) all came to be
+    shipped as department domains: each hosts a real page about the unit,
+    and none of them is the unit.
+    """
+    host = (host or "").strip().lower().rstrip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    if not host or not needles:
+        return False
+    registrable = (extract_domain(f"https://{host}") or "").strip().lower()
+    if registrable and (host == registrable or host.endswith("." + registrable)):
+        prefix = host[: -len(registrable)].rstrip(".")
+    else:                       # unparseable suffix — judge every label
+        registrable, prefix = "", host
+    labels = [seg for seg in prefix.split(".") if seg]
+    if registrable and registrable != (org_domain or "").strip().lower():
+        labels.append(registrable.split(".")[0])
+    # A compound label is matched whole and by its parts: "rad-onc" names
+    # Radiation Oncology through "rad", "science-math" names Science and
+    # Mathematics through either half. `_seg_matches_needle` compares whole
+    # strings, so the parts have to be offered to it separately.
+    for label in list(labels):
+        labels.extend(part for part in re.split(r"[-_]+", label) if part)
+    return any(
+        _label_matches_needle(label, n) for label in labels for n in needles
+    )
+
+
+def _dept_host_is_admissible(
+    host: str, org_domain: str | None, base: str | None, needles: set[str],
+) -> bool:
+    """The one admissibility test every probe stage and the emit point share:
+    not a third-party platform (§5g), not a cross-cutting service or newsroom
+    host (§5g), and naming the unit itself (§5i)."""
+    if not host:
+        return False
+    if _is_third_party_host(host):
+        return False
+    if _host_prefix_is_generic(host, base):
+        return False
+    return _host_names_the_unit(host, org_domain, needles)
 
 
 # ── Result helpers ────────────────────────────────────────────────────────────
@@ -1387,16 +1536,41 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # `unverified-inference` (flags §corroborated) purely by being non-null,
     # and `_dept_domain_to_search_term` would derive search_term_2 from the
     # institution host ("nasa" for Space Biosciences Research).
+    #
+    # §5i generalises that: the organisation's own domain is only the most
+    # visible way for the surviving host to name the unit not at all. A
+    # repository (`digitalcommons.usf.edu`), a course catalogue
+    # (`catalog.smu.edu`), a library guide (`libguides.csun.edu`), an awards
+    # page (`facultyhonors.umich.edu`), a parent brand's homepage
+    # (`massgeneralbrigham.org`) and a third-party directory
+    # (`bigfuture.collegeboard.org`) all host a page that genuinely describes
+    # the unit — which is what verified them — and all of them ship a host
+    # that names a service, a parent or a publisher instead. The test is the
+    # one the scored stages already apply to a host, applied once more where
+    # every route has to pass: what ships must name the unit.
     _dept_raw = (result.get("department_domain") or "").strip()
     if _dept_raw:
         _dept_host = canonicalise_host(_dept_raw)
-        if not _dept_host or _dept_host == (
-            result.get("domain") or ""
-        ).strip().lower():
+        _org_domain = (result.get("domain") or "").strip().lower()
+        _needles = _dept_needles(
+            (result.get("name2_enriched") or "").strip()
+            or (result.get("name2_original") or "").strip()
+        )
+        if not _dept_host or _dept_host == _org_domain:
             logger.info(
                 "[%s] department_domain dropped: %r reduces to the "
                 "organisation domain %r",
                 result.get("record_id"), _dept_raw, result.get("domain"),
+            )
+            result["department_domain"] = None
+        elif not _dept_host_is_admissible(
+            _dept_host, _org_domain, _org_domain, _needles,
+        ):
+            logger.info(
+                "[%s] department_domain dropped (§5i): %r names no unit — "
+                "name2=%r needles=%s",
+                result.get("record_id"), _dept_host,
+                result.get("name2_enriched"), sorted(_needles),
             )
             result["department_domain"] = None
 
@@ -2584,6 +2758,11 @@ class Orchestrator:
         cleaned = clean_name2_phrase(core) or core
         tokens = _significant_dept_tokens(cleaned)
         acronym = derive_acronym(cleaned)
+        # §5i: what a host has to name to earn the column. Same tokens plus
+        # the acronym in both spellings — the stages that score a candidate
+        # test the host against `tokens`/`acronym` themselves; this is the
+        # set the unscored stages (2b, 3) and the emit point test against.
+        needles = _dept_needles(name2)
         if not tokens and not acronym:
             logger.info(
                 "[%s] dept domain probe: no significant tokens/acronym "
@@ -2800,6 +2979,14 @@ class Orchestrator:
                 continue
             if _host_prefix_is_generic(host, base):
                 continue  # newsroom/admin host — the path can't redeem it
+            # §5i: the path is dropped at the emit point, so a host that does
+            # not name the unit ships as the service that hosts the page — a
+            # repository, a course catalogue, a library guide. The path can no
+            # more redeem those than it can redeem a newsroom host. Checked
+            # while collecting, so no verification fetch is spent on a
+            # candidate that cannot survive canonicalisation.
+            if not _host_names_the_unit(host, org_domain, needles):
+                continue
             path = (parsed.path or "").strip("/")
             if not path:
                 continue  # bare domain handled by the host scan above
@@ -2864,6 +3051,16 @@ class Orchestrator:
             if _is_third_party_host(host):
                 continue
             if _host_prefix_is_generic(host):
+                continue
+            # §5i: a cross-domain host earns the column the same way an
+            # on-domain one does — by naming the unit. Without this the
+            # highest-ranking result for "<department> <institution>" is the
+            # parent brand's own homepage (`massgeneralbrigham.org` for a
+            # Brigham and Women's department), which verifies on the page body
+            # and names the unit nowhere.
+            if not _host_names_the_unit(
+                host, result.get("domain"), needles,
+            ):
                 continue
             # Verify the page actually describes this dept before
             # accepting a cross-domain host.

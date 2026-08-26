@@ -339,9 +339,11 @@ class TestNeverDuplicatesTheOrgDomain:
         assert result["department_domain"] is None
 
     @_pytest.mark.asyncio
-    async def test_stage_2b_still_accepts_a_path_on_a_subdomain(self):
-        # clas.ufl.edu/chemistry stays distinct from ufl.edu once the path is
-        # stripped, so the §5e/2b behaviour is unchanged for it.
+    async def test_stage_2b_skips_a_path_on_a_host_that_names_no_unit(self):
+        # §5i. clas.mit.edu/chemistry stays distinct from mit.edu once the
+        # path is stripped — but what is left names the College of Liberal
+        # Arts, not the Department of Chemistry. Distinct from the Domain
+        # column is not the same as naming the unit.
         url = "https://clas.mit.edu/chemistry"
         pf = _StoryPF({
             url: "MIT Department of Chemistry",
@@ -359,7 +361,9 @@ class TestNeverDuplicatesTheOrgDomain:
         })
         result = _probe_result()
         await o._probe_department_url("R1", result, BatchCache())
-        assert result["department_domain"] == url
+        assert result["department_domain"] is None
+        # …and no verification fetch was spent on it.
+        assert url not in pf.fetched
 
     @_pytest.mark.parametrize("stored", [
         "https://nasa.gov/ames/space-biosciences",
@@ -396,3 +400,185 @@ class TestNeverDuplicatesTheOrgDomain:
             department_domain="chemistry.mit.edu",
         ), time.monotonic())
         assert out["department_domain"] == "https://chemistry.mit.edu"
+
+
+# ---------------------------------------------------------------------------
+# §5i — the host that ships must name the unit
+# ---------------------------------------------------------------------------
+
+from enrichment.orchestrator import (  # noqa: E402
+    _dept_needles,
+    _host_names_the_unit,
+    _is_third_party_host,
+)
+
+
+class TestHostNamesTheUnit:
+    """`department_domain` ships as a bare host, so the host is the whole of
+    what the column says. Stages 2b and 3 accept a candidate on evidence that
+    does NOT survive into the column — the unit named in a URL *path*, or on
+    the page body — which is how an institution's cross-cutting services, a
+    parent brand and a third-party directory all came to be shipped as
+    department domains. Each observed value below is a real row from the
+    university / hospital eval batches.
+    """
+
+    @pytest.mark.parametrize("host, name2", [
+        # Cross-cutting services: one page per department, hosted by the
+        # service. The page verifies; the host names the service.
+        ("digitalcommons.pvamu.edu", "Department of Chemistry and Physics"),
+        ("digitalcommons.usf.edu",
+         "Department of Chemical & Biomedical Engineering"),
+        ("catalog.smu.edu", "Department of Biological Sciences"),
+        ("libguides.csun.edu", "Department of Chemistry and Biochemistry"),
+        ("facultyhonors.umich.edu", "Institute of Howard Hughes Medicine"),
+        # An umbrella school / college: a real unit, but not this one.
+        ("pll.harvard.edu", "Department of Chemistry & Biochemistry"),
+        ("sph.umich.edu", "Institute of Life Sciences"),
+        ("artsci.uc.edu", "Department of Chemistry"),
+        ("science-math.wright.edu", "Department of Chemistry"),
+        # A parent brand's homepage — reached through the §5f redirect
+        # (brighamandwomens.org → massgeneralbrigham.org), so it is not the
+        # record's own Domain and §5h never saw it.
+        ("massgeneralbrigham.org",
+         "Department of Rheumatology, Immunology and Allergy"),
+        ("idfellowship.massgeneralbrigham.org", "Global Health"),
+        ("research.massgeneralbrigham.org",
+         "Massachusetts Eye and Ear Infirmary"),
+        # A third-party directory that outranks the institution itself.
+        ("bigfuture.collegeboard.org", "Department of Physics"),
+    ])
+    def test_host_that_names_no_unit_is_refused(self, host, name2):
+        assert _host_names_the_unit(
+            host, "example.edu", _dept_needles(name2),
+        ) is False
+
+    @pytest.mark.parametrize("host, name2", [
+        ("engineering.ucdavis.edu", "College of Engineering"),
+        ("npb.ucdavis.edu",
+         "Department of Neurobiology, Physiology and Behavior"),
+        ("nanoengineering.ucsd.edu", "Department of NanoEngineering"),
+        ("mse.mtu.edu", "Department of Materials Science and Engineering"),
+        ("chemical.uml.edu", "Department of Chemical Engineering"),
+        ("transportation.tamu.edu", "Institute of Texas A&M Transportation"),
+        ("medicine.osu.edu", "College of Medicine"),
+        ("artsandsciences.osu.edu", "College of Arts and Sciences"),
+        ("me.mit.edu", "Department of Mechanical Engineering"),
+        ("phoenix.ucdavis.edu", "Phoenix Cluster"),
+        # Two labels below the registrable domain — either may name the unit.
+        ("heb.fas.harvard.edu", "Department of Human Evolutionary Biology"),
+        # §5e: the institution is itself a subdomain.
+        ("chemistry.gc.cuny.edu", "Department of Chemistry"),
+        # The acronym keeps its ampersand ("S&M"); the host does not.
+        ("csm.rowan.edu", "College of Science & Mathematics"),
+        # A compound label is matched by its parts too.
+        ("rad-onc.medschool.umich.edu", "Department of Radiation Oncology"),
+    ])
+    def test_host_that_names_the_unit_is_kept(self, host, name2):
+        assert _host_names_the_unit(
+            host, "example.edu", _dept_needles(name2),
+        ) is True
+
+    def test_a_units_own_registrable_domain_names_it(self):
+        # A unit with a domain of its own names itself in the registrable
+        # label — but only when that domain is not the organisation's.
+        needles = _dept_needles("Harvard Business School")
+        assert _host_names_the_unit("hbs.edu", "harvard.edu", needles) is True
+        assert _host_names_the_unit("hbs.edu", "hbs.edu", needles) is False
+
+    def test_no_name2_means_nothing_to_match(self):
+        assert _dept_needles(None) == set()
+        assert _host_names_the_unit("chem.mit.edu", "mit.edu", set()) is False
+
+
+class TestThirdPartyPlatformHosts:
+    """A unit's account on a site builder carries the unit's name in the
+    SUBDOMAIN, so §5i alone would accept it — the registrable domain is what
+    disqualifies it. Observed: nationwidechildrenshospital.tumblr.com shipped
+    as the department domain for the Research Institute at Nationwide
+    Children's Hospital."""
+
+    @pytest.mark.parametrize("host", [
+        "nationwidechildrenshospital.tumblr.com",
+        "chemistry.wordpress.com",
+        "physicsdept.blogspot.com",
+        "bigfuture.collegeboard.org",
+        "www.usnews.com",
+    ])
+    def test_platform_and_directory_hosts_refused(self, host):
+        assert _is_third_party_host(host) is True
+
+    @pytest.mark.parametrize("host", [
+        "chem.ufl.edu", "eecs.mit.edu", "hopkinsmedicine.org",
+    ])
+    def test_institution_hosts_untouched(self, host):
+        assert _is_third_party_host(host) is False
+
+
+class TestFinaliseRefusesAHostThatNamesNoUnit:
+    """The emit-point gate — whatever route wrote the value."""
+
+    @pytest.mark.parametrize("stored", [
+        "https://digitalcommons.mit.edu/chemistry_collection",
+        "catalog.mit.edu",
+        "https://libguides.mit.edu/chemistry",
+        "https://chemistry.tumblr.com",
+        "https://clas.mit.edu/chemistry",
+        "https://facultyhonors.mit.edu/2026/chemistry-prize",
+    ])
+    def test_dropped_before_flags_and_search_terms_read_it(self, stored):
+        name2 = "Department of Chemistry"
+        out = finalise(make_record(
+            record_id="R1",
+            routing_type="research_institution",
+            record_type="research_institution",
+            domain="mit.edu",
+            name1_enriched="Massachusetts Institute of Technology",
+            name2_enriched=name2,
+            department_domain=stored,
+        ), time.monotonic())
+        assert out["department_domain"] is None
+        # The value is not inert: a non-null department_domain corroborates
+        # Name 2 out of `unverified-inference` and feeds search_term_2.
+        assert out["search_term_2"] == "CHEMISTRY"
+
+    def test_a_real_department_subdomain_still_ships(self):
+        out = finalise(make_record(
+            record_id="R2",
+            routing_type="research_institution",
+            record_type="research_institution",
+            domain="usf.edu",
+            name1_enriched="University of South Florida",
+            name2_enriched="Department of Chemical & Biomedical Engineering",
+            department_domain="https://cbe.usf.edu/undergraduate",
+        ), time.monotonic())
+        assert out["department_domain"] == "https://cbe.usf.edu"
+
+
+class TestAdminWordThatAlsoNamesAUnit:
+    """§5g is a hard veto and §5i is per-record. A word that is a service host
+    at one institution and a real unit at another must be judged by §5i — so
+    it is deliberately absent from `_GENERIC_HOST_PREFIXES`."""
+
+    @pytest.mark.parametrize("host, name2, domain", [
+        ("finance.wharton.upenn.edu", "Department of Finance", "upenn.edu"),
+        ("athletics.osu.edu", "Department of Athletics", "osu.edu"),
+        ("housing.boston.gov", "Department of Housing", "boston.gov"),
+        ("honors.psu.edu", "Schreyer Honors College", "psu.edu"),
+        ("extension.psu.edu", "Cooperative Extension", "psu.edu"),
+    ])
+    def test_the_unit_it_names_still_claims_it(self, host, name2, domain):
+        from enrichment.orchestrator import _dept_host_is_admissible
+        assert _dept_host_is_admissible(
+            host, domain, domain, _dept_needles(name2),
+        ) is True
+
+    @pytest.mark.parametrize("host", [
+        "finance.smu.edu", "athletics.smu.edu", "catalog.smu.edu",
+    ])
+    def test_every_other_record_is_refused(self, host):
+        from enrichment.orchestrator import _dept_host_is_admissible
+        assert _dept_host_is_admissible(
+            host, "smu.edu", "smu.edu",
+            _dept_needles("Department of Biological Sciences"),
+        ) is False
