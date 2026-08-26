@@ -649,6 +649,30 @@ def has_identifying_token(
     )
 
 
+def identifies_nothing(
+    text: str | None, result: "dict[str, Any] | None" = None,
+) -> bool:
+    """True when *text* names nothing at all — every token is a qualifier, a
+    facility function, a function word, or a repeat of the record's own
+    address.
+
+    The inverse of :func:`has_identifying_token`, given a RECORD rather than a
+    pre-computed geo set. This is the entry point for the callers outside
+    search-term derivation — `enrichment.flags` and the department-domain
+    probe in `enrichment.orchestrator` — which reach the same question from
+    the other side: "Central Warehouse", "Main Plant" and "Corporate
+    Headquarters" are not units whose existence a reviewer could confirm or a
+    SERP call could locate, for exactly the reason they make no search term.
+
+    An empty *text* is not a phrase that identifies nothing; it is no phrase,
+    and returns False so callers keep their own handling of a blank slot.
+    """
+    if not text or not text.strip():
+        return False
+    geo = _record_geo_tokens(result) if result else frozenset()
+    return not has_identifying_token(text, geo)
+
+
 def _cap_to_two_terms(
     text: str, geo: "frozenset[str] | None" = None,
 ) -> str | None:
@@ -929,9 +953,11 @@ def _derive_search_term_2(result: dict[str, Any]) -> str | None:
     stores desk, so those words describe where a delivery goes and never which
     unit the record is — and a search term that matches every large employer
     in the country is worse than an empty field, because the empty field does
-    not claim to have found something. `has_identifying_token` is the test;
-    the admin override above it still runs first, so an accounts-payable desk
-    keeps its ADMIN handle instead of being emptied.
+    not claim to have found something. `has_identifying_token` is the test, and
+    it runs first: a finance or procurement desk always carries an identifying
+    token and keeps its ADMIN handle, while a receiving bay or a stores desk —
+    which `is_admin_unit` also recognises — is emptied rather than sent out
+    under a sentinel.
     """
     geo = _record_geo_tokens(result)
     domain = (result.get("domain") or "").strip() or None
@@ -953,16 +979,25 @@ def _derive_search_term_2(result: dict[str, Any]) -> str | None:
             # review flags; enrichment.flags is the single flag authority.
             name2 = ""
 
-    # 0. Admin override (accounts payable, finance, billing, …).
-    if name2 and is_admin_unit(name2):
-        return "ADMIN"
-
-    # 0b. A phrase built entirely from facility and scaffolding words names no
-    #     unit. Checked after the admin override, which recognises a real desk,
-    #     and before the acronym and phrase branches, so neither can rebuild a
-    #     handle out of words that were just found to identify nothing.
+    # 0. A phrase built entirely from facility and scaffolding words names no
+    #    unit, so it gets no handle of any kind — not even the ADMIN sentinel.
+    #    Checked BEFORE the admin override: `is_admin_unit` also covers the
+    #    goods-in / goods-out desks ("Central Receiving", "Stores"), and for
+    #    those the honest Search Term 2 is empty rather than a sentinel that
+    #    claims a back-office desk was identified. A finance or procurement
+    #    desk always carries an identifying token ("payable", "purchasing",
+    #    "treasury"), so it passes this test untouched and still reaches the
+    #    override below.
+    #
+    #    The FLAGS do not follow this ordering, and should not: both halves
+    #    of the rule say the phrase names nothing checkable, so both suppress
+    #    the name2 review flags (`enrichment.flags`, `admin_name2`).
     if name2 and not has_identifying_token(name2, geo):
         name2 = ""
+
+    # 0b. Admin override (accounts payable, finance, billing, …).
+    if name2 and is_admin_unit(name2):
+        return "ADMIN"
 
     dept_domain = (result.get("department_domain") or "").strip() or None
 

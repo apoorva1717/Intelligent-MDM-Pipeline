@@ -150,6 +150,32 @@ class TestIsAdminUnit:
     def test_admin(self, text, expected):
         assert is_admin_unit(text) is expected
 
+    @pytest.mark.parametrize("text", [
+        "Central Receiving", "Receiving", "Receiving Department",
+        "Shipping and Receiving", "Shipping & Receiving", "Shipping/Receiving",
+        "Stores", "Central Stores", "Storeroom", "Stockroom",
+        "Mail Room", "Mailroom", "Mail Services",
+        "Administration", "Office of Administration", "Administrative Services",
+    ])
+    def test_goods_and_mail_desks_are_admin(self, text):
+        """A receiving bay, a stores desk and a mail room are as unverifiable
+        as an accounts-payable desk: no registry entry, no web page, no
+        institutional spelling to be wrong about."""
+        assert is_admin_unit(text) is True
+
+    @pytest.mark.parametrize("text,expected", [
+        # Only a desk WITH its generic word. A bare "Business" is a school of
+        # business, so the phrase has to arrive whole.
+        ("Business Office", True), ("Main Office", True),
+        ("Corporate Office", True), ("Administrative Office", True),
+        ("Department of Business", False), ("School of Business", False),
+        ("College of Business", False), ("Business Administration", False),
+        ("Department of Business Administration", False),
+        ("Business Development", False), ("Administrative Sciences", False),
+    ])
+    def test_whole_phrase_desks(self, text, expected):
+        assert is_admin_unit(text) is expected
+
 
 class TestDerivedAfterEnrichmentOnly:
     """Both terms come from post-enrichment values; the pre-enrichment SAP
@@ -409,17 +435,29 @@ class TestPhraseThatIdentifiesNothing:
         r = _st(name1_enriched="Dow Chemical", name2_enriched=name2)
         assert derive_search_terms(r)[1] is None
 
+    @pytest.mark.parametrize("name2", ["Central Receiving", "Stores"])
+    def test_a_goods_desk_is_emptied_not_sent_out_as_admin(self, name2):
+        """`is_admin_unit` covers these too — they carry no verifiable claim,
+        so they suppress the review flags. Search Term 2 is still EMPTY rather
+        than "ADMIN": the sentinel says a back-office desk was identified, and
+        a phrase every large site carries identified nothing."""
+        r = _st(name1_enriched="Dow Chemical", name2_enriched=name2)
+        assert derive_search_terms(r)[1] is None
+
     @pytest.mark.parametrize("name2,expected", [
         # One identifying token is enough to keep the phrase.
         ("Food Service Systems", "FOOD SERVICE"),
         ("Abbott Nutrition", "ABBOTT NUTRITION"),
         ("Global Technical", "GLOBAL TECHNICAL"),
         ("Truck & Bus", "TRUCK & BUS"),
-        # The existing chain is untouched: structural words still strip and
-        # the admin override still fires before this test runs.
+        # The existing chain is untouched: structural words still strip, and
+        # a finance or procurement desk carries an identifying token, so it
+        # survives this rule and still reaches the admin override below it.
         ("Department of Chemistry", "CHEMISTRY"),
         ("Analytical Sciences Division", "ANALYTICAL SCIENCES"),
         ("Accounts Payable", "ADMIN"),
+        ("Central Purchasing", "ADMIN"),
+        ("Office of Finance", "ADMIN"),
     ])
     def test_real_units_survive(self, name2, expected):
         r = _st(name1_enriched="Acme", name2_enriched=name2)

@@ -1289,12 +1289,44 @@ def seg_matches_needle(seg: str | None, needle: str | None) -> bool:
 # Administrative / back-office units. English only (German deferred). Matched
 # after stripping a leading "Office of" / "Department of" style prefix, so
 # "Office of Finance" is admin but "Office of Research" is not.
+#
+# The test each entry has to pass: is there anything a reviewer could open to
+# confirm this unit? A chemicals company has no web page, registry entry or
+# institutional spelling for its accounts-payable desk or its receiving bay —
+# the phrase says WHERE IN the customer the mail goes, not which unit the
+# record is. Anything with a checkable existence (a named lab, a faculty, a
+# product division) stays out.
 _ADMIN_UNIT_TERMS = {
+    # Finance / procurement back office.
     "accounts payable", "accounts receivable", "ap", "ar",
     "finance", "financial services", "billing", "invoicing",
     "invoice processing", "purchasing", "procurement", "controlling",
     "treasury", "bursar", "comptroller", "general accounting",
     "shared services",
+    # Goods-in / goods-out and mail. Every site has these and none of them
+    # says whose site it is. `search_terms.has_identifying_token` already
+    # emptied Search Term 2 for most of them; listing them here extends the
+    # same judgement to the review flags and the department-domain probe,
+    # which that rule does not reach.
+    "receiving", "shipping", "shipping and receiving",
+    "shipping & receiving", "shipping/receiving",
+    "stores", "storeroom", "stockroom",
+    "mail", "mail room", "mailroom",
+    # Undifferentiated administration. "Business Administration" and
+    # "Administrative Sciences" survive: they carry a second word, so they
+    # reduce to something this vocabulary does not state.
+    "administration", "administrative", "admin",
+}
+
+#: Desks that are only desks WITH their generic word. "Business Office" is the
+#: campus bursar; a bare "Business" is a school of business, and stripping the
+#: trailing "Office" the way :func:`_admin_canonical` does would collapse the
+#: two. These are matched on :func:`_admin_phrase_form` instead — prefix and
+#: plurals removed, but the qualifier and the generic word both kept — so the
+#: phrase has to arrive whole.
+_ADMIN_UNIT_PHRASES = {
+    "business office", "main office", "front office",
+    "corporate office", "general office", "administrative office",
 }
 _ADMIN_PREFIXES = (
     "office of ", "department of ", "dept of ", "dept. ", "dept ",
@@ -1352,10 +1384,32 @@ def _admin_canonical(text: str) -> str:
     return " ".join(_admin_token_stem(w) for w in words)
 
 
+def _admin_phrase_form(text: str) -> str:
+    """*text* normalised only as far as spelling, for :data:`_ADMIN_UNIT_PHRASES`.
+
+    A leading "Office of"/"Department of", punctuation and plurals go; the
+    leading qualifier and the trailing generic word STAY. "Business Office"
+    stays "business office" here, where :func:`_admin_canonical` would reduce
+    it to "business" and take a business school with it.
+    """
+    t = text.strip().lower()
+    for pref in _ADMIN_PREFIXES:
+        if t.startswith(pref):
+            t = t[len(pref):].strip()
+            break
+    t = re.sub(r"[^a-z/& ]", " ", t)
+    return " ".join(_admin_token_stem(w) for w in t.split() if w)
+
+
 #: The vocabulary in the same reduced form the input is reduced to, built once.
 _ADMIN_UNIT_STEMS = frozenset(
     _admin_canonical(term) for term in _ADMIN_UNIT_TERMS
 ) | {"a/p", "a/r"}
+
+#: The whole-phrase vocabulary, in its own reduced form.
+_ADMIN_UNIT_PHRASE_FORMS = frozenset(
+    _admin_phrase_form(phrase) for phrase in _ADMIN_UNIT_PHRASES
+)
 
 
 def is_admin_unit(text: str | None) -> bool:
@@ -1373,9 +1427,19 @@ def is_admin_unit(text: str | None) -> bool:
     ``'Procurement Services'``        → True
     ``'Central Purchasing'``          → True
     ``'Office of Finance'``           → True
+    ``'Central Receiving'``           → True
+    ``'Business Office'``             → True
     ``'Office of Research'``          → False
+    ``'School of Business'``          → False
+    ``'Business Administration'``     → False
     ``'Oncology Lab'``                → False
+
+    A second vocabulary (:data:`_ADMIN_UNIT_PHRASES`) holds the desks that are
+    only desks with their generic word attached, and is matched on the whole
+    phrase rather than on the reduced form.
     """
     if not text or not text.strip():
         return False
-    return _admin_canonical(text) in _ADMIN_UNIT_STEMS
+    if _admin_canonical(text) in _ADMIN_UNIT_STEMS:
+        return True
+    return _admin_phrase_form(text) in _ADMIN_UNIT_PHRASE_FORMS

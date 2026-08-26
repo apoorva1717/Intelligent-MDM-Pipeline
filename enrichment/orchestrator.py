@@ -51,6 +51,7 @@ from enrichment.search_terms import (
     derive_acronym,
     derive_search_terms,
     extract_dept_core,
+    identifies_nothing,
 )
 from enrichment.preprocess import (
     _extract_addresses,
@@ -2414,6 +2415,19 @@ class Orchestrator:
         if is_admin_unit(name2):
             logger.info(
                 "[%s] dept domain probe: skipped (admin unit name2=%r)",
+                record_id, name2,
+            )
+            return
+        # A phrase whose every token is a facility function or a scope
+        # qualifier ("Central Warehouse", "Main Plant", "Corporate
+        # Headquarters") is not a department either — there is no
+        # warehouse.university.edu to find, and the SERP query would match
+        # every large employer in the country. Same test that empties
+        # search_term_2 for these rows; skipped BEFORE any fetch, as above.
+        if identifies_nothing(name2, result):
+            logger.info(
+                "[%s] dept domain probe: skipped (name2 identifies nothing "
+                "%r)",
                 record_id, name2,
             )
             return

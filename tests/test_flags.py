@@ -724,19 +724,29 @@ class TestAnAdminDeskInName2NeedsNoVerification:
     goes, not a unit whose existence is in question.
 
     The pipeline already knows this in two other places: `search_term_2` is
-    "ADMIN" for exactly these rows, and the department-domain probe skips them
-    before it spends a fetch. Flagging afterwards asked a reviewer to confirm
-    what the pipeline itself had declined to look for.
+    "ADMIN" (or, for a desk built entirely of generic words, empty) for
+    exactly these rows, and the department-domain probe skips them before it
+    spends a fetch. Flagging afterwards asked a reviewer to confirm what the
+    pipeline itself had declined to look for.
+
+    The same reasoning covers the goods-in / goods-out and mail desks and the
+    undifferentiated "Business Office": every large site has them, none has a
+    page for them, and none has an institutional spelling to get wrong.
     """
 
     ADMIN = [
         "Accounts Payable", "Account Payable", "Accounts Payable Department",
         "Procurement Services", "Central Purchasing", "Purchasing Dept",
         "Billing Services", "Office of Finance", "AP", "Shared Services",
+        "Central Receiving", "Receiving Department", "Shipping and Receiving",
+        "Central Stores", "Stockroom", "Mail Room",
+        "Business Office", "Main Office", "Office of Administration",
     ]
     NOT_ADMIN = [
         "Oncology Lab", "Department of Chemistry", "Materials Science",
         "Office of Research", "Analytical Services",
+        # "Business Office" is a desk; a business SCHOOL is a real unit.
+        "School of Business", "Business Administration",
     ]
 
     @pytest.mark.parametrize("name2", ADMIN)
@@ -797,3 +807,90 @@ class TestAnAdminDeskInName2NeedsNoVerification:
         )
         assert flags.UNVERIFIED_INFERENCE in (out.get("flag_codes") or [])
         assert "name1" in (out.get("flagged_fields") or [])
+
+
+class TestAPhraseThatNamesNoUnitNeedsNoVerification:
+    """"Central Warehouse" is not a claim anything could check either.
+
+    The twin of the admin-desk rule, reached from the other side. A back-office
+    desk is a real desk with no web presence; a phrase built entirely from
+    facility functions and scope qualifiers is not even a desk. Every large
+    site has a warehouse, a plant and a headquarters, and none of them says
+    whose site it is — there is no page to open, no registry entry to match
+    and no institutional spelling to get wrong.
+
+    `search_terms.identifies_nothing` is the same test that already empties
+    Search Term 2 for these rows and skips the department-domain probe before
+    it spends a fetch. Flagging afterwards asked a reviewer to confirm a
+    phrase the pipeline had just declined to search for.
+    """
+
+    NAMES_NOTHING = [
+        "Central Warehouse", "Main Plant", "Corporate Headquarters",
+        "Distribution Center", "Shipping Dock", "Manufacturing",
+        "Global Operations", "Production Facility", "Logistics",
+        "Interplant Site Off E",
+    ]
+    NAMES_A_UNIT = [
+        "Advanced Manufacturing", "Polymer Production", "Vaccine Distribution",
+        "Neuroscience Institute", "Food Service Systems", "Global Technical",
+    ]
+
+    @pytest.mark.parametrize("name2", NAMES_NOTHING)
+    def test_an_inferred_facility_phrase_is_not_flagged(self, name2):
+        out = _finalised(
+            {"name1": "Acme Chemicals", "name2": name2},
+            name1_enriched="Acme Chemicals",
+            name2_enriched=name2.upper(),
+            _ev_tier3_wrote=("name2",),
+        )
+        assert flags.UNVERIFIED_INFERENCE not in (out.get("flag_codes") or [])
+        assert "name2" not in (out.get("flagged_fields") or [])
+
+    @pytest.mark.parametrize("name2", NAMES_NOTHING)
+    def test_the_low_confidence_half_is_cleared_too(self, name2):
+        out = _finalised(
+            {"name1": "Acme Chemicals", "name2": name2},
+            name1_enriched="Acme Chemicals",
+            name2_enriched=name2,
+            _ev_low_conf_unchanged=["name2"],
+        )
+        assert "name2" not in (out.get("flagged_fields") or [])
+
+    @pytest.mark.parametrize("name2", NAMES_A_UNIT)
+    def test_one_identifying_token_keeps_the_doubt(self, name2):
+        """The boundary. "Manufacturing" alone names nothing; "Advanced
+        Manufacturing" names a unit, and a unit's existence is a question."""
+        out = _finalised(
+            {"name1": "Acme Chemicals", "name2": name2},
+            name1_enriched="Acme Chemicals",
+            name2_enriched=name2.upper() + " GROUP",
+            _ev_tier3_wrote=("name2",),
+        )
+        assert flags.UNVERIFIED_INFERENCE in (out.get("flag_codes") or [])
+
+    def test_name1_doubts_are_untouched(self):
+        """Scoped to Name 2, exactly as the admin rule is."""
+        out = _finalised(
+            {"name1": "Acme Chemicals", "name2": "Central Warehouse"},
+            name1_enriched="Acme Chemicals International",
+            name2_enriched="Central Warehouse",
+            _ev_tier3_wrote=("name1",),
+        )
+        assert flags.UNVERIFIED_INFERENCE in (out.get("flag_codes") or [])
+        assert "name1" in (out.get("flagged_fields") or [])
+
+    def test_a_blank_name2_is_not_a_phrase_that_identifies_nothing(self):
+        """`identifies_nothing("")` is False: an empty slot is no phrase, and
+        the callers keep their own handling of one."""
+        from enrichment.search_terms import identifies_nothing
+        assert identifies_nothing("") is False
+        assert identifies_nothing(None) is False
+
+    def test_the_records_own_address_does_not_identify_a_unit(self):
+        """A Name 2 that only repeats the record's own city is a location, not
+        a department — the geo half of the same test."""
+        from enrichment.search_terms import identifies_nothing
+        rec = {"city": "Midland", "region": "MI"}
+        assert identifies_nothing("Midland Site", rec) is True
+        assert identifies_nothing("Midland Site", {}) is False
