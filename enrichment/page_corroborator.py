@@ -125,6 +125,29 @@ _MIN_CONTENT_CHARS = 120
 _WS_RE = re.compile(r"\s+")
 
 
+def _readable_text(content: Any) -> str:
+    """One page's body text with its footer put back on the end.
+
+    `PageFetcher` strips `<footer>` out of `body_text` and holds it separately
+    (`PageContent.footer_text`), because for every OTHER consumer a footer is
+    per-site boilerplate that pollutes the extraction. This reader is the
+    exception, and it is the reader that most needs it: a footer's copyright
+    line is where a site states its COMPLETE legal name, while the top of the
+    page — all this reader used to be shown — carries the trading brand and
+    nothing else. That is what produced "LabQ" for "Labq Clinical Diagnostics
+    Inc" and "Noveon" for "Noveon Magnetics": not a reader that abbreviated,
+    a reader that was never shown the full name.
+
+    Marked with a `[footer]` tag rather than merged, so the prompt can name
+    the copyright line as a source and the reader can tell where it is.
+    """
+    body = (getattr(content, "body_text", "") or "").strip()
+    footer = (getattr(content, "footer_text", "") or "").strip()
+    if not footer:
+        return body
+    return f"{body}\n\n[footer] {footer}".strip()
+
+
 @dataclass
 class PageStatement:
     """What the page said about itself, as the reader reported it."""
@@ -233,6 +256,13 @@ async def fetch_pages(
     a footer copyright line and an address stated only on ``/contact`` are both
     available to the reader in a single call.
 
+    The footer half of that sentence was not true until :func:`_readable_text`
+    existed. ``REMOVE_TAGS`` deletes ``<footer>`` before ``body_text`` is
+    taken, so the copyright line this docstring promised the reader had been
+    stripped out of every page it was ever shown, and the reader was left
+    reporting the trading brand from the top of the page. The footer is now
+    carried on ``PageContent.footer_text`` and put back here, marked.
+
     Cached and fixture-recorded on the **domain**, so a batch that names the
     same organisation twice reads it once, and a re-run reads what the first
     run saw. ``cache.replay_only`` refuses to go to the network at all: a
@@ -275,7 +305,7 @@ async def fetch_pages(
     payload.update({
         "title": content.page_title,
         "h1": content.h1,
-        "text": content.body_text,
+        "text": _readable_text(content),
         "paths": ["/"],
     })
 
@@ -291,7 +321,8 @@ async def fetch_pages(
         payload["text"] = _WS_RE.sub(
             " ",
             f"{payload['text']}\n\n[{path}] "
-            f"{sub.content.page_title} {sub.content.h1} {sub.content.body_text}",
+            f"{sub.content.page_title} {sub.content.h1} "
+            f"{_readable_text(sub.content)}",
         ).strip()
         break
 

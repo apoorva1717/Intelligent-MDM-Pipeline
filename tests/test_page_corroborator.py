@@ -39,7 +39,8 @@ from enrichment.page_corroborator import (
     operating_name_provenance,
 )
 from enrichment.provenance import GUARD_PAGE_IDENTITY, deterministic_evidence
-from search.page_fetcher import PageContent, PageFetchResult
+from llm.prompts import PAGE_READ_USER_PROMPT_TEMPLATE
+from search.page_fetcher import PageContent, PageFetcher, PageFetchResult
 from tests.mocks.lei_mock import MockLEIClient
 from tests.mocks.openai_mock import MockOpenAIClient
 from tests.mocks.ror_mock import MockRORClient
@@ -66,12 +67,14 @@ class _Fetcher:
         return self.pages.get(url, PageFetchResult(url=url, status=404))
 
 
-def _page(url: str, title: str = "", h1: str = "", text: str = "") -> PageFetchResult:
+def _page(
+    url: str, title: str = "", h1: str = "", text: str = "", footer: str = "",
+) -> PageFetchResult:
     return PageFetchResult(
         url=url, status=200,
         content=PageContent(
             url=url, url_path="", page_title=title, h1=h1,
-            breadcrumb="", body_text=text,
+            breadcrumb="", body_text=text, footer_text=footer,
         ),
     )
 
@@ -161,6 +164,90 @@ class TestFetch:
 # ---------------------------------------------------------------------------
 # Learning nothing
 # ---------------------------------------------------------------------------
+
+class TestTheReaderSeesTheCompleteName:
+    """The footer is where a site states its full legal name, and it used to be
+    stripped before the reader was shown anything.
+
+    This is the whole cause of `Operating Name` arriving as a clipped `Name 1`
+    — "LabQ" for "Labq Clinical Diagnostics Inc". The reader was not
+    abbreviating; the only name in the text it was given was the trading brand
+    at the top of the page.
+    """
+
+    def test_the_parser_keeps_the_footer_it_strips_from_the_body(self):
+        html = (
+            "<html><body><h1>LabQ</h1>"
+            "<p>Diagnostics, delivered.</p>"
+            "<footer>© 2025 Labq Clinical Diagnostics, Inc. "
+            "All rights reserved.</footer>"
+            "</body></html>"
+        )
+        content = PageFetcher()._parse("https://labq.com/", html)
+        # Unchanged for every other consumer: the footer is still out of the body.
+        assert "Labq Clinical Diagnostics" not in content.body_text
+        # And available to the one consumer that needs it.
+        assert "Labq Clinical Diagnostics, Inc." in content.footer_text
+
+    def test_a_long_footer_keeps_the_end_where_the_copyright_line_is(self):
+        html = (
+            "<html><body><p>hero</p><footer>"
+            + "Products Services Careers Investors " * 60
+            + "© 2025 Noveon Magnetics, Inc.</footer></body></html>"
+        )
+        content = PageFetcher()._parse("https://noveon.com/", html)
+        assert content.footer_text.startswith("…")
+        assert "Noveon Magnetics, Inc." in content.footer_text
+
+    @pytest.mark.asyncio
+    async def test_the_footer_reaches_the_text_the_reader_is_given(self):
+        fetcher = _Fetcher({
+            "https://labq.com/": _page(
+                "https://labq.com/", title="LabQ", h1="LabQ",
+                text="Diagnostics, delivered." + "x" * 200,
+                footer="© 2025 Labq Clinical Diagnostics, Inc.",
+            ),
+        })
+        payload = await fetch_pages("labq.com", fetcher, PageCache())
+        assert "[footer]" in payload["text"]
+        assert "Labq Clinical Diagnostics, Inc." in payload["text"]
+
+    @pytest.mark.asyncio
+    async def test_an_imprint_footer_reaches_it_too(self):
+        fetcher = _Fetcher({
+            "https://labq.com/": _page("https://labq.com/", text="x" * 200),
+            "https://labq.com/impressum": _page(
+                "https://labq.com/impressum", text="Imprint",
+                footer="Labq Clinical Diagnostics, Inc., Valley Stream NY",
+            ),
+        })
+        payload = await fetch_pages("labq.com", fetcher, PageCache())
+        assert "Labq Clinical Diagnostics, Inc." in payload["text"]
+
+    def test_a_page_with_no_footer_is_unchanged(self):
+        html = "<html><body><h1>Magna</h1><p>Coatings for industry.</p></body></html>"
+        content = PageFetcher()._parse("https://magna.com/", html)
+        assert content.footer_text == ""
+
+    def test_a_cache_entry_written_before_the_field_existed_still_decodes(self):
+        """Legacy fixtures replay as a page with no footer — which is exactly
+        the content the run that recorded them saw."""
+        content = PageFetcher._content_from_json({
+            "url": "https://acme.com/", "url_path": "/",
+            "page_title": "Acme", "h1": "Acme", "breadcrumb": "",
+            "body_text": "Acme makes things.",
+        })
+        assert content.footer_text == ""
+
+    def test_the_prompt_asks_for_the_most_complete_stated_form(self):
+        """Seeing the fuller name is necessary but not sufficient — the reader
+        also has to be told which of two printed forms to report."""
+        assert "MOST COMPLETE form" in PAGE_READ_USER_PROMPT_TEMPLATE
+        # …without licensing invention: rule 6 must still stand.
+        assert "never assemble a fuller name out of parts" in (
+            PAGE_READ_USER_PROMPT_TEMPLATE
+        )
+
 
 class TestNotLookingIsNotEvidence:
     @pytest.mark.asyncio

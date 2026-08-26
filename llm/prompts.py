@@ -315,6 +315,16 @@ WEBSITE_INFERENCE_USER_PROMPT_TEMPLATE = (
 #     page does not mention it — and location consistency is one of the two
 #     tests, so a remembered address would decide the very question being
 #     asked. Absent fields must come back null.
+#   * A page that names itself twice — "LabQ" across the top and "Labq Clinical
+#     Diagnostics, Inc." in the copyright line — was being reported by whichever
+#     form the reader met first, which is the short one. That is a real choice
+#     the reader has to make and the rules were silent on it, so `Operating
+#     Name` came out a clipped version of Name 1 on row after row. Rule 7
+#     settles it: among the forms the page ACTUALLY PRINTS, the most complete
+#     one wins. It is not a licence to expand — rule 6 still forbids assembling
+#     a name or supplying a legal form the page does not show — and it only
+#     became reachable once `PageContent.footer_text` started putting the
+#     copyright line in front of the reader at all.
 
 PAGE_READ_SYSTEM_PROMPT = (
     "You read the text of one web page and report ONLY what that page "
@@ -360,7 +370,15 @@ PAGE_READ_USER_PROMPT_TEMPLATE = (
     "5. legal_form_present is true only when stated_org_name carries an "
     "explicit legal form (Inc, LLC, Ltd, GmbH, AG, S.A., B.V., …).\n"
     "6. Report the name exactly as written on the page. Do not expand, "
-    "abbreviate, translate, or tidy it."
+    "abbreviate, translate, or tidy it.\n"
+    "7. If the page states the operating organisation's name in more than "
+    "one form — a short trading name in a heading or logo and a fuller one "
+    "in a copyright line, an imprint, an address block, or an about "
+    "statement — return the MOST COMPLETE form that appears on the page. "
+    "Text marked [footer] is part of the page and is usually where the "
+    "fullest form is. Choosing between forms the page prints is not "
+    "expanding; rule 6 still holds, so never assemble a fuller name out of "
+    "parts and never add a legal form the page does not show."
 )
 
 
@@ -568,6 +586,7 @@ TIER2_CANONICAL_PROMPT_VERSION = prompt_version(
     TIER2_CANONICAL_SYSTEM_PROMPT, TIER2_CANONICAL_USER_PROMPT_TEMPLATE,
 )
 PAGE_READ_PROMPT_VERSION = prompt_version(
-    "page_read", "v1",
+    # v2 — rule 7 (most complete stated form) and the [footer] slice.
+    "page_read", "v2",
     PAGE_READ_SYSTEM_PROMPT, PAGE_READ_USER_PROMPT_TEMPLATE,
 )

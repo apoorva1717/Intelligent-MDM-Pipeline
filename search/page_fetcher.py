@@ -26,6 +26,14 @@ logger = logging.getLogger(__name__)
 
 REMOVE_TAGS = {"script", "style", "nav", "footer", "header", "aside", "form", "iframe"}
 
+#: How much of a `<footer>` is kept, and from which end.
+#:
+#: The TAIL. A footer runs nav columns, then an address block, then social
+#: links, then the copyright line — the legal name is in the last two of those
+#: and the link lists are the part worth losing. A head slice of a long footer
+#: is a sitemap; a tail slice of one is the sentence that names the company.
+_FOOTER_MAX_CHARS = 600
+
 
 def _log_fetch_failure(url: str, exc: Exception) -> None:
     """Log a fetch failure without the alarming multi-line traceback.
@@ -60,6 +68,20 @@ class PageContent:
     h1: str
     breadcrumb: str
     body_text: str  # kept for debugging / legacy callers
+    #: The `<footer>` text, held apart from `body_text`.
+    #:
+    #: `REMOVE_TAGS` strips `<footer>` before the body text is taken, and for
+    #: every consumer that reads a page for a department, a contact or a
+    #: profile that is right: a footer is the same boilerplate on every page of
+    #: a site and it pollutes what they extract. The page-read corroborator is
+    #: the exception — a footer's copyright line ("© 2025 Labq Clinical
+    #: Diagnostics, Inc.") is the single most reliable statement of COMPLETE
+    #: legal identity a site carries, and stripping it left that reader with
+    #: hero copy whose only name is the trading brand. So the footer is
+    #: extracted rather than discarded, and offered as a separate slice each
+    #: consumer opts into. Defaulted, so every existing construction site and
+    #: every cache entry written before the field existed stays valid.
+    footer_text: str = ""
 
     def is_empty(self) -> bool:
         return not any([self.page_title, self.h1, self.breadcrumb, self.body_text])
@@ -148,6 +170,7 @@ class PageFetcher:
             "url": content.url, "url_path": content.url_path,
             "page_title": content.page_title, "h1": content.h1,
             "breadcrumb": content.breadcrumb, "body_text": content.body_text,
+            "footer_text": content.footer_text,
         }
 
     @staticmethod
@@ -159,6 +182,10 @@ class PageFetcher:
             page_title=raw.get("page_title") or "", h1=raw.get("h1") or "",
             breadcrumb=raw.get("breadcrumb") or "",
             body_text=raw.get("body_text") or "",
+            # Absent on entries recorded before the field existed. Those
+            # replay as a page with no footer, which is exactly the content
+            # the run that recorded them saw.
+            footer_text=raw.get("footer_text") or "",
         )
 
     async def fetch_page_result(
@@ -435,6 +462,16 @@ class PageFetcher:
         parsed = urlparse(url)
         url_path = parsed.path or ""
 
+        # The footer, BEFORE the decompose loop below deletes it. Kept apart
+        # from `body_text` so no existing consumer's extraction changes; see
+        # `PageContent.footer_text` for why it is worth keeping at all.
+        footer_text = " ".join(
+            tag.get_text(" ", strip=True) for tag in soup.find_all("footer")
+        )
+        footer_text = re.sub(r"\s+", " ", footer_text).strip()
+        if len(footer_text) > _FOOTER_MAX_CHARS:
+            footer_text = "…" + footer_text[-(_FOOTER_MAX_CHARS - 1):]
+
         # Remove non-content elements and extract body text
         for tag in soup.find_all(REMOVE_TAGS):
             tag.decompose()
@@ -450,6 +487,7 @@ class PageFetcher:
             h1=h1[:300],
             breadcrumb=breadcrumb[:300],
             body_text=body_text,
+            footer_text=footer_text,
         )
 
 
