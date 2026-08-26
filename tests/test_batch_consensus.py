@@ -26,11 +26,14 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from api.models import EnrichmentResult
+from enrichment.provenance import deterministic_evidence, llm_evidence
 from enrichment.batch_consensus import (
     NEVER_PROPAGATED,
     PROPAGATED_FIELDS,
     _address_block_id,
+    _input_affinity,
     _name_parts,
+    _supplied_names,
     apply_batch_consensus,
 )
 from enrichment.flags import (
@@ -83,6 +86,25 @@ def _low_conf(
     """
     rendered = render_flags(scopes or {}, low_confidence=list(fields))
     return _result(record_id, name1, **{**rendered, **kw})
+
+
+def _supplied(record_id: str, original: str, enriched: str, **kw) -> EnrichmentResult:
+    """A result that remembers the Name 1 its record ARRIVED with.
+
+    Seeded through the real write path rather than by hand: the input
+    passthrough is an ordinary provenance event, and `_supplied_names` reads
+    it back the same way it does on a record the pipeline produced. A plain
+    `_result` has no log and therefore no supplied name, which is exactly the
+    fallback case the tie-break has to tolerate.
+    """
+    row = _result(record_id, None, **kw)
+    row.write("name1_enriched", original,
+              deterministic_evidence("input-passthrough", producer="input"))
+    if enriched != original:
+        row.write("name1_enriched", enriched,
+                  llm_evidence(("llm_tier3",), tier=3,
+                               prompt_version="t", deployment="t"))
+    return row
 
 
 class TestPropagation:
@@ -852,3 +874,108 @@ class TestFlagsFalsifiedByPropagation:
         assert row.flagged_fields == ["domain"]
         assert row.flag_reason.startswith("Domain:")
         assert "left exactly as supplied" not in row.flag_reason
+
+
+class TestNameFormTieBreak:
+    """When the batch has no majority spelling, the form closest to what the
+    records were SUPPLIED with wins.
+
+    A tie means the modal rule has nothing to say, and what used to decide it
+    was row order — which is not a fact about the data. The demo batch showed
+    the cost: the Coastal trio spells one company three ways, no two records
+    enrich to the same form, and the elected name was a string none of the
+    three was ever supplied with, taken from the first row because it was
+    first. Tier and batch order stay below this, so the election is still
+    total when a group has no originals to compare against.
+    """
+
+    def test_a_three_way_tie_elects_the_form_closest_to_the_input(self):
+        """The demo's Coastal trio, verbatim. `Coastal Diagnostics, Inc` is
+        what row 19 supplied; `Coastal Diagnostics Inc.` is what row 17's LLM
+        invented and what batch order used to elect."""
+        rows = [
+            _supplied("r17", "Coastal Diagnostics INC", "Coastal Diagnostics Inc."),
+            _supplied("r18", "COASTAL DIAGNOSTICS", "Coastal Diagnostics"),
+            _supplied("r19", "Coastal Diagnostics, Inc", "Coastal Diagnostics, Inc"),
+        ]
+        apply_batch_consensus(rows)
+
+        assert {r.name1_enriched for r in rows} == {"Coastal Diagnostics, Inc"}
+
+    def test_batch_order_no_longer_decides_a_tie(self):
+        """Same group, reversed. The elected form must not follow the ordering
+        — that is the whole defect."""
+        rows = [
+            _supplied("r19", "Coastal Diagnostics, Inc", "Coastal Diagnostics, Inc"),
+            _supplied("r18", "COASTAL DIAGNOSTICS", "Coastal Diagnostics"),
+            _supplied("r17", "Coastal Diagnostics INC", "Coastal Diagnostics Inc."),
+        ]
+        apply_batch_consensus(rows)
+
+        assert {r.name1_enriched for r in rows} == {"Coastal Diagnostics, Inc"}
+
+    def test_a_majority_still_beats_a_closer_form(self):
+        """The tie-break is a tie-break. Two rows agreeing on a spelling is
+        the batch's own evidence, and it outranks one row being nearer its own
+        input — otherwise a single outlier would overrule the group."""
+        rows = [
+            _supplied("a", "ACME LABS", "Acme Labs Inc."),
+            _supplied("b", "ACME LABS", "Acme Labs Inc."),
+            _supplied("c", "Acme Labs, Inc", "Acme Labs, Inc"),
+        ]
+        apply_batch_consensus(rows)
+
+        assert {r.name1_enriched for r in rows} == {"Acme Labs Inc."}
+
+    def test_a_form_nobody_was_supplied_with_loses_to_one_that_was(self):
+        """Both records were supplied the same spelling; one was then
+        repunctuated on the way out. The supplied spelling wins."""
+        rows = [
+            _supplied("a", "Harbor Clinic Inc", "Harbor Clinic Inc."),
+            _supplied("b", "Harbor Clinic Inc", "Harbor Clinic Inc"),
+        ]
+        apply_batch_consensus(rows)
+
+        assert {r.name1_enriched for r in rows} == {"Harbor Clinic Inc"}
+
+    def test_a_group_with_no_supplied_names_still_elects_deterministically(self):
+        """No provenance, so no originals to compare — the affinity is zero
+        for every candidate and the tier/batch-order tie-breaks below it
+        decide, exactly as before."""
+        rows = [
+            _result("a", "Coastal Diagnostics, Inc.", tier_used=3),
+            _result("b", "Coastal Diagnostics Inc", tier_used=1),
+        ]
+        apply_batch_consensus(rows)
+
+        # Earliest tier wins, unchanged by this fix.
+        assert {r.name1_enriched for r in rows} == {"Coastal Diagnostics Inc"}
+
+    def test_the_elected_form_is_never_a_string_the_pass_composed(self):
+        """Consensus elects among the forms the batch already holds; it never
+        builds one. Whatever wins must be one of the candidates."""
+        rows = [
+            _supplied("a", "Delta Systems INC", "Delta Systems Inc."),
+            _supplied("b", "DELTA SYSTEMS", "Delta Systems"),
+            _supplied("c", "Delta Systems, Inc", "Delta Systems, Inc"),
+        ]
+        candidates = {r.name1_enriched for r in rows}
+        apply_batch_consensus(rows)
+
+        assert {r.name1_enriched for r in rows} <= candidates
+
+    def test_affinity_scores_a_form_against_every_original_not_just_its_own(self):
+        """`Coastal Diagnostics` is verbatim its own record's input, so a
+        per-record rule would elect it and drop the legal form the other two
+        rows carry. Scoring against the whole group keeps `Inc`."""
+        supplied = ["Coastal Diagnostics INC", "COASTAL DIAGNOSTICS",
+                    "Coastal Diagnostics, Inc"]
+        assert (_input_affinity("Coastal Diagnostics, Inc", supplied)
+                > _input_affinity("Coastal Diagnostics", supplied))
+
+    def test_supplied_names_reads_the_input_event_not_the_final_value(self):
+        row = _supplied("a", "COASTAL DIAGNOSTICS", "Coastal Diagnostics, Inc.")
+        assert _supplied_names([row]) == ["COASTAL DIAGNOSTICS"]
+
+    def test_a_record_with_no_log_contributes_no_supplied_name(self):
+        assert _supplied_names([_result("a", "Coastal Diagnostics")]) == []

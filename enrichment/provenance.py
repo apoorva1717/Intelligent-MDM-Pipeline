@@ -678,6 +678,29 @@ class ProvenanceLog:
     def has_event(self, field: str) -> bool:
         return bool(self.events_for(field))
 
+    def original_value(self, field: str) -> Any:
+        """The value the record ARRIVED with, before any producer touched it.
+
+        The log already answers this — the first thing written to a scoped
+        field is the record's own input, by the ``input`` producer — so the
+        value does not need carrying separately on the result. That matters
+        after ``finalise``: `EnrichmentResult` keeps no `*_original`, and a
+        batch-level pass asking "which of these surface forms is closest to
+        what the customer actually supplied" would otherwise have nothing to
+        compare against.
+
+        None when the field has no events, or when the earliest one is not an
+        input passthrough — a field the pipeline populated from nothing was
+        not supplied at all, and an absent value is not a spelling.
+        """
+        events = self.events_for(field)
+        if not events:
+            return None
+        first = events[0]
+        if first.producer_chain and first.producer_chain[-1] == "input":
+            return first.new_value
+        return first.old_value
+
     def as_dicts(self) -> list[dict[str, Any]]:
         return [e.as_dict() for e in self.events]
 
