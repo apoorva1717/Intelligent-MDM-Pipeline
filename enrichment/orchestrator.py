@@ -1183,6 +1183,35 @@ def _same_name_text(a: Any, b: Any) -> bool:
     )
 
 
+def _slot_input_value(result: Any, slot: str) -> str | None:
+    """What the RECORD states for *slot* — the raw SAP value, or the value
+    preprocessing moved there out of another input field.
+
+    `{slot}_original` alone is not that question. Preprocessing routes input
+    content between slots: the unit split out of a parent-org Name 1 ("USDA -
+    Kerrville MLRA Office" → Name 1 "United States Department of Agriculture",
+    Name 2 "Kerrville MLRA Office") and a name the street routers lifted out of
+    an address line both land in a slot whose `_original` is blank. The value
+    is still the record's own — nothing inferred it — so the two rules that ask
+    "was this slot blank in the input?" must see it: Tier 3's subject guard,
+    which only protects a POPULATED slot, and finalise §6c, which drops an
+    uncertain Tier 3 answer written INTO a blank one. Reading `_original` there
+    let Tier 3 replace "Kerrville MLRA Office" with "Natural Resources
+    Conservation Service" and §6c then drop that as invented — and the
+    department passthrough restores `_original`, which is blank, so the office
+    the record named shipped nowhere at all.
+
+    Returns None when the slot genuinely carries no input value.
+    """
+    orig = result.get(f"{slot}_original")
+    if orig and str(orig).strip():
+        return str(orig).strip()
+    placed = (result.get("_preprocess_populated") or {}).get(slot)
+    if placed and str(placed).strip():
+        return str(placed).strip()
+    return None
+
+
 def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     """Apply empty-string guards and compute changed flags.
 
@@ -1218,11 +1247,11 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
         result.get("confidence") or ""
     ).lower() != "high":
         for _slot in DEPT_SLOTS:
-            _orig = result.get(f"{_slot}_original")
+            _orig = _slot_input_value(result, _slot)
             if (
                 result.get(f"_{_slot}_from_tier3")
                 and result.get(f"{_slot}_enriched")
-                and not (_orig and str(_orig).strip())
+                and not _orig
             ):
                 logger.info(
                     "[%s] Tier 3 %s guess dropped (input blank, confidence=%s): %r",
@@ -1782,6 +1811,7 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     result["duration_ms"] = int((time.monotonic() - start) * 1000)
     # Strip transient non-schema keys before pydantic validation.
     result.pop("_preprocess_cleared", None)
+    result.pop("_preprocess_populated", None)
     result.pop("_names_from_street", None)
     result.pop("_dba_values", None)
     result.pop("_pp_name1", None)
@@ -2279,11 +2309,8 @@ def _apply_tier3(
                 # of Engineering" along with everything else Tier 3 legitimately
                 # does here. `subject_preserved` asks the narrower question
                 # Tier 2 already asks of its own medium-confidence answers.
-                original = result.get(f"{slot}_original")
-                if (
-                    original and str(original).strip()
-                    and not subject_preserved(original, suggestion)
-                ):
+                original = _slot_input_value(result, slot)
+                if original and not subject_preserved(original, suggestion):
                     # No write, so the slot stays None and finalise's
                     # department passthrough restores the input value with
                     # `input`, not `llm`, provenance — the same end state as
@@ -5055,6 +5082,13 @@ class Orchestrator:
             # "changed" = field value is different (includes cleared).
             # Both types prevent finalise() from restoring the original.
             preprocess_cleared: set[str] = set()
+            # Slots preprocessing filled that the input left blank, mapped to
+            # the value it put there. The content came out of another INPUT
+            # field (the unit split off a parent-org Name 1, a name lifted out
+            # of a street line, the UC 14 leftward pack), so `_slot_input_value`
+            # reads this alongside `{slot}_original` — see its docstring for
+            # the two rules that would otherwise treat the slot as blank.
+            preprocess_populated: dict[str, str] = {}
             for base in NAME_SLOTS:
                 pre_val = getattr(pre, base, None)
                 orig = getattr(record, base, None)
@@ -5079,6 +5113,7 @@ class Orchestrator:
                     # Preprocessing populated a previously empty slot
                     # (UC 14 name3 → name2 shift). Record the new value
                     # so downstream tiers and finalise() see it.
+                    preprocess_populated[base] = pre_stripped
                     _write(
                         result, f"{base}_enriched", pre_stripped,
                         deterministic_evidence(
@@ -5088,6 +5123,7 @@ class Orchestrator:
                         ),
                     )
             result["_preprocess_cleared"] = preprocess_cleared
+            result["_preprocess_populated"] = preprocess_populated
             # Name slots preprocessing filled from a STREET field, mapped to
             # the value it put there. Not name data anyone supplied — the
             # routers lifted it out of an address line — so finalise() holds
