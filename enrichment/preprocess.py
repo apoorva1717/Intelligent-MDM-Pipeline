@@ -123,6 +123,8 @@ _AP_PATTERNS = [
     # "AP Invoice", "AP Dept", "A/P Dept", "AP Department", "AP Div", "AP Division"
     re.compile(r"\bap\b(?:\s+invoice|\s+dept|\s+department|\s+div|\s+division)", re.IGNORECASE),
     re.compile(r"\baccounts?\s+pay\b", re.IGNORECASE),
+    # "Acct Pay", "Accts Pay", "Acct. Pay" — the clipped SAP spelling.
+    re.compile(r"\baccts?\.?\s+pay\b", re.IGNORECASE),
 ]
 
 
@@ -130,6 +132,70 @@ def _is_ap_reference(text: str) -> bool:
     if not text:
         return False
     return any(p.search(text) for p in _AP_PATTERNS)
+
+
+#: A segment that is the accounts-payable desk and nothing else. A bare "AP"
+#: is too ambiguous to match anywhere in a name ("AP Moller", "AP Chemicals"),
+#: but a delimited segment of its own, sitting after a real organisation
+#: name, is only ever the desk.
+_BARE_AP_SEGMENTS = frozenset({"ap", "a/p", "a.p.", "acctpay", "acctspay"})
+
+
+def _segment_is_ap(segment: str) -> bool:
+    """True when a single delimited segment names the accounts-payable desk."""
+    stripped = segment.strip().strip(".").lower()
+    return stripped in _BARE_AP_SEGMENTS or _is_ap_reference(segment)
+
+
+# Delimiters that separate an organisation from a trailing administrative desk
+# inside one field: "McLaren HealthCare Corp/Acct Pay", "Acme Corp - A/P".
+# A hyphen counts only with whitespace on both sides, so a hyphenated name
+# ("Coca-Cola") is never a split point.
+_AP_DELIM_RE = re.compile(r"\s*[|,;]\s*|\s+[-\u2013\u2014]\s+|\s*/\s*")
+#: A slash between two single letters is the "A/P" abbreviation, not a
+#: delimiter — "Acme Corp/A/P" splits once, before the "A/P".
+_ABBREV_SLASH_RE = re.compile(r"(?<![A-Za-z])[A-Za-z]\s*/\s*[A-Za-z](?![A-Za-z])")
+
+
+def _split_ap_suffix(text: str) -> str | None:
+    """Return the organisation when *text* is "<organisation><delim><AP desk>".
+
+    ``"McLaren HealthCare Corp/Acct Pay"`` → ``"McLaren HealthCare Corp"``,
+    the caller then putting the desk in its own name slot. Returns None when
+    the value is an AP reference through and through ("Accounts Payable
+    Department") — UC 6 replaces the whole field in that case, as it always
+    has — or when the desk is not a trailing segment, which would make the
+    prefix an incomplete name rather than a whole one.
+    """
+    abbrev_spans = [m.span() for m in _ABBREV_SLASH_RE.finditer(text)]
+
+    def _inside_abbrev(m: re.Match[str]) -> bool:
+        return any(s < m.start() and m.end() <= e for s, e in abbrev_spans)
+
+    segments: list[tuple[int, str]] = []
+    pos = 0
+    for m in _AP_DELIM_RE.finditer(text):
+        if _inside_abbrev(m):
+            continue
+        segments.append((pos, text[pos:m.start()]))
+        pos = m.end()
+    segments.append((pos, text[pos:]))
+    segments = [(start, seg) for start, seg in segments if seg.strip()]
+    if len(segments) < 2:
+        return None
+
+    first_ap = next(
+        (i for i, (_, seg) in enumerate(segments) if _segment_is_ap(seg)), None
+    )
+    # The desk must trail a real name: nothing to keep if it leads, and a
+    # non-desk segment after it means the value is a longer chain this rule
+    # has no reading of.
+    if not first_ap:
+        return None
+    if not all(_segment_is_ap(seg) for _, seg in segments[first_ap:]):
+        return None
+    organisation = text[: segments[first_ap][0]].strip(" \t,;:/|-\u2013\u2014")
+    return organisation or None
 
 
 # ---------------------------------------------------------------------------
@@ -1500,7 +1566,10 @@ def preprocess_record(
     # Institute of Technology", "Massachusetts Institute of Technology (MIT)"),
     # keep only the full form.
     # ---------------------------------------------------------------
-    if res.name1 and res.name1.strip():
+    # A trailing "- A/P" is the accounts-payable desk, not an abbreviation of
+    # the name in front of it: UC 6 below moves it into its own slot, so the
+    # dedupe must not read it as a restatement and delete it first.
+    if res.name1 and res.name1.strip() and not _split_ap_suffix(res.name1):
         original = res.name1
         deduped = _strip_redundant_acronym(original)
         if deduped and deduped != original:
@@ -1752,7 +1821,32 @@ def preprocess_record(
     # ---------------------------------------------------------------
     for field_name in NAME_SLOTS:
         val = getattr(res, field_name)
-        if val and _is_ap_reference(val):
+        if not (val and val.strip()):
+            continue
+        # "McLaren HealthCare Corp/Acct Pay" is an organisation AND a desk in
+        # one field. Keep the organisation where it is — it is the only name
+        # the record has — and give the desk its own slot. Replacing the whole
+        # field, the way a desk-only value is replaced below, would throw the
+        # customer away and leave the record with nothing to enrich.
+        organisation = _split_ap_suffix(val)
+        if organisation:
+            target = _first_empty_name_slot(res)
+            if target is None:
+                res.note(
+                    6,
+                    f"accounts-payable desk embedded in {field_name} but "
+                    f"{'/'.join(DEPT_SLOTS)} full — left in place",
+                )
+                continue
+            setattr(res, field_name, organisation)
+            setattr(res, target, "Accounts Payable")
+            res.note(
+                6,
+                f"split Accounts Payable out of {field_name} to {target} "
+                f"(was {val!r})",
+            )
+            continue
+        if _is_ap_reference(val):
             setattr(res, field_name, "Accounts Payable")
             res.note(6, f"{field_name} normalised to Accounts Payable (was {val!r})")
 

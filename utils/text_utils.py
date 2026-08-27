@@ -1467,6 +1467,9 @@ def seg_matches_needle(seg: str | None, needle: str | None) -> bool:
 _ADMIN_UNIT_TERMS = {
     # Finance / procurement back office.
     "accounts payable", "accounts receivable", "ap", "ar",
+    # The clipped SAP spellings of the same desk. `_admin_token_stem` folds
+    # "accts"→"acct", so one entry per phrase covers both plural forms.
+    "acct pay", "acct payable", "acct receivable",
     "finance", "financial services", "billing", "invoicing",
     "invoice processing", "purchasing", "procurement", "controlling",
     "treasury", "bursar", "comptroller", "general accounting",
