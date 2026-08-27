@@ -23,7 +23,7 @@ from llm.prompts import (
     TIER2_CANONICAL_SYSTEM_PROMPT,
     TIER2_CANONICAL_USER_PROMPT_TEMPLATE,
 )
-from utils.text_utils import expand_abbreviations
+from utils.text_utils import _token_covers, expand_abbreviations
 
 logger = logging.getLogger(__name__)
 
@@ -105,13 +105,64 @@ def _is_pure_recanonicalisation(original: str, cleaned: str) -> bool:
     subject = _subject_tokens(cleaned.strip()[m.end():])
     if not subject:
         return False
-    kept = [
-        w.lower() for w in re.findall(r"[A-Za-z0-9&]+", expand_abbreviations(original) or original)
+    return _kept_subject_tokens(original) == subject
+
+
+def _kept_subject_tokens(text: str) -> list[str]:
+    """Subject tokens of *text*, in order, with bare building/room codes
+    dropped.
+
+    Differs from :func:`_subject_tokens` in one way that matters: the
+    bare-code test reads the CASE-PRESERVED token ("OCSB"), so it has to run
+    before the lower-casing rather than after it. Extracted so the Tier 2
+    medium-confidence check and :func:`subject_preserved` ask the question
+    with one implementation instead of two.
+    """
+    return [
+        w.lower() for w in re.findall(r"[A-Za-z0-9&]+", expand_abbreviations(text) or text)
         if w.lower() not in _UNIT_WORDS
         and w.lower() not in _CONNECTOR_WORDS
-        and not _is_bare_code(w, original)
+        and not _is_bare_code(w, text)
     ]
-    return kept == subject
+
+
+def subject_preserved(original: str | None, suggestion: str | None) -> bool:
+    """True when *suggestion* still names the unit *original* named.
+
+    The department-slot counterpart of
+    :func:`utils.text_utils.canonical_preserves_identity`, which is tuned for
+    COMPANY names and rejects every legitimate department rewrite (its
+    addable vocabulary carries "University" and "Institute", not "Department"
+    or "Division", so even "Engineering" → "Department of Engineering" fails
+    it).
+
+    The question here is narrower and is the one Tier 2 already asks: did the
+    model keep the SUBJECT the record supplied, whatever it did to the unit
+    wording around it. Unit words and connectors carry no subject identity and
+    are dropped from both sides; a bare building/room code the record stapled
+    on ("Marine Biology, OCSB") is droppable too, exactly as Tier 2 allows.
+    So re-wordings pass —
+
+        "Engineering"          → "Department of Engineering"
+        "Biochem"              → "Department of Biochemistry"
+        "Marine Biology, OCSB" → "Department of Marine Biology"
+
+    — and subject SWAPS fail, which is the whole point:
+
+        "Edwards Air Force Base" → "412th Test Wing"
+        "Office of Purchasing"   → "Procurement Services"
+
+    Conservative in the same direction as its Name 1 counterpart: an original
+    with no subject tokens at all (pure unit words) has no identity to
+    preserve, so it returns True rather than blocking a reformat.
+    """
+    orig = _kept_subject_tokens((original or "").strip())
+    if not orig:
+        return True
+    sugg = _subject_tokens((suggestion or "").strip())
+    if not sugg:
+        return False
+    return all(any(_token_covers(o, s) for s in sugg) for o in orig)
 
 
 @dataclass

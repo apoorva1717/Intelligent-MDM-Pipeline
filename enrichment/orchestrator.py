@@ -132,7 +132,7 @@ from enrichment.wikidata import (
     resolve as resolve_wikidata,
     website_agrees as wikidata_website_agrees,
 )
-from enrichment.tier2_canonical import run_tier2_canonical
+from enrichment.tier2_canonical import run_tier2_canonical, subject_preserved
 from enrichment.tier2a_contact import Tier2AResult, run_tier2a
 from enrichment.tier3_llm import Tier3Result, run_tier3
 from enrichment.unchanged_state import (
@@ -2137,6 +2137,43 @@ def _apply_tier3(
         for slot in DEPT_SLOTS:
             suggestion = getattr(tier3, f"{slot}_suggestion", None)
             if suggestion and suggestion.strip():
+                # Identity guard, the department-slot half of the one Name 1
+                # has carried since Fix 2. A slot the record FILLED states a
+                # unit; Tier 3 is asked to canonicalise its wording, not to
+                # answer with a different unit. Without this, "Edwards Air
+                # Force Base" shipped as "412th Test Wing" — a real unit at
+                # that base, inferred from the model's training data, stated
+                # nowhere in the record and contradicting what the source
+                # system said. `unverified-inference` flagged it, but the
+                # invented value was already in the output field.
+                #
+                # Only a POPULATED slot is guarded. A blank slot has no
+                # identity to preserve and inventing into one is a feature
+                # the prompt deliberately asks for; finalise §6c is what
+                # governs that case, and it is untouched here.
+                #
+                # `canonical_preserves_identity` is NOT the test: it is tuned
+                # for company names and rejects "Engineering" → "Department
+                # of Engineering" along with everything else Tier 3 legitimately
+                # does here. `subject_preserved` asks the narrower question
+                # Tier 2 already asks of its own medium-confidence answers.
+                original = result.get(f"{slot}_original")
+                if (
+                    original and str(original).strip()
+                    and not subject_preserved(original, suggestion)
+                ):
+                    # No write, so the slot stays None and finalise's
+                    # department passthrough restores the input value with
+                    # `input`, not `llm`, provenance — the same end state as
+                    # Tier 3 having declined to answer, which is exactly what
+                    # a rejected answer means.
+                    logger.warning(
+                        "[%s] Tier 3: REJECTED %s '%s' → '%s' "
+                        "(different unit — subject not preserved)",
+                        result.get("record_id"), slot, original,
+                        suggestion.strip(),
+                    )
+                    continue
                 _write(
                     result, f"{slot}_enriched", suggestion.strip(),
                     llm_evidence(
