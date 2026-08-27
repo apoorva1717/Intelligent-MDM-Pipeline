@@ -5,9 +5,11 @@ a match in the institution's ROR children list. Uses the LLM's existing
 knowledge of well-known institutions to return the canonical form the
 institution itself uses on its own website. Zero SerpAPI calls.
 
-The result is ONLY used when confidence=high. Any other confidence
-level (or a null answer) means we could not canonicalise, and the
-caller falls through to the next tier.
+The result is used when confidence=high, or when confidence=medium AND
+the answer is deterministically verified to be a PURE RE-WORDING of the
+input (see `_is_pure_recanonicalisation`). Any other confidence level (or
+a null answer) means we could not canonicalise, and the caller falls
+through to the next tier.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from llm.prompts import (
     TIER2_CANONICAL_SYSTEM_PROMPT,
     TIER2_CANONICAL_USER_PROMPT_TEMPLATE,
 )
+from utils.text_utils import expand_abbreviations
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +46,72 @@ def _is_prefix_downgrade(original: str, cleaned: str) -> bool:
         return False
     remainder = original.strip()[m.end():].strip()
     return bool(remainder) and remainder.lower() == cleaned.strip().lower()
+
+
+# Unit words and connectors carry no subject identity, so they are dropped
+# before the two sides are compared: the question is whether the model kept
+# the SUBJECT the record supplied, not how it spelled the unit around it.
+_UNIT_WORDS = {
+    "department", "dept", "division", "div", "school", "faculty", "institute",
+    "center", "centre", "college", "office", "laboratory", "lab",
+}
+_CONNECTOR_WORDS = {"the", "of", "and", "for", "in", "at", "on", "&"}
+
+
+def _subject_tokens(text: str) -> list[str]:
+    """The subject-bearing tokens of *text*, in order, lower-cased."""
+    expanded = expand_abbreviations(text) or text
+    return [
+        w.lower() for w in re.findall(r"[A-Za-z0-9&]+", expanded)
+        if w.lower() not in _UNIT_WORDS and w.lower() not in _CONNECTOR_WORDS
+    ]
+
+
+def _is_bare_code(token: str, original: str) -> bool:
+    """True when *token* reads as a bare code rather than a subject word — a
+    2-6 letter all-caps run sitting in an otherwise mixed-case value.
+
+    This is the building / room / faculty code SAP records routinely staple
+    onto a department ("Marine Biology, OCSB", where OCSB is the Ocean and
+    Coastal Studies Building). An ALL-CAPS value is excluded outright: there
+    every token is upper-case, so the signal says nothing.
+    """
+    if original.isupper():
+        return False
+    letters = re.sub(r"[^A-Za-z]", "", token)
+    return 2 <= len(letters) <= 6 and letters.isupper()
+
+
+def _is_pure_recanonicalisation(original: str, cleaned: str) -> bool:
+    """True when *cleaned* is *original* re-worded into canonical unit form
+    and nothing else — no subject word added, none dropped except bare codes.
+
+    This is what makes a MEDIUM-confidence answer safe to keep. The model is
+    routinely only medium on the *exact institutional wording* while being
+    plainly right about the subject ("Marine Biology, OCSB" → "Department of
+    Marine Biology": medium, because it cannot confirm TAMUG's exact unit
+    name). Verifying that the answer adds no new content turns that into a
+    deterministic reformatting the pipeline can stand behind, while every
+    answer that swaps or invents a subject ("Office of Purchasing" →
+    "Procurement Services", "& Health Sciences" → "School of Arts and
+    Sciences") still fails the check and falls through to passthrough.
+    """
+    m = _UNIT_PREFIX_RE.match(cleaned.strip())
+    if not m:
+        # Not in "<Unit> of <Subject>" form — a suffix form ("Fire Department")
+        # or a bare phrase is not a canonicalisation the pipeline asked for,
+        # and `canonicalise_unit_name` handles those deterministically anyway.
+        return False
+    subject = _subject_tokens(cleaned.strip()[m.end():])
+    if not subject:
+        return False
+    kept = [
+        w.lower() for w in re.findall(r"[A-Za-z0-9&]+", expand_abbreviations(original) or original)
+        if w.lower() not in _UNIT_WORDS
+        and w.lower() not in _CONNECTOR_WORDS
+        and not _is_bare_code(w, original)
+    ]
+    return kept == subject
 
 
 @dataclass
@@ -91,9 +160,14 @@ async def run_tier2_canonical(
     if cleaned.lower() in {"null", "none", "n/a", "na"}:
         return result
 
-    # Only trust high-confidence answers — this tier is authoritative
-    # for well-known institutions, not a best-effort guess.
-    if confidence != "high":
+    # Trust a high-confidence answer outright — this tier is authoritative
+    # for well-known institutions, not a best-effort guess. A medium answer
+    # is kept only when it is a verified pure re-wording of the input, which
+    # is not a guess either: no subject word was added or dropped.
+    verified_recanonicalisation = (
+        confidence == "medium" and _is_pure_recanonicalisation(name2, cleaned)
+    )
+    if confidence != "high" and not verified_recanonicalisation:
         logger.info(
             "[%s] Tier 2 canonical: rejecting '%s' (confidence=%s)",
             record_id, cleaned, confidence,
@@ -116,7 +190,9 @@ async def run_tier2_canonical(
     result.reasoning = reasoning
 
     logger.info(
-        "[%s] Tier 2 canonical: '%s' → '%s' (high confidence)",
+        "[%s] Tier 2 canonical: '%s' → '%s' (%s)",
         record_id, name2, cleaned,
+        "verified re-canonicalisation, medium confidence"
+        if verified_recanonicalisation else "high confidence",
     )
     return result
