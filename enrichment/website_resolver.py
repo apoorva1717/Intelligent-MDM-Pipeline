@@ -34,7 +34,7 @@ from llm.prompts import (
 from search.base import SearchClient, SearchResult
 from utils.cache import BatchCache, cached_serp
 from utils.domain_resolver import country_conflict
-from utils.text_utils import acronym_matches_name, extract_domain
+from utils.text_utils import acronym_matches_name, extract_domain, name_initials
 
 logger = logging.getLogger(__name__)
 
@@ -153,12 +153,116 @@ def _acronym_in_host(name1: str, url: str) -> bool:
     return acronym_matches_name(domain.split(".")[0], name1)
 
 
+# Legal-form suffixes. They are part of the registered name and routinely part
+# of the domain ("emservicesllc.com"), but they identify a company's *form*,
+# never the company — so they may close out a host label without being what
+# matched it.
+_LEGAL_FORM_TOKENS: frozenset[str] = frozenset({
+    "llc", "llp", "lp", "inc", "incorporated", "corp", "corporation", "co",
+    "company", "ltd", "limited", "plc", "gmbh", "mbh", "ag", "kg", "bv", "nv",
+    "sa", "sas", "srl", "spa", "ab", "as", "oy", "aps", "pte", "pty", "pvt",
+    "kk", "kft", "zrt", "doo",
+})
+
+# Contractions a company routinely uses in its own domain. These are NOT
+# prefixes of the word they stand for ("mfg" ← "manufacturing"), so no amount
+# of prefix matching finds them; they have to be listed.
+_TOKEN_ABBREVIATIONS: dict[str, tuple[str, ...]] = {
+    "manufacturing": ("mfg", "mfr", "manu"),
+    "manufacturers": ("mfrs", "mfg"),
+    "technology": ("tech",), "technologies": ("tech",),
+    "services": ("svcs", "svc", "serv"), "service": ("svc", "serv"),
+    "international": ("intl",),
+    "engineering": ("engr", "eng"), "engineers": ("engr", "eng"),
+    "laboratories": ("labs", "lab"), "laboratory": ("lab",),
+    "association": ("assoc", "assn"), "associates": ("assoc",),
+    "management": ("mgmt", "mgt"),
+    "industries": ("inds", "ind"), "industrial": ("ind",),
+    "systems": ("sys",), "solutions": ("soln", "sol"),
+    "group": ("grp",),
+    "pharmaceuticals": ("pharma",), "pharmaceutical": ("pharma",),
+    "equipment": ("equip",), "products": ("prods", "prod"),
+    "construction": ("constr",), "development": ("dev",),
+    "instruments": ("instr",), "resources": ("res",),
+}
+
+
+def _host_label_covered_by_name(name1: str, url: str) -> bool:
+    """True when the host's primary label is ENTIRELY spelled out by *name1*'s
+    words, read left to right, allowing each word to appear contracted.
+
+    This is the test that catches the domains §7a's token rule cannot see:
+
+        "EM Services LLC"   -> emservicesllc   em|services|llc      -> covered
+        "KNT Manufacturing" -> kntmfg          knt|mfg              -> covered
+
+    Neither has a *distinctive* token in the host ("EM"/"KNT" fall under the
+    4-character significance floor, "Services" is generic), so both are rank 0
+    on the token rule while being the company's own site.
+
+    Full coverage is the whole guard, and it is why this can be permissive
+    about short words without re-opening §7a. A label only matches when nothing
+    is left over, so a stranger's host that merely *starts* with a name word is
+    still rejected: "Precision Research" against ``researchgate.net`` consumes
+    "research" and strands "gate", and ``scup.org`` for "Bayfront Research"
+    never starts at all.
+    """
+    domain = (extract_domain(url) or "").lower()
+    if not domain:
+        return False
+    label = re.sub(r"[^a-z0-9]", "", domain.split(".")[0])
+    if not label:
+        return False
+
+    rest = label
+    matched_any = False
+    for token in (t.lower() for t in re.findall(r"[A-Za-z]+", name1)):
+        if not rest:
+            break
+        hit = None
+        for form in (token, *_TOKEN_ABBREVIATIONS.get(token, ())):
+            if rest.startswith(form):
+                hit = form
+                break
+        # A truncation the abbreviation table does not carry ("labora" ->
+        # "laboratories"). Only for words long enough that a >=3-char prefix
+        # still identifies them.
+        if hit is None and len(token) >= 5:
+            for n in range(len(token) - 1, 2, -1):
+                if rest.startswith(token[:n]):
+                    hit = token[:n]
+                    break
+        if hit:
+            rest = rest[len(hit):]
+            matched_any = True
+
+    # A legal form may close out the label even when the name omitted it
+    # ("EM Services" -> emservicesllc.com).
+    while rest:
+        for form in _LEGAL_FORM_TOKENS:
+            if rest.startswith(form):
+                rest = rest[len(form):]
+                break
+        else:
+            break
+
+    return matched_any and not rest
+
+
 def _has_host_match(name1: str, url: str, record_type: str | None) -> bool:
-    """§7a/§7b host-match test used by ranking. A distinctive name token in the
-    host, OR (research institutions only) an acronym-in-host match."""
+    """§7a/§7b host-match test used by ranking. Any of: a distinctive name
+    token in the host, an acronym-in-host match, or a host label spelled out
+    in full by the name's words (:func:`_host_label_covered_by_name`)."""
     if _distinctive_in_host(name1, url):
         return True
-    if record_type == "research_institution" and _acronym_in_host(name1, url):
+    # Acronym hosts are not an institution phenomenon — "Milton Keynes Play
+    # Association" is on mkpa.co.uk exactly as "Florida Institute of
+    # Technology" is on fit.edu. The initials must match in full, so a
+    # stranger's host still fails ("scup" is not the initials of "Bayfront
+    # Research"); requiring three of them keeps two-letter coincidences out.
+    if len(name_initials(name1)) >= 3 and _acronym_in_host(name1, url):
+        return True
+    if _host_label_covered_by_name(name1, url):
         return True
     return False
 
