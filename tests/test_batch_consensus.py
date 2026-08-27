@@ -37,6 +37,7 @@ from enrichment.batch_consensus import (
     apply_batch_consensus,
 )
 from enrichment.flags import (
+    ADVISORY_CODES,
     DOMAIN_UNVERIFIED,
     LOW_CONFIDENCE_UNCHANGED,
     NO_MATCH,
@@ -411,7 +412,10 @@ class TestInvariants:
         apply_batch_consensus(rows)
 
         assert rows[1].name1_enriched == "Coastal Diagnostics Inc"  # it did inherit
-        assert rows[1].flag_for_review is True
+        # Untouched means untouched: `domain-unverified` is advisory, so the
+        # row was not in the queue before the pass and is not after it. What
+        # this test pins is that the pass did not DISTURB the domain flag.
+        assert rows[1].flag_for_review is False
         assert rows[1].flag_codes == [DOMAIN_UNVERIFIED]
         assert rows[1].flag_reason == before
         assert rows[0].flag_for_review is False
@@ -870,7 +874,11 @@ class TestFlagsFalsifiedByPropagation:
 
         row = rows[1]
         assert row.flag_codes == [DOMAIN_UNVERIFIED]
-        assert row.flag_for_review is (len(row.flag_codes) > 0)
+        # The boolean tracks the codes that ask for review, not the count of
+        # codes — `domain-unverified` is advisory and asks for none.
+        assert row.flag_for_review is bool(
+            set(row.flag_codes) - ADVISORY_CODES,
+        )
         assert row.flagged_fields == ["domain"]
         assert row.flag_reason.startswith("Domain:")
         assert "left exactly as supplied" not in row.flag_reason

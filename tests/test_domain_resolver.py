@@ -330,8 +330,14 @@ class TestFinaliseEmitsCanonicalFields:
             domain=None, website_url=None, _domain_unverified=True,
             ror_id="https://ror.org/00jmfr291",
         )
+        # A bare `True` marker names no site, so there is nothing for
+        # `_ship_unverified_domain` to put in the column — the code still
+        # fires on the doubt itself.
         assert out["domain"] is None
-        assert out["flag_for_review"] is True
+        # ADVISORY: the code, the scope and the prose ship; the review request
+        # does not. See `flags.ADVISORY_CODES`.
+        assert out["flag_for_review"] is False
+        assert out["flag_reason"]
         # Scoped to the one field in doubt: the registry match stands.
         assert out["flag_codes"] == ["domain-unverified"]
         assert out["flagged_fields"] == ["domain"]

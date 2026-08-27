@@ -740,6 +740,15 @@ _EMAIL_PRODUCER = "record_email"
 #: `ror`/`gleif`; the crosswalk is what `+wikidata` records.
 _CROSSWALK_RULE_PREFIX = "wikidata:crosswalk"
 
+#: Rule id for a domain the ownership guard declined and the pipeline shipped
+#: anyway. The candidate goes in the column because it is usually right and a
+#: reviewer would otherwise have to rediscover it; the column has to say so,
+#: which is what this rule id buys — ``situation_for`` maps it to a
+#: contradicted situation and the scalar reads ``web:{domain}:low``, never
+#: ``provisional``. Hard rule 3 is not touched: the value is KEPT, not
+#: rejected, and the guard's own refusal is still in the rejections log.
+UNVERIFIED_DOMAIN_RULE = "domain-ownership:unverified"
+
 #: `unchanged-verified` records WHAT corroborated the retained name as a
 #: `kind:detail` string. This maps the kind to the witness token.
 _CORROBORATION_WITNESSES: dict[str, str] = {
@@ -873,6 +882,15 @@ def situation_for(
     # second, independent source agreed. Only a registry-stated website, a
     # Wikidata P856 agreement, or the record's own email domain does that.
     if producer in _WEB_PRODUCERS:
+        # The ownership guard declined this one and it shipped regardless.
+        # Checked before the witness lookup, not after: a witness that
+        # happened to agree would have satisfied the guard, so there cannot
+        # be one here, and reading `verified_by` first would only invite a
+        # future edit to promote a value the guard refused.
+        if rule_id == UNVERIFIED_DOMAIN_RULE:
+            return confidence_web_source(
+                _web_domain_for(event),
+            ), EvidenceSituation(has_source=True, contradicted=True)
         witness = _DOMAIN_WITNESSES.get(str(ref.get("verified_by") or ""))
         if witness is None and event.field == "domain" and record is not None:
             corroboration = (

@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from api.models import EnrichmentOptions, EnrichmentRecord
 from config import Settings
 from enrichment.orchestrator import Orchestrator
+from enrichment.provenance import UNVERIFIED_DOMAIN_RULE
 from enrichment.tier1_ror import extract_website_from_ror
 from enrichment.website_resolver import (
     DOMAIN_BLACKLIST,
@@ -26,6 +27,7 @@ from enrichment.website_resolver import (
     select_website_from_serp,
 )
 from search.base import SearchResult
+from tests.conftest import seed
 from utils.cache import BatchCache
 
 
@@ -386,7 +388,7 @@ class TestOrchestratorWebsiteFields:
         assert "website" not in (result.flag_reason or "").lower()
 
     @pytest.mark.asyncio
-    async def test_path_c_llm_guess_is_rejected_without_corroboration(
+    async def test_path_c_llm_guess_ships_unverified_and_flagged(
         self, orchestrator, default_options,
     ):
         # "Fisher Scientific Co. LLC" — not in ROR mock; the SERP mock
@@ -395,19 +397,36 @@ class TestOrchestratorWebsiteFields:
         # fishersci.com. Path C has no registry provenance and no search
         # evidence, the record carries no email, and "fishersci" is a
         # contraction the name-similarity rule cannot reach — so the guard
-        # rejects it. An unattributable website is left empty rather than
-        # shipped as successful enrichment.
+        # cannot attribute it.
+        #
+        # It ships anyway. The guard's failure here is an absence of
+        # corroboration, not evidence of a wrong answer, and fishersci.com is
+        # in fact Fisher Scientific's site — blanking the column made a
+        # reviewer go and find a value the pipeline already had. What the row
+        # must not do is CLAIM it: the provenance reads `low`, never
+        # `provisional`, and `domain-unverified` fires.
         record = EnrichmentRecord(
             record_id="WEB_C1", name1="Fisher Scientific Co. LLC",
             city="Pittsburgh", state="PA", country="US",
         )
         response = await orchestrator.enrich_batch([record], default_options)
         result = response.results[0]
-        assert result.domain is None
+        assert result.domain == "fishersci.com"
+        assert result.domain_provenance == "web:fishersci.com:low"
+        # NOT written: the guard verified no website, and `website_url` is the
+        # homepage of a domain that was attributed. Only the column the
+        # reviewer acts on is populated.
         assert result.website_url is None
-        assert result.flag_for_review is True
+        # ADVISORY (`flags.ADVISORY_CODES`): the code, its `domain` scope and
+        # its prose all ship; no review is requested. A consumer wanting these
+        # rows filters on the code or on `web:*:low`, not on the boolean.
+        assert result.flag_for_review is False
+        assert result.flag_reason and "fishersci.com" in result.flag_reason
         assert "domain-unverified" in result.flag_codes
         assert result.flagged_fields == ["domain"]
+        # The guard still refused, and the telemetry still counts it — what
+        # changed is what the pipeline does with the refusal, not whether it
+        # happened.
         assert response.summary.domain_rejected_unverified == 1
 
     @pytest.mark.asyncio
@@ -967,3 +986,80 @@ class TestInstitutionConfidenceEvidence:
             record_type="research_institution", country="US", city="Cambridge",
         )
         assert res.url == "https://www.harvard.edu"
+
+
+class TestShippingTheUnverifiedDomain:
+    """`_ship_unverified_domain` puts the ownership guard's declined candidate
+    in the column, and the three conditions that stop it.
+
+    Unit-level and deliberately so: the orchestrator test above proves the
+    path end to end, and these pin the narrowing rules one at a time, which a
+    full pipeline run cannot isolate.
+    """
+
+    @staticmethod
+    def _record(**overrides):
+        from enrichment.orchestrator import _init_result
+
+        result = _init_result(EnrichmentRecord(
+            record_id="U1", name1="Meridian Labs", country="US",
+        ))
+        for key, value in overrides.items():
+            if key == "domain":
+                seed(result, domain=value)
+            else:
+                result[key] = value
+        return result
+
+    def _ship(self, **overrides):
+        from enrichment.orchestrator import _ship_unverified_domain
+
+        result = self._record(**overrides)
+        _ship_unverified_domain(result)
+        return result
+
+    def test_the_declined_candidate_goes_in_the_column(self):
+        result = self._ship(_domain_unverified="meridianlabs.ai")
+        assert result.get("domain") == "meridianlabs.ai"
+
+    def test_the_column_says_the_value_is_unverified(self):
+        """The whole basis for shipping it. A value in `domain` that read
+        `provisional` would be claiming corroboration the guard could not
+        find, which is the thing the guard exists to prevent."""
+        from enrichment.provenance import derived_scalar
+
+        result = self._ship(_domain_unverified="meridianlabs.ai")
+        assert derived_scalar(result.provenance, "domain") == (
+            "web:meridianlabs.ai:low"
+        )
+
+    def test_a_domain_already_settled_is_not_overwritten(self):
+        """The page read promoting this same candidate to `provisional` is
+        the common case, and its answer is the better one."""
+        result = self._ship(
+            domain="meridianlabs.ai", _domain_unverified="meridianlabs.ai",
+        )
+        assert result.get("domain") == "meridianlabs.ai"
+        # One attributing event — the seeded one. Nothing was written over it.
+        assert not [
+            e for e in result.provenance.events
+            if getattr(e, "rule_id", None) == UNVERIFIED_DOMAIN_RULE
+        ]
+
+    def test_a_refuted_domain_does_not_come_back(self):
+        """The one class where the pipeline has evidence AGAINST the domain
+        rather than merely no evidence for it: the site's own page states
+        another organisation's identity. `_withdraw_domain` removed it, and
+        this must not undo that."""
+        result = self._ship(
+            _domain_unverified="johnsoncontrols.com", _domain_refuted=True,
+        )
+        assert result.get("domain") in (None, "")
+
+    def test_a_bare_marker_names_no_site_and_writes_nothing(self):
+        """An older `True` marker raises the code but carries no domain —
+        there is nothing to put in the column."""
+        assert self._ship(_domain_unverified=True).get("domain") in (None, "")
+
+    def test_no_candidate_writes_nothing(self):
+        assert self._ship().get("domain") in (None, "")

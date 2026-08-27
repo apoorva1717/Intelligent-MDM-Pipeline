@@ -33,8 +33,14 @@ Three rules follow from that, and this module exists to enforce them:
    ``source_url``; a verified Tier 1 match carries a registry identifier).
 
 The three output fields are a contract with DATAshaper and are always
-consistent: ``flag_for_review`` is true **iff** ``flag_codes`` is non-empty,
-and ``flag_reason`` is the prose rendering of the same codes. The scope is
+consistent: ``flag_reason`` is the prose rendering of ``flag_codes``, and
+``flag_for_review`` says whether the record is being put in front of a
+reviewer. That last one is DERIVED rather than "non-empty codes", in both
+directions — a core field at ``low`` confidence raises it with no code
+attached, and an :data:`ADVISORY_CODES` code emits its prose without raising
+it. A row can therefore ship with ``flag_for_review`` false and a populated
+``flag_reason``: something is worth saying about the record, and nothing is
+being asked of anyone. The scope is
 encoded in the reason text as well as in ``flagged_fields``, so a consumer
 that reads only the two pre-Fix-8 columns still learns which field is in
 doubt. :func:`render` builds all three, and is the only thing that does.
@@ -64,8 +70,7 @@ from enrichment.provenance import (
 )
 from enrichment.unchanged_state import UNCHANGED_CONFIRMED, UNCHANGED_VERIFIED
 from utils.name_slots import DEPT_SLOTS, NAME_SLOT_LABELS, NAME_SLOTS
-from enrichment.search_terms import identifies_nothing
-from utils.text_utils import is_admin_unit
+from enrichment.search_terms import has_no_canonical_form
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +98,14 @@ DEPT_VIA_LAB = "dept-via-lab"
 PERSON_UNRESOLVED = "person-unresolved"
 OVERFLOW = "overflow"
 OPAQUE_CODE = "opaque-code"
+#: A domain the ownership guard could tie to nothing. The candidate SHIPS —
+#: it is in the `domain` column, at `web:{domain}:low` — because checked
+#: against the batch most of them are the right site, and blanking the column
+#: made a reviewer go and find a value the pipeline already had. The code
+#: says the column's value is uncorroborated, not that a value is missing.
+#: See `enrichment.orchestrator._ship_unverified_domain` for the three cases
+#: that do NOT ship, of which the substantive one is a page read refuting the
+#: site outright.
 DOMAIN_UNVERIFIED = "domain-unverified"
 EMAIL_CONFLICT = "email-conflict"
 NAME3_NOT_DEMOTED = "name3-not-demoted"
@@ -140,6 +153,44 @@ ALL_CODES: tuple[str, ...] = (
     SOURCE_CONFLICT,
     REGISTRY_LOCATION_MISMATCH,
 )
+
+#: Codes that do NOT on their own put a record in the review queue.
+#:
+#: The code, its prose and its field scope are emitted exactly as any other —
+#: what changes is only whether the code's presence is enough to make
+#: ``flag_for_review`` true. A record whose ONLY code is advisory ships with
+#: the flag false and the reason populated: the finding is on the record for
+#: anyone who looks at it, and nobody is asked to look.
+#:
+#: `registry-location-mismatch` is here because of what a contradicted
+#: registry address usually turns out to mean. A register holds the addresses
+#: of a legal ENTITY — GLEIF publishes two, the incorporation address and the
+#: head office — and a large organisation operates from far more sites than
+#: that. Merck has plants in fifty places and a single Darmstadt LEI record;
+#: Arkema Inc. is registered in King of Prussia PA while the record names its
+#: North Carolina site. Neither is a doubt about which company the record
+#: names, and a review queue that asks a human to confirm each one spends the
+#: reviewer's attention on the ordinary case. The address disagreement is
+#: still worth SAYING — it is the reason prose, and a reviewer already in the
+#: record for another reason should see it — so the code stays and only the
+#: queue membership goes.
+#:
+#: `domain-unverified` is here for the same reason, reached from the domain
+#: side. The candidate now SHIPS in the column (see
+#: `enrichment.orchestrator._ship_unverified_domain`) because checked against
+#: the batch most of them are the right site — `fishersci.com` really is
+#: Fisher Scientific's, and "fishersci" is simply a contraction the name
+#: comparator cannot reach. A queue entry per row would ask a reviewer to
+#: confirm the ordinary case, which is the failure this whole flag model
+#: exists to have fixed. What the row must never do is CLAIM the value, and it
+#: does not: the provenance reads `web:{domain}:low`, the code is in
+#: `flag_codes`, and the reason names the domain. A consumer that wants these
+#: rows can filter on either — what it cannot do is get them from
+#: `flag_for_review`.
+ADVISORY_CODES: frozenset[str] = frozenset({
+    REGISTRY_LOCATION_MISMATCH,
+    DOMAIN_UNVERIFIED,
+})
 
 # Emission order — most structural first, so the leading clause of a
 # multi-code reason is the one that most changes what a reviewer does.
@@ -196,8 +247,8 @@ _REASONS: dict[str, str] = {
         "the organisation name"
     ),
     DOMAIN_UNVERIFIED: (
-        "a candidate website was found but nothing tied it to this "
-        "organisation — confirm the website before using it"
+        "the domain shown was found on the web but nothing independently "
+        "tied it to this organisation — confirm it"
     ),
     EMAIL_CONFLICT: (
         "an email found in the record differs from the one already on file "
@@ -241,9 +292,15 @@ _REASONS: dict[str, str] = {
 # `{detail}`. Codes without an entry here, or with no detail supplied, fall
 # back to `_REASONS` unchanged.
 _DETAILED_REASONS: dict[str, str] = {
+    # Names the domain even though the column now carries it: a reviewer
+    # reading `Flag Reason` on its own — a filtered export, a DATAshaper
+    # queue view — should not have to go and find which value the sentence is
+    # about. It reads as a statement about a value that is present, not as a
+    # suggestion of one that is missing; the domain ships, and the sentence
+    # says how far to trust it.
     DOMAIN_UNVERIFIED: (
-        "a candidate website ({detail}) was found but nothing tied it to "
-        "this organisation — confirm {detail} before using it"
+        "the domain shown ({detail}) was found on the web but nothing "
+        "independently tied it to this organisation — confirm it"
     ),
     # The successor's name and QID, or the dissolution date. Without it the
     # reviewer is told an entity is gone and left to find out what replaced it
@@ -295,6 +352,7 @@ _EVIDENCE_KEYS: tuple[str, ...] = (
     "_multi_contact",
     "_domain_unverified",
     "_domain_page_note",
+    "_domain_refuted",
     "_ev_entity_superseded",
     # Fix D — left by `enrichment.consistency`, which runs just before this.
     "_ev_source_conflict",
@@ -410,6 +468,62 @@ def _evidence_free_fields(
 CORE_PROVENANCE_FIELDS: tuple[str, ...] = ("name1_enriched", "name2_enriched")
 
 
+def name2_needs_no_verification(result: Any) -> bool:
+    """True when Name 2 names something no source could confirm or deny.
+
+    Two shapes, and the same conclusion for both:
+
+    * an **administrative desk** — "Accounts Payable", "Central Receiving",
+      "Procurement Services", "Office of Purchasing". The phrase names where
+      in the customer an invoice goes, not a unit whose existence is in
+      question. There is no registry entry, no web presence and no page for
+      the accounts-payable desk of a chemicals company;
+    * a phrase whose every token is a **facility function or scope
+      qualifier** — "Central Warehouse", "Main Plant", "Corporate
+      Headquarters". Not a back-office desk, so not in ``is_admin_unit``'s
+      vocabulary, but it fails the same test for the same reason.
+
+    The pipeline already acts on this in three other places: ``search_term_2``
+    is ``"ADMIN"`` (or empty) for exactly these rows, the department-domain
+    probe skips them before spending a fetch, and Tier 2 declines to send them
+    to canonicalisation at all. This function is the fourth, and it is what
+    keeps the flag decision agreeing with the other three.
+
+    Consulted by BOTH name2 doubts, which is the whole point. A registry
+    identity or a matching ``department_domain`` answers "does this unit
+    exist" and leaves "is it spelled the way the institution spells it" open;
+    an admin desk has no institutional spelling to be wrong about, so it
+    clears the derived ``low`` as well as ``unverified-inference``. Anything
+    less asks a reviewer to establish a canonical form for a phrase that has
+    none.
+    """
+    mapping = result if hasattr(result, "get") else None
+
+    def _read(field: str) -> Any:
+        if mapping is not None:
+            return mapping.get(field)
+        return getattr(result, field, None)
+
+    value = (
+        str(_read("name2_enriched") or "").strip()
+        or str(_read("name2_original") or "").strip()
+    )
+    if not value:
+        return False
+    # `has_no_canonical_form` is shared with the two stages that DECLINE to
+    # look — the search-term derivation and the Tier 2 canonicalisation skip —
+    # which is what keeps this flag decision from contradicting them.
+    #
+    # `mapping` is None when `retract` reaches here with an
+    # `EnrichmentResult`, which has no `.get`. The predicate then answers
+    # without the record's address tokens, which is the conservative
+    # direction: no geo set means a phrase is MORE likely to look
+    # identifying, so the exemption is withheld rather than granted on a
+    # record this function cannot fully read. A desk is caught either way —
+    # `is_admin_unit` needs no record at all.
+    return has_no_canonical_form(value, mapping)
+
+
 def low_confidence_core_fields(result: Any) -> list[str]:
     """Core field labels whose derived provenance confidence is ``low``.
 
@@ -446,6 +560,13 @@ def low_confidence_core_fields(result: Any) -> list[str]:
         # An empty field has no value to doubt. Rule 3 of this module:
         # absence of data is not a defect.
         if not _value(field):
+            continue
+        # Nor is a value nothing could have established. `input:low` is the
+        # honest provenance for an admin desk left as supplied — nothing
+        # corroborated it, and the column should say so — but the flag asks a
+        # reviewer to CONFIRM a canonical form, and "Accounts Payable" has
+        # none to confirm. The provenance stays; the review request goes.
+        if field == "name2_enriched" and name2_needs_no_verification(result):
             continue
         scalar = derived_scalar(log, field, result)
         if not scalar:
@@ -535,11 +656,17 @@ def render(
     return {
         "flag_codes": ordered,
         "flagged_fields": _sorted_fields(flagged),
-        # DERIVED, not "true iff there is a code". A core field at `low`
-        # raises the flag with no code attached, which is the whole of the
-        # authorised taxonomy change: `low-confidence-unchanged` was a code
-        # that existed only to say what the confidence already says.
-        "flag_for_review": bool(ordered) or bool(low),
+        # DERIVED, not "true iff there is a code", in both directions. A core
+        # field at `low` raises the flag with no code attached, which is the
+        # whole of the authorised taxonomy change: `low-confidence-unchanged`
+        # was a code that existed only to say what the confidence already
+        # says. And an ADVISORY_CODES code does not raise it at all — the
+        # code and its prose ship, the review request does not. A record
+        # carrying an advisory code alongside a substantive one is still
+        # queued, by the substantive one.
+        "flag_for_review": (
+            bool(set(ordered) - ADVISORY_CODES) or bool(low)
+        ),
         "flag_reason": "; ".join(reasons) if reasons else None,
         "flag_scopes": scoped,
         "flag_details": kept,
@@ -807,14 +934,13 @@ def compute_flags(result: dict[str, Any]) -> None:
     # is the rule that already empties `search_term_2` for these rows
     # (`search_terms` §0); applying it here is what stops the pipeline from
     # asking a reviewer to verify a phrase it just declined to search for.
-    name2_value = (
-        (result.get("name2_enriched") or "").strip()
-        or (result.get("name2_original") or "").strip()
-    )
-    unverifiable_name2 = (
-        is_admin_unit(name2_value) or identifies_nothing(name2_value, result)
-    )
-    if unverifiable_name2:
+    # ONE implementation, shared with `low_confidence_core_fields` — which is
+    # what makes "clears BOTH name2 doubts" true rather than merely intended.
+    # It was stated here and enforced only for `unverified-inference`: the
+    # derived `low` read the provenance and knew nothing about admin desks, so
+    # an "Accounts Payable" left exactly as supplied still shipped asking a
+    # reviewer to establish a canonical form it does not have.
+    if name2_needs_no_verification(result):
         corroborated.add("name2")
 
     inferred: set[str] = set()
@@ -856,8 +982,8 @@ def compute_flags(result: dict[str, Any]) -> None:
         if field in registry_named or field in inferred:
             continue
         # The admin-desk / names-nothing rule above, applied to the other
-        # half of the same doubt. See `unverifiable_name2`.
-        if unverifiable_name2 and field == "name2":
+        # half of the same doubt. See `name2_needs_no_verification`.
+        if field == "name2" and name2_needs_no_verification(result):
             continue
         if not result.get(f"{field}_enriched"):
             # An empty input field that stayed empty. Nothing to review.

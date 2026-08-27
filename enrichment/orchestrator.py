@@ -52,6 +52,7 @@ from enrichment.search_terms import (
     derive_acronym,
     derive_search_terms,
     extract_dept_core,
+    has_no_canonical_form,
     identifies_nothing,
 )
 from enrichment.preprocess import (
@@ -81,13 +82,16 @@ from enrichment.provenance import (
     EnrichedRecord,
     Evidence,
     FUZZY_RATIO,
+    GUARD_DOMAIN_OWNERSHIP,
     GUARD_GLEIF_NAME,
     GUARD_PAGE_IDENTITY,
     LLM_SELF_REPORTED,
+    NO_SCALE,
     ROR_LOCAL,
     ProvenanceLog,
     UNATTRIBUTED_CODE,
     UNATTRIBUTED_REASON,
+    UNVERIFIED_DOMAIN_RULE,
     deterministic_evidence,
     derived_scalar,
     validate_provenance_strings,
@@ -903,6 +907,69 @@ def _write(result: Any, field: str, value: Any, evidence: Evidence) -> None:
     result.write(field, value, evidence)
 
 
+def _ship_unverified_domain(result: Any) -> None:
+    """Put the ownership guard's declined candidate in the ``domain`` column.
+
+    The guard answers "did anything independently tie this site to this
+    organisation" — a registry stating it, a matching email domain, a name
+    similar enough, on-domain search evidence. A candidate that satisfies none
+    of those used to be dropped, and the row shipped with an empty Domain and
+    a flag naming the site in prose. Checked against the batch, most of those
+    candidates are the right site; the guard's failure is usually an absence
+    of corroboration rather than evidence of a wrong answer, and blanking the
+    column made a reviewer retype a value the pipeline had already found.
+
+    So the value ships and the column says what it is worth: the provenance
+    reads ``web:{domain}:low`` (:data:`~enrichment.provenance.UNVERIFIED_DOMAIN_RULE`),
+    never ``provisional``, and `domain-unverified` still fires. Nothing is
+    claimed that was not claimed before — the same doubt is recorded in the
+    same two places. What changed is that the reviewer confirms a value
+    instead of going and finding one.
+
+    THREE conditions, all of them narrowing:
+
+    * the guard left a candidate STRING. An older bare-``True`` marker names
+      no site and there is nothing to write;
+    * ``domain`` is still empty. A domain that any later stage settled — the
+      page read promoting this same candidate to ``provisional`` is the
+      common one — is a better answer and is left exactly as it is;
+    * the page read did not REFUTE it. A candidate withdrawn because the
+      site's own page states another organisation's identity is the one class
+      where the pipeline has evidence against the domain rather than merely no
+      evidence for it, and that evidence is not overridden here.
+
+    A country-rejected candidate never reaches this function: the resolver
+    declines to record one, precisely so that it can never be presented as an
+    answer.
+    """
+    candidate = result.get("_domain_unverified")
+    if not isinstance(candidate, str) or not candidate.strip():
+        return
+    if (result.get("domain") or "").strip():
+        return
+    if result.get("_domain_refuted"):
+        return
+    domain = candidate.strip().lower()
+    _write(
+        result, "domain", domain,
+        Evidence(
+            producer_chain=("domain_resolver",),
+            tier="finalise",
+            confidence_scale=NO_SCALE,
+            evidence_ref={
+                "source_url": result.get("_website_raw"),
+                "guard": GUARD_DOMAIN_OWNERSHIP,
+            },
+            rule_id=UNVERIFIED_DOMAIN_RULE,
+        ),
+    )
+    logger.info({
+        "record_id": result.get("record_id"),
+        "step": "unverified_domain_shipped",
+        "domain": domain,
+    })
+
+
 # ── Output normalisation — one function, every exit path ──────────────────────
 
 # Name fields. A short upper-case token defaults to an acronym here ("HCA",
@@ -1622,6 +1689,12 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
                 result.get("name2_enriched"), sorted(_needles),
             )
             result["department_domain"] = None
+
+    # The candidate the ownership guard declined goes in the column. Runs
+    # immediately before the flag decision and after everything that can
+    # change a domain, so it sees the record's final answer and cannot
+    # pre-empt a better one.
+    _ship_unverified_domain(result)
 
     # THE flag decision, taken once, here. Every name, contact and domain
     # field above has settled and the `*_changed` flags are computed, so the
@@ -4619,6 +4692,12 @@ class Orchestrator:
         # The withdrawn domain, so `domain-unverified`'s reason still names the
         # site a reviewer has to look at.
         result["_domain_unverified"] = domain
+        # REFUTED, not merely uncorroborated — the site's own page states
+        # another organisation's identity. `_ship_unverified_domain` reads
+        # this and declines to put the domain back: the two cases arrive at
+        # the same flag by opposite routes, and only one of them is a
+        # candidate worth shipping.
+        result["_domain_refuted"] = True
         result.reject(
             "domain", domain, GUARD_PAGE_IDENTITY,
             reason=(
@@ -5810,6 +5889,38 @@ class Orchestrator:
                             producer="preprocess", tier=2,
                         ),
                     )
+                    continue
+
+                # An administrative desk, or a phrase built entirely of
+                # facility functions and scope qualifiers, has no canonical
+                # form to establish. "Accounts Payable" IS the canonical
+                # spelling of the accounts-payable desk; "Office of
+                # Purchasing" is not a draft of "Procurement Services". Asking
+                # the model produced answers the identity guard then had to
+                # refuse — that refusal is a worked example in
+                # `tier2_canonical._subject_survived` — and the record fell
+                # through to passthrough having spent an LLM call to arrive
+                # where it started. Normalise it and let it be: preprocessing
+                # has already fixed the casing and expanded the
+                # abbreviations, which is all these values ever needed.
+                #
+                # The same test that empties `search_term_2` to "ADMIN"
+                # (`search_terms` §0) and that the department probe and the
+                # flag decision both read, so the four agree by construction.
+                if has_no_canonical_form(pp_val, result):
+                    _write(
+                        result, f"{field_key}_enriched", pp_val,
+                        deterministic_evidence(
+                            "uc6:admin-desk-skips-canonicalisation",
+                            producer="preprocess", tier=2,
+                        ),
+                    )
+                    logger.info({
+                        "record_id": record.record_id,
+                        "step": f"tier2_canonical_skipped_{field_key}",
+                        "reason": "admin_desk",
+                        "value": pp_val,
+                    })
                     continue
 
                 canonical = await run_tier2_canonical(

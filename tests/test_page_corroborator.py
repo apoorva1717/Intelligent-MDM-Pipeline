@@ -562,7 +562,10 @@ class TestConsequences:
         compute_flags(result)
         assert DOMAIN_UNVERIFIED in result["flag_codes"]
         # Appended, not overwritten: the original wording survives in full.
-        assert "confirm johnsoncontrols.com before using it" in result["flag_reason"]
+        assert (
+            "the domain shown (johnsoncontrols.com) was found on the web but "
+            "nothing independently tied it to this organisation — confirm it"
+        ) in result["flag_reason"]
         assert result["flag_reason"].endswith(
             "— its page states 'Johnson Controls' in Milwaukee"
         )

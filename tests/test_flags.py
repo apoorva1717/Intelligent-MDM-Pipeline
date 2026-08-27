@@ -11,8 +11,10 @@ replacement model:
 * evidence-backed results are **not** flagged — a verified registry match, a
   department read off a page that ``source_url`` names, a deterministic
   normalisation, an absent department;
-* the three output fields stay consistent: ``flag_for_review`` is true **iff**
-  ``flag_codes`` is non-empty, and ``flagged_fields`` scopes the doubt.
+* the three output fields stay consistent: ``flag_for_review`` is true iff a
+  code outside :data:`~enrichment.flags.ADVISORY_CODES` was raised or a core
+  field landed at ``low`` confidence, ``flag_reason`` renders whatever codes
+  there are either way, and ``flagged_fields`` scopes the doubt.
 """
 
 from __future__ import annotations
@@ -117,8 +119,18 @@ class _Flagged:
             setattr(self, key, value)
 
 
+def _queues_for_review(codes: Any, low: Any) -> bool:
+    """The `flag_for_review` contract, stated once for the tests that check it.
+
+    Not "there is a code": an advisory code states a finding without asking
+    anyone to act on it, and a core field at `low` asks without carrying a
+    code. See `enrichment.flags.render`.
+    """
+    return bool(set(codes or ()) - flags.ADVISORY_CODES) or bool(low)
+
+
 class TestFlagFieldsStayConsistent:
-    """``flag_for_review`` is true if and only if ``flag_codes`` is non-empty."""
+    """``flag_for_review`` tracks the codes that actually ask for review."""
 
     @pytest.mark.parametrize("overrides", [
         # Clean verified match — no codes.
@@ -143,10 +155,12 @@ class TestFlagFieldsStayConsistent:
         `flag_for_review` was true iff `flag_codes` was non-empty; now a core
         field at `low` raises it with no code attached, because
         `low-confidence-unchanged` was a code that existed only to restate
-        what the field's confidence already said."""
+        what the field's confidence already said. It has since come apart in
+        the other direction too — an `ADVISORY_CODES` code renders its prose
+        without asking for review."""
         out = _finalised(**overrides)
-        assert out["flag_for_review"] is (
-            bool(out["flag_codes"]) or bool(out["flag_low_confidence"])
+        assert out["flag_for_review"] is _queues_for_review(
+            out["flag_codes"], out["flag_low_confidence"],
         )
 
     @pytest.mark.asyncio
@@ -163,13 +177,18 @@ class TestFlagFieldsStayConsistent:
             records, EnrichmentOptions(max_concurrency=1),
         )
         for r in resp.results:
-            raised = bool(r.flag_codes) or bool(r.flag_low_confidence)
-            assert r.flag_for_review is raised
+            assert r.flag_for_review is _queues_for_review(
+                r.flag_codes, r.flag_low_confidence,
+            )
             # Every code is part of the published vocabulary, and every
             # flagged field is one a reviewer can open.
             assert set(r.flag_codes) <= set(flags.ALL_CODES)
             assert set(r.flagged_fields) <= set(flags.FIELD_LABELS)
-            assert bool(r.flag_reason) is raised
+            # The prose tracks the CODES, not the queue membership: an
+            # advisory-only row has a reason and no review request.
+            assert bool(r.flag_reason) is (
+                bool(r.flag_codes) or bool(r.flag_low_confidence)
+            )
             # The retired token can never come back as a code.
             assert flags.LOW_CONFIDENCE_UNCHANGED not in r.flag_codes
 
@@ -550,6 +569,78 @@ class TestRebuiltFromFinalState:
         assert not [k for k in out if k.startswith("_")]
 
 
+class TestAdvisoryCodesStateWithoutQueueing:
+    """An `ADVISORY_CODES` code says something about a record without asking
+    anyone to look at it.
+
+    `registry-location-mismatch` is the case that motivated the split. A
+    register holds the addresses of a legal ENTITY — GLEIF publishes two — and
+    a large organisation operates from many more sites than that, so a
+    contradicted registry address is the ordinary condition of a multi-site
+    company rather than a defect. It is still worth stating, and stating it is
+    all the code now does.
+    """
+
+    _DETAIL = "GLEIF states region PA; record says NC"
+
+    def _rendered(self, *extra_codes: str) -> dict[str, Any]:
+        scopes: dict[str, set[str]] = {flags.REGISTRY_LOCATION_MISMATCH: {"address"}}
+        for code in extra_codes:
+            scopes[code] = set()
+        return flags.render(
+            scopes, {flags.REGISTRY_LOCATION_MISMATCH: self._DETAIL}, {}, [],
+        )
+
+    def test_the_code_the_scope_and_the_prose_all_survive(self):
+        """Only the boolean changed. A consumer reading any of the other
+        three columns sees exactly what it saw before."""
+        out = self._rendered()
+        assert out["flag_codes"] == [flags.REGISTRY_LOCATION_MISMATCH]
+        assert out["flagged_fields"] == ["address"]
+        assert out["flag_scopes"] == {
+            flags.REGISTRY_LOCATION_MISMATCH: ["address"],
+        }
+        assert self._DETAIL in out["flag_reason"]
+        assert out["flag_reason"].startswith("Address:")
+
+    def test_it_does_not_put_the_record_in_the_queue(self):
+        assert self._rendered()["flag_for_review"] is False
+
+    def test_a_populated_reason_with_the_boolean_false_is_a_valid_row(self):
+        """The combination the old invariant made unreachable, asserted
+        directly: this is now a state DATAshaper must expect."""
+        out = self._rendered()
+        assert out["flag_reason"] and out["flag_for_review"] is False
+
+    def test_a_substantive_code_alongside_it_still_queues(self):
+        """The advisory code suppresses nothing but itself — it is subtracted
+        from the set that raises the boolean, not consulted as a veto."""
+        out = self._rendered(flags.NO_MATCH)
+        assert out["flag_for_review"] is True
+        assert set(out["flag_codes"]) == {
+            flags.NO_MATCH, flags.REGISTRY_LOCATION_MISMATCH,
+        }
+
+    def test_a_low_confidence_core_field_alongside_it_still_queues(self):
+        """The other half of the derivation is untouched: `low` raises the
+        boolean whether or not the only code present is advisory."""
+        out = flags.render(
+            {flags.REGISTRY_LOCATION_MISMATCH: {"address"}},
+            {flags.REGISTRY_LOCATION_MISMATCH: self._DETAIL}, {}, ["name1"],
+        )
+        assert out["flag_for_review"] is True
+
+    def test_every_advisory_code_is_a_real_code(self):
+        """The set names codes from the published vocabulary — an entry that
+        no site can raise would silently do nothing."""
+        assert flags.ADVISORY_CODES <= set(flags.ALL_CODES)
+
+    def test_not_every_code_is_advisory(self):
+        """A guard on the obvious mistake: emptying the review queue by
+        widening this set is not a change any test would otherwise catch."""
+        assert set(flags.ALL_CODES) - flags.ADVISORY_CODES
+
+
 class TestRenderAndRetract:
     """`render` is the one place the four flag columns are built, and
     `retract` is the only way a code leaves a record after `compute_flags`
@@ -575,9 +666,12 @@ class TestRenderAndRetract:
     def test_render_emits_the_four_columns_consistently(self):
         out = flags.render({flags.DOMAIN_UNVERIFIED: {"domain"}})
         assert out["flag_codes"] == [flags.DOMAIN_UNVERIFIED]
-        assert out["flag_for_review"] is True
         assert out["flagged_fields"] == ["domain"]
         assert out["flag_reason"].startswith("Domain:")
+        # Consistent does not mean identical: `domain-unverified` is advisory,
+        # so the three descriptive columns are populated and the queue column
+        # is not. That IS the contract — see `flags.ADVISORY_CODES`.
+        assert out["flag_for_review"] is False
 
     def test_render_of_nothing_is_the_unflagged_record(self):
         # `flag_notes` joined `flag_details` with Fix 3 — a second internal
@@ -621,22 +715,40 @@ class TestRenderAndRetract:
         assert result.flag_codes == [flags.DOMAIN_UNVERIFIED]
         assert result.flagged_fields == ["domain"]
         assert result.flag_low_confidence == []
-        assert result.flag_for_review is True
+        # The derived low was the only thing asking for review; withdrawing it
+        # leaves an advisory code, which does not. The code and its prose
+        # survive the retraction unchanged, which is what this test is about.
+        assert result.flag_for_review is False
         assert "left exactly as supplied" not in result.flag_reason
+        assert result.flag_reason.startswith("Domain:")
 
-    def test_render_names_the_rejected_domain_in_the_reason(self):
-        """A reviewer told to "confirm the website" would have to rediscover
-        which one; the guard knew, so the prose says it."""
+    def test_render_names_the_unverified_domain_in_the_reason(self):
+        """The domain is in the column, and the reason still names it: a
+        reviewer reading `Flag Reason` in a filtered export should not have to
+        go and find which value the sentence is about. It describes a value
+        that is PRESENT — no "before using it", because it is already there."""
         out = flags.render(
             {flags.DOMAIN_UNVERIFIED: {"domain"}},
             {flags.DOMAIN_UNVERIFIED: "meridianlabs.ai"},
         )
         assert out["flag_reason"] == (
-            "Domain: a candidate website (meridianlabs.ai) was found but "
-            "nothing tied it to this organisation — confirm meridianlabs.ai "
-            "before using it"
+            "Domain: the domain shown (meridianlabs.ai) was found on the web "
+            "but nothing independently tied it to this organisation — "
+            "confirm it"
         )
         assert out["flag_details"] == {flags.DOMAIN_UNVERIFIED: "meridianlabs.ai"}
+
+    def test_the_reason_does_not_read_as_a_suggestion(self):
+        """A guard on the wording, not a restatement of it. The prose used to
+        propose a value the row did not carry; now the row carries it, and a
+        sentence telling a reviewer to go and get one would describe a state
+        the record is not in."""
+        for prose in (
+            flags._REASONS[flags.DOMAIN_UNVERIFIED],
+            flags._DETAILED_REASONS[flags.DOMAIN_UNVERIFIED],
+        ):
+            assert "before using it" not in prose
+            assert "a candidate website" not in prose
 
     def test_render_falls_back_to_the_generic_prose_without_a_detail(self):
         out = flags.render({flags.DOMAIN_UNVERIFIED: {"domain"}})
@@ -808,6 +920,66 @@ class TestAnAdminDeskInName2NeedsNoVerification:
         assert flags.UNVERIFIED_INFERENCE in (out.get("flag_codes") or [])
         assert "name1" in (out.get("flagged_fields") or [])
 
+    # ── The derived half ────────────────────────────────────────────────
+    #
+    # `test_the_low_confidence_half_is_cleared_too` above exercises the
+    # `_ev_low_conf_unchanged` MARKER, and the marker branch always consulted
+    # the admin rule. The provenance-DERIVED low is a second, independent
+    # route to the same flag — `low_confidence_core_fields` reads `input:low`
+    # off the write history — and it consulted nothing. An "Accounts Payable"
+    # left exactly as supplied went out asking a reviewer to establish a
+    # canonical form it does not have. These pin the route the marker tests
+    # could not reach.
+
+    @staticmethod
+    def _unchanged_name2(name2: str):
+        """A record whose Name 1 a registry settled and whose Name 2 was
+        RETAINED with nothing corroborating it — `input:low` on name2, and no
+        marker anywhere. The real not-canonicalised state."""
+        from enrichment.provenance import deterministic_evidence, registry_evidence
+
+        result = _init_result(EnrichmentRecord(
+            record_id="AD1", country="US", name1="Acme Chemicals", name2=name2,
+        ))
+        # A settled Name 1, so `no-match` cannot fire and the only question
+        # left on the record is the one under test.
+        seed(result, registry_evidence("ror", "https://ror.org/00x"),
+             name1_enriched="Acme Chemicals", ror_id="https://ror.org/00x")
+        seed(result, deterministic_evidence("passthrough"), name2_enriched=name2)
+        return finalise(result, time.monotonic())
+
+    @pytest.mark.parametrize("name2", ADMIN)
+    def test_an_unchanged_admin_desk_does_not_ask_for_review(self, name2):
+        out = self._unchanged_name2(name2)
+        assert out["flag_for_review"] is False
+        assert out["flag_low_confidence"] == []
+        assert "name2" not in (out.get("flagged_fields") or [])
+
+    @pytest.mark.parametrize("name2", NOT_ADMIN)
+    def test_an_unchanged_real_unit_still_does(self, name2):
+        """The twin, with one thing changed. A unit that HAS an institutional
+        spelling can be spelled wrong, so the doubt stands."""
+        out = self._unchanged_name2(name2)
+        assert out["flag_for_review"] is True
+        assert out["flag_low_confidence"] == ["name2"]
+
+    @pytest.mark.parametrize(
+        "name2", ["Central Warehouse", "Main Plant", "Corporate Headquarters"],
+    )
+    def test_a_phrase_that_names_no_unit_is_covered_by_the_same_rule(self, name2):
+        """Not a back-office desk, so not in `is_admin_unit`'s vocabulary —
+        but it fails the same test for the same reason, and the loading bay of
+        a chemicals company has no canonical form either."""
+        assert self._unchanged_name2(name2)["flag_for_review"] is False
+
+    @pytest.mark.parametrize("name2", ADMIN[:4])
+    def test_the_provenance_still_says_low(self, name2):
+        """The exemption is about the REVIEW REQUEST, not about the evidence.
+        Nothing corroborated the value and the column must keep saying so —
+        suppressing the flag by inflating the confidence would be lying about
+        the record to make a queue shorter."""
+        assert self._unchanged_name2(name2)["name2_provenance"] == "input:low"
+
 
 class TestAPhraseThatNamesNoUnitNeedsNoVerification:
     """"Central Warehouse" is not a claim anything could check either.
@@ -894,3 +1066,66 @@ class TestAPhraseThatNamesNoUnitNeedsNoVerification:
         rec = {"city": "Midland", "region": "MI"}
         assert identifies_nothing("Midland Site", rec) is True
         assert identifies_nothing("Midland Site", {}) is False
+
+
+class TestAnAdminDeskIsNotSentForCanonicalisation:
+    """The other half of "just normalise them and let them be".
+
+    Not flagging an admin desk was only half the problem: the pipeline was
+    still asking a model to canonicalise one. "Accounts Payable" IS the
+    canonical spelling of the accounts-payable desk, and "Office of
+    Purchasing" is not a draft of "Procurement Services" — an answer the
+    identity guard in `tier2_canonical` then has to refuse, which is a worked
+    example in its own docstring. The record spent an LLM call to arrive back
+    where it started, and shipped `input:low` for its trouble. Preprocessing
+    has already fixed the casing and expanded the abbreviations, which is all
+    these values ever needed.
+
+    Pinned on the PREDICATE rather than through a batch run: the three stages
+    that consult it — the search-term derivation, the Tier 2 skip and the flag
+    exemption — must give one answer for one phrase, and that shared answer is
+    the thing worth pinning. `TestAnAdminDeskInName2NeedsNoVerification` above
+    covers the flag consequence end to end.
+    """
+
+    NO_CANONICAL_FORM = [
+        # Back-office desks — `is_admin_unit`.
+        "Accounts Payable", "Central Receiving", "Procurement Services",
+        "Office of Purchasing", "Purchasing Dept", "Mail Room",
+        "Business Office", "Shipping and Receiving",
+        # Facility function + scope qualifier — `identifies_nothing`.
+        "Central Warehouse", "Main Plant", "Corporate Headquarters",
+    ]
+    HAS_A_CANONICAL_FORM = [
+        "Dept of Chemistry", "Oncology Lab", "School of Business",
+        "Office of Research", "Materials Science",
+    ]
+
+    @pytest.mark.parametrize("name2", NO_CANONICAL_FORM)
+    def test_a_phrase_with_no_official_spelling_is_recognised(self, name2):
+        from enrichment.search_terms import has_no_canonical_form
+
+        assert has_no_canonical_form(name2) is True
+
+    @pytest.mark.parametrize("name2", HAS_A_CANONICAL_FORM)
+    def test_a_real_unit_is_not(self, name2):
+        """The guard on the skip: a unit with an institutional spelling is
+        exactly what canonicalisation is for, and must still go."""
+        from enrichment.search_terms import has_no_canonical_form
+
+        assert has_no_canonical_form(name2) is False
+
+    @pytest.mark.parametrize("value", [None, "", "   "])
+    def test_a_blank_slot_is_not_a_phrase(self, value):
+        """False, so callers keep their own handling of an empty slot rather
+        than inheriting a skip meant for a phrase."""
+        from enrichment.search_terms import has_no_canonical_form
+
+        assert has_no_canonical_form(value) is False
+
+    @pytest.mark.parametrize("name2", NO_CANONICAL_FORM)
+    def test_the_flag_exemption_reads_the_same_predicate(self, name2):
+        """The two stages cannot drift: one function answers for both."""
+        assert flags.name2_needs_no_verification(
+            {"name2_enriched": name2},
+        ) is True

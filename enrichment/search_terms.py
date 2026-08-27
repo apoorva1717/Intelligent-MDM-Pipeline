@@ -673,6 +673,37 @@ def identifies_nothing(
     return not has_identifying_token(text, geo)
 
 
+def has_no_canonical_form(
+    text: str | None, result: "dict[str, Any] | None" = None,
+) -> bool:
+    """True when *text* names something that HAS no official spelling.
+
+    The union of the two shapes, and the one predicate every consumer asks:
+
+    * :func:`~utils.text_utils.is_admin_unit` — a back-office desk. "Accounts
+      Payable" is not a draft of a canonical form, it IS the canonical form;
+      "Office of Purchasing" is not a misspelling of "Procurement Services";
+    * :func:`identifies_nothing` — a phrase built entirely of facility
+      functions and scope qualifiers. "Central Warehouse" names no unit at
+      all, so there is nothing for an institution to spell its own way.
+
+    Three callers, and they must agree or the pipeline contradicts itself:
+    §0 of this module empties ``search_term_2`` to ``"ADMIN"``, Tier 2 skips
+    the canonicalisation LLM call, and ``enrichment.flags`` declines to ask a
+    reviewer to confirm a canonical form. The first two decline to look; a
+    flag afterwards would ask a human to do by hand what the pipeline itself
+    judged not worth doing.
+
+    *result* is optional and is used only for :func:`identifies_nothing`'s
+    address-token comparison. Without it a phrase is more likely to look
+    identifying, so the answer is conservative — False rather than True.
+    """
+    if not text or not str(text).strip():
+        return False
+    value = str(text).strip()
+    return is_admin_unit(value) or identifies_nothing(value, result)
+
+
 def _cap_to_two_terms(
     text: str, geo: "frozenset[str] | None" = None,
 ) -> str | None:

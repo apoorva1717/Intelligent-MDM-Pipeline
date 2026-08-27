@@ -429,7 +429,13 @@ class EnrichmentResult(BaseModel):
     # ── Review metadata (enrichment output) ──────────────────────────
     # The three flag fields are always consistent, and are rebuilt together
     # once per record from its final state — see enrichment/flags.py.
-    # `flag_for_review` is true if and only if `flag_codes` is non-empty.
+    # `flag_for_review` is DERIVED, not "`flag_codes` is non-empty": a core
+    # field at `low` confidence raises it with no code attached, and a code in
+    # `enrichment.flags.ADVISORY_CODES` (`registry-location-mismatch`,
+    # `domain-unverified`) ships its prose without raising it. So a row can carry a populated
+    # `flag_reason` with this false — the finding is stated, no review is
+    # requested. A consumer building the review queue must read this field and
+    # not test `flag_codes` for emptiness.
     flag_for_review: bool = False
     # Machine-readable triage codes from enrichment.flags.ALL_CODES. A record
     # can carry several; the single concatenated `flag_reason` string it
