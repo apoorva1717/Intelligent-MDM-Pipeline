@@ -351,6 +351,30 @@ def _normalise_for_tokens(text: str) -> str:
 _CANONICAL_NAME_TYPES = {"ror_display", "label"}
 
 
+def _ror_name_variants(org: dict[str, Any]) -> list[str]:
+    """Every name ROR publishes for *org*, cleaned the way the display name is.
+
+    Display name, labels, aliases and acronyms, each through the SAME bracket
+    strip :func:`_extract_org_fields` applies to ``ror_display`` — ROR's
+    "(United States)" / "(Detroit)" qualifier is its keyspace disambiguating
+    two records, not part of what the organisation is called.
+
+    Order is ROR's own, so the display name comes first and a caller that
+    takes the first match prefers it. De-duplicated case-insensitively.
+    """
+    variants: list[str] = []
+    seen: set[str] = set()
+    for name_entry in org.get("names") or []:
+        value = strip_parentheticals(
+            _strip_ror_country_suffix(name_entry.get("value") or ""),
+        ).strip()
+        if not value or value.lower() in seen:
+            continue
+        seen.add(value.lower())
+        variants.append(value)
+    return variants
+
+
 def _compute_name_score(
     query: str,
     org_names: list[dict[str, Any]],
@@ -840,6 +864,11 @@ def _extract_org_fields(org: dict[str, Any]) -> dict[str, Any]:
         "country": country,
         "country_code": _org_country_code(org),
         "org_names": org_names,
+        # The cleaned name strings — small enough to travel in the result
+        # payload and the cache, unlike the full `org_names` blob, which is
+        # stripped at every return. `_write_registry_name` reads these to see
+        # whether the record already states one of ROR's own names.
+        "name_variants": _ror_name_variants(org),
     }
 
 
@@ -988,15 +1017,7 @@ async def call_ror(
         "Sekisui XenoTech (United States)" as a fuzzy match and flagged three
         exact matches on the chemspeed batch.
         """
-        return name_match_tier(
-            list(queries),
-            [
-                strip_parentheticals(
-                    _strip_ror_country_suffix(ne.get("value") or ""),
-                )
-                for ne in (org.get("names") or [])
-            ],
-        )
+        return name_match_tier(list(queries), _ror_name_variants(org))
 
     def _short_name_ok(
         fields: dict[str, Any], score: float, org: dict[str, Any],

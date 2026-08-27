@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import Sequence
 from typing import Any
 from urllib.parse import urlparse
 
@@ -106,6 +107,7 @@ from enrichment.consistency import (
     registry_location_unconfirmed_count,
     reset_consistency_counters,
 )
+from enrichment.registry_match import names_match_verbatim
 from enrichment.tier1_lei import LEIClient, clear_lei_cache, lei_normalised_hits
 from enrichment.tier1_ror import RORClient, clear_ror_cache, ror_normalised_hits
 from enrichment.page_corroborator import (
@@ -791,6 +793,45 @@ def _record_domain_hint(result: dict[str, Any], record: Any = None) -> str | Non
     return host or None
 
 
+def _preferred_registry_variant(
+    incumbent: str | None,
+    display: str,
+    variants: Sequence[str] | None,
+) -> str:
+    """Which of the registry's own names to write — display, or the one the
+    record already states.
+
+    A registry publishes several names for one organisation and nominates one
+    of them for display. ROR's nomination is a *keyspace* decision, not a
+    branding one — it is the string ROR disambiguates its own records by, and
+    it is frequently the historical form: ror.org/054962n91 displays "Siemens
+    Healthcare (United States)" and carries "Siemens Healthineers", the name
+    the company has traded under since 2016, as an alias. A record that says
+    "Siemens Healthineers" is not an abbreviation ROR is correcting; it is the
+    same organisation named by a name ROR itself publishes, and rewriting it to
+    the display form churns a correct value into a stale one.
+
+    So: when *incumbent* matches one of *variants* verbatim (case, punctuation
+    and legal form forgiven — :func:`names_match_verbatim`), that variant is
+    written instead of *display*. The variant, not the incumbent: the string
+    still comes from the registry, so it keeps the registry's spelling and
+    casing rather than SAP's shouted input, and the field stays registry-owned
+    exactly as before.
+
+    Everything else is unchanged. A name the registry does NOT publish — "Mayo
+    Clinic FLA" against ror.org/03zzw1w08 — matches no variant, and the display
+    name wins, which is the whole point of the registry name write.
+    """
+    if not (incumbent and incumbent.strip()):
+        return display
+    for variant in variants or ():
+        if not (variant and variant.strip()):
+            continue
+        if names_match_verbatim(incumbent, variant):
+            return variant.strip()
+    return display
+
+
 def _write_registry_name(
     result: dict[str, Any],
     field: str,
@@ -801,9 +842,16 @@ def _write_registry_name(
     score: float | None = None,
     scale: str | None = None,
     rule_id: str | None = None,
+    incumbent: str | None = None,
+    variants: Sequence[str] | None = None,
 ) -> None:
     """Write a registry's official name into an output name field and record
     that the field is registry-owned.
+
+    ``incumbent`` is the name the record already states for this field and
+    ``variants`` every name the registry publishes for the matched entity;
+    when the two meet, :func:`_preferred_registry_variant` keeps the form the
+    record stated. Callers that pass neither get the display name, unchanged.
 
     A verified match — one that has already passed ROR's country and
     distinctive-token guards, or GLEIF's ``token_sort_ratio`` guard — is
@@ -820,6 +868,7 @@ def _write_registry_name(
     """
     if not (value and value.strip()):
         return
+    value = _preferred_registry_variant(incumbent, value.strip(), variants)
     # ``identifier`` is the evidence_ref — the registry id a reviewer opens to
     # check the name. A registry-supplied name is exact by definition: the
     # scored comparison happened upstream, at the match, and its score is
@@ -3550,6 +3599,10 @@ class Orchestrator:
                 result, "name1", ror_res.get("official_name"), registry="ROR",
                 identifier=ror_res["ror_id"],
                 rule_id="fix2:tier1-retry-after-canonicalisation",
+                # The corrected name the retry queried with — if ROR publishes
+                # it as one of this organisation's names, it stands.
+                incumbent=canonical,
+                variants=ror_res.get("name_variants"),
             )
             record_registry_identity(
                 result, "ROR", ror_res, name=ror_res.get("official_name"),
@@ -5168,6 +5221,13 @@ class Orchestrator:
                         registry="ROR",
                         identifier=ror_parent["ror_id"],
                         rule_id="tier1-ror:parent-match",
+                        # …with one exception, and it is not a second
+                        # threshold: if the name the record already states is
+                        # itself one of ROR's published names for this
+                        # organisation, that variant is written rather than
+                        # the display name. See `_preferred_registry_variant`.
+                        incumbent=name1_cleaned,
+                        variants=ror_parent.get("name_variants"),
                     )
                     # Fix D — what ROR says this organisation is called, and
                     # where it is registered. Recorded, not acted on; the gate
