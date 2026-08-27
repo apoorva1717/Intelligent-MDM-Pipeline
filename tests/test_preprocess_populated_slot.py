@@ -40,15 +40,18 @@ from enrichment.tier3_llm import Tier3Result
 from tests.conftest import seed
 
 
-def _finalised(inputs, enriched, populated=None, from_tier3=()):
+def _finalised(inputs, enriched, populated=None, from_tier3=(), cleared=()):
     """Finalise one record whose tiers settled on *enriched*.
 
     *populated* is the marker preprocessing hands to finalise: the name slots
     it filled that the input left blank, mapped to the value it put there.
+    *cleared* is its counterpart — the slots preprocessing emptied, which the
+    department passthrough must not refill from `{slot}_original`.
     """
     r = _init_result(EnrichmentRecord(record_id="t", country="US", **inputs))
     seed(r, **enriched)
     seed(r, _preprocess_populated=dict(populated or {}))
+    seed(r, _preprocess_cleared=set(cleared))
     seed(r, tier_used=3, confidence="medium")
     for slot in from_tier3:
         seed(r, **{f"_{slot}_from_tier3": True})
@@ -141,3 +144,63 @@ class TestFinaliseDropsOnlyInventions:
             populated={"name2": "Kerrville MLRA Office"},
         )
         assert "_preprocess_populated" not in out
+
+
+class TestTheUC14LeftwardPack:
+    """The same defect reached through UC 14 instead of the parent-org split.
+
+    Row 13036137 of the government-labs batch arrived with a gap in the block:
+
+        Name 1  Naval Info Warfare Center
+        Name 2  (empty)
+        Name 3  PAC Receiving Bldg
+
+    UC 14 packs the block leftward, so the building lands in Name 2 with
+    `name2_original` empty — the same starting state the USDA split produces,
+    reached by a different route. It shipped in the 2026-08-27 00:35 export and
+    was gone from the next one; nothing about the record changed, only whether
+    Tier 3 happened to answer for Name 2 that run. When it did, the guard let
+    the answer through and §6c dropped it as an invention into a blank slot,
+    and the building went nowhere.
+    """
+
+    def test_uc14_moves_the_building_up_into_name2(self):
+        pre = preprocess_record(
+            name1="Naval Info Warfare Center", name2=None,
+            name3="PAC Receiving Bldg", contact=None, email=None,
+            street1="Pacific Hwy", street2=None, street3=None,
+            house_number="4297",
+        )
+        assert 14 in pre.use_cases
+        assert pre.name2 == "PAC Receiving Bldg"
+        assert pre.name3 is None
+
+    def test_the_packed_building_is_guarded_from_a_different_unit(self):
+        r = _init_result(EnrichmentRecord(
+            record_id="13036137", country="US",
+            name1="Naval Info Warfare Center", name3="PAC Receiving Bldg",
+        ))
+        seed(r, name2_enriched="PAC Receiving Bldg")
+        seed(r, _preprocess_populated={"name2": "PAC Receiving Bldg"})
+        _apply_tier3(r, Tier3Result(
+            success=True, confidence="medium",
+            name2_suggestion="Naval Information Warfare Systems Command",
+        ))
+        assert r["name2_enriched"] == "PAC Receiving Bldg"
+        assert not r.get("_name2_from_tier3")
+
+    def test_the_packed_building_survives_finalise(self):
+        # name3 is in `_preprocess_cleared` — UC 14 emptied it — so the
+        # passthrough cannot put the building back there either. If §6c drops
+        # Name 2, the value is gone from the record entirely.
+        out = _finalised(
+            {"name1": "Naval Info Warfare Center", "name3": "PAC Receiving Bldg"},
+            {
+                "name1_enriched": "Naval Info Warfare Center",
+                "name2_enriched": "PAC Receiving Bldg",
+            },
+            populated={"name2": "PAC Receiving Bldg"},
+            from_tier3=("name2",),
+            cleared=("name3",),
+        )
+        assert out["name2_enriched"] == "PAC Receiving Bldg"
