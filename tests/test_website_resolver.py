@@ -761,3 +761,209 @@ class TestPathBCountryGate:
         )
         assert res.url == "https://www.unilever.be"
         assert "US" in client.calls[0]
+
+
+# ---------------------------------------------------------------------------
+# Path B — region / city as campus evidence
+# ---------------------------------------------------------------------------
+
+class TestMultiCampusInstitution:
+    """The University of Texas case.
+
+    "University of Texas" is not one university. Every guard in the resolver
+    asks whether the NAME fits the host, and the name of a multi-campus system
+    fits every campus it has plus everything else that carries the state's name
+    — so the name tests alone could only ever pick one arbitrarily. On the live
+    SERP that arbitrary pick was UT Austin's athletics site, on every record.
+    """
+
+    # The exact SERP shape SerpAPI returns for the resolver's own query. It is
+    # the ordering that matters: utexas.edu is #1 and texaslonghorns.com is #2.
+    _UT_SERP = [
+        _sr("The University of Texas at Austin", "https://www.utexas.edu/",
+            "a leading public research university"),
+        _sr("University of Texas Athletics - Official Athletics Website",
+            "https://texaslonghorns.com/",
+            "The official athletics website for the University of Texas Longhorns."),
+        _sr("Home | The University of Texas System", "https://www.utsystem.edu/",
+            "consists of 13 institutions across the state"),
+        _sr("University Co-op: Texas Longhorns Apparel, Gifts & Textbooks",
+            "https://www.universitycoop.com/", "Longhorns apparel"),
+    ]
+
+    def test_athletics_site_no_longer_beats_the_university(self):
+        # The reported bug. texaslonghorns.com, universitycoop.com and
+        # utexas.edu all rank 2 — "texas"/"university" is a substring of each
+        # host — and the tiebreak was ALPHABETICAL, so the athletics site won
+        # the #1 result deterministically, on every University of Texas row.
+        res = select_website_from_serp(
+            "University of Texas", self._UT_SERP,
+            record_type="research_institution", country="US",
+        )
+        assert res.url == "https://www.utexas.edu"
+
+    def test_city_selects_the_right_campus(self):
+        # utep.edu fails every host test there is: "utep" carries neither
+        # "university" nor "texas", and the initials of the name are two
+        # letters, below the acronym rule's floor. Only the city reaches it.
+        results = [
+            _sr("UTEP: The University of Texas at El Paso", "https://www.utep.edu/",
+                "America's Leading Hispanic-Serving University"),
+            _sr("The University of Texas at Austin", "https://www.utexas.edu/",
+                "a leading public research university"),
+        ]
+        res = select_website_from_serp(
+            "University of Texas", results,
+            record_type="research_institution", country="US", city="El Paso",
+        )
+        assert res.url == "https://www.utep.edu"
+        # Rank 2 reached on locality evidence, not on the host — written, but
+        # flagged rather than trusted clean.
+        assert res.confidence == "low"
+
+    def test_reference_site_with_an_identical_title_loses_on_tld(self):
+        # texasalmanac.com's SERP title is character-for-character the same as
+        # utep.edu's, and it mentions El Paso too. Neither the name test nor the
+        # city test can separate them; the TLD can.
+        results = [
+            _sr("The University of Texas at El Paso", "https://www.texasalmanac.com/x",
+                "founded under Senate Bill 183 in April 1913"),
+            _sr("UTEP: The University of Texas at El Paso", "https://www.utep.edu/",
+                "America's Leading Hispanic-Serving University"),
+        ]
+        res = select_website_from_serp(
+            "University of Texas", results,
+            record_type="research_institution", country="US", city="El Paso",
+        )
+        assert res.url == "https://www.utep.edu"
+
+    def test_state_directory_on_a_gov_tld_is_not_rescued(self):
+        # comptroller.texas.gov is rank 2, authoritative, and names El Paso —
+        # the live result the city-bearing query promoted to HIGH confidence
+        # before the full-name-phrase condition existed.
+        results = [
+            _sr("Texas Colleges and Universities",
+                "https://comptroller.texas.gov/economy/education/",
+                "University of Texas at Arlington - University of Texas at El Paso"),
+        ]
+        res = select_website_from_serp(
+            "University of Texas", results,
+            record_type="research_institution", country="US", city="El Paso",
+        )
+        # Eligible on the host test ("texas" in the host), so it is still
+        # selectable — but only at LOW confidence, never written clean.
+        assert res.confidence == "low"
+
+    def test_rescue_requires_edu_or_gov(self):
+        # .org is in _OFFICIAL_TLDS but not in _RESCUE_TLDS: it is where
+        # 'scup.org' lives, the stranger the rank-0 rule exists to reject.
+        results = [
+            _sr("The University of Texas at El Paso", "https://www.someorg.org/",
+                "about UTEP"),
+        ]
+        res = select_website_from_serp(
+            "University of Texas", results,
+            record_type="research_institution", country="US", city="El Paso",
+        )
+        assert res.url is None
+
+    def test_rescue_is_institutions_only(self):
+        results = [
+            _sr("Acme Biotech, El Paso", "https://www.somelab.edu/", "Acme Biotech"),
+        ]
+        res = select_website_from_serp(
+            "Acme Biotech", results,
+            record_type="company", country="US", city="El Paso",
+        )
+        assert res.url is None
+
+    def test_short_city_is_not_evidence(self):
+        # "Ada" occurs inside ordinary words; a three-letter city would
+        # corroborate anything.
+        results = [
+            _sr("The University of Texas at Ada", "https://www.utada.edu/",
+                "Canada research programme"),
+        ]
+        res = select_website_from_serp(
+            "University of Texas", results,
+            record_type="research_institution", country="US", city="Ada",
+        )
+        assert res.url is None
+
+    def test_city_absent_leaves_ranking_unchanged(self):
+        # city=None is the shape every existing caller had. Selection must fall
+        # back to exactly the name/TLD ordering, with no rescue.
+        with_city = select_website_from_serp(
+            "University of Texas", self._UT_SERP,
+            record_type="research_institution", country="US", city="El Paso",
+        )
+        without = select_website_from_serp(
+            "University of Texas", self._UT_SERP,
+            record_type="research_institution", country="US",
+        )
+        assert with_city.url == without.url == "https://www.utexas.edu"
+
+
+class TestInstitutionQueryCarriesRegion:
+    def test_region_and_city_reach_the_query(self):
+        from enrichment.website_resolver import _build_serp_query
+
+        q = _build_serp_query(
+            "University of Texas", "El Paso", "TX", "US", "research_institution",
+        )
+        assert q == '"University of Texas" official website El Paso TX US'
+
+    def test_country_alone_when_no_city_or_region(self):
+        from enrichment.website_resolver import _build_serp_query
+
+        q = _build_serp_query(
+            "University of Texas", None, None, "US", "research_institution",
+        )
+        assert q == '"University of Texas" official website US'
+
+
+class TestInstitutionConfidenceEvidence:
+    """An authoritative TLD alone does not earn a clean write."""
+
+    def test_state_directory_is_written_but_flagged(self):
+        # comptroller.texas.gov reduces to the registrable domain texas.gov,
+        # whose whole label is one of the name's own words — a clean rank-2
+        # host match — and .gov then granted HIGH. The Texas state comptroller
+        # was the resolver's unflagged answer for a university.
+        res = select_website_from_serp(
+            "University of Texas",
+            [_sr("Texas Colleges and Universities",
+                 "https://comptroller.texas.gov/economy/education/",
+                 "University of Texas at El Paso")],
+            record_type="research_institution", country="US", city="El Paso",
+        )
+        assert res.url is not None
+        assert res.confidence == "low"
+
+    def test_acronym_institution_keeps_high_confidence(self):
+        # fit.edu's real SERP title is "Florida Tech: www.fit.edu" — its own
+        # homepage, which never spells the name out. The host already matches
+        # the initials in full, so requiring the phrase as well would flag every
+        # acronym-domain university in the batch.
+        res = select_website_from_serp(
+            "Florida Institute of Technology",
+            [_sr("Florida Tech: www.fit.edu", "https://www.fit.edu/", "homepage")],
+            record_type="research_institution", country="US", city="Melbourne",
+        )
+        assert res.url == "https://www.fit.edu"
+        assert res.confidence == "high"
+
+    def test_root_host_beats_a_unit_subdomain(self):
+        # Same registrable domain, so _candidate_key sorted them as strings and
+        # "college.harvard.edu" preceded "www.harvard.edu".
+        res = select_website_from_serp(
+            "Harvard University",
+            [
+                _sr("Harvard College - Harvard University",
+                    "https://college.harvard.edu/", "Cambridge, MA"),
+                _sr("Harvard University", "https://www.harvard.edu/",
+                    "Cambridge, Massachusetts"),
+            ],
+            record_type="research_institution", country="US", city="Cambridge",
+        )
+        assert res.url == "https://www.harvard.edu"

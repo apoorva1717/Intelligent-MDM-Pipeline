@@ -22,7 +22,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -267,6 +266,107 @@ def _has_host_match(name1: str, url: str, record_type: str | None) -> bool:
     return False
 
 
+
+# ── Region / country evidence ──────────────────────────────────────────────
+#
+# Region and country were already in play here, but only in the two weakest
+# places available: the country shapes the QUERY, and `_wrong_country`
+# disqualifies a candidate whose ccTLD contradicts it. Neither can separate two
+# campuses of one institution inside one country — and that is the case this
+# exists for. "University of Texas" is not one university; it is a system of a
+# dozen, and the record's city is the only field that says which one this row
+# is.
+#
+# The corroborating unit is the CITY, not the region. `enrichment.locality`
+# settled that for the page corroborator already — a match no finer than the
+# region "is too coarse to corroborate", because every candidate in a
+# single-state batch clears it. Not hypothetical here: "Texas" occurs in
+# `texaslonghorns.com`, `texasalmanac.com` and `comptroller.texas.gov` alike,
+# so region-level corroboration would rank precisely nothing. The region earns
+# its keep in the QUERY instead, where it changes which candidates come back at
+# all (`_build_serp_query`).
+
+
+def _record_city_token(city: str | None) -> str | None:
+    """The record's city normalised for a substring test, or ``None`` when it
+    is too short to be evidence — "Ada", "Rye" and "Erie" occur inside ordinary
+    words and would corroborate anything."""
+    token = re.sub(r"\s+", " ", (city or "").strip().lower())
+    return token if len(token) >= 4 else None
+
+
+def _geo_corroborated(city: str | None, candidate: SearchResult) -> bool:
+    """True when the candidate's SERP text names the record's city.
+
+    Title AND snippet: a campus qualifier usually sits in the title ("The
+    University of Texas at El Paso"), but a homepage often states the place
+    only in the snippet.
+    """
+    token = _record_city_token(city)
+    if not token:
+        return False
+    return token in f"{candidate.title or ''} {candidate.snippet or ''}".lower()
+
+
+def _name_phrase_in_title(name1: str, title: str | None) -> bool:
+    """True when *title* carries name1 as a contiguous phrase, punctuation and
+    spacing ignored.
+
+    Far stricter than `_name_overlap`'s any-token test, and it has to be: it is
+    what tells "UTEP: The University of Texas at El Paso" from "Texas Colleges
+    and Universities".
+    """
+    def _flat(text: str) -> str:
+        return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", text.lower())).strip()
+
+    needle, hay = _flat(name1), _flat(title or "")
+    return bool(needle) and needle in hay
+
+
+# An abbreviation domain cannot pass `_has_host_match`: "utep" carries neither
+# "university" nor "texas", and the initials of "University of Texas" are two
+# letters — below the acronym rule's floor of three. So the one candidate that
+# IS the record's institution ranks 0 and is discarded, while `texasalmanac.com`
+# — a reference site whose SERP title is character-for-character identical to
+# utep.edu's — ranks 2 on the substring "texas".
+#
+# The host test cannot separate those two, and no tightening of it can: the same
+# permissive substring rule is the only thing keeping `utexas.edu` eligible as
+# well (`utexas` does not start with "texas", so coverage-style matching drops
+# the right answer along with the wrong one). Only evidence the host never
+# carried can do it. All three of these must hold, and each rules out a real
+# candidate seen on this SERP:
+#
+#   .edu / .gov      — `texasalmanac.com` is out. `.org` is deliberately NOT
+#                      here: it is the loosest of the authoritative TLDs and
+#                      the one `scup.org` sits on, the stranger domain the
+#                      host test exists to reject.
+#   full name phrase — `comptroller.texas.gov` ("Texas Colleges and
+#                      Universities") is out.
+#   city corroborated — every campus that is not the record's is out.
+_RESCUE_TLDS: frozenset[str] = frozenset({"edu", "gov"})
+
+
+def _geo_rescues_host_miss(
+    name1: str,
+    candidate: SearchResult,
+    city: str | None,
+    record_type: str | None,
+) -> bool:
+    """True when locality evidence promotes a rank-0 institution candidate.
+
+    Institutions only. A company's site is not identified by its city appearing
+    beside its name, and `.edu`/`.gov` is not where a company lives.
+    """
+    if record_type != "research_institution":
+        return False
+    if _tld(candidate.url) not in _RESCUE_TLDS:
+        return False
+    if not _name_phrase_in_title(name1, candidate.title):
+        return False
+    return _geo_corroborated(city, candidate)
+
+
 def _domain_introduces_foreign_brand(name1: str, url: str) -> bool:
     """True if the host's primary label carries a distinctive word absent
     from *name1* — the mark of a subsidiary / sub-brand domain.
@@ -323,19 +423,121 @@ def _candidate_key(sr: SearchResult) -> str:
     return f"{extract_domain(sr.url) or ''}|{(sr.url or '').lower()}"
 
 
-def _best_candidate(
-    valid: list[SearchResult], rank: "Callable[[SearchResult], int]",
-) -> SearchResult:
-    """The highest-ranked candidate, ties broken by canonical id ASC.
+def _host_depth(url: str) -> int:
+    """Label count of the host, ``www.`` ignored — 2 for ``harvard.edu``, 3 for
+    ``college.harvard.edu``.
 
-    Fix C(1). This was ``max(valid, key=_rank)``, which returns the FIRST
-    maximum and therefore inherited the search API's own ordering for every
-    tie. SERP order is not reproducible between runs — one chemspeed record
-    changed its candidate domain between two runs of the identical batch on
-    exactly this — so the tie is now broken by the candidate's own identity
-    instead. Nothing about which candidates are *eligible* changes.
+    An organisation lives at the root of its host; a subdomain is one of its
+    units. Both are the same registrable domain, so `_candidate_key` could not
+    tell them apart and sorted them as strings: "college.harvard.edu" precedes
+    "www.harvard.edu", and Harvard University resolved to Harvard College.
     """
-    return min(valid, key=lambda sr: (-rank(sr), _candidate_key(sr)))
+    host = (urlparse(url or "").netloc or "").lower().split(":")[0]
+    if host.startswith("www."):
+        host = host[4:]
+    return host.count(".") + 1 if host else 99
+
+
+def _sort_key(
+    sr: SearchResult,
+    rank: int,
+    position: int,
+    *,
+    record_type: str | None,
+    city: str | None,
+) -> tuple:
+    """Total order over eligible candidates, best first.
+
+    Fix C(1) replaced ``max(valid, key=_rank)`` — which inherited the search
+    API's ordering for every tie — with a tiebreak on the candidate's own id,
+    because SERP order is not reproducible between runs and one chemspeed
+    record changed its domain because of it. That fixed the determinism and
+    introduced a different bug: `_candidate_key` sorts ALPHABETICALLY, so every
+    rank tie resolved to whichever domain happened to sort first.
+    "texaslonghorns.com" < "utexas.edu", so UT Austin's athletics site beat the
+    university's own homepage — deterministically, which is why it was every
+    University of Texas record in the batch rather than some of them.
+
+    The answer is not to go back to SERP order, but to put MEANINGFUL keys in
+    front of the alphabetical one. It stays as the final backstop, so the
+    ordering is still total and still reproducible run to run:
+
+      1. ``rank``          — the existing §7b host match, including a rank
+         restored by :func:`_geo_rescues_host_miss`.
+      2. authoritative TLD — for an institution, ``.edu``/``.gov``/``.org``
+         outranks ``.com``. Until now the TLD set CONFIDENCE and never ORDER,
+         so an athletics ``.com`` competed on equal footing with the
+         university's ``.edu``. Institutions only: for a company ``.com`` is
+         the normal home and promoting ``.org`` above it would be wrong.
+      3. city corroborated — which campus of a multi-campus institution.
+      4. host depth        — the root host over one of its subdomains
+         (:func:`_host_depth`).
+      5. SERP position     — the provider's own ranking, previously discarded
+         outright. utexas.edu was the #1 result and lost to the #2.
+      6. ``_candidate_key`` — unchanged, and still what makes ties reproducible.
+    """
+    authoritative = (
+        record_type == "research_institution" and _tld(sr.url) in _OFFICIAL_TLDS
+    )
+    return (
+        -rank,
+        0 if authoritative else 1,
+        0 if _geo_corroborated(city, sr) else 1,
+        _host_depth(sr.url),
+        position,
+        _candidate_key(sr),
+    )
+
+
+def _evaluate_candidates(
+    name1: str,
+    results: list[SearchResult],
+    record_type: str | None,
+    *,
+    country: str | None,
+    city: str | None,
+) -> tuple[list[SearchResult], dict[int, int], SearchResult | None]:
+    """``(valid, rank_by_id, best)`` — the whole selection decision, computed
+    once.
+
+    :func:`select_website_from_serp` and :func:`_assemble_path_b_trace` both
+    need this and each used to compute it separately, the trace's copy carrying
+    a comment promising it mirrored the real one "in the SAME short-circuit
+    order". That is a promise only shared code can actually keep.
+
+    ``best`` is ``None`` when the winner is still rank 0 — no candidate has a
+    distinctive name token (or the acronym) in its HOST and none was rescued by
+    locality evidence, so the overlap is only a word in a title. Too weak to
+    trust ('scup.org' for 'Bayfront Research'); the caller defers to Path C.
+    """
+    valid = [
+        sr for sr in results
+        if sr.url and _URL_RE.match(sr.url)
+        and not _is_blacklisted(sr.url)
+        and _name_overlap(name1, sr)
+        and not _wrong_country(sr.url, country)
+    ]
+    if not valid:
+        return [], {}, None
+
+    position = {id(sr): i for i, sr in enumerate(results)}
+    ranks: dict[int, int] = {}
+    for sr in valid:
+        if not _has_host_match(name1, sr.url, record_type):
+            ranks[id(sr)] = (
+                2 if _geo_rescues_host_miss(name1, sr, city, record_type) else 0
+            )
+        else:
+            ranks[id(sr)] = 1 if _domain_introduces_foreign_brand(name1, sr.url) else 2
+
+    best = min(valid, key=lambda sr: _sort_key(
+        sr,
+        ranks[id(sr)],
+        position.get(id(sr), len(results)),
+        record_type=record_type,
+        city=city,
+    ))
+    return valid, ranks, (best if ranks[id(best)] != 0 else None)
 
 
 def _root_url(url: str) -> str:
@@ -409,6 +611,7 @@ def _assemble_path_b_trace(
     error: str | None = None,
     attempt: str = "quoted",
     country: str | None = None,
+    city: str | None = None,
 ) -> dict:
     """Build the per-candidate Path B trace record.
 
@@ -418,26 +621,12 @@ def _assemble_path_b_trace(
     attribute each candidate's ``rejected_by`` to the FIRST guard that fired.
     It never mutates state or changes what was resolved.
     """
-    # Recompute valid + chosen exactly as select_website_from_serp does, so the
-    # per-candidate `chosen`/`rank` fields match the real decision.
-    valid = [
-        sr for sr in results
-        if sr.url and _URL_RE.match(sr.url)
-        and not _is_blacklisted(sr.url)
-        and _name_overlap(name1, sr)
-        and not _wrong_country(sr.url, country)
-    ]
-    ranks: dict[int, int] = {}
-    chosen_sr: SearchResult | None = None
-    if valid:
-        for sr in valid:
-            ranks[id(sr)] = (
-                0 if not _has_host_match(name1, sr.url, record_type)
-                else (1 if _domain_introduces_foreign_brand(name1, sr.url) else 2)
-            )
-        best = _best_candidate(valid, lambda sr: ranks[id(sr)])
-        if ranks[id(best)] != 0:
-            chosen_sr = best
+    # The SAME evaluation select_website_from_serp ran, not a copy of it, so
+    # the per-candidate `chosen`/`rank` fields cannot drift from the real
+    # decision.
+    _valid, ranks, chosen_sr = _evaluate_candidates(
+        name1, results, record_type, country=country, city=city,
+    )
 
     candidates: list[dict] = []
     for i, sr in enumerate(results, 1):
@@ -480,6 +669,10 @@ def _assemble_path_b_trace(
                 entry["matched_in"] = where
                 rank = ranks.get(id(sr))
                 entry["rank"] = rank
+                entry["geo_corroborated"] = _geo_corroborated(city, sr)
+                entry["geo_rescued"] = bool(
+                    rank == 2 and not _has_host_match(name1, sr.url, record_type)
+                )
                 if rank == 0:
                     entry["rejected_by"] = "rank_0"
                 elif rank == 1:
@@ -498,6 +691,7 @@ def _assemble_path_b_trace(
         "query": query,
         "num_results": num_results,
         "record_country": country,
+        "record_city": city,
         "results_returned": len(results),
         "candidates": candidates,
         "chosen_url": chosen.url,
@@ -516,6 +710,7 @@ def select_website_from_serp(
     record_type: str | None = None,
     *,
     country: str | None = None,
+    city: str | None = None,
 ) -> WebsiteResolution:
     """Pick the best official-website candidate from ranked SERP results.
 
@@ -536,39 +731,66 @@ def select_website_from_serp(
         the chosen host cleanly contains a name token; ``low`` when only a
         sub-brand / weak host is available.
       * ``none`` — no usable candidate.
+
+    *city* is the record's own city, and it decides between campuses. It ranks
+    candidates (:func:`_sort_key`) and, for an institution, can restore a
+    candidate the host test rejected (:func:`_geo_rescues_host_miss`). Passing
+    ``None`` disables both and leaves ranking exactly as it was.
+
+    Candidates rank 0/1/2 on WHERE the name matched (§7b):
+      * 2 = distinctive/acronym host match with no foreign brand word (clean),
+        or a rank-0 institution candidate restored by locality evidence
+      * 1 = host match but the label adds a foreign brand (sub-brand)
+      * 0 = the name only overlaps the title, not the host → rejected
     """
-    valid = [
-        sr for sr in results
-        if sr.url and _URL_RE.match(sr.url)
-        and not _is_blacklisted(sr.url)
-        and _name_overlap(name1, sr)
-        and not _wrong_country(sr.url, country)
-    ]
-    if not valid:
+    _valid, ranks, best = _evaluate_candidates(
+        name1, results, record_type, country=country, city=city,
+    )
+    if best is None:
         return WebsiteResolution()
 
-    # Both branches now rank 0/1/2 on WHERE the name matched (§7b):
-    #   2 = distinctive/acronym host match, no foreign brand word (clean)
-    #   1 = host match but the label adds a foreign brand (sub-brand)
-    #   0 = name only overlaps the title, not the host → rejected
-    def _rank(sr: SearchResult) -> int:
-        if not _has_host_match(name1, sr.url, record_type):
-            return 0
-        return 1 if _domain_introduces_foreign_brand(name1, sr.url) else 2
-
-    best = _best_candidate(valid, _rank)
-    best_rank = _rank(best)
-    if best_rank == 0:
-        # No candidate has a distinctive name token (or, for institutions, the
-        # acronym) in its HOST — the overlap is only a word in the title. Too
-        # weak to trust ('scup.org' for 'Bayfront Research'); defer to Path C.
-        return WebsiteResolution()
-
+    best_rank = ranks[id(best)]
     if record_type == "research_institution":
-        # §7c: an authoritative TLD grants HIGH only with a clean host match.
-        high = best_rank == 2 and _tld(best.url) in _OFFICIAL_TLDS
+        # §7c: an authoritative TLD grants HIGH only with a clean host match,
+        # and only when the SERP title says the institution's name.
+        #
+        # The TLD condition alone is not enough. `comptroller.texas.gov` is a
+        # clean rank-2 match for "University of Texas" — `extract_domain`
+        # reduces the host to `texas.gov`, whose entire label IS one of the
+        # name's own words, so `_host_label_covered_by_name` accepts it — and
+        # `.gov` then granted it HIGH, i.e. written with no review flag. The
+        # Texas state comptroller was the resolver's confident answer for a
+        # university the moment the record's city entered the query.
+        #
+        # An institution states its name in its own page title. A state
+        # directory listing it does not ("Texas Colleges and Universities"),
+        # and neither does a partial-label coincidence. Where the title is
+        # silent the URL is still written — only the clean/flagged call
+        # changes.
+        # ...or states its acronym. fit.edu's real SERP title is "Florida
+        # Tech: www.fit.edu" — the institution's own homepage, which never
+        # spells "Florida Institute of Technology" out. `_acronym_in_host` has
+        # already matched the host to the initials in full, which identifies
+        # the institution at least as strongly as the phrase would; requiring
+        # the phrase on top of it would flag every acronym-domain university in
+        # the batch. `texas.gov` does not benefit: the initials of "University
+        # of Texas" are "UT", not "texas".
+        high = (
+            best_rank == 2
+            and _tld(best.url) in _OFFICIAL_TLDS
+            and (
+                _name_phrase_in_title(name1, best.title)
+                or _acronym_in_host(name1, best.url)
+            )
+        )
     else:
         high = best_rank == 2
+    if not _has_host_match(name1, best.url, record_type):
+        # Rank 2 reached on locality evidence rather than on the host itself.
+        # That is a weaker claim than the test it stands in for — utep.edu and
+        # utsystem.edu clear it on the same SERP — so the URL is written and
+        # the record is flagged, never written clean.
+        high = False
     return WebsiteResolution(
         url=_root_url(best.url),
         confidence="high" if high else "low",
@@ -599,9 +821,19 @@ def _build_serp_query(
     """
     base = f'"{name1}" official website' if quoted else f"{name1} official website"
     if record_type == "research_institution":
-        if country and country.strip():
-            return f"{base} {country.strip()}"
-        return base
+        # Region and city, not country alone. "University of Texas" does not
+        # name one university — it names a system of a dozen — and the bare
+        # query returns whichever campus Google ranks first (Austin) together
+        # with its athletics and merchandise sites. The record's city is the
+        # only field that says WHICH campus this row is, and dropping it here
+        # is why utep.edu never entered the candidate set at all for a
+        # Sun Bowl Dr / El Paso row.
+        #
+        # The country stays on the end rather than being displaced by the city:
+        # a campus town is not unique across countries (Cambridge), and it is
+        # the country that keeps the ccTLD gate and the query agreeing.
+        parts = [p.strip() for p in (city, state, country) if p and p.strip()]
+        return f"{base} {' '.join(parts)}" if parts else base
     # company / unknown
     geo = " ".join(p.strip() for p in (city, state) if p and p.strip())
     if geo:
@@ -658,6 +890,7 @@ async def resolve_website_via_serp(
     if prefetched_results is not None:
         chosen = select_website_from_serp(
             name1, prefetched_results, record_type, country=gate_country,
+            city=city,
         )
         logger.info(
             "[%s] website Path B (reused SERP): url=%s confidence=%s",
@@ -668,7 +901,7 @@ async def resolve_website_via_serp(
                 record_id=record_id, name1=name1, record_type=record_type,
                 query="(reused Tier 2B SERP results)", num_results=num_results,
                 results=prefetched_results, chosen=chosen, attempt="quoted",
-                country=gate_country,
+                country=gate_country, city=city,
             )))
         return chosen
 
@@ -690,11 +923,11 @@ async def resolve_website_via_serp(
                     record_id=record_id, name1=name1, record_type=record_type,
                     query=query, num_results=num_results, results=[],
                     chosen=WebsiteResolution(), error=f"serp_call_failed: {exc}",
-                    attempt=attempt, country=gate_country,
+                    attempt=attempt, country=gate_country, city=city,
                 )))
             return WebsiteResolution()
         chosen = select_website_from_serp(
-            name1, results, record_type, country=gate_country,
+            name1, results, record_type, country=gate_country, city=city,
         )
         logger.info(
             "[%s] website Path B (%s): query=%r url=%s confidence=%s",
@@ -705,6 +938,7 @@ async def resolve_website_via_serp(
                 record_id=record_id, name1=name1, record_type=record_type,
                 query=query, num_results=num_results, results=results,
                 chosen=chosen, attempt=attempt, country=gate_country,
+                city=city,
             )))
         return chosen
 
