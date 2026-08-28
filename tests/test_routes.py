@@ -465,6 +465,27 @@ class TestRoutes:
         assert len(reduced_rows) == summary["Reduced: issues after"]
 
     @pytest.mark.asyncio
+    async def test_issues_suppresses_unresolvable_g6_codes(self, client):
+        """The suppressed G6 codes are withheld from the /issues column even in
+        the conditions that raise them; the sibling required-field codes still
+        fire, so the suppression is targeted rather than a column-gating side
+        effect. Name 1 is a research institution with an empty Name 2, which is
+        what G2-NAME-012 reads."""
+        data = self._xlsx_bytes(
+            ["Customer", "Name 1", "Name 2", "Tax Jurisdiction", "Language Key",
+             "Postal Code", "Country/Region Key"],
+            ["R1", "University of Florida", "", "", "", "", "US"],
+        )
+        resp = await client.post("/issues", files=self._xlsx_upload(data))
+        assert resp.status_code == 200
+        ws = load_workbook(io.BytesIO(resp.content)).active
+        codes = {c.strip() for c in ([c.value for c in ws[2]][-1] or "").split(";")}
+        assert "G2-VAL-003" not in codes
+        assert "G2-VAL-006" not in codes
+        assert "G2-NAME-012" not in codes
+        assert "G2-VAL-002" in codes  # Postal Code blank — still reported
+
+    @pytest.mark.asyncio
     async def test_issues_g7_never_raised_on_a_raw_input_audit(self, client):
         """A raw file has no Flag for Review column, so G7 cannot apply. The
         record below is deliberately dirty: it must collect quality codes and
@@ -481,7 +502,10 @@ class TestRoutes:
         assert "G7-VERIFY-001" not in cell
 
     @pytest.mark.asyncio
-    async def test_issues_g7_raised_only_for_flagged_enriched_rows(self, client):
+    async def test_issues_suppresses_g7_on_flagged_enriched_rows(self, client):
+        """G7-VERIFY-001 is withheld from the /issues column even for a row the
+        pipeline flagged — the case where the detector does raise it. The
+        detector-level behaviour is pinned in tests/test_issue_detection.py."""
         data = self._xlsx_bytes(
             ["Customer", "Name 1", "Flag for Review", "Flag Reason"],
             ["R1", "Acme Corporation", "TRUE", "LLM canonical form — verify"],
@@ -492,7 +516,7 @@ class TestRoutes:
         ws = load_workbook(io.BytesIO(resp.content)).active
         flagged = [c.value for c in ws[2]][-1] or ""
         unflagged = [c.value for c in ws[3]][-1] or ""
-        assert "G7-VERIFY-001" in flagged
+        assert "G7-VERIFY-001" not in flagged
         assert "G7-VERIFY-001" not in unflagged
 
     @pytest.mark.asyncio

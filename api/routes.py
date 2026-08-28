@@ -694,6 +694,23 @@ async def enrich_file(
     )
 
 
+# Codes withheld from the ``/issues`` audit column.
+#
+# The three G2- codes are all G6 ("Not Resolvable by Enrichment") despite their
+# identifiers: DS-origin rules that no automated path resolves, so they persist
+# from raw to enriched by design and crowd the column without telling a
+# reviewer anything actionable. G7-VERIFY-001 is not a quality issue at all: it
+# is raised *by* successful enrichment to route a record to a steward, so it
+# does not belong in a column that reads as a defect list.
+#
+# The detector still raises all four, and ``/issues/compare`` still reports
+# them in its "Expected to persist" and "Verification" segments; only the
+# standalone audit column drops them.
+_ISSUES_SUPPRESSED_CODES: frozenset[str] = frozenset(
+    {"G2-VAL-003", "G2-VAL-006", "G2-NAME-012", "G7-VERIFY-001"}
+)
+
+
 @router.post("/issues")
 async def detect_file_issues(
     file: UploadFile = File(..., description="XLSX file of customer master data records"),
@@ -703,8 +720,9 @@ async def detect_file_issues(
     Each data row is checked against the deterministic issue-detection rules
     (see ``enrichment.issue_detection``). The uploaded sheet is returned
     unchanged with a single appended ``Issues`` column listing every issue
-    code found on that row (semicolon-separated, codes only). This is a pure
-    audit: no enrichment, LLM, or external call is made.
+    code found on that row (semicolon-separated, codes only), except the codes
+    in ``_ISSUES_SUPPRESSED_CODES``. This is a pure audit: no enrichment, LLM,
+    or external call is made.
     """
     filename = file.filename or ""
     if not filename.lower().endswith((".xlsx", ".xlsm")):
@@ -721,9 +739,13 @@ async def detect_file_issues(
     records = _rows_to_records(row_dicts)
     present = _present_fields(headers)
     issues_per_row = [
-        detect_issues(
-            record, present, flag_for_review=_flag_for_review(row, headers),
-        )
+        [
+            code
+            for code in detect_issues(
+                record, present, flag_for_review=_flag_for_review(row, headers),
+            )
+            if code not in _ISSUES_SUPPRESSED_CODES
+        ]
         for record, row in zip(records, row_dicts)
     ]
 
