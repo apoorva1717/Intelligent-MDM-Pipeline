@@ -482,6 +482,19 @@ class EnrichmentResult(BaseModel):
     # institutions, lei_id for companies (e.g. "Pfizer AG" / "Pfizer").
     ror_id: Optional[str] = None
     lei_id: Optional[str] = None
+    # The registry identifier of a Name 2 that turned out to be its OWN
+    # registered entity — "Ames Research Center" under NASA, resolving to its
+    # own ROR record rather than to NASA's. Written only by the grounded
+    # resolver's re-verification step, and only when the id differs from
+    # Name 1's, so it can never be a second copy of `ror_id`.
+    #
+    # Excluded from the response body on purpose. `ror_id` / `lei_id` are
+    # exported because they identify THE ORGANISATION the record is about, and
+    # the dedup phase converges records on them; a unit's own identifier
+    # answers a different question and would converge the wrong rows. It is
+    # kept because it is real evidence about how the match was made, and the
+    # trace is where that belongs.
+    name2_registry_id: Optional[str] = Field(default=None, exclude=True)
 
     # ── Per-field provenance (Fix 10) ────────────────────────────────
     # Six derived scalars, one per Phase 1 scoped field, in Provenance

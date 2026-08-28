@@ -973,7 +973,15 @@ def derived_scalars(
 #: from one of these is an unverified inference no matter how confident the
 #: model said it was — a confident unverifiable claim is the more dangerous
 #: case, not the safer one.
-EVIDENCE_FREE_PRODUCERS: frozenset[str] = frozenset({"llm_tier3"})
+EVIDENCE_FREE_PRODUCERS: frozenset[str] = frozenset(
+    # `llm_grounded` is here for the same reason `llm_tier3` is, and it is
+    # here even when a page was read. The grounded lane's NON-registry
+    # outcomes are the model's reading of that page, not the page's own
+    # statement of identity — the registry outcome is the one that leaves a
+    # chain a reviewer does not have to re-read, and it writes under `ror` /
+    # `gleif`, so it never reaches this set.
+    {"llm_tier3", "llm_grounded"},
+)
 
 #: Producers whose write makes a field registry-owned.
 REGISTRY_PRODUCERS: frozenset[str] = frozenset({"ror", "gleif"})

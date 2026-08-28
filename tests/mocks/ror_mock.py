@@ -18,6 +18,37 @@ logger = logging.getLogger(__name__)
 
 # Curated mock data keyed by lowercased name/alias substrings.
 _MOCK_DATA: dict[str, dict[str, Any]] = {
+    # ── Grounded resolver re-verification (tests/test_grounded_resolver.py) ──
+    # NASA and Ames are two ROR records, not one, which is the whole point of
+    # the Name 2 re-verification step: a unit that is its OWN registered
+    # entity gets its own identifier, and a unit that is not gets nothing.
+    # "NASA" is deliberately absent from both `names` lists — the record's
+    # acronym is what Tier 1 fails on, and the expansion the grounded lane
+    # reads off the page is what resolves.
+    "national aeronautics and space administration": {
+        "score": 0.97,
+        "ror_id": "https://ror.org/027ka1x80",
+        "official_name": "National Aeronautics and Space Administration",
+        "domain": "nasa.gov",
+        "website": "https://www.nasa.gov",
+        "org_types": ["government"],
+        "is_research_institution": True,
+        "country": "United States",
+        "names": ["National Aeronautics and Space Administration"],
+        "children": [],
+    },
+    "ames research center": {
+        "score": 0.96,
+        "ror_id": "https://ror.org/02acart68",
+        "official_name": "Ames Research Center",
+        "domain": "nasa.gov",
+        "website": "https://www.nasa.gov/ames",
+        "org_types": ["facility"],
+        "is_research_institution": True,
+        "country": "United States",
+        "names": ["Ames Research Center", "NASA Ames Research Center"],
+        "children": [],
+    },
     "massachusetts institute of technology": {
         "score": 0.97,
         "ror_id": "https://ror.org/042nb2s44",

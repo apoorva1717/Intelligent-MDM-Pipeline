@@ -521,6 +521,72 @@ PERSON_AFFILIATION_USER_PROMPT_TEMPLATE = (
 
 
 
+# ---------------------------------------------------------------------------
+# Grounded entity resolution — SERP + page evidence, one call, every slot
+# ---------------------------------------------------------------------------
+#
+# The universal lane's single LLM call. Unlike Tier 3, which asks a model what
+# it remembers, this asks a model to READ: the record's own fields, the SERP
+# snippets and the structured elements of the pages that were fetched are all
+# supplied, and the answer must point at whichever of them it came from.
+# `evidence_index` is the whole point of the contract — a claim that names no
+# evidence item is a claim from training data, and the caller sources it
+# differently because of that.
+
+GROUNDED_RESOLVER_SYSTEM_PROMPT = (
+    "You identify organisations and their internal units from supplied "
+    "evidence. You never use knowledge that is not in the evidence you "
+    "are given. Return valid JSON only. No markdown, no code fences."
+)
+
+GROUNDED_RESOLVER_USER_PROMPT_TEMPLATE = (
+    "RECORD (as supplied by the source system):\n"
+    "Name 1 (organisation): {name1}\n"
+    "Name 2 (unit/department): {name2}\n"
+    "City: {city}\n"
+    "State/region: {state}\n"
+    "Country: {country}\n\n"
+    "EVIDENCE (numbered; the ONLY material you may use):\n"
+    "{evidence}\n\n"
+    "Task: say what organisation Name 1 names, and what Name 2 names in "
+    "relation to it, using only the evidence above.\n\n"
+    "Return JSON:\n"
+    "{{\n"
+    '  "name1_canonical": "str or null",\n'
+    '  "name2_canonical": "str or null",\n'
+    '  "name2_kind": "department|sub_entity|alias_of_name1|person|noise or null",\n'
+    '  "per_field_confidence": {{"name1": "high|medium|low", '
+    '"name2": "high|medium|low"}},\n'
+    '  "evidence_index": {{"name1": 0, "name2": 0}},\n'
+    '  "reasoning": "str"\n'
+    "}}\n"
+    "Rules:\n"
+    "1. Use ONLY the numbered evidence. If the evidence does not support a "
+    "canonical name for a field, return null for that field. Never fall back "
+    "on what you remember about the organisation.\n"
+    "2. `evidence_index` gives the number of the evidence item that supports "
+    "each canonical name, or null when the field is null OR when you could "
+    "not point at a specific item. Do not guess an index to fill the slot.\n"
+    "3. name1_canonical must name the SAME organisation the record does — a "
+    "fuller, correctly spelled or expanded form of it. Never a different "
+    "company or institution, a parent, or a subsidiary.\n"
+    "4. name2_kind classifies what Name 2 is:\n"
+    "   - 'department': an internal unit of Name 1 (a department, division, "
+    "school, faculty, institute, office).\n"
+    "   - 'sub_entity': a named organisation in its own right that sits under "
+    "Name 1 (a research centre, a subsidiary, a named laboratory that is its "
+    "own registered body).\n"
+    "   - 'alias_of_name1': another name for Name 1 itself, not a unit.\n"
+    "   - 'person': a person's name.\n"
+    "   - 'noise': an address fragment, a reference number, a mail stop, or "
+    "anything that names no organisational thing at all.\n"
+    "5. Never put address content — a street, a building number, a postal "
+    "code, a city on its own — in either canonical name.\n"
+    "6. per_field_confidence describes the EVIDENCE, not your fluency: 'high' "
+    "only when an evidence item states the name outright, 'medium' when it is "
+    "clearly implied, 'low' otherwise.\n"
+    "7. Use JSON null, never the string 'null'."
+)
 
 # ---------------------------------------------------------------------------
 # Prompt versions (Fix 10)
@@ -589,4 +655,8 @@ PAGE_READ_PROMPT_VERSION = prompt_version(
     # v2 — rule 7 (most complete stated form) and the [footer] slice.
     "page_read", "v2",
     PAGE_READ_SYSTEM_PROMPT, PAGE_READ_USER_PROMPT_TEMPLATE,
+)
+GROUNDED_RESOLVER_PROMPT_VERSION = prompt_version(
+    "grounded_resolver", "v1",
+    GROUNDED_RESOLVER_SYSTEM_PROMPT, GROUNDED_RESOLVER_USER_PROMPT_TEMPLATE,
 )

@@ -43,6 +43,23 @@ _MOCK_PAGES: dict[str, str] = {
         "at Johns Hopkins School of Medicine. His research focuses on "
         "MRI spectroscopy and neuroimaging. He directs the MRI Research Group."
     ),
+    # ── Grounded resolver fixtures (tests/test_grounded_resolver.py) ──
+    "nasa.gov/ames": (
+        "Ames Research Center. NASA. Ames Research Center is one of ten NASA "
+        "field centers, located at Moffett Field in California's Silicon "
+        "Valley. Ames was founded in 1939 and is part of the National "
+        "Aeronautics and Space Administration."
+    ),
+    "nasa.gov/about": (
+        "About NASA. The National Aeronautics and Space Administration is the "
+        "United States government agency responsible for the civilian space "
+        "program and for aeronautics and space research."
+    ),
+    "kelvinbridge.com/about": (
+        "About Kelvin Bridge Instruments Ltd. Kelvin Bridge Instruments "
+        "Limited is a precision metrology manufacturer based in Glasgow. Our "
+        "Calibration Services department supports customers across Europe."
+    ),
     "pfizer.com/science/research/analytical-sciences": (
         "Pfizer Analytical Sciences Division "
         "Our Analytical Sciences team supports drug development through "

@@ -52,6 +52,32 @@ _MOCK_RESULTS: dict[str, list[dict[str, str]]] = {
             "snippet": "Dr. Robert Chen, Department of Radiology, Johns Hopkins School of Medicine.",
         },
     ],
+    # ── Grounded resolver fixtures (tests/test_grounded_resolver.py) ──
+    "nasa.gov": [
+        {
+            "title": "Ames Research Center - NASA",
+            "url": "https://www.nasa.gov/ames/",
+            "snippet": "Ames Research Center, one of ten NASA field centers, is "
+                       "located in California's Silicon Valley.",
+        },
+        {
+            "title": "About NASA",
+            "url": "https://www.nasa.gov/about/",
+            "snippet": "The National Aeronautics and Space Administration is "
+                       "the United States government agency responsible for "
+                       "the civilian space program.",
+        },
+    ],
+    # A company with a real site and no registry entry — the "registry miss,
+    # on-domain evidence" case.
+    "kelvinbridge.com": [
+        {
+            "title": "Kelvin Bridge Instruments - Precision Metrology",
+            "url": "https://www.kelvinbridge.com/about/",
+            "snippet": "Kelvin Bridge Instruments Ltd designs precision "
+                       "metrology equipment in Glasgow.",
+        },
+    ],
     "pfizer.com": [
         {
             "title": "Pfizer Analytical Sciences Division",
@@ -75,6 +101,14 @@ _MOCK_RESULTS: dict[str, list[dict[str, str]]] = {
 
 # Name1 resolution results — for companies/orgs not in ROR
 _NAME1_RESULTS: dict[str, list[dict[str, str]]] = {
+    "kelvin bridge": [
+        {
+            "title": "Kelvin Bridge Instruments - Precision Metrology",
+            "url": "https://www.kelvinbridge.com/about/",
+            "snippet": "Kelvin Bridge Instruments Ltd designs precision "
+                       "metrology equipment in Glasgow.",
+        },
+    ],
     "comet therapeutics": [
         {
             "title": "Comet Therapeutics — Precision Medicine for Rare Diseases",
@@ -143,6 +177,8 @@ class MockSearchClient(SearchClient):
                 "ucla": "ucla.edu",
                 "johns hopkins": "jhu.edu",
                 "pfizer": "pfizer.com",
+                "nasa": "nasa.gov",
+                "national aeronautics": "nasa.gov",
             }
             for inst_name, domain_key in _INST_DOMAIN_MAP.items():
                 if inst_name in query_lower and domain_key in _MOCK_RESULTS:

@@ -111,6 +111,15 @@ from enrichment.consistency import (
     registry_location_unconfirmed_count,
     reset_consistency_counters,
 )
+from enrichment.grounded_resolver import (
+    ORIGIN_LEI,
+    ORIGIN_LLM,
+    ORIGIN_ROR,
+    ORIGIN_SERP,
+    GroundedProposal,
+    GroundedResult,
+    run_grounded_resolver,
+)
 from enrichment.registry_match import names_match_verbatim
 from enrichment.tier1_lei import LEIClient, clear_lei_cache, lei_normalised_hits
 from enrichment.tier1_ror import RORClient, clear_ror_cache, ror_normalised_hits
@@ -162,6 +171,7 @@ from llm.openai_client import (
 )
 from llm.prompts import (
     COMPANY_CANONICAL_PROMPT_VERSION,
+    GROUNDED_RESOLVER_PROMPT_VERSION,
     LAB_PARENT_PROMPT_VERSION,
     PERSON_AFFILIATION_PROMPT_VERSION,
     TIER2A_PROMPT_VERSION,
@@ -834,6 +844,24 @@ def _preferred_registry_variant(
         if names_match_verbatim(incumbent, variant):
             return variant.strip()
     return display
+
+
+def _canonical_short_circuit_enriched(
+    result: dict[str, Any], record: Any,
+) -> bool:
+    """Did Tier 2 canonicalisation actually establish a department name?
+
+    The `llm_canonical` / `passthrough` fork of the canonical short-circuit,
+    lifted out of :meth:`Orchestrator._return_canonical_short_circuit` so the
+    step-16 gate can ask the question BEFORE deciding whether to stop. Two
+    readers, one definition: a gate that decided "this would be a passthrough"
+    by any other test could disagree with the branch that then labels it.
+    """
+    return any(
+        result.get(f"{f}_enriched")
+        and result.get(f"{f}_enriched") != getattr(record, f)
+        for f in DEPT_SLOTS
+    )
 
 
 def _write_registry_name(
@@ -3520,6 +3548,186 @@ class Orchestrator:
 
         return await self._finalise_and_return(result, start, record, cache)
 
+    def _apply_grounded(
+        self, result: dict[str, Any], grounded: GroundedResult,
+    ) -> None:
+        """Transfer the grounded lane's outcome into the result dict.
+
+        The lane's counterpart to :func:`_apply_tier3`, and it sits at the
+        same point in the pipeline — so ``tier_used`` stays 3 even when a
+        registry answered. That is deliberate: the record reached the
+        last-resort position, and reporting it as a Tier 1 hit would inflate
+        the tier distribution the evaluation reads. What separates the three
+        outcomes is ``source``, which is where it belongs.
+
+        The lane's own ``origin`` vocabulary maps onto the result's closed
+        ``source`` vocabulary here, and nowhere else::
+
+            ror  → "ROR"        lei → "gleif"
+            serp → "SERP+LLM"   llm → "LLM"
+
+        A registry hit is written TWICE, in that order: the model's canonical
+        name first, then the registry's official name over it. The final value
+        and its provenance scalar come from the last write, so the column
+        reads ``ror:verified``; the earlier event is what shows a reviewer
+        that a model proposed the query — the same two-event shape Fix 2's
+        Tier 1 retry already uses, and the only one the confidence grammar
+        permits (a ``+llm`` witness can never carry a value to ``verified``,
+        by hard rule 1).
+        """
+        result["tier_used"] = 3
+        deployment = self._settings.openai_model
+        wrote: list[GroundedProposal] = []
+
+        for proposal in (grounded.name1, grounded.name2):
+            if proposal is None:
+                continue
+            field = proposal.field
+            incumbent = (
+                result.get("name1_original") if field == "name1"
+                else _slot_input_value(result, field)
+            )
+
+            # The model's claim, recorded whether or not a registry then
+            # confirmed it. On the non-registry paths this IS the write; on
+            # the registry path it is the audit trail behind the query.
+            _write(
+                result, f"{field}_enriched", proposal.proposed,
+                llm_evidence(
+                    ("serp", "fetch", "llm_grounded")
+                    if proposal.evidence_index is not None
+                    else ("llm_grounded",),
+                    tier=3,
+                    prompt_version=GROUNDED_RESOLVER_PROMPT_VERSION,
+                    deployment=deployment,
+                    self_reported=proposal.self_reported,
+                    source_url=proposal.source_url,
+                    rule_id=f"grounded:{field}-canonical",
+                    extra={
+                        "input_value": incumbent,
+                        "evidence_index": proposal.evidence_index,
+                        "query": grounded.query,
+                    },
+                ),
+            )
+
+            if proposal.from_registry and proposal.registry_response:
+                res = proposal.registry_response
+                _write_registry_name(
+                    result, field, proposal.value,
+                    registry=proposal.registry or "ROR",
+                    identifier=proposal.registry_id,
+                    rule_id="grounded:registry-reverified-canonical",
+                    incumbent=incumbent,
+                    variants=proposal.variants,
+                )
+                record_registry_identity(
+                    result, proposal.registry or "ROR", res,
+                    name=proposal.value,
+                )
+                if field == "name1":
+                    id_field = (
+                        "ror_id" if proposal.origin == ORIGIN_ROR else "lei_id"
+                    )
+                    _write(
+                        result, id_field, proposal.registry_id,
+                        registry_evidence(
+                            (proposal.registry or "ROR").lower(),
+                            proposal.registry_id,
+                            tier=3,
+                            rule_id="grounded:registry-reverified-canonical",
+                        ),
+                    )
+                    if proposal.website:
+                        _apply_domain(
+                            result, proposal.website,
+                            registry=proposal.registry,
+                            settings=self._settings,
+                        )
+                    result["_ror_is_research"] = bool(
+                        res.get("is_research_institution"),
+                    )
+                else:
+                    # A department / sub-entity that is its own registered
+                    # body. The identifier is kept because the dedup phase
+                    # converges records on identifiers, and this one is a
+                    # genuine second entity — but it is NOT `ror_id`, which
+                    # names the ORGANISATION the record is about, and it is
+                    # not exported.
+                    result["name2_registry_id"] = proposal.registry_id
+            elif proposal.source_url:
+                result["source_url"] = proposal.source_url
+
+            wrote.append(proposal)
+
+        if grounded.clear_name2:
+            # `alias_of_name1` or `noise`. The slot named nothing the record
+            # did not already say, or nothing at all.
+            _write(
+                result, "name2_enriched", None,
+                deterministic_evidence(
+                    f"grounded:name2-{grounded.name2_kind}-cleared",
+                    producer="pipeline", tier=3,
+                    evidence_ref={"dropped": result.get("name2_enriched")},
+                ),
+            )
+
+        # A proposal that reproduced the record's own value is handed to Fix
+        # 2's `_canonical_proposal` instead of being written. That field is
+        # read in finalise to decide `unchanged-confirmed`, and the write this
+        # replaces would have destroyed the very state it feeds: the page
+        # corroboration behind `input:verified+web` is keyed on Name 1 having
+        # been KEPT, and an identical write still makes the model the author.
+        #
+        # Not overwritten if the company-canonical lane already recorded one —
+        # that proposal was produced without the model being shown the SERP
+        # evidence, which is the stronger form of the same statement.
+        if grounded.confirmed.get("name1") and not result.get(
+            "_canonical_proposal",
+        ):
+            result["_canonical_proposal"] = grounded.confirmed["name1"]
+
+        if not wrote:
+            if grounded.confirmed:
+                # Nothing was rewritten because nothing needed rewriting. The
+                # record keeps every value and every attribution it arrived
+                # here with, and finalise settles the Name 1 state from the
+                # evidence — which is what `_canonical_proposal` just fed.
+                # Deliberately no `source` / `confidence` / status write: this
+                # lane established that the record was already right, and
+                # relabelling it would be the same loss as the write was.
+                return
+            # The lane ran and established nothing — every field null, or
+            # every proposal refused by a guard. The record ends exactly where
+            # the passthrough it came from would have left it.
+            result["source"] = "passthrough"
+            result["confidence"] = "low"
+            result["enrichment_status"] = "unresolved"
+            result.setdefault("_ev_low_conf_unchanged", set()).update(
+                DEPT_SLOTS,
+            )
+            return
+
+        # The strongest thing that backed any written field decides how the
+        # record as a whole is described.
+        rank = {ORIGIN_ROR: 3, ORIGIN_LEI: 3, ORIGIN_SERP: 2, ORIGIN_LLM: 1}
+        best = max(wrote, key=lambda p: rank.get(p.origin, 0))
+        result["source"] = {
+            ORIGIN_ROR: "ROR", ORIGIN_LEI: "gleif",
+            ORIGIN_SERP: "SERP+LLM", ORIGIN_LLM: "LLM",
+        }[best.origin]
+        if best.from_registry:
+            result["confidence"] = "high"
+            result["enrichment_status"] = "enriched"
+        else:
+            result["confidence"] = best.self_reported
+            # A value a page supports is an enrichment a reviewer can check;
+            # a value only the model supports is still an open question, and
+            # `unresolved` is what says so.
+            result["enrichment_status"] = (
+                "enriched" if best.origin == ORIGIN_SERP else "unresolved"
+            )
+
     async def _return_canonical_short_circuit(
         self,
         result: dict[str, Any],
@@ -3537,10 +3745,7 @@ class Orchestrator:
         without producing a usable result.
         """
         result["tier_used"] = 2
-        has_enriched = any(
-            result.get(f"{f}_enriched") and result.get(f"{f}_enriched") != getattr(record, f)
-            for f in DEPT_SLOTS
-        )
+        has_enriched = _canonical_short_circuit_enriched(result, record)
         if has_enriched:
             result["source"] = "llm_canonical"
             result["confidence"] = "high"
@@ -6026,9 +6231,33 @@ class Orchestrator:
             # here never reaches Tier 3.
             canonical_short_circuit = any_canonical_ran and name2_already_filled
             if canonical_short_circuit and not can_do_contact_lookup:
-                return await self._return_canonical_short_circuit(
-                    result, start, record, cache,
-                )
+                # GATE CHANGE 1 (grounded resolver). The short-circuit has two
+                # outcomes and they are not equally worth stopping on.
+                #
+                # `llm_canonical` means canonicalisation ESTABLISHED something:
+                # a unit name the record already carried, now in the
+                # institution's own wording. Stopping is what keeps a later
+                # tier from overwriting it, and that reason is unchanged.
+                #
+                # `passthrough` means the opposite — the LLM was asked and
+                # declined, and the record leaves holding exactly what it
+                # arrived with, `low`, unresolved. There is nothing here to
+                # protect from Tier 3, and returning only preserved the
+                # failure. So that outcome falls through to the grounded lane
+                # instead, which is the one thing that had never been tried on
+                # this population: an actual search, an actual page, and the
+                # registries asked a second time with what those said.
+                #
+                # Clearing the flag rather than returning is what routes it
+                # there: Tier 2A is already excluded (`can_do_contact_lookup`
+                # is false in this branch), and the post-2A short-circuit
+                # below reads this same flag, so the record continues to the
+                # Tier 3 position — where GATE CHANGE 2 receives it.
+                if _canonical_short_circuit_enriched(result, record):
+                    return await self._return_canonical_short_circuit(
+                        result, start, record, cache,
+                    )
+                canonical_short_circuit = False
 
             # ── TIER 2A (contact lookup): 1 SerpAPI call, gated ────────
             # Runs for a research institution with a single contact and an
@@ -6133,30 +6362,73 @@ class Orchestrator:
                     result, start, record, cache,
                 )
 
-            # ── TIER 3: LLM INFERENCE ────────────────────────────────────
+            # ── GROUNDED RESOLVER (was: TIER 3) ──────────────────────────
+            # GATE CHANGE 2. Everything the registries and the short-circuit
+            # lanes could not settle arrives here. It used to go straight to
+            # Tier 3 — a model asked what it remembers, with no page to open
+            # and no identifier to check. The grounded lane asks the web
+            # first, makes the model READ rather than recall, and then takes
+            # what it read back to ROR / GLEIF. Tier 3 is still exactly here,
+            # unmodified, as the lane's degraded mode: when the search returns
+            # nothing, when every fetch fails, or when the LLM call itself
+            # fails, the record gets precisely the treatment it got before.
 
             logger.info({
                 "record_id": record.record_id,
-                "step": "tier3_start",
+                "step": "grounded_start",
             })
 
-            tier3_result: Tier3Result = await run_tier3(
-                record_id=record.record_id,
+            grounded = await run_grounded_resolver(
+                record.record_id,
                 name1=pp_name1,
                 name2=pp_name2,
-                name3=pp_name3,
-                name4=pp_name4,
-                name5=pp_name5,
-                contact=pp_contact,
                 street=pp_street1 or record.street,
                 city=record.city,
                 state=record.state,
-                zip_code=record.zip,
                 country=record.country,
+                country_code=(
+                    result.get("_tier1_country_code")
+                    or country_to_iso_code(record.country)
+                ),
+                routing_type=result["routing_type"],
+                domain=institution_domain or result.get("domain"),
+                name1_registry_ids=[
+                    i for i in (result.get("ror_id"), result.get("lei_id")) if i
+                ],
+                search_client=self._search_client,
+                page_fetcher=self._page_fetcher,
                 llm_client=self._llm_client,
+                ror_client=self._ror_client,
+                lei_client=self._lei_client,
+                cache=cache,
+                settings=self._settings,
             )
 
-            _apply_tier3(result, tier3_result, self._settings.openai_model)
+            if grounded.degraded:
+                logger.info({
+                    "record_id": record.record_id,
+                    "step": "tier3_start",
+                    "degraded_from": "grounded",
+                    "reason": grounded.degraded_reason,
+                })
+                tier3_result: Tier3Result = await run_tier3(
+                    record_id=record.record_id,
+                    name1=pp_name1,
+                    name2=pp_name2,
+                    name3=pp_name3,
+                    name4=pp_name4,
+                    name5=pp_name5,
+                    contact=pp_contact,
+                    street=pp_street1 or record.street,
+                    city=record.city,
+                    state=record.state,
+                    zip_code=record.zip,
+                    country=record.country,
+                    llm_client=self._llm_client,
+                )
+                _apply_tier3(result, tier3_result, self._settings.openai_model)
+            else:
+                self._apply_grounded(result, grounded)
 
             # Last resort: if nothing enriched name1, pass through the preprocessed original
             if not result.get("name1_enriched") and not is_blank(pp_name1):
