@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Any, ClassVar
 
 
 class SearchUnavailable(RuntimeError):
@@ -33,6 +34,21 @@ class SearchResult:
 class SearchClient(ABC):
     """Abstract base for web search providers."""
 
+    #: Stable identity of the provider, and part of the cache key for every
+    #: search it answers (`utils.cache.serp_key`). Without it a SerpAPI query
+    #: and a DuckDuckGo query for the same string collide on one entry, and one
+    #: provider's silence replays as the other's answer — which is exactly what
+    #: happened: 251 empty DuckDuckGo results, recorded while SERPAPI_KEY was
+    #: shadowed by a duplicate in `.env`, were served to later runs as "this
+    #: organisation has no web presence", with no network call and no warning.
+    #: Same bug class as :class:`SearchUnavailable` one level up: there,
+    #: *provider failed* must not become *no results*; here, *a different
+    #: provider answered* must not become *this provider found nothing*.
+    #:
+    #: Subclasses MUST set it. It is baked into durable cache keys, so changing
+    #: an existing value silently orphans every entry that provider wrote.
+    provider_id: ClassVar[str] = ""
+
     @abstractmethod
     async def search(
         self,
@@ -54,3 +70,23 @@ class SearchClient(ABC):
         depend on any provider honouring this.
         """
         ...
+
+
+def provider_id_of(client: Any) -> str:
+    """The cache-key identity of *client*.
+
+    Prefers the declared :attr:`SearchClient.provider_id`. A client that does
+    not declare one — a test double, a lane that was handed something
+    duck-typed — is derived from its class name rather than defaulted to a
+    shared constant: two undeclared providers must not collide with each other
+    either, and a silent shared default is the bug this exists to prevent.
+
+    Pure function of the client's type, so it cannot make a cache key depend on
+    anything but the request.
+    """
+    declared = getattr(client, "provider_id", "") or ""
+    if isinstance(declared, str) and declared.strip():
+        return declared.strip().lower()
+    name = type(client).__name__
+    stripped = name[:-6] if name.endswith("Client") and len(name) > 6 else name
+    return "".join(c for c in stripped.lower() if c.isalnum()) or "unknown"

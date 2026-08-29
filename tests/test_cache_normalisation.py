@@ -111,11 +111,18 @@ class TestKeyConstruction:
         it exists to get away from."""
         quoted = '"Vanguard Sciences" official website'
         unquoted = 'Vanguard Sciences official website'
-        assert serp_key(quoted, "US") != serp_key(unquoted, "US")
+        assert serp_key(quoted, "US", provider="serpapi") != serp_key(
+            unquoted, "US", provider="serpapi",
+        )
 
     def test_serp_key_still_collapses_punctuation(self):
-        assert serp_key('"Coastal Diagnostics, Inc." official website', "US") == \
-               serp_key('"Coastal Diagnostics Inc" official website', "US")
+        assert serp_key(
+            '"Coastal Diagnostics, Inc." official website', "US",
+            provider="serpapi",
+        ) == serp_key(
+            '"Coastal Diagnostics Inc" official website', "US",
+            provider="serpapi",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -289,26 +296,35 @@ class TestSerpCacheNormalisation:
     def test_punctuation_variants_share_one_serp_entry(self):
         cache = BatchCache()
         cache.set_serp('"Coastal Diagnostics, Inc." official website',
-                       ["r1"], "US")
+                       ["r1"], "US", provider="serpapi")
         assert cache.get_serp('"Coastal Diagnostics Inc" official website',
-                              "US") == ["r1"]
+                              "US", provider="serpapi") == ["r1"]
         assert cache.normalised_hits == 1
 
     def test_unquoted_retry_is_not_served_the_quoted_results(self):
         cache = BatchCache()
-        cache.set_serp('"Vanguard Sciences" official website', ["quoted"], "US")
-        assert cache.get_serp("Vanguard Sciences official website", "US") is None
+        cache.set_serp('"Vanguard Sciences" official website', ["quoted"],
+                       "US", provider="serpapi")
+        assert cache.get_serp(
+            "Vanguard Sciences official website", "US", provider="serpapi",
+        ) is None
 
     def test_country_separates_serp_entries(self):
         cache = BatchCache()
-        cache.set_serp("Sartorius official website", ["de"], "DE")
-        assert cache.get_serp("Sartorius official website", "US") is None
+        cache.set_serp("Sartorius official website", ["de"], "DE",
+                       provider="serpapi")
+        assert cache.get_serp(
+            "Sartorius official website", "US", provider="serpapi",
+        ) is None
 
     def test_identical_query_is_not_counted_as_a_normalisation_win(self):
         """The counter must report only what the OLD key would have missed."""
         cache = BatchCache()
-        cache.set_serp("Bruker official website", ["r"], "US")
-        assert cache.get_serp("Bruker official website", "US") == ["r"]
+        cache.set_serp("Bruker official website", ["r"], "US",
+                       provider="serpapi")
+        assert cache.get_serp(
+            "Bruker official website", "US", provider="serpapi",
+        ) == ["r"]
         assert cache.normalised_hits == 0
 
 

@@ -30,7 +30,7 @@ Namespace        Directory           Key
 ===============  ==================  =====================================
 ``page``         ``page_reads/``     registrable domain
 ``wikidata``     ``wikidata/``       ``search:<normalised query>`` / ``entity:<QID>``
-``serp``         ``serp/``           normalised query + quoted-flag + country
+``serp``         ``serp/``           provider + normalised query + quoted-flag + country
 ``fetch``        ``fetch/``          the URL (or host) the request was made to
 ``llm``          ``llm/``            digest of deployment + sampling params + both prompts
 ``ror``          ``registry/``       normalised name + country
@@ -95,7 +95,7 @@ from pathlib import Path
 from typing import Any, Optional, Tuple
 
 from dedup.signatures import normalize_key
-from search.base import SearchUnavailable
+from search.base import SearchUnavailable, provider_id_of
 from utils.text_utils import country_to_iso_code
 
 logger = logging.getLogger(__name__)
@@ -147,28 +147,75 @@ def legacy_lookup_key(name: str | None, country_code: str | None = None) -> Cach
     return ((name or "").strip().lower(), _country_part(country_code))
 
 
-def serp_key(query: str, country: str | None = None) -> tuple[str, bool, str | None]:
-    """Cache key for a SERP query.
+#: Version prefix on the flat SERP disk key. Bumped when the key SHAPE
+#: changes, so entries written under an older shape stop resolving instead of
+#: being silently reused. v1 (``serp:``) omitted the provider; entries written
+#: under it are indistinguishable by inspection from correct ones, so they are
+#: retired by making them unreachable rather than by trusting a migration.
+SERP_KEY_VERSION = "serp2"
 
-    Same normalisation as :func:`lookup_key`, plus one extra component: whether
-    the query carried a quoted exact phrase. ``normalize_key`` strips the quote
-    characters, which would make an exact-phrase query and its unquoted retry
+SerpCacheKey = Tuple[str, bool, Optional[str], str]
+
+
+def serp_key(
+    query: str, country: str | None = None, *, provider: str,
+) -> SerpCacheKey:
+    """Cache key for a SERP query *as answered by* ``provider``.
+
+    Same normalisation as :func:`lookup_key`, plus two extra components.
+
+    **Quoted-phrase flag.** ``normalize_key`` strips the quote characters,
+    which would make an exact-phrase query and its unquoted retry
     (website_resolver §8) collide — the retry would be served the very results
     it exists to get away from. Quoting changes what is searched, so it is part
     of the identity of the query rather than noise to fold away.
+
+    **Provider.** The key is a pure function of the request, and the provider
+    is part of what the request MEANS — "what does SerpAPI say about X" and
+    "what does DuckDuckGo say about X" are two questions, not one. Omitting it
+    let one provider's silence be replayed as the other's answer: 251 empty
+    DuckDuckGo results, recorded while ``SERPAPI_KEY`` was shadowed by a
+    duplicate placeholder in ``.env``, were served to later runs as "this
+    organisation has no web presence" — no network call, no warning, and
+    byte-identical to a real negative. Required rather than defaulted: a caller
+    that forgets must get a ``TypeError``, not the collision back.
+
+    Callers do not choose this value; :func:`cached_serp` derives it from the
+    client that is about to answer, via ``search.base.provider_id_of``.
     """
-    return (normalize_key(query), '"' in (query or ""), _country_part(country))
+    return (
+        normalize_key(query),
+        '"' in (query or ""),
+        _country_part(country),
+        (provider or "").strip().lower() or "unknown",
+    )
 
 
-def legacy_serp_key(query: str, country: str | None = None) -> tuple[str, bool, str | None]:
-    """The pre-fix SERP key. Measurement only — see :func:`legacy_lookup_key`."""
-    return ((query or "").strip().lower(), '"' in (query or ""), _country_part(country))
+def legacy_serp_key(
+    query: str, country: str | None = None, *, provider: str,
+) -> SerpCacheKey:
+    """The pre-fix SERP key. Measurement only — see :func:`legacy_lookup_key`.
+
+    Carries the provider too, so the normalisation counter it feeds stays
+    per-provider rather than conflating two providers' lookups into one.
+    """
+    return (
+        (query or "").strip().lower(),
+        '"' in (query or ""),
+        _country_part(country),
+        (provider or "").strip().lower() or "unknown",
+    )
 
 
-def serp_disk_key(query: str, country: str | None = None) -> str:
+def serp_disk_key(query: str, country: str | None = None, *, provider: str) -> str:
     """:func:`serp_key` rendered as the flat string the disk store keys on."""
-    normalised, quoted, country_part = serp_key(query, country)
-    return f"serp:{country_part or '-'}:{'q' if quoted else 'u'}:{normalised}"
+    normalised, quoted, country_part, provider_part = serp_key(
+        query, country, provider=provider,
+    )
+    return (
+        f"{SERP_KEY_VERSION}:{provider_part}:{country_part or '-'}:"
+        f"{'q' if quoted else 'u'}:{normalised}"
+    )
 
 
 def http_disk_key(url: str, params: "dict[str, str] | None" = None) -> str:
@@ -657,26 +704,34 @@ class SerpCache:
     """
 
     def __init__(self, disk: DiskCache | None = None) -> None:
-        self._store: dict[tuple[str, bool, str | None], Any] = {}
+        self._store: dict[SerpCacheKey, Any] = {}
         self._disk = disk
 
-    def get(self, query: str, country: str | None = None) -> Any | None:
-        key = serp_key(query, country)
+    def get(
+        self, query: str, country: str | None = None, *, provider: str,
+    ) -> Any | None:
+        key = serp_key(query, country, provider=provider)
         if key in self._store:
             return self._store[key]
         if self._disk is None:
             return None
-        raw = self._disk.get(serp_disk_key(query, country))
+        raw = self._disk.get(serp_disk_key(query, country, provider=provider))
         if raw is None:
             return None
         results = _serp_from_json(raw)
         self._store[key] = results
         return results
 
-    def set(self, query: str, result: Any, country: str | None = None) -> None:
-        self._store[serp_key(query, country)] = result
+    def set(
+        self, query: str, result: Any, country: str | None = None, *,
+        provider: str,
+    ) -> None:
+        self._store[serp_key(query, country, provider=provider)] = result
         if self._disk is not None:
-            self._disk.set(serp_disk_key(query, country), _serp_to_json(result))
+            self._disk.set(
+                serp_disk_key(query, country, provider=provider),
+                _serp_to_json(result),
+            )
 
     @property
     def replay_only(self) -> bool:
@@ -729,6 +784,12 @@ async def cached_serp(
     exception propagates: each caller has its own idea of what a failed lane
     means, and swallowing them here would flatten that.
 
+    The **provider** is part of the cache key, derived here from the client
+    that is about to answer. It is derived at this single point rather than
+    passed by callers because every lane already routes through this function,
+    and a value seven call sites each had to remember is a value that would be
+    forgotten. See :func:`serp_key` for what omitting it cost.
+
     *country* now reaches the provider as well as the cache key. It used to do
     only the latter, which meant two records in different countries were filed
     under different keys for a search that had been issued identically — the
@@ -737,8 +798,9 @@ async def cached_serp(
     receives the same well-formed value or nothing, and the RAW string stays
     the cache key so existing entries keep resolving.
     """
+    provider = provider_id_of(search_client)
     if cache is not None:
-        hit = cache.get_serp(query, country)
+        hit = cache.get_serp(query, country, provider=provider)
         if hit is not None:
             return hit
         if cache.serp_frozen:
@@ -758,7 +820,7 @@ async def cached_serp(
         # as no candidates, and still do.
         return []
     if cache is not None:
-        cache.set_serp(query, results, country)
+        cache.set_serp(query, results, country, provider=provider)
     return results
 
 
@@ -772,13 +834,13 @@ class BatchCache:
     """
 
     def __init__(self, shared_serp: SerpCache | None = None) -> None:
-        self._serp: dict[tuple[str, bool, str | None], Any] = {}
+        self._serp: dict[SerpCacheKey, Any] = {}
         self._shared_serp = shared_serp
         # Legacy (lowercase-only) SERP keys that have actually been queried.
         # A normalised hit whose legacy key was never queried is a lookup the
         # old key would have missed — that count is the
         # `cache_hits_after_normalisation` telemetry, nothing more.
-        self._serp_legacy_seen: set[tuple[str, bool, str | None]] = set()
+        self._serp_legacy_seen: set[SerpCacheKey] = set()
         self._serp_normalised_hits = 0
         # Per-batch cache of a resolved institution host (redirect-followed /
         # subdomain-aware) so the department probe costs one resolution per
@@ -841,19 +903,21 @@ class BatchCache:
         """True when a SERP miss must NOT go to the network (CACHE_FROZEN)."""
         return bool(self._shared_serp is not None and self._shared_serp.replay_only)
 
-    def get_serp(self, query: str, country: str | None = None) -> Any | None:
-        """Retrieve a cached SERP result by normalised query + country.
+    def get_serp(
+        self, query: str, country: str | None = None, *, provider: str,
+    ) -> Any | None:
+        """Retrieve a cached SERP result by normalised query + country + provider.
 
         Checks the per-batch cache first, then the shared process-level
         cache (promoting a shared hit into the batch cache).
         """
-        key = serp_key(query, country)
-        legacy = legacy_serp_key(query, country)
+        key = serp_key(query, country, provider=provider)
+        legacy = legacy_serp_key(query, country, provider=provider)
         hit = None
         if key in self._serp:
             hit = self._serp[key]
         elif self._shared_serp is not None:
-            data = self._shared_serp.get(query, country)
+            data = self._shared_serp.get(query, country, provider=provider)
             if data is not None:
                 self._serp[key] = data
                 hit = data
@@ -863,12 +927,17 @@ class BatchCache:
             self._serp_normalised_hits += 1
         return hit
 
-    def set_serp(self, query: str, result: Any, country: str | None = None) -> None:
+    def set_serp(
+        self, query: str, result: Any, country: str | None = None, *,
+        provider: str,
+    ) -> None:
         """Cache a SERP result in the batch cache and the shared cache."""
-        self._serp[serp_key(query, country)] = result
-        self._serp_legacy_seen.add(legacy_serp_key(query, country))
+        self._serp[serp_key(query, country, provider=provider)] = result
+        self._serp_legacy_seen.add(
+            legacy_serp_key(query, country, provider=provider),
+        )
         if self._shared_serp is not None:
-            self._shared_serp.set(query, result, country)
+            self._shared_serp.set(query, result, country, provider=provider)
 
     # -- Diagnostics ---------------------------------------------------------
 

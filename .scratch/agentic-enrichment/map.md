@@ -151,6 +151,24 @@ it concludes.
   evidence the gate rejects real matches. Promotes [23](issues/23-what-is-ror-id-for-parent-vs-child.md).
 
 
+- [20 — SERP cache key omits the provider](issues/20-serp-cache-key-omits-provider.md): **FIXED
+  2026-08-29.** The provider is now a required component of every SERP cache key, derived once in
+  `cached_serp` from the client about to answer, under a versioned prefix (`serp2:`) so v1 entries
+  become unreachable rather than silently reused. Q2 answered **no**: refusing to cache empties
+  would break `tools/run_diff.py`'s `evidence_network_calls == 0` precondition, and is unnecessary
+  once the provider is in the key. Suite at baseline (`5 failed, 2821 passed, 5 skipped`).
+  **Every existing SERP entry is now cold** — warm before running the reproducibility gate.
+- [24 — Grounded Name 2 identity guard](issues/24-grounded-name2-identity-guard.md): the guard at
+  `grounded_resolver.py:588` is `name1`-only, though `originals` already holds the Name 2 value.
+  Confirmed shipping wrong departments on live evidence — `Forensic Science Div` ->
+  `Forensic Services Laboratory`, `Baytown Refinery Laboratory` -> `Baytown Refinery`. Two of the
+  four unclean values among the lane's 8 resolutions are this. **Correctness, not recovery.**
+- [25 — `build_query` cannot emit a `site:` term](issues/25-grounded-build-query-cannot-emit-site-term.md):
+  `domain` is not a parameter of `build_query`; it reaches the module only inside `_re_verify`.
+  **0 of 21 live grounded queries carried `site:`**, while 19 of the 21 records had a domain.
+  Tier 2B's one distinguishing capability, recoverable in a signature change plus one
+  `parts.append`. Sequenced after 24 so a proposal the guard should refuse is not counted as a win.
+
 ## Not yet specified
 
 - **Should the agent eventually run *first*, with the static checks purely as verification?**

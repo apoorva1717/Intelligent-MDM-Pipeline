@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 class DuckDuckGoClient(SearchClient):
     """Search via duckduckgo-search library (no API key required)."""
 
+    provider_id = "duckduckgo"
+
     async def search(
         self,
         query: str,

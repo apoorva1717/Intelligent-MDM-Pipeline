@@ -355,9 +355,9 @@ class TestCacheKeysArePureFunctionsOfTheRequest:
             assert lookup_key("Coastal Diagnostics, Inc.", "US") == (
                 "coastal diagnostics inc", "US",
             )
-            assert serp_key('"Acme" official website', "US") == (
-                "acme official website", True, "US",
-            )
+            assert serp_key(
+                '"Acme" official website', "US", provider="serpapi",
+            ) == ("acme official website", True, "US", "serpapi")
 
     def test_a_key_is_built_only_from_the_request(self):
         """The property that makes a second run HIT rather than miss.
@@ -371,7 +371,9 @@ class TestCacheKeysArePureFunctionsOfTheRequest:
 
         def build() -> list[str]:
             return [
-                serp_disk_key('"Acme Labs" official website', "US"),
+                serp_disk_key(
+                    '"Acme Labs" official website', "US", provider="serpapi",
+                ),
                 http_disk_key(
                     "https://api.ror.org/v2/organizations",
                     {"query": "Univ of Florida", "filter": "cc:US"},
@@ -420,9 +422,9 @@ class TestCacheKeysArePureFunctionsOfTheRequest:
     def test_the_quoted_and_unquoted_forms_stay_distinct(self):
         """Website resolver §8's retry exists to escape the phrase results;
         a key that collapsed the quoting would serve it those very results."""
-        assert serp_disk_key('"Acme" official website') != serp_disk_key(
-            "Acme official website",
-        )
+        assert serp_disk_key(
+            '"Acme" official website', provider="serpapi",
+        ) != serp_disk_key("Acme official website", provider="serpapi")
 
 
 class TestEntriesAreImmutableAndDated(object):
@@ -497,11 +499,14 @@ class TestTheCacheIsSharedAndSurvivesTheProcess:
 
         store = DiskCache(tmp_path, prefix="serp", namespace="serp")
         first = SerpCache(disk=store)
-        first.set("acme labs", [SearchResult("T", "https://acme.example", "s")], "US")
+        first.set(
+            "acme labs", [SearchResult("T", "https://acme.example", "s")], "US",
+            provider="serpapi",
+        )
 
         # A second run: new in-memory cache, same directory.
         second = SerpCache(disk=DiskCache(tmp_path, prefix="serp", namespace="serp"))
-        hit = second.get("acme labs", "US")
+        hit = second.get("acme labs", "US", provider="serpapi")
         assert hit is not None
         assert hit[0].url == "https://acme.example"
 
@@ -600,16 +605,20 @@ class TestCacheFrozenIsAnEvaluationControl:
     async def test_a_frozen_hit_is_served_normally(self, tmp_path):
         from search.base import SearchResult
 
+        class _Boom:
+            provider_id = "boom"
+
+            async def search(self, q, num_results=5, *, country=None):
+                raise AssertionError("should have been served from the cache")
+
         warm = DiskCache(tmp_path, prefix="serp", namespace="serp")
-        SerpCache(disk=warm).set("acme labs", [SearchResult("T", "u", "s")])
+        SerpCache(disk=warm).set(
+            "acme labs", [SearchResult("T", "u", "s")], provider="boom",
+        )
 
         frozen = DiskCache(tmp_path, prefix="serp", namespace="serp",
                            replay_only=True)
         batch = BatchCache(shared_serp=SerpCache(disk=frozen))
-
-        class _Boom:
-            async def search(self, q, num_results=5, *, country=None):
-                raise AssertionError("should have been served from the cache")
 
         assert len(await cached_serp(batch, _Boom(), "acme labs")) == 1
         assert frozen.frozen_misses == 0
