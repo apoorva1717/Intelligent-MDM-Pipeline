@@ -247,6 +247,13 @@ _TITLE_CASE_CONNECTORS = {"of", "and", "for", "the", "in", "at", "&"}
 _FORCE_TITLE_SHORT = {
     "INC", "LTD", "CO", "BAY", "NEW", "OLD", "SUN", "OAK", "BIG", "RED",
     "SKY", "SEA", "AIR", "SON", "TWO", "ONE", "KEY", "TOP", "BOX",
+    # Measured on the golden set: a registry answered in full caps and the
+    # short-token default read these as initialisms. "SOUTHWEST GAS CORP"
+    # shipped "Southwest GAS Corp"; "DOW" is a surname, and the company writes
+    # it "Dow". The list cannot be complete — it is the documented cost of
+    # defaulting a short upper-case token in a NAME to an acronym, which is
+    # right far more often than not (HCA, UCI, IBM).
+    "GAS", "DOW",
 }
 # ---------------------------------------------------------------------------
 # Parent-organisation acronyms
@@ -409,14 +416,18 @@ def _mc_name(word: str) -> str:
     return f"{m.group(1)}{m.group(2).upper()}{m.group(3)}" if m else word
 
 
-def _case_segment(seg: str) -> str:
-    """Case one hyphen-free segment, preserving acronyms/connectors."""
+def _case_segment(seg: str, *, first: bool = False) -> str:
+    """Case one hyphen-free segment, preserving acronyms/connectors.
+
+    *first* says the segment opens the value, where a connector is an ordinary
+    word rather than a connector — see :func:`smart_title_case`.
+    """
     letters = re.sub(r"[^A-Za-z]", "", seg)
     upper = letters.upper()
     if not letters:
         return seg
     if seg.lower() in _TITLE_CASE_CONNECTORS:
-        return seg.lower()
+        return _mc_name(seg.capitalize()) if first else seg.lower()
     if upper in _FORCE_TITLE_SHORT:
         return _mc_name(seg.capitalize())
     if upper in _KEEP_UPPER_ACRONYMS:
@@ -447,18 +458,29 @@ def smart_title_case(value: str | None) -> str | None:
     Each hyphen-separated segment is cased independently, so the part after a
     hyphen is no longer lower-cased. Mixed-case input is returned unchanged, so
     canonical ROR / LLM names (never ALL-CAPS) are never altered.
+
+    The FIRST word is a word, never a connector: "THE UNIVERSITY OF TEXAS" is
+    "The University of Texas", not "the University of Texas". Without that,
+    GLEIF's "THE DOW CHEMICAL COMPANY" reached the output as "the Dow Chemical
+    Company" — a registry name whose leading article had been lower-cased by
+    the very pass that was tidying it. `normalise_case` makes the same
+    distinction, and the two casing paths have to agree or a value lands cased
+    differently depending on which one reached it.
     """
     if not value or not value.strip() or not value.isupper():
         return value
     out = []
-    for w in value.split():
+    for index, w in enumerate(value.split()):
         key = w.lower()
         if key in _CASE_EXCEPTIONS:
             out.append(_CASE_EXCEPTIONS[key])
         elif "-" in w:
-            out.append("-".join(_case_segment(s) if s else s for s in w.split("-")))
+            out.append("-".join(
+                _case_segment(s, first=index == 0 and n == 0) if s else s
+                for n, s in enumerate(w.split("-"))
+            ))
         else:
-            out.append(_case_segment(w))
+            out.append(_case_segment(w, first=index == 0))
     return " ".join(out)
 
 
@@ -699,6 +721,18 @@ def _case_core(
     if lowered in _LOWERCASE_PARTICLES and not first:
         if not (is_upper and mixed_source and lowered in _NAME_PARTICLES):
             return lowered
+    # Leading the value, the same connector is an ordinary word and cases like
+    # one. Saying so here matters because the branch above deliberately does
+    # not touch a leading particle, which dropped `THE` through to the
+    # short-token acronym default below: `THE DOW CHEMICAL COMPANY` shipped as
+    # `THE DOW Chemical Company`, and `AN EVOQUA COMPANY` as `AN Evoqua
+    # Company`. An English connector is never an acronym, wherever it sits.
+    #
+    # `_TITLE_CASE_CONNECTORS` only, not the name particles: a leading `LA`
+    # ("LA JOLLA LABORATORIES") is Los Angeles far more often than the Romance
+    # article, and its existing treatment is pinned in test_output_casing.
+    if first and lowered in _TITLE_CASE_CONNECTORS:
+        return _plain_title(core)
     if upper in _KEEP_UPPER_ACRONYMS:
         return upper
     if is_upper:

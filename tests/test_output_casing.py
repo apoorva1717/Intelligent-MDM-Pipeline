@@ -44,7 +44,7 @@ from enrichment.orchestrator import (
 )
 from tests.mocks.lei_mock import MockLEIClient
 from tests.mocks.page_mock import MockPageFetcher
-from utils.text_utils import normalise_case
+from utils.text_utils import normalise_case, smart_title_case
 
 
 # ---------------------------------------------------------------------------
@@ -475,8 +475,62 @@ class TestAnUpperCaseParticleIsNotAParticle:
         # first version of the rule above, and it shipped `THE University OF
         # Texas` for one record before this test existed.
         assert normalise_case("THE University OF Texas M", mode="name") == (
-            "THE University of Texas M"
+            "The University of Texas M"
         )
         assert normalise_case("Center AND Institute", mode="name") == (
             "Center and Institute"
         )
+
+    def test_a_leading_english_connector_is_a_word_not_an_acronym(self):
+        # The other end of the same rule. This test previously pinned `THE
+        # University OF Texas M` -> `THE University ...`, describing the
+        # leading `THE` as an accident of the short-token acronym default —
+        # which it was. `THE DOW CHEMICAL COMPANY` shipped `THE DOW Chemical
+        # Company` for two records on the strength of it.
+        assert normalise_case("THE DOW CHEMICAL COMPANY", mode="name") == (
+            "The Dow Chemical Company"
+        )
+        assert normalise_case("AND ENGINEERING COMPANY", mode="name") == (
+            "And Engineering Company"
+        )
+
+    def test_a_short_word_a_registry_shouted_is_not_an_initialism(self):
+        # A registry answering in full caps meets the rule that a <=3-letter
+        # upper token in a NAME is an acronym. `_FORCE_TITLE_SHORT` is the
+        # documented carve-out, and cannot be complete.
+        assert normalise_case("SOUTHWEST GAS CORP", mode="name") == (
+            "Southwest Gas Corp"
+        )
+
+    def test_smart_title_case_agrees_about_the_leading_connector(self):
+        """The two casing paths must agree, or a value lands cased differently
+        depending on which one reached it.
+
+        This one reached `smart_title_case`: GLEIF answered `THE DOW CHEMICAL
+        COMPANY`, the name is registry-owned so `normalise_case` skips it, and
+        the canonicaliser's tidy-up lower-cased the leading article. The record
+        shipped `the Dow Chemical Company` on two rows.
+        """
+        assert smart_title_case("THE DOW CHEMICAL COMPANY") == (
+            "The Dow Chemical Company"
+        )
+        assert smart_title_case("THE UNIVERSITY OF TEXAS") == (
+            "The University of Texas"
+        )
+        assert smart_title_case("AND ENGINEERING CO") == "And Engineering Co"
+
+    def test_smart_title_case_still_lower_cases_a_connector_inside(self):
+        assert smart_title_case("CHEMISTRY AND BIOLOGY DEPARTMENT") == (
+            "Chemistry and Biology Department"
+        )
+        assert smart_title_case("INSTITUTE OF TECHNOLOGY") == (
+            "Institute of Technology"
+        )
+
+    def test_the_acronym_default_still_holds_for_everything_else(self):
+        # The carve-outs above must not become a general retreat: a short
+        # upper token in a name is an initialism far more often than not.
+        assert normalise_case("HCA FLORIDA HOSPITAL", mode="name") == (
+            "HCA Florida Hospital"
+        )
+        assert normalise_case("IBM RESEARCH", mode="name") == "IBM Research"
