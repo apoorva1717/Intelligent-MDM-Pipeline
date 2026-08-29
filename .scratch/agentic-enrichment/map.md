@@ -169,6 +169,17 @@ it concludes.
   `Co Down Health Trust` as companies, and the sample is 200 records where the pipeline runs on
   ten thousand. One existing test changed — `unknown` is not a contradiction of `company`, and
   `batch_consensus` already converges the cluster (`batch_consensus.py:143`).
+- [21 — A record trace and a run manifest](issues/21-record-trace-and-run-manifest.md): **DONE
+  2026-08-29.** `enrichment/call_trace.py`, off by default behind `CALL_TRACE`, wired into the only
+  two places any lane can issue an external request (`cached_serp`, `cached_registry_get`) — the
+  "one way to issue a search" invariant paid for itself. Lines carry the **verbatim outbound
+  string**, the provider by name, cache HIT/MISS, and an outcome vocabulary that finally separates
+  *provider failed* / *empty* / *no candidate matched* / *rejected by gate*. `scripts/explain.py`
+  runs 5-20 rows and prints a manifest of what was **actually** live, read off the resolved client
+  rather than the configuration — and it found a defect on its first run (`llm_deployment` reported
+  `<unset>` because the Settings field is `openai_model`). Ticket 18's `1910 Genetics` loss is now
+  legible in two trace lines, and sharper than the ticket had it: the unstripped form IS also tried,
+  later, so it is a selection/ordering problem rather than purely a preprocessing one.
 - [24 — Grounded Name 2 identity guard](issues/24-grounded-name2-identity-guard.md): **DONE
   2026-08-29.** Both name slots are identity-checked now. The existing comparator refused the two
   wrong values but ALSO refused `Weapons Div` -> `...Weapons Division` (a `ror:verified` answer) and

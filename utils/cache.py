@@ -644,19 +644,65 @@ async def cached_registry_get(
     Under a frozen store a miss raises :class:`RegistryUnavailableFrozen`,
     which the clients turn into their existing clean-miss result.
     """
+    from enrichment import call_trace
+
     store = registry_store(registry)
     key = http_disk_key(url, params)
     if store is not None:
         recorded = store.get(key)
         if recorded is not None:
-            return recorded.get("body") if isinstance(recorded, dict) else recorded
+            body = (
+                recorded.get("body") if isinstance(recorded, dict) else recorded
+            )
+            call_trace.call(
+                registry, url=url, params=params, cache_hit=True,
+                outcome=call_trace.OK, candidates=_result_count(body),
+            )
+            return body
         if store.replay_only:
+            call_trace.call(
+                registry, url=url, params=params,
+                outcome=call_trace.FROZEN,
+            )
             raise RegistryUnavailableFrozen(key)
     note_network_call(registry)
-    body = await fetch()
+    try:
+        body = await fetch()
+    except Exception as exc:  # noqa: BLE001
+        # Re-raised unchanged. Traced because a registry 500 is currently
+        # indistinguishable downstream from "this organisation is not in the
+        # registry" -- ROR returns one on any name containing "/" (ticket 18),
+        # and nothing recorded that the request had failed rather than missed.
+        call_trace.call(
+            registry, url=url, params=params,
+            outcome=call_trace.PROVIDER_FAILED, reason=type(exc).__name__,
+        )
+        raise
+    call_trace.call(
+        registry, url=url, params=params,
+        outcome=call_trace.OK if _result_count(body) else call_trace.EMPTY,
+        candidates=_result_count(body),
+    )
     if store is not None:
         store.set(key, {"url": url, "params": params or {}, "body": body})
     return body
+
+
+def _result_count(body: Any) -> int:
+    """How many candidates a registry body carries, for the trace only.
+
+    Best-effort and never raises: a shape it does not recognise reports 0
+    rather than breaking the request it is describing.
+    """
+    try:
+        if isinstance(body, dict):
+            for field in ("items", "data", "records", "results"):
+                value = body.get(field)
+                if isinstance(value, list):
+                    return len(value)
+        return len(body) if isinstance(body, list) else 0
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def build_evidence_cache(settings: Any) -> EvidenceCache:
@@ -798,12 +844,23 @@ async def cached_serp(
     receives the same well-formed value or nothing, and the RAW string stays
     the cache key so existing entries keep resolving.
     """
+    from enrichment import call_trace
+
     provider = provider_id_of(search_client)
     if cache is not None:
         hit = cache.get_serp(query, country, provider=provider)
         if hit is not None:
+            call_trace.call(
+                "serp", provider=provider, query=query, cache_hit=True,
+                outcome=call_trace.OK if hit else call_trace.EMPTY,
+                results=len(hit), country=country,
+            )
             return hit
         if cache.serp_frozen:
+            call_trace.call(
+                "serp", provider=provider, query=query,
+                outcome=call_trace.FROZEN, country=country,
+            )
             return []
     note_network_call("serp")
     try:
@@ -813,12 +870,23 @@ async def cached_serp(
             country=country_to_iso_code(country) if _serp_geo_enabled() else None,
         )
     except SearchUnavailable:
+        # Traced BEFORE the return, and distinctly from an empty answer: this
+        # is the distinction the whole outcome vocabulary exists for.
+        call_trace.call(
+            "serp", provider=provider, query=query,
+            outcome=call_trace.PROVIDER_FAILED, country=country,
+        )
         # The search could not be executed. NOT recorded: a dropped connection
         # is not evidence that the organisation has no web presence, and this
         # cache is durable — one bad afternoon would otherwise become a
         # permanent empty result. Callers have always treated a failed search
         # as no candidates, and still do.
         return []
+    call_trace.call(
+        "serp", provider=provider, query=query,
+        outcome=call_trace.OK if results else call_trace.EMPTY,
+        results=len(results or ()), country=country,
+    )
     if cache is not None:
         cache.set_serp(query, results, country, provider=provider)
     return results
