@@ -43,3 +43,18 @@ tests/fixtures/llm/
 
 # Dated backups of moved evidence-cache namespaces (see utils/cache.py).
 _cache_backup_*/
+
+# ── Customer master data / PII ────────────────────────────────────────────
+# SAP customer records carry organisation names, street addresses, contact
+# names and email addresses. This repository is PUBLIC — no row-level customer
+# data may be committed. Keep sample workbooks local, or sanitise before
+# sharing. (Note: several data workbooks predate this rule and are already in
+# history — see the audit; removing them needs a history rewrite.)
+docs/results/
+.scratch/agentic-enrichment/tmp/
+*.xlsx
+*.xls
+*.csv
+!.github/**/*.csv
+# Run artefacts and caches can embed the same rows.
+logs/
