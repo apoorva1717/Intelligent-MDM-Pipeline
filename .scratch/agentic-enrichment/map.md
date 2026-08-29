@@ -201,6 +201,25 @@ it concludes.
   Tier 2B's one distinguishing capability, recoverable in a signature change plus one
   `parts.append`. Sequenced after 24 so a proposal the guard should refuse is not counted as a win.
 
+- [26 — Name 2 slot is not classified before flagging](issues/26-name2-slot-is-not-classified-before-flagging.md):
+  **111 of 200 records flagged (56%), and ~30% of that load is noise.** Of the 57 `Name 2: could not
+  be canonicalised` flags, only **23** are a department the pipeline failed to resolve; the other 34
+  are slots holding no department at all — a company name (17), Name 1 overflow (8), a DBA fragment
+  (5), an admin label like `Ref#` / `Email To:` (3), a duplicate of Name 1 (1). The flag conflates
+  *"I could not canonicalise this"* with *"there is nothing here to canonicalise"*. Ticket 14
+  measured the same 74% from the other side and nothing acted on it.
+- [27 — A wrong domain at `provisional` ships unflagged](issues/27-silently-wrong-domain-provisional.md):
+  `nlrb.gov` — the National Labor Relations Board — as ExxonMobil's domain on two records, one with
+  **no flag at all**. `domain-unverified` did not fire because the value landed at `provisional`,
+  not `low`. Wrong AND silent is the worst class the pipeline can produce; every other failure mode
+  is either visible or an absence. The real question is whether a page that *mentions* an
+  organisation should corroborate a domain the way a page that *is* the organisation does.
+- [28 — Stage 0 overflow misses a dangling connector](issues/28-stage0-overflow-misses-a-dangling-connector.md):
+  6 of 100 S2 records have Name 1 ending in `&` / `and` / `of` with the rest of the name in Name 2.
+  **One fix, three symptoms:** the name is wrong, the truncated form searches as a fragment and lands
+  on `nlrb.gov` (27) where the whole form resolves at `verified+domain`, and the name's second half
+  in the Name 2 slot manufactures 8 of ticket 26's noise flags.
+
 ## Not yet specified
 
 - **Should the agent eventually run *first*, with the static checks purely as verification?**
