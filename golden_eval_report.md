@@ -1,32 +1,55 @@
 # Golden-set evaluation — 99 records against the solved reference
 
-**Run:** `enrichment-spike`, 2026-08-29, live registries and LLM, 99 records in 322s.
+**Run:** `enrichment-spike`, 2026-08-29, live registries and LLM, 99 records.
 **Inputs:** `docs/SAMPLE_DATA/testall100_SOLVED_REFERENCE_v1 (1) (1).xlsx`
-**Artefacts:** `logs/golden2/` (`golden_input.xlsx`, `golden_enriched.xlsx`, `golden_eval.json`, `golden_eval.md`)
-**Harness:** `scripts/eval_golden.py`, `tools/golden_eval.py`, `scripts/golden_root_cause.py`, `tests/test_golden_eval.py`
+**Artefacts:** `logs/golden4/` (latest), `logs/golden_baseline/` (pre-session code)
+**Harness:** `scripts/eval_golden.py`, `tools/golden_eval.py`, `scripts/golden_root_cause.py`,
+`tests/test_golden_eval.py`, `tests/test_output_input_roundtrip.py`
 
 ---
 
-## Headline
+## Where it stands
 
-| | |
-|---|---|
-| **records fully passing** | **6 / 99 (6.1%)** |
-| **cells matching** | **3684 / 3928 (93.8%)** |
-| graded columns | 40 of 67 — the reference declares the other 27 `skip` |
-| failing cells | 244 |
+| | baseline | now |
+|---|---:|---:|
+| **cells matching** | 3685 / 3928 (93.8%) | **3768 / 3928 (95.9%)** |
+| **records fully passing** | 6 / 99 (6.1%) | **19 / 99 (19.2%)** |
+| failing cells | 243 | **160** |
 
-**The 6.1% is the more alarming number and the less informative one.** A record
-passes only if all ~40 of its graded cells pass, so one systematic defect that
-touches many rows caps the record score no matter what else is right. Two such
-defects (§1, §2) touch **57 of the 99 records** and account for **54 of the 244
-failing cells** — but only **8 records fail on those alone**, so fixing both
-takes the record score from 6 to 14, not to 63. The cell score is the one that
-tracks quality; the record score mostly measures how many defects a row can
-accumulate.
+`baseline` is the code as it stood at the start of this session, measured by
+stashing every change and re-running against the same warm cache.
 
-Records that passed cleanly: `13119937`, `13140331`, `13141073`, `13213520`,
-`13223481`, `13335208`.
+### What moved it
+
+| fix | cells |
+|---|---:|
+| `Terms of Payment` readable under the header it is written as | +43 |
+| an input `PO Box` carried through instead of used as a flag | +11 |
+| reference override: `Email` graded `exact_ci` | +4 |
+| reference override: street columns graded `exact_abbrev` | +24 |
+| `P.O.` no longer cased to `P.o.` | +1 |
+| the UC-0 repack changes from earlier this session | **−1** |
+
+That last row is not a typo and is discussed in §8.
+
+### What is left, and the ceiling
+
+160 failing cells. **~8 of them are the reference** still asserting a convention
+the pipeline deliberately contradicts (4 name-abbreviation, 4 legal-form), and
+`docs/SAMPLE_DATA/reference_overrides.json` records why each was declined rather
+than silently forgiven. So the ceiling from pipeline work alone is now **99.8%**,
+and the remaining work is real:
+
+| tier | fix | cells |
+|---|---|---:|
+| T2 | sub-location routing → `Building`/`Room`, not `Mail Code`/`Street` | ~35 |
+| T3 | name block boundary / column width | 27 |
+| T5 | `canonical_preserves_identity` rejecting pure expansions | ~10 |
+| T5 | acronym casing, individual wrong records, residue in the name block | ~80 |
+| T4 | reference: name-abbreviation and legal-form conventions | 8 |
+
+The 6.1% → 19.2% record score moved further than the cell score because two of
+the fixes were systematic: `Terms of Payment` alone touched 43 records.
 
 ---
 

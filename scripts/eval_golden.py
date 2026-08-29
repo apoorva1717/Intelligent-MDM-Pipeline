@@ -51,6 +51,7 @@ DEFAULT_REFERENCE = (
     "docs/SAMPLE_DATA/testall100_SOLVED_REFERENCE_v1 (1) (1).xlsx"
 )
 DEFAULT_ORIGINAL = "docs/SAMPLE_DATA/test-all-100-original.xlsx"
+DEFAULT_OVERRIDES = "docs/SAMPLE_DATA/reference_overrides.json"
 
 
 def check_original(path: Path) -> dict:
@@ -143,6 +144,10 @@ def render_report(summary: dict, results, reference, meta: dict) -> str:
         f"{' (CACHE_FROZEN)' if meta['frozen'] else ''}")
     add(f"- graded columns: {len(reference.graded_columns)} of "
         f"{len(reference.columns)} — the rest the reference declares `skip`")
+    if reference.overrides_applied:
+        add(f"- column-rule overrides applied "
+            f"(`docs/SAMPLE_DATA/reference_overrides.json`): "
+            + ", ".join(f"`{o}`" for o in reference.overrides_applied))
     add("")
     add("## Score")
     add("")
@@ -209,6 +214,10 @@ async def _main() -> None:
                         help="CACHE_FROZEN=true — answer from the evidence "
                              "cache or record evidence-unavailable-frozen, "
                              "never the network.")
+    parser.add_argument("--no-overrides", action="store_true",
+                        help="Grade against the reference's Match Rules "
+                             "exactly as authored, ignoring "
+                             "reference_overrides.json.")
     parser.add_argument("--check-original", action="store_true",
                         help="Report the column shift in the raw upload and "
                              "exit.")
@@ -225,7 +234,12 @@ async def _main() -> None:
     out_dir = _ROOT / args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    reference = load_reference(str(_ROOT / args.reference))
+    reference = load_reference(
+        str(_ROOT / args.reference),
+        overrides=None if args.no_overrides else str(_ROOT / DEFAULT_OVERRIDES),
+    )
+    for line in reference.overrides_applied:
+        print(f"  override: {line}")
     print(f"reference: {len(reference.expected)} expected rows, "
           f"{len(reference.graded_columns)} graded columns, "
           f"{len(reference.notes)} cell notes")

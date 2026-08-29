@@ -205,9 +205,19 @@ class EnrichmentRecord(BaseModel):
         default=None,
         validation_alias=AliasChoices("Search Term 2", "search_term_2"),
     )
+    # Read under BOTH spellings on purpose. The output column this field feeds
+    # (`RESPONSE_COLUMNS["terms_of_payment"]`) is "Terms of Payment", so a
+    # workbook produced by /enrich/file carries that header — and without the
+    # bare alias, feeding the pipeline its own output emptied the column. 43 of
+    # the 99 golden-set records lost their payment terms exactly that way.
     terms_of_payment_contact: Optional[str] = Field(
         default=None,
-        validation_alias=AliasChoices("Terms of Payment Contact", "terms_of_payment_contact"),
+        validation_alias=AliasChoices(
+            "Terms of Payment Contact",
+            "Terms of Payment",
+            "terms_of_payment_contact",
+            "terms_of_payment",
+        ),
     )
 
     # ── Auxiliary enrichment inputs (no SAP column) ──────────────────

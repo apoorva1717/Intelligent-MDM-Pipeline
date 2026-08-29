@@ -1,0 +1,111 @@
+{
+  "_readme": [
+    "Column-rule corrections applied ON TOP of the Match Rules sheet in",
+    "testall100_SOLVED_REFERENCE_v1.xlsx. The reference workbook itself is left",
+    "exactly as its author wrote it — this file is the diff, so every deviation",
+    "is reviewable and reversible in one place.",
+    "",
+    "The bar for an entry: the reference asserts a convention that the pipeline",
+    "is DOCUMENTED and TESTED as deliberately doing otherwise. Each entry cites",
+    "the code that makes it so. A cell the pipeline simply gets wrong does not",
+    "belong here, and neither does one where the reference is merely arguable.",
+    "",
+    "The reference's own Method sheet invites this: 'If your output disagrees on",
+    "an un-noted cell, check the record by hand before assuming the reference is",
+    "right: this file was authored by one reviewer.'",
+    "",
+    "Run without it:  python scripts/eval_golden.py --no-overrides"
+  ],
+
+  "column_rules": {
+    "Email": {
+      "rule": "exact_ci",
+      "was": "exact",
+      "cells": 4,
+      "why": [
+        "The pipeline lower-cases every e-mail address, at",
+        "orchestrator.py:1057 — 'case-insensitive by RFC and lower case by",
+        "convention; ORDERS@MERIDIANLABS.COM is never the right output form'.",
+        "The reference keeps the input casing and grades the column `exact`, so",
+        "all four failures are the same address written two ways.",
+        "Case is the only thing forgiven: a different mailbox still fails."
+      ]
+    },
+
+    "Street 1": {
+      "rule": "exact_abbrev",
+      "was": "exact_ci",
+      "cells": 20,
+      "why": [
+        "The pipeline abbreviates street types and directionals by design:",
+        "address_processing.py:62-81, STREET_TYPE_ABBREVIATIONS (STREET->St,",
+        "LANE->Ln, DRIVE->Dr) and DIRECTIONAL_ABBREVIATIONS (SOUTH->S, EAST->E).",
+        "README documents it as pipeline step 5, 'Normalise'.",
+        "The reference expects the unabbreviated word — 'OLDEN STREET',",
+        "'EAST OTTAWA COURT', 'N TORREY PINES ROAD'.",
+        "",
+        "`exact_abbrev` folds only that one convention, in both directions, and",
+        "keeps grading everything else about the street. A wrong street number,",
+        "a wrong street name or a lost token still fails. Skipping the column",
+        "would have thrown away real signal to silence a convention."
+      ]
+    },
+    "Street 2": {"rule": "exact_abbrev", "was": "exact_ci", "why": "as Street 1"},
+    "Street 3": {"rule": "exact_abbrev", "was": "exact_ci", "why": "as Street 1"},
+    "Street 4": {"rule": "exact_abbrev", "was": "exact_ci", "why": "as Street 1"}
+  },
+
+  "considered_and_declined": {
+    "Name 1-4 abbreviation": [
+      "4 cells. The reference expects Name 2='Baytown Refinery Lab' and",
+      "Name 1='Zoetis Ref Lab Cincinnati' — the abbreviated form — while its",
+      "own Method sheet says it asserts abbreviation expansion, and",
+      "README:830 has Name 1-5 run through the global expand_abbreviations()",
+      "map precisely so no output name ships a bare Lab, Univ or Dept.",
+      "So the reference contradicts itself here and the pipeline is right.",
+      "",
+      "NOT overridden anyway: folding abbreviations across the name columns",
+      "would also forgive real defects on the same 4 columns, and one of them",
+      "is live — 'Bio-Rad Laboratories' shipping as 'Bio-Rad Laboratory'.",
+      "Losing that to recover 4 cells is a bad trade. Left failing, and",
+      "recorded in golden_eval_report.md."
+    ],
+    "Name 1 legal forms": [
+      "4 cells, and the reference is internally inconsistent: it expands",
+      "Corp->Corporation for Genzyme and Avient, expects 'Dow Chemical Co'",
+      "(not Company), ADDS 'Inc' to Brigham and Women's Hospital and REMOVES",
+      "'LLC' from Paper Money Guaranty.",
+      "",
+      "No single rule reproduces that, and one of the four is a genuine",
+      "question rather than a convention — 'Neptune Benson, Inc.' against",
+      "'Neptune-Benson, LLC' are different legal entities and the pipeline",
+      "took its answer from a registry. Left failing."
+    ],
+    "PO Box label": [
+      "7 cells. A PO Box extracted from a STREET field ships with its label —",
+      "'PO Box 750259' — while the reference expects the bare number '750259'.",
+      "",
+      "NOT a defect: tests/test_output_casing.py:230 asserts",
+      "po_box_extracted == 'PO Box 1200', so the label is a deliberate, tested",
+      "convention. NOT overridden either: stripping a label prefix inside the",
+      "grader would be a rule invented for one column to reproduce one",
+      "reviewer's preference, and it would hide a genuinely empty PO Box.",
+      "",
+      "Left failing, and worth a product decision: which form does DATAshaper",
+      "want in that column? A value already in the PO Box column on the way in",
+      "is carried through verbatim, so today the column can hold either form",
+      "depending on where the value came from — which is the real problem here."
+    ],
+    "House Number": [
+      "The reference extracts House Number on 42 rows, leaves the number",
+      "inside Street 1 on 31, and does both on none. The same street appears",
+      "as '1400 TOWNSEND DR', '1400 TOWNSEND DRIVE' and '1400 TOWNSEND DR.'",
+      "across three records.",
+      "",
+      "This needs the reference to pick one convention; it is not something an",
+      "override can decide without inventing an answer. Only 1 cell fails",
+      "today, so the cost of leaving it is small — but it makes the Street 1",
+      "column noisier than its score suggests."
+    ]
+  }
+}

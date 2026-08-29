@@ -1042,6 +1042,19 @@ async def process_address(
                 res.zip_inferred = zip_inf
 
     po_box_present = bool(po_box and po_box.strip())
+    # Carried, not merely noted. The input value used to be consulted only to
+    # decide whether a PO Box found in a STREET field was a second one and so a
+    # conflict — `po_box_extracted` was written from the street and nowhere
+    # else, so a record that arrived with its PO Box already in the PO Box
+    # column, and none in any street, shipped with the column empty. 11 of the
+    # 99 golden-set records lost a PO Box that way.
+    #
+    # Seeding it here also keeps the conflict rule intact: the check below is
+    # `res.po_box_extracted or po_box_present`, so a street PO Box arriving on
+    # top of this one still raises G3-ADDR-005 and still does not overwrite it.
+    # The record's own column wins; the street is the one in doubt.
+    if po_box_present:
+        res.po_box_extracted = po_box.strip()
 
     # Step 2a.5 — per-segment reduction of a mixed primary street (c/o line,
     # named building, or pipe). Routes buildings / c-o / campus / location-only

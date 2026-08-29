@@ -100,7 +100,14 @@ Two things to hold on to when reading a score from it:
   and that the pipeline deliberately contradicts (`STREET_TYPE_ABBREVIATIONS`
   abbreviates; the reference expects `OLDEN STREET`). Check a disagreement
   against the documented rule before treating it as a defect —
-  `golden_eval_report.md` works through all 244 from the 2026-08-29 run.
+  `golden_eval_report.md` works through them.
+- **`docs/SAMPLE_DATA/reference_overrides.json` is the diff against the authored
+  Match Rules**, so the workbook stays exactly as its author wrote it. An entry
+  needs the pipeline to be *documented and tested* as deliberately doing
+  otherwise, and must cite the code; the file also records what was considered
+  and declined, which is the more useful half. `--no-overrides` grades against
+  the sheet as authored. An override may never turn a graded column into a
+  `skip` — that raises the score by measuring less, and a test forbids it.
 
 **Do not feed `test-all-100-original.xlsx` to the pipeline**: 75 of its 99 rows
 have shifted columns (City holds an issue-code list and a date, Region holds the

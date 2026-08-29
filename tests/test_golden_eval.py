@@ -24,6 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tools.golden_eval import (  # noqa: E402
     EXACT,
+    EXACT_ABBREV,
+    fold_abbreviations,
     EXACT_CI,
     MATCH,
     MISMATCH,
@@ -123,6 +125,43 @@ class TestCompareCell:
         assert compare_cell(None, "OLDEN STREET", rule) == MATCH
 
 
+class TestExactAbbrev:
+    """The rule that neutralises one documented convention, and nothing else.
+
+    The pipeline abbreviates street types by design and the reference expects
+    the long form. Skipping the street columns would have discarded real signal
+    to silence that; folding the abbreviation keeps grading everything else.
+    """
+
+    def test_the_street_convention_is_forgiven_in_both_directions(self):
+        rule = Rule(kind=EXACT_ABBREV)
+        assert compare_cell("OLDEN STREET", "Olden St", rule) == MATCH
+        assert compare_cell("Olden St", "OLDEN STREET", rule) == MATCH
+        assert compare_cell("EAST OTTAWA COURT", "E Ottawa Ct", rule) == MATCH
+        assert compare_cell("N TORREY PINES ROAD", "N Torrey Pines Rd", rule) == MATCH
+
+    def test_a_different_street_still_fails(self):
+        rule = Rule(kind=EXACT_ABBREV)
+        assert compare_cell("OLDEN STREET", "Nassau St", rule) == MISMATCH
+        assert compare_cell("1400 TOWNSEND DR", "1401 Townsend Dr", rule) == MISMATCH
+        assert compare_cell("IVY LANE", "Ivy Ln Suite 2", rule) == MISMATCH
+
+    def test_a_lost_plural_is_still_caught(self):
+        # `Bio-Rad Laboratories` shipping as `Bio-Rad Laboratory` is a real
+        # defect, and folding must not forgive it.
+        assert fold_abbreviations("Bio-Rad Laboratories") != (
+            fold_abbreviations("Bio-Rad Laboratory")
+        )
+        assert compare_cell(
+            "Bio-Rad Laboratories", "Bio-Rad Laboratory", Rule(kind=EXACT_ABBREV),
+        ) == MISMATCH
+
+    def test_labs_and_laboratories_are_the_same_word(self):
+        assert fold_abbreviations("Baytown Refinery Labs") == (
+            fold_abbreviations("Baytown Refinery Laboratories")
+        )
+
+
 def _reference(**kw) -> Reference:
     base = dict(
         columns=["Customer", "Name 1", "Domain"],
@@ -216,6 +255,38 @@ def reference():
         pytest.skip("the golden set is not present in this checkout")
     from tools.golden_eval import load_reference
     return load_reference(str(REFERENCE_PATH))
+
+
+class TestTheOverrides:
+    """The shipped overrides must apply, and must not widen anything silently."""
+
+    OVERRIDES = (
+        Path(__file__).resolve().parent.parent
+        / "docs" / "SAMPLE_DATA" / "reference_overrides.json"
+    )
+
+    def test_they_are_applied_and_reported(self, reference):
+        from tools.golden_eval import load_reference
+        if not self.OVERRIDES.exists():
+            pytest.skip("overrides file not present")
+        with_overrides = load_reference(
+            str(REFERENCE_PATH), overrides=str(self.OVERRIDES),
+        )
+        assert with_overrides.overrides_applied
+        assert with_overrides.rules["Email"].kind == EXACT_CI
+        assert with_overrides.rules["Street 1"].kind == EXACT_ABBREV
+        # The authored reference is untouched by loading the overrides.
+        assert reference.rules["Email"].kind == EXACT
+        assert reference.rules["Street 1"].kind == EXACT_CI
+
+    def test_no_override_turns_a_graded_column_into_a_skip(self, reference):
+        # Silencing a column would raise the score by measuring less. Every
+        # override must keep grading it.
+        from tools.golden_eval import load_reference
+        if not self.OVERRIDES.exists():
+            pytest.skip("overrides file not present")
+        after = load_reference(str(REFERENCE_PATH), overrides=str(self.OVERRIDES))
+        assert set(after.graded_columns) == set(reference.graded_columns)
 
 
 class TestTheRealReferenceLoads:

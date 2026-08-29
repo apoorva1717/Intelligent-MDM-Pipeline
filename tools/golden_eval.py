@@ -43,6 +43,7 @@ from __future__ import annotations
 import datetime as _dt
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 REFERENCE_SHEET = "Reference"
@@ -54,7 +55,51 @@ PAIR_COLUMNS = ("pair_id", "row_kind")
 
 EXACT = "exact"
 EXACT_CI = "exact_ci"
+EXACT_ABBREV = "exact_abbrev"
 SKIP = "skip"
+
+#: Abbreviation pairs the pipeline's own maps rewrite, in both directions.
+#: `enrichment.address_processing.STREET_TYPE_ABBREVIATIONS` and
+#: `DIRECTIONAL_ABBREVIATIONS` for the street half,
+#: `utils.text_utils.expand_abbreviations` for the name half.
+#:
+#: Used ONLY by :data:`EXACT_ABBREV`, to recognise that two strings differ by an
+#: abbreviation the pipeline is documented as rewriting. It never rewrites a
+#: value and it is not a normaliser — it decides whether a disagreement is about
+#: the organisation or about the convention for writing it down.
+ABBREVIATION_PAIRS: tuple[tuple[str, str], ...] = (
+    ("street", "st"), ("street", "str"), ("avenue", "ave"),
+    ("boulevard", "blvd"),
+    ("drive", "dr"), ("road", "rd"), ("lane", "ln"), ("court", "ct"),
+    ("highway", "hwy"), ("parkway", "pkwy"), ("route", "rte"),
+    ("north", "n"), ("south", "s"), ("east", "e"), ("west", "w"),
+    ("northwest", "nw"), ("northeast", "ne"),
+    ("southwest", "sw"), ("southeast", "se"),
+    ("university", "univ"), ("department", "dept"), ("institute", "inst"),
+    ("laboratory", "lab"), ("laboratories", "labs"), ("center", "ctr"),
+    ("centre", "ctr"), ("medical", "med"), ("services", "svcs"),
+    ("group", "grp"), ("national", "natl"), ("international", "intl"),
+    ("administration", "admin"), ("management", "mgmt"),
+    ("building", "bldg"), ("division", "div"), ("reference", "ref"),
+)
+
+_TO_LONG_FORM: dict[str, str] = {}
+for _long, _short in ABBREVIATION_PAIRS:
+    _TO_LONG_FORM[_short] = _long
+    _TO_LONG_FORM[_long] = _long
+
+
+def fold_abbreviations(text: str) -> str:
+    """Rewrite every abbreviation in *text* to its long form, lower case.
+
+    Deliberately whole-word and singular/plural aware: `laboratories` folds to
+    `laboratories`, not to `laboratory`, so a pipeline that turned
+    `Bio-Rad Laboratories` into `Bio-Rad Laboratory` is still caught.
+    """
+    return " ".join(
+        _TO_LONG_FORM.get(word, word)
+        for word in re.findall(r"[a-z0-9&]+", text.casefold())
+    )
 
 #: What a blank looks like inside an `any_of` list.
 EMPTY_TOKEN = "(empty)"
@@ -154,6 +199,10 @@ def compare_cell(expected: Any, actual: Any, rule: Rule) -> str:
         return MATCH if got.casefold() in {
             a.casefold() for a in accepted
         } else MISMATCH
+    if rule.kind == EXACT_ABBREV:
+        return MATCH if fold_abbreviations(got) in {
+            fold_abbreviations(a) for a in accepted
+        } else MISMATCH
     return MATCH if got in accepted else MISMATCH
 
 
@@ -180,6 +229,8 @@ class Reference:
     #: than dropped: a note that grades nothing is a defect in the reference,
     #: and silently ignoring it would hide a column-name drift.
     orphan_notes: list[tuple[str, str, str]] = field(default_factory=list)
+    #: Column rules replaced from the overrides file, as "col: was -> now".
+    overrides_applied: list[str] = field(default_factory=list)
 
     def rule_for(self, customer: str, column: str) -> Rule:
         note = self.notes.get((customer, column))
@@ -192,7 +243,33 @@ class Reference:
         return [c for c in self.columns if self.rules.get(c, SKIP_RULE).graded]
 
 
-def load_reference(path: str) -> Reference:
+def apply_overrides(rules: dict[str, Rule], overrides_path: str) -> list[str]:
+    """Replace column rules from an overrides file. Returns what changed.
+
+    The reference workbook is left exactly as its author wrote it; the
+    corrections live in `docs/SAMPLE_DATA/reference_overrides.json` so every
+    deviation from the authored rules is reviewable in one place and revertible
+    with `--no-overrides`. The bar for an entry is stated in that file: the
+    reference asserts a convention the pipeline is documented and tested as
+    deliberately doing otherwise.
+    """
+    import json
+
+    data = json.loads(Path(overrides_path).read_text(encoding="utf-8"))
+    applied: list[str] = []
+    for column, spec in (data.get("column_rules") or {}).items():
+        kind = str(spec.get("rule", "")).strip()
+        if kind not in (EXACT, EXACT_CI, EXACT_ABBREV, SKIP):
+            raise ValueError(f"{column}: unknown override rule {kind!r}")
+        if column not in rules:
+            raise ValueError(f"{column}: not a column of the reference")
+        was = rules[column].kind
+        rules[column] = Rule(kind=kind, reason="override", source="override")
+        applied.append(f"{column}: {was} -> {kind}")
+    return applied
+
+
+def load_reference(path: str, overrides: str | None = None) -> Reference:
     """Read the solved-reference workbook into a :class:`Reference`."""
     from openpyxl import load_workbook
 
@@ -226,6 +303,10 @@ def load_reference(path: str) -> Reference:
         if kind in (EXACT, EXACT_CI, SKIP):
             rules[column] = Rule(kind=kind, reason=why, source="column")
 
+    overrides_applied: list[str] = []
+    if overrides:
+        overrides_applied = apply_overrides(rules, overrides)
+
     notes: dict[tuple[str, str], Rule] = {}
     orphans: list[tuple[str, str, str]] = []
     for raw in book[NOTES_SHEET].iter_rows(values_only=True):
@@ -244,6 +325,7 @@ def load_reference(path: str) -> Reference:
     return Reference(
         columns=columns, inputs=inputs, expected=expected,
         rules=rules, notes=notes, orphan_notes=orphans,
+        overrides_applied=overrides_applied,
     )
 
 

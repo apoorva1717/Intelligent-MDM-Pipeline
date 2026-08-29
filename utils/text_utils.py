@@ -385,6 +385,13 @@ _CASE_EXCEPTIONS = {
     "abx-cro": "ABX-CRO",
     "dana-farber": "Dana-Farber",
     "at&t": "AT&T",
+    # An initialism whose full stops hid it from the acronym rule: the token
+    # is not all-caps letters, so it cased as an ordinary word and
+    # "P.O. BOX 691787" shipped as "P.o. Box 691787". The dotless spelling
+    # already cased correctly, which is why this only ever showed on the
+    # records that punctuate it.
+    "p.o.": "P.O.",
+    "p.o": "P.O",
 }
 
 
