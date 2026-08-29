@@ -1574,6 +1574,14 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # same unit — or a near-duplicate/typo — AFTER that ran. Collapse
     # equivalent enriched name slots here (canonical + fuzzy match) and pack
     # the survivors leftward so a duplicate never reaches the output.
+    #
+    # The organisation seeds the comparison, so a department slot that merely
+    # restates Name 1 drops out too. It arrives there by resolution, not by
+    # copying: Name 2 held `PAVIR`, the acronym of Name 1, and a tier expanded
+    # it into `Palo Alto Veterans Institute for Research` — the organisation's
+    # own name, written twice. Same shape when a record supplies Name 1 and
+    # Name 2 identical and each resolves the same way. Name 1 itself is only
+    # ever the seed and is never a candidate for removal.
     def _name_norm(v: Any) -> str:
         if not v or not str(v).strip():
             return ""
@@ -1582,6 +1590,9 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
 
     kept_vals: list[Any] = []
     kept_norms: list[str] = []
+    _org_norm = _name_norm(result.get("name1_enriched"))
+    if _org_norm:
+        kept_norms.append(_org_norm)
     for f in DEPT_ENRICHED_FIELDS:
         val = result.get(f)
         n = _name_norm(val)
