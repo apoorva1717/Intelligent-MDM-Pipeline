@@ -157,7 +157,22 @@ _AP_DELIM_RE = re.compile(r"\s*[|,;]\s*|\s+[-\u2013\u2014]\s+|\s*/\s*")
 _ABBREV_SLASH_RE = re.compile(r"(?<![A-Za-z])[A-Za-z]\s*/\s*[A-Za-z](?![A-Za-z])")
 
 
-def _split_ap_suffix(text: str) -> str | None:
+#: The unambiguous spellings of the desk, for the case where NOTHING separates
+#: it from the organisation but a space: "Wyss Inst Accounts Payable". Only the
+#: multi-word forms are here. A bare "AP" needs a delimiter to be safe — "AP
+#: Moller" and "AP Chemicals" are organisations — which is what
+#: `_BARE_AP_SEGMENTS` is for, and it deliberately has no entry here.
+_AP_TRAILING_RE = re.compile(
+    r"\s+(?:"
+    r"accounts?\s+payable|accts?\.?\s+payable|acct\.?\s+payable"
+    r"|accounts?\s+pay|accts?\.?\s+pay"
+    r"|a\s*/\s*p"
+    r")\s*$",
+    re.IGNORECASE,
+)
+
+
+def _split_ap_suffix(text: str, *, allow_space_split: bool = False) -> str | None:
     """Return the organisation when *text* is "<organisation><delim><AP desk>".
 
     ``"McLaren HealthCare Corp/Acct Pay"`` → ``"McLaren HealthCare Corp"``,
@@ -166,6 +181,20 @@ def _split_ap_suffix(text: str) -> str | None:
     Department") — UC 6 replaces the whole field in that case, as it always
     has — or when the desk is not a trailing segment, which would make the
     prefix an incomplete name rather than a whole one.
+
+    With *allow_space_split*, a desk separated by nothing but a space is
+    recognised too: ``"Wyss Inst Accounts Payable"`` is the same value with a
+    space where the slash would be, and it used to fall through to the
+    whole-field replacement — shipping ``Name 1 = "Accounts Payable"`` and
+    losing the only name the record had.
+
+    That is off by default and the caller turns it on **for Name 1 only**,
+    because only Name 1 holds the organisation. In a department slot the words
+    before the desk are a qualifier on it, not a customer: ``"LSG Accts
+    Payable"`` is the Life Science Group's accounts-payable desk, and splitting
+    it leaves ``"LSG"`` standing where a department belongs. A delimiter is
+    evidence of two things in one field wherever it appears; a space is only
+    evidence of that in the slot that is supposed to hold a name.
     """
     abbrev_spans = [m.span() for m in _ABBREV_SLASH_RE.finditer(text)]
 
@@ -182,7 +211,18 @@ def _split_ap_suffix(text: str) -> str | None:
     segments.append((pos, text[pos:]))
     segments = [(start, seg) for start, seg in segments if seg.strip()]
     if len(segments) < 2:
-        return None
+        # No delimiter. A desk can still be sitting on the end of the name with
+        # only a space in front of it; the organisation is whatever precedes
+        # it, and an empty prefix means the value IS the desk.
+        if not allow_space_split:
+            return None
+        trailing = _AP_TRAILING_RE.search(text)
+        if not trailing:
+            return None
+        organisation = text[: trailing.start()].strip(" \t,;:/|-–—")
+        if not organisation or _is_ap_reference(organisation):
+            return None
+        return organisation
 
     first_ap = next(
         (i for i, (_, seg) in enumerate(segments) if _segment_is_ap(seg)), None
@@ -1828,8 +1868,27 @@ def preprocess_record(
         # the record has — and give the desk its own slot. Replacing the whole
         # field, the way a desk-only value is replaced below, would throw the
         # customer away and leave the record with nothing to enrich.
-        organisation = _split_ap_suffix(val)
+        organisation = _split_ap_suffix(
+            val, allow_space_split=field_name == NAME_SLOTS[0],
+        )
         if organisation:
+            # The desk may already have a slot of its own — SAP records
+            # routinely repeat it, as `Name 1 = "Wyss Inst Accounts Payable"`
+            # with `Name 2 = "Accounts Payable"`. Keeping the organisation and
+            # writing the desk a second time would trade one defect for a
+            # duplicate, so the desk is simply dropped from Name 1.
+            elsewhere = any(
+                _is_ap_reference(getattr(res, slot) or "")
+                for slot in NAME_SLOTS if slot != field_name
+            )
+            if elsewhere:
+                setattr(res, field_name, organisation)
+                res.note(
+                    6,
+                    f"dropped the accounts-payable desk from {field_name} — "
+                    f"already held in another name slot (was {val!r})",
+                )
+                continue
             target = _first_empty_name_slot(res)
             if target is None:
                 res.note(

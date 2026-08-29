@@ -111,3 +111,63 @@ class TestAdminVocabulary:
     @pytest.mark.parametrize("value", ["Acct Management", "Account Executive"])
     def test_other_acct_phrases_are_not(self, value):
         assert not is_admin_unit(value)
+
+
+class TestASpaceIsEnoughOfASeparatorInName1:
+    """Found by the golden set, 2026-08-29.
+
+    `Wyss Inst Accounts Payable` is the same value as
+    `McLaren HealthCare Corp/Acct Pay` with a space where the slash is. Without
+    a delimiter the split never fired, the whole field matched as a desk, and
+    the record shipped `Name 1 = "Accounts Payable"` — the worst outcome this
+    rule exists to prevent, and the one its own comment names.
+    """
+
+    def test_the_organisation_survives_a_space_separated_desk(self):
+        res = _pp(name1="Wyss Inst Accounts Payable")
+        assert res.name1 == "Wyss Inst"
+
+    def test_the_desk_is_dropped_when_another_slot_already_holds_it(self):
+        # SAP repeats it routinely. Keeping the organisation and writing the
+        # desk a second time would trade one defect for a duplicate.
+        res = _pp(name1="Wyss Inst Accounts Payable", name2="Accounts Payable")
+        assert res.name1 == "Wyss Inst"
+        assert res.name2 == "Accounts Payable"
+        assert not (res.name3 or "").strip()
+
+    def test_the_desk_still_gets_a_slot_when_it_has_none(self):
+        res = _pp(name1="Wyss Inst Accounts Payable")
+        assert res.name2 == "Accounts Payable"
+
+    @pytest.mark.parametrize("value", [
+        "Genzyme Corp Accts Pay",
+        "Acme Holdings Acct Payable",
+        "Bruker Scientific Accounts Pay",
+    ])
+    def test_the_clipped_spellings_split_too(self, value):
+        assert _pp(name1=value).name1 == value.rsplit(" ", 2)[0]
+
+
+class TestASpaceIsNotEnoughInADepartmentSlot:
+    """The other half of the same finding.
+
+    Only Name 1 holds the organisation, which is what makes losing it
+    catastrophic. In a department slot the words before the desk qualify it —
+    `LSG Accts Payable` is the Life Science Group's accounts-payable desk —
+    and splitting leaves `LSG` standing where a department belongs. That
+    regression is what scoped the space split to Name 1.
+    """
+
+    def test_a_qualifier_is_not_an_organisation(self):
+        res = _pp(name1="Bio-Rad Lab Inc", name2="LSG Accts Payable")
+        assert res.name2 == "Accounts Payable"
+        assert not (res.name3 or "").strip()
+
+    def test_a_delimited_desk_still_splits_in_a_lower_slot(self):
+        # A delimiter is evidence of two things in one field wherever it
+        # appears; only the SPACE reading is Name-1-only.
+        res = _pp(name1="Acme Corp", name2="Widgets Division/Acct Pay")
+        assert res.name2 == "Widgets Division"
+
+    def test_a_desk_only_value_still_collapses_in_name1(self):
+        assert _pp(name1="Accounts Payable Department").name1 == "Accounts Payable"
