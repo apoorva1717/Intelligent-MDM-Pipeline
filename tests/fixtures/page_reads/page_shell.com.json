@@ -1,0 +1,17 @@
+{
+ "domain": "shell.com",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "status": 200,
+  "blocked": false,
+  "error": null,
+  "url": "https://www.shell.com/",
+  "title": "Shell Global",
+  "h1": "",
+  "text": "Shell Global [/about] Who we are | Shell Global Who we are | Shell Global",
+  "paths": [
+   "/",
+   "/about"
+  ]
+ }
+}

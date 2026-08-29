@@ -1,0 +1,55 @@
+{
+ "domain": "entity:q140467447",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q140467447",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "JD Supra"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "jdsupra.com"
+    },
+    {
+     "language": "en",
+     "value": "JDSupra"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 35127,
+        "id": "Q35127"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.jdsupra.com/",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

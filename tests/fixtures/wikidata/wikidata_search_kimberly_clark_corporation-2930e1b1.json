@@ -1,0 +1,40 @@
+{
+ "domain": "search:kimberly clark corporation",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "KIMBERLY-CLARK CORPORATION"
+  },
+  "search": [
+   {
+    "id": "Q1741634",
+    "title": "Q1741634",
+    "pageid": 1674597,
+    "concepturi": "http://www.wikidata.org/entity/Q1741634",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q1741634",
+    "display": {
+     "label": {
+      "value": "Kimberly-Clark",
+      "language": "en"
+     },
+     "description": {
+      "value": "American multinational company",
+      "language": "en"
+     }
+    },
+    "label": "Kimberly-Clark",
+    "description": "American multinational company",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "Kimberly-Clark Corporation"
+    },
+    "aliases": [
+     "Kimberly-Clark Corporation"
+    ]
+   }
+  ],
+  "success": 1
+ }
+}

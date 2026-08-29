@@ -1,0 +1,14 @@
+{
+ "domain": "microsemi.com",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "status": null,
+  "blocked": false,
+  "error": "ReadTimeout",
+  "url": "https://microsemi.com/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

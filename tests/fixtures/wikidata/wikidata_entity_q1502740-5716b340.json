@@ -1,0 +1,142 @@
+{
+ "domain": "entity:q1502740",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q1502740",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Genzyme"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Sanofi Genzyme"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 4830453,
+        "id": "Q4830453"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 658255,
+        "id": "Q658255"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 6881511,
+        "id": "Q6881511"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P159": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 49111,
+        "id": "Q49111"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.genzyme.com",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P1278": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P1278",
+      "datavalue": {
+       "value": "549300ZNNO34O8GXUE47",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P576": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P576",
+      "datavalue": {
+       "value": {
+        "time": "+2022-02-00T00:00:00Z",
+        "timezone": 0,
+        "before": 0,
+        "after": 0,
+        "precision": 10,
+        "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+       },
+       "type": "time"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

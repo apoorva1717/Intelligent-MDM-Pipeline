@@ -1,0 +1,16 @@
+{
+ "domain": "nordsonnet.com",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "status": 200,
+  "blocked": false,
+  "error": null,
+  "url": "https://www.nordsonnet.com/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": [
+   "/"
+  ]
+ }
+}

@@ -1,0 +1,14 @@
+{
+ "domain": "afit.edu",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "status": null,
+  "blocked": false,
+  "error": "ConnectionError",
+  "url": "https://afit.edu/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

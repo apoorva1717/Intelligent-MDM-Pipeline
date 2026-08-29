@@ -1,0 +1,11 @@
+{
+ "domain": "search:jeol usa inc",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "JEOL USA, Inc."
+  },
+  "search": [],
+  "success": 1
+ }
+}

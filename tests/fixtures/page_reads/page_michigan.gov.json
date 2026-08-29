@@ -1,0 +1,14 @@
+{
+ "domain": "michigan.gov",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "status": 403,
+  "blocked": true,
+  "error": null,
+  "url": "https://michigan.gov/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

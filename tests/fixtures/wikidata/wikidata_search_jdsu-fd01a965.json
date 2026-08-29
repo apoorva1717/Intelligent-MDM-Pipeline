@@ -1,0 +1,130 @@
+{
+ "domain": "search:jdsu",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "JDSU"
+  },
+  "search": [
+   {
+    "id": "Q3156887",
+    "title": "Q3156887",
+    "pageid": 3015574,
+    "concepturi": "http://www.wikidata.org/entity/Q3156887",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q3156887",
+    "display": {
+     "label": {
+      "value": "JDSU",
+      "language": "en"
+     },
+     "description": {
+      "value": "Canadian/American fiber-optics company, 1979\u20132015",
+      "language": "en"
+     }
+    },
+    "label": "JDSU",
+    "description": "Canadian/American fiber-optics company, 1979\u20132015",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "JDSU"
+    }
+   },
+   {
+    "id": "Q29123276",
+    "title": "Q29123276",
+    "pageid": 30781390,
+    "concepturi": "http://www.wikidata.org/entity/Q29123276",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q29123276",
+    "display": {
+     "label": {
+      "value": "JDSU (Canada)",
+      "language": "en"
+     }
+    },
+    "label": "JDSU (Canada)",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "JDSU (Canada)"
+    }
+   },
+   {
+    "id": "Q30338411",
+    "title": "Q30338411",
+    "pageid": 31950624,
+    "concepturi": "http://www.wikidata.org/entity/Q30338411",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q30338411",
+    "display": {
+     "label": {
+      "value": "JDSU (Switzerland)",
+      "language": "en"
+     }
+    },
+    "label": "JDSU (Switzerland)",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "JDSU (Switzerland)"
+    }
+   },
+   {
+    "id": "Q30273356",
+    "title": "Q30273356",
+    "pageid": 31886133,
+    "concepturi": "http://www.wikidata.org/entity/Q30273356",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q30273356",
+    "display": {
+     "label": {
+      "value": "JDSU (China)",
+      "language": "en"
+     },
+     "description": {
+      "value": "organization in Shenzhen, China",
+      "language": "en"
+     }
+    },
+    "label": "JDSU (China)",
+    "description": "organization in Shenzhen, China",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "JDSU (China)"
+    }
+   },
+   {
+    "id": "Q140467447",
+    "title": "Q140467447",
+    "pageid": 133906512,
+    "concepturi": "http://www.wikidata.org/entity/Q140467447",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q140467447",
+    "display": {
+     "label": {
+      "value": "JD Supra",
+      "language": "en"
+     },
+     "description": {
+      "value": "legal news website",
+      "language": "en"
+     }
+    },
+    "label": "JD Supra",
+    "description": "legal news website",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "jdsupra.com"
+    },
+    "aliases": [
+     "jdsupra.com"
+    ]
+   }
+  ],
+  "success": 1
+ }
+}

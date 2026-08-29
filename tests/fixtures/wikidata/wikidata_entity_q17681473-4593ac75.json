@@ -1,0 +1,32 @@
+{
+ "domain": "entity:q17681473",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q17681473",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Dow Chemical to buy Rohm and Haas"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 17633526,
+        "id": "Q17633526"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,89 @@
+{
+ "domain": "entity:q208459",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q208459",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Sunnyvale"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "City of Sunnyvale"
+    },
+    {
+     "language": "en",
+     "value": "Sunnyvale, California"
+    },
+    {
+     "language": "en",
+     "value": "Sunnyvale, CA"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 1549591,
+        "id": "Q1549591"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 13218391,
+        "id": "Q13218391"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://sunnyvale.ca.gov/",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,71 @@
+{
+ "domain": "entity:q1000642",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q1000642",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Summit"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Summit, New Jersey"
+    },
+    {
+     "language": "en",
+     "value": "Summit, NJ"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 2974552,
+        "id": "Q2974552"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.cityofsummit.org/",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

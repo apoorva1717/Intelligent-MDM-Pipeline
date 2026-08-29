@@ -1,0 +1,136 @@
+{
+ "domain": "search:dow chemical",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Dow Chemical"
+  },
+  "search": [
+   {
+    "id": "Q855639",
+    "title": "Q855639",
+    "pageid": 807405,
+    "concepturi": "http://www.wikidata.org/entity/Q855639",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q855639",
+    "display": {
+     "label": {
+      "value": "Dow Chemical Company",
+      "language": "en"
+     },
+     "description": {
+      "value": "American chemical company",
+      "language": "en"
+     }
+    },
+    "label": "Dow Chemical Company",
+    "description": "American chemical company",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Dow Chemical Company"
+    }
+   },
+   {
+    "id": "Q30274050",
+    "title": "Q30274050",
+    "pageid": 31886819,
+    "concepturi": "http://www.wikidata.org/entity/Q30274050",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q30274050",
+    "display": {
+     "label": {
+      "value": "Dow Chemical (India)",
+      "language": "en"
+     },
+     "description": {
+      "value": "company in Mumbai, India",
+      "language": "en"
+     }
+    },
+    "label": "Dow Chemical (India)",
+    "description": "company in Mumbai, India",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Dow Chemical (India)"
+    }
+   },
+   {
+    "id": "Q30338756",
+    "title": "Q30338756",
+    "pageid": 31950975,
+    "concepturi": "http://www.wikidata.org/entity/Q30338756",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q30338756",
+    "display": {
+     "label": {
+      "value": "Dow Chemical Company (South Korea)",
+      "language": "en"
+     }
+    },
+    "label": "Dow Chemical Company (South Korea)",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Dow Chemical Company (South Korea)"
+    }
+   },
+   {
+    "id": "Q7359784",
+    "title": "Q7359784",
+    "pageid": 7267846,
+    "concepturi": "http://www.wikidata.org/entity/Q7359784",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q7359784",
+    "display": {
+     "label": {
+      "value": "Rohm and Haas Corporate Headquarters",
+      "language": "en"
+     },
+     "description": {
+      "value": "Corporate headquarters building in Philadelphia",
+      "language": "en"
+     }
+    },
+    "label": "Rohm and Haas Corporate Headquarters",
+    "description": "Corporate headquarters building in Philadelphia",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "Dow Chemical Company building"
+    },
+    "aliases": [
+     "Dow Chemical Company building"
+    ]
+   },
+   {
+    "id": "Q17681473",
+    "title": "Q17681473",
+    "pageid": 19277332,
+    "concepturi": "http://www.wikidata.org/entity/Q17681473",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q17681473",
+    "display": {
+     "label": {
+      "value": "Dow Chemical to buy Rohm and Haas",
+      "language": "en"
+     },
+     "description": {
+      "value": "Wikinews article",
+      "language": "en"
+     }
+    },
+    "label": "Dow Chemical to buy Rohm and Haas",
+    "description": "Wikinews article",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Dow Chemical to buy Rohm and Haas"
+    }
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

@@ -1,0 +1,40 @@
+{
+ "domain": "search:spansion llc",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Spansion LLC"
+  },
+  "search": [
+   {
+    "id": "Q1192654",
+    "title": "Q1192654",
+    "pageid": 1136772,
+    "concepturi": "http://www.wikidata.org/entity/Q1192654",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q1192654",
+    "display": {
+     "label": {
+      "value": "Spansion",
+      "language": "en"
+     },
+     "description": {
+      "value": "company",
+      "language": "en"
+     }
+    },
+    "label": "Spansion",
+    "description": "company",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "Spansion LLC"
+    },
+    "aliases": [
+     "Spansion LLC"
+    ]
+   }
+  ],
+  "success": 1
+ }
+}

@@ -1,0 +1,11 @@
+{
+ "domain": "search:sanofi us services inc",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Sanofi US Services Inc."
+  },
+  "search": [],
+  "success": 1
+ }
+}

@@ -1,0 +1,176 @@
+{
+ "domain": "entity:q3156887",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q3156887",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "JDSU"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "JDS Uniphase"
+    },
+    {
+     "language": "en",
+     "value": "JDS Uniphase Corporation"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 4830453,
+        "id": "Q4830453"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 891723,
+        "id": "Q891723"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 16,
+        "id": "Q16"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P159": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 927510,
+        "id": "Q927510"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.jdsu.com/",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P6782": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P6782",
+      "datavalue": {
+       "value": "01a5v8x09",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P576": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P576",
+      "datavalue": {
+       "value": {
+        "time": "+2015-08-00T00:00:00Z",
+        "timezone": 0,
+        "before": 0,
+        "after": 0,
+        "precision": 10,
+        "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+       },
+       "type": "time"
+      }
+     }
+    }
+   ],
+   "P1366": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P1366",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 28222763,
+        "id": "Q28222763"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P1366",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 106253770,
+        "id": "Q106253770"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

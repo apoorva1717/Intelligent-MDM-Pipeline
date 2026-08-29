@@ -1,0 +1,65 @@
+{
+ "domain": "search:merck sharp dohme corp",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "MERCK SHARP & DOHME CORP."
+  },
+  "search": [
+   {
+    "id": "Q247489",
+    "title": "Q247489",
+    "pageid": 240314,
+    "concepturi": "http://www.wikidata.org/entity/Q247489",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q247489",
+    "display": {
+     "label": {
+      "value": "Merck & Co.",
+      "language": "en"
+     },
+     "description": {
+      "value": "American multinational pharmaceutical company",
+      "language": "en"
+     }
+    },
+    "label": "Merck & Co.",
+    "description": "American multinational pharmaceutical company",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "Merck Sharp & Dohme Corp."
+    },
+    "aliases": [
+     "Merck Sharp & Dohme Corp."
+    ]
+   },
+   {
+    "id": "Q124820542",
+    "title": "Q124820542",
+    "pageid": 119005186,
+    "concepturi": "http://www.wikidata.org/entity/Q124820542",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q124820542",
+    "display": {
+     "label": {
+      "value": "Merck Sharp & Dohme Corp. v. Albrecht",
+      "language": "en"
+     },
+     "description": {
+      "value": "2019 United States Supreme Court case",
+      "language": "en"
+     }
+    },
+    "label": "Merck Sharp & Dohme Corp. v. Albrecht",
+    "description": "2019 United States Supreme Court case",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Merck Sharp & Dohme Corp. v. Albrecht"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

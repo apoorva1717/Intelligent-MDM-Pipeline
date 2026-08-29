@@ -1,0 +1,40 @@
+{
+ "domain": "search:genzyme corporation",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Genzyme Corporation"
+  },
+  "search": [
+   {
+    "id": "Q1502740",
+    "title": "Q1502740",
+    "pageid": 1440183,
+    "concepturi": "http://www.wikidata.org/entity/Q1502740",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q1502740",
+    "display": {
+     "label": {
+      "value": "Genzyme",
+      "language": "en"
+     },
+     "description": {
+      "value": "company",
+      "language": "en"
+     }
+    },
+    "label": "Genzyme",
+    "description": "company",
+    "match": {
+     "type": "alias",
+     "language": "fr",
+     "text": "Genzyme Corporation"
+    },
+    "aliases": [
+     "Genzyme Corporation"
+    ]
+   }
+  ],
+  "success": 1
+ }
+}

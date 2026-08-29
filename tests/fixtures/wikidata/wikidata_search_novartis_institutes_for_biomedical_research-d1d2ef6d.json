@@ -1,0 +1,37 @@
+{
+ "domain": "search:novartis institutes for biomedical research",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Novartis Institutes for BioMedical Research"
+  },
+  "search": [
+   {
+    "id": "Q127415627",
+    "title": "Q127415627",
+    "pageid": 121410525,
+    "concepturi": "http://www.wikidata.org/entity/Q127415627",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q127415627",
+    "display": {
+     "label": {
+      "value": "Novartis Institutes for BioMedical Research",
+      "language": "en"
+     },
+     "description": {
+      "value": "organization in Basel, Switzerland",
+      "language": "en"
+     }
+    },
+    "label": "Novartis Institutes for BioMedical Research",
+    "description": "organization in Basel, Switzerland",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Novartis Institutes for BioMedical Research"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

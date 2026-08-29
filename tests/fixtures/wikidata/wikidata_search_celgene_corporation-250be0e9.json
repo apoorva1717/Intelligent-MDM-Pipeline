@@ -1,0 +1,40 @@
+{
+ "domain": "search:celgene corporation",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "CELGENE CORPORATION"
+  },
+  "search": [
+   {
+    "id": "Q842947",
+    "title": "Q842947",
+    "pageid": 795131,
+    "concepturi": "http://www.wikidata.org/entity/Q842947",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q842947",
+    "display": {
+     "label": {
+      "value": "Celgene",
+      "language": "en"
+     },
+     "description": {
+      "value": "American biopharmaceutical company",
+      "language": "en"
+     }
+    },
+    "label": "Celgene",
+    "description": "American biopharmaceutical company",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "Celgene Corporation"
+    },
+    "aliases": [
+     "Celgene Corporation"
+    ]
+   }
+  ],
+  "success": 1
+ }
+}

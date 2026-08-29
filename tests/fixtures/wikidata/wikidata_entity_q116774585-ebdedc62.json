@@ -1,0 +1,80 @@
+{
+ "domain": "entity:q116774585",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q116774585",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Celanese Corporation of America"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 4830453,
+        "id": "Q4830453"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P159": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 60,
+        "id": "Q60"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P1366": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P1366",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 547450,
+        "id": "Q547450"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

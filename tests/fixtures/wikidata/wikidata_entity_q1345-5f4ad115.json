@@ -1,0 +1,135 @@
+{
+ "domain": "entity:q1345",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q1345",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Philadelphia"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "City of Brotherly Love"
+    },
+    {
+     "language": "en",
+     "value": "Cradle of Liberty"
+    },
+    {
+     "language": "en",
+     "value": "City of Philadelphia"
+    },
+    {
+     "language": "en",
+     "value": "Philadelphia, PA"
+    },
+    {
+     "language": "en",
+     "value": "Philadelphia, Pa"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 21010817,
+        "id": "Q21010817"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 62049,
+        "id": "Q62049"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 5888666,
+        "id": "Q5888666"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 3301053,
+        "id": "Q3301053"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://phila.gov/",
+       "type": "string"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://ci.philadelphia.pa.us/",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

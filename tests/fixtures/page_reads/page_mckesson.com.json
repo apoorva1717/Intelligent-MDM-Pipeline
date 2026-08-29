@@ -1,0 +1,14 @@
+{
+ "domain": "mckesson.com",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "status": 403,
+  "blocked": true,
+  "error": null,
+  "url": "https://www.mckesson.com/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

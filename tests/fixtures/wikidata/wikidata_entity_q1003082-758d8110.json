@@ -1,0 +1,71 @@
+{
+ "domain": "entity:q1003082",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q1003082",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Rahway"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Rahway, New Jersey"
+    },
+    {
+     "language": "en",
+     "value": "Rahway, NJ"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 2974552,
+        "id": "Q2974552"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.cityofrahway.com/",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

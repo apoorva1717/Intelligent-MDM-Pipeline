@@ -1,0 +1,71 @@
+{
+ "domain": "entity:q1021540",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q1021540",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Kenilworth"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Kenilworth, New Jersey"
+    },
+    {
+     "language": "en",
+     "value": "Kenilworth, NJ"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 2911266,
+        "id": "Q2911266"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.kenilworthnj.com/",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

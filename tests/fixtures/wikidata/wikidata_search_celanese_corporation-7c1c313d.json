@@ -1,0 +1,62 @@
+{
+ "domain": "search:celanese corporation",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "CELANESE CORPORATION"
+  },
+  "search": [
+   {
+    "id": "Q547450",
+    "title": "Q547450",
+    "pageid": 515785,
+    "concepturi": "http://www.wikidata.org/entity/Q547450",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q547450",
+    "display": {
+     "label": {
+      "value": "Celanese Corporation",
+      "language": "en"
+     },
+     "description": {
+      "value": "American technology and specialty materials company",
+      "language": "en"
+     }
+    },
+    "label": "Celanese Corporation",
+    "description": "American technology and specialty materials company",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Celanese Corporation"
+    }
+   },
+   {
+    "id": "Q116774585",
+    "title": "Q116774585",
+    "pageid": 111543281,
+    "concepturi": "http://www.wikidata.org/entity/Q116774585",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q116774585",
+    "display": {
+     "label": {
+      "value": "Celanese Corporation of America",
+      "language": "en"
+     },
+     "description": {
+      "value": "business",
+      "language": "en"
+     }
+    },
+    "label": "Celanese Corporation of America",
+    "description": "business",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Celanese Corporation of America"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

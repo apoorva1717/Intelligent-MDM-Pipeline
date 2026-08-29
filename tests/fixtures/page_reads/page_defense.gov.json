@@ -1,0 +1,14 @@
+{
+ "domain": "defense.gov",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "status": 403,
+  "blocked": true,
+  "error": null,
+  "url": "https://defense.gov/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

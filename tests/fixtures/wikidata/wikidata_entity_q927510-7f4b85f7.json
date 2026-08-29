@@ -1,0 +1,75 @@
+{
+ "domain": "entity:q927510",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q927510",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Milpitas"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Milpitas, California"
+    },
+    {
+     "language": "en",
+     "value": "Milpitas, CA"
+    },
+    {
+     "language": "en",
+     "value": "City of Milpitas"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 13218357,
+        "id": "Q13218357"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.milpitas.gov/",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

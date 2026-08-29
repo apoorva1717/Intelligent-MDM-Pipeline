@@ -1,0 +1,11 @@
+{
+ "domain": "search:merck sharp dohme llc",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Merck Sharp & Dohme LLC"
+  },
+  "search": [],
+  "success": 1
+ }
+}

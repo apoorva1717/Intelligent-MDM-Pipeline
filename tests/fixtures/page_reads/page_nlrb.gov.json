@@ -1,0 +1,14 @@
+{
+ "domain": "nlrb.gov",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "status": null,
+  "blocked": false,
+  "error": "ConnectTimeout",
+  "url": "https://nlrb.gov/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}
