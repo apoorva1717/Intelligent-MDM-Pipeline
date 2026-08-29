@@ -676,6 +676,13 @@ class TestGuardsAtTheLane:
         about the unit, so it is not a Name 2 answer — and the field falls
         through to the evidence-backed path instead of acquiring an
         identifier that names the wrong thing.
+
+        Name 2 is the bare acronym rather than "NASA HQ" (ticket 24). With the
+        unit word present, the Name 2 identity guard now refuses the proposal
+        outright — dropping "HQ" is the same failure as `Baytown Refinery
+        Laboratory` -> `Baytown Refinery` — and the proposal never reaches the
+        own-entity check this test is about. The bare acronym passes the guard
+        as a legitimate expansion, so the condition under test still fires.
         """
         from utils.cache import BatchCache
 
@@ -689,7 +696,7 @@ class TestGuardsAtTheLane:
         })
         grounded = await run_grounded_resolver(
             "GRB",
-            name1="NASA", name2="NASA HQ",
+            name1="NASA", name2="NASA",
             street=None, city="Moffett Field", state="CA",
             country="US", country_code="US",
             routing_type="research_institution", domain=None,

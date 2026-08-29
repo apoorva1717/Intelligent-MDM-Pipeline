@@ -153,3 +153,119 @@ def test_company_canonical_accepts_same_entity():
     ))
     assert res.success is True
     assert res.name1_enriched == "ISO Group, Inc."
+
+
+# ---------------------------------------------------------------------------
+# The Name 2 (department) guard — ticket 24
+#
+# `grounded_resolver`'s identity guard was `name1`-only, so every Name 2
+# proposal reached the write path AND the ROR re-verification with nothing
+# asking whether it still denoted the same unit. Two values shipped that way.
+#
+# Every case below is a real proposal from the ticket-14 live run
+# (.scratch/agentic-enrichment/tmp/live21_result.json), not an invented one.
+# ---------------------------------------------------------------------------
+
+from utils.text_utils import department_preserves_identity
+
+
+class TestDepartmentIdentityGuardRefuses:
+    """A changed or dropped unit type is what the guard is for."""
+
+    def test_the_unit_type_may_not_change(self):
+        """S3_16, shipped: a division became a laboratory."""
+        assert not department_preserves_identity(
+            "Forensic Science Div", "Forensic Services Laboratory",
+            parent_name="Texas Department of Public Safety",
+        )
+
+    def test_the_unit_word_may_not_be_dropped(self):
+        """S2_02, shipped: without "Laboratory" the value names the site, not
+        the lab."""
+        assert not department_preserves_identity(
+            "Baytown Refinery Laboratory", "Baytown Refinery",
+            parent_name="Exxonmobil",
+        )
+
+    def test_a_mangled_value_is_refused(self):
+        """S3_11, shipped with a null provenance."""
+        assert not department_preserves_identity(
+            "Center for Medical", "For Medical", parent_name="Walter Reed",
+        )
+
+    def test_the_parent_name_cannot_rescue_a_dropped_token(self):
+        """`parent_name` only ever makes words ADDABLE. It must not turn a
+        dropped unit word into an accepted one."""
+        assert not department_preserves_identity(
+            "Baytown Refinery Laboratory", "Baytown Refinery",
+            parent_name="Baytown Refinery Laboratory",
+        )
+
+
+class TestDepartmentIdentityGuardAccepts:
+    """The guard must not cost the lane its correct answers."""
+
+    def test_an_abbreviation_expansion_is_not_an_identity_change(self):
+        """S3_13/14. The raw comparator reads `Lab` -> `Laboratory` as a
+        distinctive-token mismatch, which is why this guard expands first."""
+        assert department_preserves_identity(
+            "Orange County Water Lab", "Orange County Water Laboratory",
+        )
+
+    def test_a_registry_verified_expansion_survives(self):
+        """S3_15 — `ror.org/03cap2a49`, a real identifier for the right
+        entity. The four "new" words ARE Name 1, sitting in the same record;
+        a guard that refused this would discard a correct resolution."""
+        assert department_preserves_identity(
+            "Weapons Div", "Naval Air Warfare Center Weapons Division",
+            parent_name="Naval Air Warfare Center",
+        )
+
+    def test_without_the_parent_that_same_value_is_refused(self):
+        """The parent name is doing the work, not a loosened comparator."""
+        assert not department_preserves_identity(
+            "Weapons Div", "Naval Air Warfare Center Weapons Division",
+        )
+
+    def test_mgmt_expands(self):
+        """S3_17. `Mgmt` was absent from `_ABBREV_MAP`, so a correct expansion
+        read as a token swap."""
+        assert department_preserves_identity(
+            "Department of Supply Chain Mgmt",
+            "Department of Supply Chain Management",
+        )
+
+    def test_a_unit_word_may_be_ADDED(self):
+        """The asymmetry is deliberate: gaining a unit type states what the
+        slot left implicit, losing one changes what the value names."""
+        assert department_preserves_identity(
+            "Calibration Services", "Calibration Services Department",
+        )
+
+
+class TestTheName1GuardIsUnchanged:
+    """Ticket 24 is scoped to Name 2. The expansion and the widened addable
+    vocabulary must not leak into the Name 1 guard, whose behaviour is settled
+    on a different population."""
+
+    @pytest.mark.parametrize("original, canonical", [
+        ("Kelvin Bridge Instruments", "Wheatstone Metrology Group"),
+        ("Liberty Health Sciences", "Liberty Science Center"),
+        ("Iso Group Inc", "CoStar Group"),
+    ])
+    def test_name1_still_refuses_a_replacement(self, original, canonical):
+        assert not canonical_preserves_identity(original, canonical)
+
+    def test_name1_does_not_gain_the_unit_vocabulary(self):
+        """`Division` is addable for a department and must not become addable
+        for an organisation name."""
+        assert not canonical_preserves_identity(
+            "Acme Instruments", "Acme Instruments Weapons Division",
+        )
+
+    def test_extra_addable_defaults_to_nothing(self):
+        assert canonical_preserves_identity(
+            "Acme", "Acme Institute",
+        ) is canonical_preserves_identity(
+            "Acme", "Acme Institute", extra_addable=None,
+        )

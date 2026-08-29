@@ -169,7 +169,17 @@ it concludes.
   `Co Down Health Trust` as companies, and the sample is 200 records where the pipeline runs on
   ten thousand. One existing test changed — `unknown` is not a contradiction of `company`, and
   `batch_consensus` already converges the cluster (`batch_consensus.py:143`).
-- [24 — Grounded Name 2 identity guard](issues/24-grounded-name2-identity-guard.md): the guard at
+- [24 — Grounded Name 2 identity guard](issues/24-grounded-name2-identity-guard.md): **DONE
+  2026-08-29.** Both name slots are identity-checked now. The existing comparator refused the two
+  wrong values but ALSO refused `Weapons Div` -> `...Weapons Division` (a `ror:verified` answer) and
+  every other abbreviation expansion, because `_token_covers` needs a 4-char prefix - so Name 2 got
+  its own predicate: expand abbreviations first, a unit-type word may be added but never dropped or
+  changed, and Name 1's words are addable because a department names a unit *of* something. Replayed
+  over all 7 live proposals: **kept 4, refused 3 - every refusal wrong, every keep correct, zero
+  correct values lost.** An earlier iteration refused 5 of 7; the two false refusals are what forced
+  the parent-name rule and a missing `Mgmt` -> `Management` entry, and they were found by running the
+  real proposals rather than reasoning about them.
+  Original finding: the guard at
   `grounded_resolver.py:588` is `name1`-only, though `originals` already holds the Name 2 value.
   Confirmed shipping wrong departments on live evidence — `Forensic Science Div` ->
   `Forensic Services Laboratory`, `Baytown Refinery Laboratory` -> `Baytown Refinery`. Two of the

@@ -212,6 +212,7 @@ _ABBREV_MAP: dict[str, str] = {
     r"\bNatl\.?(?=\s|$)": "National",
     r"\bIntl\.?(?=\s|$)": "International",
     r"\bDiv\.?(?=\s|$)": "Division",
+    r"\bMgmt\.?(?=\s|$)": "Management",
 }
 
 _COMPILED_ABBREVS: list[tuple[re.Pattern[str], str]] = [
@@ -1211,6 +1212,22 @@ def is_logistics_location(value: str | None) -> bool:
 # OTHER distinctive word — a brand/scope qualifier like "World" or "Global"
 # ("Precision Instruments Co." → "World Precision Instruments") — signals a
 # different entity and is rejected.
+#: Unit-type words a DEPARTMENT string may legitimately gain, the way an
+#: organisation name may gain "University". Kept separate from
+#: `_ORG_TYPE_ADDABLE` rather than merged into it: these are the words that
+#: carry a department's identity, and making them freely addable on Name 1 too
+#: would change settled behaviour on a population nothing has measured.
+#: Note this only ever permits ADDING one. Dropping a unit word is still
+#: refused, which is what catches `Baytown Refinery Laboratory` ->
+#: `Baytown Refinery`.
+_UNIT_TYPE_ADDABLE = {
+    "department", "departments", "division", "divisions", "office", "offices",
+    "unit", "units", "branch", "branches", "section", "sections", "group",
+    "groups", "team", "teams", "programme", "program", "service", "services",
+    "facility", "facilities", "lab", "labs", "laboratory", "laboratories",
+    "centre", "center", "institute", "faculty", "school",
+}
+
 _ORG_TYPE_ADDABLE = {
     "university", "universities", "college", "colleges", "school", "schools",
     "institute", "institutes", "laboratory", "laboratories", "foundation",
@@ -1227,7 +1244,73 @@ def _token_covers(a: str, b: str) -> bool:
     return min(len(a), len(b)) >= 4 and (a.startswith(b) or b.startswith(a))
 
 
-def canonical_preserves_identity(original: str | None, canonical: str | None) -> bool:
+def department_preserves_identity(
+    original: str | None,
+    canonical: str | None,
+    *,
+    parent_name: str | None = None,
+) -> bool:
+    """:func:`canonical_preserves_identity`, for a Name 2 department string.
+
+    Same question, one preparation step: both sides are run through
+    :func:`expand_abbreviations` first. Department strings in SAP data are
+    abbreviated far more often than organisation names are — ``Div``, ``Dept``,
+    ``Lab``, ``Mech Eng`` — and the underlying comparator treats an
+    abbreviation as a *distinctive token mismatch*, not as the same word. Used
+    raw it therefore refuses the lane's best work:
+
+    ==========================================  =====  ========
+    proposal                                     raw    expanded
+    ==========================================  =====  ========
+    ``Weapons Div`` -> ``Weapons Division``      no     yes
+    ``Dept of Chemistry`` -> ``Department of…``  no     yes
+    ``Mech Eng Dept`` -> ``Department of Mech…`` no     yes
+    ==========================================  =====  ========
+
+    The first of those is a **registry-verified** answer carrying a real ROR
+    identifier, so a guard that refused it would be discarding a correct
+    resolution to prevent a wrong one.
+
+    What it still refuses is what it is for — a changed or dropped unit type:
+    ``Forensic Science Div`` -> ``Forensic Services Laboratory`` (a division
+    became a laboratory) and ``Baytown Refinery Laboratory`` -> ``Baytown
+    Refinery`` (the unit word dropped entirely, so the value now names the site
+    rather than the lab). Both of those shipped.
+
+    *parent_name* is the record's Name 1, and its words are addable. A
+    department names a unit **of** something, so a proposal that spells out the
+    organisation the unit belongs to has not changed which unit it is — it has
+    stated context the Name 2 slot left implicit. Without this the guard refuses
+    ``Weapons Div`` -> ``Naval Air Warfare Center Weapons Division``, which is a
+    **registry-verified** answer carrying ``ror.org/03cap2a49``: the four
+    "new" words are Name 1, sitting in the same record.
+
+    This only ever permits ADDING the parent's words. Dropping the unit's own
+    distinctive tokens is still refused, which is why it does not weaken any of
+    the real failures — those all drop or swap a word rather than add one.
+
+    Only the Name 2 guard expands. Doing the same for Name 1 may well be right,
+    but it changes settled behaviour on a different population and needs its own
+    measurement.
+    """
+    addable = set(_UNIT_TYPE_ADDABLE)
+    if parent_name and parent_name.strip():
+        addable |= _identity_tokens(
+            expand_abbreviations(parent_name) or parent_name,
+        )
+    return canonical_preserves_identity(
+        expand_abbreviations(original) or original,
+        expand_abbreviations(canonical) or canonical,
+        extra_addable=addable,
+    )
+
+
+def canonical_preserves_identity(
+    original: str | None,
+    canonical: str | None,
+    *,
+    extra_addable: "frozenset[str] | set[str] | None" = None,
+) -> bool:
     """Return True if *canonical* plausibly names the SAME entity as *original*.
 
     Guards LLM canonicalisation against silently replacing a company with a
@@ -1244,6 +1327,10 @@ def canonical_preserves_identity(original: str | None, canonical: str | None) ->
       * it is a legitimate acronym expansion — the original is a single
         all-caps acronym (2–6 letters) whose letters match the initials of
         the canonical's words ("IBM" → "International Business Machines").
+
+    *extra_addable* widens the set of new words the canonical may introduce.
+    Default empty, so every existing caller is unaffected; the Name 2 guard
+    passes the department unit-type words through it.
 
     Conservative: when the original has no distinctive tokens to compare
     (e.g. only generic words), it returns True so legitimate reformatting is
@@ -1262,7 +1349,8 @@ def canonical_preserves_identity(original: str | None, canonical: str | None) ->
     # the entity).
     if all(any(_token_covers(t, u) for u in c) for t in o):
         extras = [u for u in c if not any(_token_covers(t, u) for t in o)]
-        return all(u in _ORG_TYPE_ADDABLE for u in extras)
+        addable = _ORG_TYPE_ADDABLE | (extra_addable or frozenset())
+        return all(u in addable for u in extras)
     # Acronym expansion: original is a single all-caps token (in the raw
     # string), 2–6 letters, matching the initials of the canonical's words.
     # Use ALL canonical words for the initials (a generic word like

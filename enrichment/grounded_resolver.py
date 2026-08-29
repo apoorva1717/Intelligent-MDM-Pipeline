@@ -37,9 +37,11 @@ or every fetch fails — it degrades to ``run_tier3`` unchanged, so a record can
 never be worse off for the lane having been tried.
 
 The deterministic guards are the pipeline's existing ones, imported rather
-than restated: :func:`canonical_preserves_identity` for Name 1, Tier 3's
-address-like-name guard for every name, and the locality comparator for
-country. A guard drops the field it refused and nothing else — the other
+than restated: :func:`canonical_preserves_identity` for Name 1,
+:func:`department_preserves_identity` for Name 2 (the same comparator over
+abbreviation-expanded forms, because a department string is abbreviated far
+more often than an organisation name), Tier 3's address-like-name guard for
+every name, and the locality comparator for country. A guard drops the field it refused and nothing else — the other
 field's proposal, and the record's own original value, are untouched.
 """
 
@@ -70,6 +72,7 @@ from search.page_fetcher import PageContent, PageFetcher
 from utils.cache import BatchCache, cached_serp
 from utils.text_utils import (
     canonical_preserves_identity,
+    department_preserves_identity,
     looks_like_research_institution,
 )
 
@@ -585,9 +588,36 @@ async def run_grounded_resolver(
             result.dropped[field] = "address_like"
             del proposals[field]
             continue
-        if field == "name1" and not canonical_preserves_identity(
-            originals.get(field), value,
-        ):
+        # Both name slots are identity-checked. The guard was `name1`-only,
+        # so a Name 2 proposal reached the write path -- and the ROR
+        # re-verification -- with nothing asking whether it still denoted the
+        # same unit. Two values shipped that way: `Forensic Science Div` ->
+        # `Forensic Services Laboratory` (the unit TYPE changed) and
+        # `Baytown Refinery Laboratory` -> `Baytown Refinery` (the unit word
+        # dropped, so the value named the site instead of the lab). The
+        # comment above applies to Name 2 exactly as written: a proposal the
+        # guard refuses must not become a registry query either.
+        #
+        # Name 2 uses the abbreviation-expanding variant. The raw comparator
+        # reads `Div` -> `Division` as a distinctive-token mismatch and would
+        # refuse the lane's registry-verified answers along with its wrong
+        # ones.
+        if field == "name1":
+            refused = not canonical_preserves_identity(
+                originals.get("name1"), value,
+            )
+        else:
+            # Name 1 is passed as context: a department names a unit OF
+            # something, so a proposal that spells out the parent organisation
+            # has stated what the Name 2 slot left implicit, not changed which
+            # unit it means. Without it the guard refuses `Weapons Div` ->
+            # `Naval Air Warfare Center Weapons Division`, whose four "new"
+            # words are Name 1 sitting in the same record — and which carries
+            # a real ROR identifier.
+            refused = not department_preserves_identity(
+                originals.get(field), value, parent_name=name1,
+            )
+        if field in originals and refused:
             result.dropped[field] = "identity_not_preserved"
             del proposals[field]
     for field, why in result.dropped.items():
