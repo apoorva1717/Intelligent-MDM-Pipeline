@@ -21,6 +21,7 @@ from typing import Any
 import httpx
 from rapidfuzz import fuzz
 
+from enrichment import funnel_probe
 from enrichment.locality import US_REGION_CODES, compare_registry_addresses
 from enrichment.registry_match import (
     CROSSWALK_TIER,
@@ -908,6 +909,13 @@ async def call_ror(
     global _ror_normalised_hits
     cache_key = lookup_key(name, country_code)
     legacy_key = legacy_lookup_key(name, country_code)
+    # Ticket 11 — counting only; see enrichment/funnel_probe. Off by default.
+    _probe = funnel_probe.next_call_id()
+    funnel_probe.event(
+        registry="ror", call=_probe, gate="enter", query=name,
+        country_code=country_code, city=city, state=state,
+        cache_hit=cache_key in _ror_cache,
+    )
     if cache_key in _ror_cache:
         if legacy_key not in _ror_legacy_seen:
             _ror_normalised_hits += 1
@@ -1100,6 +1108,14 @@ async def call_ror(
                         aff_str[:80], ch is not None,
                         ch["score"] if ch else 0.0,
                     )
+                    funnel_probe.event(
+                        registry="ror", call=_probe, strategy=strategy,
+                        gate=("aff_no_chosen" if ch is None
+                              else "aff_chosen_below_ror_threshold"),
+                        query=name, ror_score=(ch or {}).get("score"),
+                        threshold=threshold,
+                        n_items=len(data.get("items") or []),
+                    )
                     return None
                 org = ch["organization"]
                 # Re-validate locally — ROR's affiliation scorer is fuzzy
@@ -1124,6 +1140,19 @@ async def call_ror(
                             _guard, org, local_score,
                             "local rescore below the match threshold",
                         )
+                    # Ticket 11 gate 3 — the pair the guard log cannot carry:
+                    # ROR's own score for the candidate it chose, beside the
+                    # local rescore that discarded it.
+                    funnel_probe.event(
+                        registry="ror", call=_probe, strategy=strategy,
+                        gate="aff_local_rescore_reject", query=name,
+                        ror_score=ch["score"], local_score=local_score,
+                        threshold=threshold,
+                        caps=sorted(caps),
+                        candidate=(org.get("names") or [{}])[0].get("value"),
+                        candidate_id=org.get("id"),
+                        rescore_names=list(rescore_names),
+                    )
                     return None
                 # Country guard — ROR's affiliation scorer ignores the country
                 # context in the affiliation string often enough to return a
@@ -1142,6 +1171,15 @@ async def call_ror(
                         f"candidate country {_org_country_code(org)} != "
                         f"requested {country_code}",
                     )
+                    funnel_probe.event(
+                        registry="ror", call=_probe, strategy=strategy,
+                        gate="aff_country_reject", query=name,
+                        ror_score=ch["score"], local_score=local_score,
+                        candidate=(org.get("names") or [{}])[0].get("value"),
+                        candidate_id=org.get("id"),
+                        candidate_country=_org_country_code(org),
+                        want_country=country_code,
+                    )
                     return None
                 fields = _extract_org_fields(org)
                 (
@@ -1152,6 +1190,14 @@ async def call_ror(
                 ) = _locality(fields)
                 fields["name_match_tier"] = _name_tier(org, rescore_names)
                 if not _short_name_ok(fields, local_score, org):
+                    funnel_probe.event(
+                        registry="ror", call=_probe, strategy=strategy,
+                        gate="aff_short_name_reject", query=name,
+                        ror_score=ch["score"], local_score=local_score,
+                        candidate=fields.get("official_name"),
+                        candidate_id=fields.get("ror_id"),
+                        location_verdict=fields.get("location_verdict"),
+                    )
                     return None
                 res: dict[str, Any] = {
                     "matched": True,
@@ -1164,6 +1210,13 @@ async def call_ror(
                     "strategy": strategy,
                 }
                 _cache(res)
+                funnel_probe.event(
+                    registry="ror", call=_probe, strategy=strategy,
+                    gate="aff_accept", query=name,
+                    ror_score=ch["score"], local_score=local_score,
+                    candidate=fields.get("official_name"),
+                    candidate_id=fields.get("ror_id"),
+                )
                 logger.info(
                     "ROR affiliation matched '%s' → '%s' (score=%.2f)",
                     aff_str[:80], fields["official_name"], ch["score"],
@@ -1249,6 +1302,12 @@ async def call_ror(
                             f"!= requested {country_code}",
                         )
                 if len(kept) != len(items):
+                    funnel_probe.event(
+                        registry="ror", call=_probe, strategy="query",
+                        gate="query_country_dropped", query=name,
+                        dropped=len(items) - len(kept), n_items=len(items),
+                        want_country=country_code,
+                    )
                     logger.info(
                         "ROR query: dropped %d/%d wrong-country candidate(s) for "
                         "'%s' (requested %s)",
@@ -1257,6 +1316,10 @@ async def call_ror(
                 items = kept
 
             if not items:
+                funnel_probe.event(
+                    registry="ror", call=_probe, strategy="query",
+                    gate="query_no_items", query=name,
+                )
                 logger.info("ROR: 0 items for '%s' across both strategies", name[:80])
                 return _no_match()
 
@@ -1377,6 +1440,16 @@ async def call_ror(
                     f"{runner_up.get('official_name')} "
                     f"({runner_up.get('ror_id')})",
                 )
+                funnel_probe.event(
+                    registry="ror", call=_probe, strategy="query",
+                    gate="query_ambiguity_reject", query=name,
+                    local_score=best_score,
+                    runner_up_score=_item_score(_peers[0]),
+                    candidate=best_named.get("official_name"),
+                    candidate_id=best_named.get("ror_id"),
+                    runner_up=runner_up.get("official_name"),
+                    runner_up_id=runner_up.get("ror_id"),
+                )
                 return _no_match(best_score, refused_by="ambiguous")
 
             org = best_org
@@ -1397,6 +1470,14 @@ async def call_ror(
                         _guard, best_org, score,
                         "best candidate capped below the match threshold",
                     )
+                funnel_probe.event(
+                    registry="ror", call=_probe, strategy="query",
+                    gate="query_below_threshold", query=name,
+                    local_score=score, threshold=threshold,
+                    caps=sorted(_caps), n_items=len(items),
+                    candidate=fields.get("official_name"),
+                    candidate_id=fields.get("ror_id"),
+                )
                 return _no_match(score)
 
             (
@@ -1409,6 +1490,14 @@ async def call_ror(
                 org, [name, expanded_query],
             )
             if not _short_name_ok(fields, score, org):
+                funnel_probe.event(
+                    registry="ror", call=_probe, strategy="query",
+                    gate="query_short_name_reject", query=name,
+                    local_score=score,
+                    candidate=fields.get("official_name"),
+                    candidate_id=fields.get("ror_id"),
+                    location_verdict=fields.get("location_verdict"),
+                )
                 return _no_match(score, refused_by="short_name_uncorroborated")
 
             result = {
@@ -1421,6 +1510,12 @@ async def call_ror(
                 "strategy": "query",
             }
             _cache(result)
+            funnel_probe.event(
+                registry="ror", call=_probe, strategy="query",
+                gate="query_accept", query=name, local_score=score,
+                candidate=fields.get("official_name"),
+                candidate_id=fields.get("ror_id"),
+            )
             logger.info(
                 "ROR query matched '%s' → '%s' (score=%.2f)",
                 name[:60], fields["official_name"], score,
@@ -1431,15 +1526,26 @@ async def call_ror(
         # CACHE_FROZEN and nothing recorded for this request. A clean miss,
         # already traced as `evidence-unavailable-frozen`; NOT cached, because
         # "we were not allowed to look" is not an answer about the name.
+        funnel_probe.event(
+            registry="ror", call=_probe, gate="frozen_miss", query=name,
+        )
         logger.info("ROR: frozen cache has no response for '%s'", name[:80])
         return {"matched": False, "score": 0.0, "guard_rejections": []}
     except httpx.HTTPStatusError as exc:
+        funnel_probe.event(
+            registry="ror", call=_probe, gate="error", query=name,
+            detail=f"http:{exc.response.status_code}",
+        )
         logger.error(
             "ROR API HTTP %d for '%s': %s",
             exc.response.status_code, name[:80], exc.response.text[:200],
         )
         return _no_match()
-    except Exception:
+    except Exception as _exc:
+        funnel_probe.event(
+            registry="ror", call=_probe, gate="error", query=name,
+            detail=type(_exc).__name__,
+        )
         logger.exception("ROR API call failed for '%s'", name[:80])
         return _no_match()
 

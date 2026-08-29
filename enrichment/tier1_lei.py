@@ -47,6 +47,7 @@ from typing import Any
 import httpx
 from rapidfuzz import fuzz
 
+from enrichment import funnel_probe
 from enrichment.locality import (
     CONSISTENT,
     compare_registry_addresses,
@@ -596,6 +597,13 @@ async def call_lei(
     global _lei_normalised_hits
     cache_key = lookup_key(name, country_code)
     legacy_key = legacy_lookup_key(name, country_code)
+    # Ticket 11 — counting only; see enrichment/funnel_probe. Off by default.
+    _probe = funnel_probe.next_call_id()
+    funnel_probe.event(
+        registry="gleif", call=_probe, gate="enter", query=name,
+        country_code=country_code, city=city, state=state,
+        threshold=threshold, cache_hit=cache_key in _lei_cache,
+    )
     if cache_key in _lei_cache:
         if legacy_key not in _lei_legacy_seen:
             _lei_normalised_hits += 1
@@ -643,10 +651,25 @@ async def call_lei(
             data = await _get_json(client, records_url, params, max_retries)
             records = data.get("data", []) or []
 
+            _rej_before = len(guard_rejections)
             fields, best_score, refusal = _best_verified_candidate(
                 name, records, threshold, country_code=country_code,
                 rejections=guard_rejections,
                 city=city, state=state, record_domain=record_domain,
+            )
+            funnel_probe.event(
+                registry="gleif", call=_probe, strategy="exact",
+                gate=("exact_accept" if fields is not None
+                      else "exact_no_verified_candidate"),
+                query=name, n_records=len(records), best_score=best_score,
+                threshold=threshold, refusal=refusal,
+                rejections=[
+                    {"guard": r.get("guard"), "score": r.get("score"),
+                     "candidate": r.get("candidate_name")}
+                    for r in guard_rejections[_rej_before:]
+                ],
+                candidate=(fields or {}).get("legal_name"),
+                candidate_id=(fields or {}).get("lei_id"),
             )
             if fields is not None:
                 result = {
@@ -674,6 +697,7 @@ async def call_lei(
                 client, base, records_url, name, country_code,
                 max_retries, threshold, rejections=guard_rejections,
                 city=city, state=state, record_domain=record_domain,
+                probe_call=_probe,
             )
             if fuzzy_result is not None:
                 fuzzy_result["guard_rejections"] = guard_rejections
@@ -689,16 +713,27 @@ async def call_lei(
         # CACHE_FROZEN and nothing recorded for this request. A clean miss,
         # already traced; NOT cached, because "we were not allowed to look" is
         # not an answer about the name.
+        funnel_probe.event(
+            registry="gleif", call=_probe, gate="frozen_miss", query=name,
+        )
         logger.info("GLEIF: frozen cache has no response for '%s'", name[:80])
         return {"matched": False, "strategy": None, "score": 0.0,
                 "guard_rejections": []}
     except httpx.HTTPStatusError as exc:
+        funnel_probe.event(
+            registry="gleif", call=_probe, gate="error", query=name,
+            detail=f"http:{exc.response.status_code}",
+        )
         logger.error(
             "GLEIF HTTP %d for '%s': %s",
             exc.response.status_code, name[:80], exc.response.text[:200],
         )
         return {"matched": False, "error": True}
-    except Exception:
+    except Exception as _exc:
+        funnel_probe.event(
+            registry="gleif", call=_probe, gate="error", query=name,
+            detail=type(_exc).__name__,
+        )
         logger.exception("GLEIF lookup failed for '%s'", name[:80])
         return {"matched": False, "error": True}
 
@@ -716,6 +751,7 @@ async def _fuzzy_lookup(
     city: str | None = None,
     state: str | None = None,
     record_domain: str | None = None,
+    probe_call: int = 0,
 ) -> dict[str, Any] | None:
     """fuzzycompletions → resolve candidate → verify. Returns a match dict
     or ``None`` (no usable/verified candidate). Best-effort: GLEIF's
@@ -728,6 +764,10 @@ async def _fuzzy_lookup(
     )
     completions = data.get("data", []) or []
     if not completions:
+        funnel_probe.event(
+            registry="gleif", call=probe_call, strategy="fuzzy",
+            gate="fuzzy_no_completions", query=name,
+        )
         return None
 
     # Resolve each completion to its full lei-record, verify, keep the best.
@@ -771,10 +811,26 @@ async def _fuzzy_lookup(
         if isinstance(rec, dict):
             candidate_records.append(rec)
 
+    _rej_before = len(rejections or ())
     fields, best_score, _refusal = _best_verified_candidate(
         name, candidate_records, threshold, country_code=country_code,
         rejections=rejections,
         city=city, state=state, record_domain=record_domain,
+    )
+    funnel_probe.event(
+        registry="gleif", call=probe_call, strategy="fuzzy",
+        gate=("fuzzy_accept" if fields is not None
+              else "fuzzy_no_verified_candidate"),
+        query=name, n_completions=len(completions),
+        n_resolved=len(candidate_records), best_score=best_score,
+        threshold=threshold, refusal=_refusal,
+        rejections=[
+            {"guard": r.get("guard"), "score": r.get("score"),
+             "candidate": r.get("candidate_name")}
+            for r in (rejections or ())[_rej_before:]
+        ],
+        candidate=(fields or {}).get("legal_name"),
+        candidate_id=(fields or {}).get("lei_id"),
     )
     if fields is None:
         logger.info(
