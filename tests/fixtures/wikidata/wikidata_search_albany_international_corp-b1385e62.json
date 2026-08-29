@@ -1,0 +1,11 @@
+{
+ "domain": "search:albany international corp",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "ALBANY INTERNATIONAL CORP."
+  },
+  "search": [],
+  "success": 1
+ }
+}

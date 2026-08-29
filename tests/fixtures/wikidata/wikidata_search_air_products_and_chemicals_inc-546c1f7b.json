@@ -1,0 +1,40 @@
+{
+ "domain": "search:air products and chemicals inc",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "AIR PRODUCTS AND CHEMICALS, INC."
+  },
+  "search": [
+   {
+    "id": "Q407744",
+    "title": "Q407744",
+    "pageid": 386475,
+    "concepturi": "http://www.wikidata.org/entity/Q407744",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q407744",
+    "display": {
+     "label": {
+      "value": "Air Products & Chemicals",
+      "language": "en"
+     },
+     "description": {
+      "value": "company",
+      "language": "en"
+     }
+    },
+    "label": "Air Products & Chemicals",
+    "description": "company",
+    "match": {
+     "type": "alias",
+     "language": "fr",
+     "text": "Air Products and Chemicals, Inc."
+    },
+    "aliases": [
+     "Air Products and Chemicals, Inc."
+    ]
+   }
+  ],
+  "success": 1
+ }
+}

@@ -1,0 +1,37 @@
+{
+ "domain": "search:amcol international corporation",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "AMCOL International Corporation"
+  },
+  "search": [
+   {
+    "id": "Q4742045",
+    "title": "Q4742045",
+    "pageid": 4531347,
+    "concepturi": "http://www.wikidata.org/entity/Q4742045",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q4742045",
+    "display": {
+     "label": {
+      "value": "Amcol International Corporation",
+      "language": "en"
+     },
+     "description": {
+      "value": "specialty materials and chemicals manufacturer based in Hoffman Estates, Illinois, United States",
+      "language": "en"
+     }
+    },
+    "label": "Amcol International Corporation",
+    "description": "specialty materials and chemicals manufacturer based in Hoffman Estates, Illinois, United States",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Amcol International Corporation"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

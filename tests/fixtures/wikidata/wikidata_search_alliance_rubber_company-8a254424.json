@@ -1,0 +1,37 @@
+{
+ "domain": "search:alliance rubber company",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "ALLIANCE RUBBER COMPANY"
+  },
+  "search": [
+   {
+    "id": "Q4732330",
+    "title": "Q4732330",
+    "pageid": 4522117,
+    "concepturi": "http://www.wikidata.org/entity/Q4732330",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q4732330",
+    "display": {
+     "label": {
+      "value": "Alliance Rubber Company",
+      "language": "en"
+     },
+     "description": {
+      "value": "American rubber band manufacturer",
+      "language": "en"
+     }
+    },
+    "label": "Alliance Rubber Company",
+    "description": "American rubber band manufacturer",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Alliance Rubber Company"
+    }
+   }
+  ],
+  "success": 1
+ }
+}
