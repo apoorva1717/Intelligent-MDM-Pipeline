@@ -1333,9 +1333,34 @@ _ORG_TYPE_ADDABLE = {
 }
 
 
+def _depluralise(token: str) -> str:
+    """Fold an ``-ies`` plural onto its singular ("laboratories" ->
+    "laboratory").
+
+    The prefix relation in :func:`_token_covers` already handles the ``-s``
+    plural, because "sciences" starts with "science". It cannot handle ``-ies``,
+    where the stem itself changes — and that is the plural this data is full of:
+    laboratories, industries, technologies, universities, properties.
+
+    Deliberately only ``-ies``. A general stemmer would start folding words that
+    are not each other, which is the one thing an identity guard must not do.
+
+    It has one known cost: ``series`` and ``species`` are not plurals, and fold
+    to non-words. That is harmless — the fold can only make two tokens *match*,
+    and nothing in the data spells ``sery``. Pinned in
+    ``test_canonical_identity.TestThePluralFold`` so the cost stays visible.
+    """
+    if len(token) > 4 and token.endswith("ies"):
+        return token[:-3] + "y"
+    return token
+
+
 def _token_covers(a: str, b: str) -> bool:
     """True if tokens *a* and *b* are the same word or an abbreviation of it
     (prefix relation, e.g. 'univ'↔'university', 'science'↔'sciences')."""
+    if a == b:
+        return True
+    a, b = _depluralise(a), _depluralise(b)
     if a == b:
         return True
     return min(len(a), len(b)) >= 4 and (a.startswith(b) or b.startswith(a))
@@ -1349,12 +1374,12 @@ def department_preserves_identity(
 ) -> bool:
     """:func:`canonical_preserves_identity`, for a Name 2 department string.
 
-    Same question, one preparation step: both sides are run through
-    :func:`expand_abbreviations` first. Department strings in SAP data are
-    abbreviated far more often than organisation names are — ``Div``, ``Dept``,
-    ``Lab``, ``Mech Eng`` — and the underlying comparator treats an
-    abbreviation as a *distinctive token mismatch*, not as the same word. Used
-    raw it therefore refuses the lane's best work:
+    Same question, one difference: the parent organisation's words are
+    addable. The abbreviation expansion this used to do itself now belongs to
+    the comparator, which does it for both slots — see there for why. It was
+    needed here first because department strings in SAP data are abbreviated
+    far more often than organisation names are — ``Div``, ``Dept``, ``Lab``,
+    ``Mech Eng`` — and an unexpanded comparator refuses the lane's best work:
 
     ==========================================  =====  ========
     proposal                                     raw    expanded
@@ -1385,10 +1410,6 @@ def department_preserves_identity(
     This only ever permits ADDING the parent's words. Dropping the unit's own
     distinctive tokens is still refused, which is why it does not weaken any of
     the real failures — those all drop or swap a word rather than add one.
-
-    Only the Name 2 guard expands. Doing the same for Name 1 may well be right,
-    but it changes settled behaviour on a different population and needs its own
-    measurement.
     """
     addable = set(_UNIT_TYPE_ADDABLE)
     if parent_name and parent_name.strip():
@@ -1396,9 +1417,7 @@ def department_preserves_identity(
             expand_abbreviations(parent_name) or parent_name,
         )
     return canonical_preserves_identity(
-        expand_abbreviations(original) or original,
-        expand_abbreviations(canonical) or canonical,
-        extra_addable=addable,
+        original, canonical, extra_addable=addable,
     )
 
 
@@ -1433,9 +1452,39 @@ def canonical_preserves_identity(
     (e.g. only generic words), it returns True so legitimate reformatting is
     never blocked. The aim is to catch identity *replacement*, not to police
     wording.
+
+    **Both sides are expanded first** (:func:`expand_abbreviations`), because
+    the token comparator below disables its prefix rule under four characters —
+    so ``Lab`` and ``Laboratories`` read as different words, and ``Lab`` is the
+    commonest abbreviation in this data. Measured on the golden set, the guard
+    refused these, and every one is the name the reference asks for:
+
+    ==========================================  ==============================
+    proposal                                     what it cost
+    ==========================================  ==============================
+    ``Bio-Rad Lab Inc`` -> ``Bio-Rad             shipped ``Bio-Rad Laboratory``
+    Laboratories, Inc.``
+    ``Orange County Public Health Lab`` ->       fell back to the abbreviation
+    ``... Laboratory``
+    ==========================================  ==============================
+
+    The Name 2 guard has expanded since it was written, and its docstring left
+    the Name 1 question open pending a measurement. This is that measurement:
+    expanding refuses everything it refused before — ``Valero Refinery`` ->
+    ``Valero Energy Corporation`` (a site for its parent), ``Huntsman Advanced
+    Chemicals`` -> ``... Materials`` (a swapped word), ``Zoetis Ref Lab
+    Cincinnati`` -> ``Zoetis Reference Laboratories`` (the site dropped) — and
+    stops refusing the same name spelled out.
+
+    What it still cannot do is accept a resolution no string comparison can
+    justify: ``VA MC West LA Visn 22`` -> ``VA Greater Los Angeles Healthcare
+    System`` is correct, and rightly needs corroboration rather than a looser
+    comparator.
     """
     if not (original and original.strip()) or not (canonical and canonical.strip()):
         return True
+    original = expand_abbreviations(original) or original
+    canonical = expand_abbreviations(canonical) or canonical
     o = _identity_tokens(original)
     c = _identity_tokens(canonical)
     if not o or not c:

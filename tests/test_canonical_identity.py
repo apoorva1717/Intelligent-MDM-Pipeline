@@ -244,9 +244,14 @@ class TestDepartmentIdentityGuardAccepts:
 
 
 class TestTheName1GuardIsUnchanged:
-    """Ticket 24 is scoped to Name 2. The expansion and the widened addable
-    vocabulary must not leak into the Name 1 guard, whose behaviour is settled
-    on a different population."""
+    """The widened addable vocabulary is scoped to Name 2 and must not leak
+    into the Name 1 guard.
+
+    The abbreviation expansion no longer is: it moved into the comparator and
+    now applies to both slots, which is what `TestTheGuardExpandsBothSides`
+    below covers. What must not leak is the *unit vocabulary* — `Division` is
+    addable for a department and never for an organisation.
+    """
 
     @pytest.mark.parametrize("original, canonical", [
         ("Kelvin Bridge Instruments", "Wheatstone Metrology Group"),
@@ -269,3 +274,84 @@ class TestTheName1GuardIsUnchanged:
         ) is canonical_preserves_identity(
             "Acme", "Acme Institute", extra_addable=None,
         )
+
+
+class TestTheGuardExpandsBothSides:
+    """`_token_covers` disables its prefix rule under four characters, so
+    `Lab` and `Laboratories` read as different words — and `Lab` is the
+    commonest abbreviation in this data. Both sides are expanded first.
+
+    Measured on the golden set: the guard refused two proposals that were
+    exactly the name the reference asks for, and the record fell back to the
+    abbreviation it arrived with.
+    """
+
+    @pytest.mark.parametrize("original, canonical", [
+        # Both measured. The first shipped as "Bio-Rad Laboratory".
+        ("Bio-Rad Lab Inc", "Bio-Rad Laboratories, Inc."),
+        ("Orange County Public Health Lab",
+         "Orange County Public Health Laboratory"),
+        # The same shape, the other way round, and per-word.
+        ("Acme Laboratories", "Acme Lab"),
+        ("Natl Inst of Standards", "National Institute of Standards"),
+    ])
+    def test_the_same_name_spelled_out_is_the_same_name(self, original, canonical):
+        assert canonical_preserves_identity(original, canonical) is True
+
+    @pytest.mark.parametrize("original, canonical", [
+        # Every rejection the golden set records, all still refused: a site
+        # swapped for its parent, a swapped word, a dropped site.
+        ("Valero Refinery", "Valero Energy Corporation"),
+        ("Huntsman Advanced Chemicals", "Huntsman Advanced Materials"),
+        ("Zoetis Ref Lab Cincinnati", "Zoetis Reference Laboratories"),
+        ("3M Corporate", "3M Company"),
+        # And the replacements the guard was written for.
+        ("Iso Group Inc", "CoStar Group"),
+        ("Liberty Health Sciences", "Liberty Science Center"),
+    ])
+    def test_expanding_refuses_everything_it_refused_before(
+        self, original, canonical,
+    ):
+        assert canonical_preserves_identity(original, canonical) is False
+
+    def test_a_resolution_no_string_rule_could_justify_is_still_refused(self):
+        """Correct, and rightly needs corroboration rather than a looser
+        comparator: nothing in the original spells the canonical."""
+        assert not canonical_preserves_identity(
+            "VA MC West LA Visn 22",
+            "VA Greater Los Angeles Healthcare System",
+        )
+
+
+class TestThePluralFold:
+    """The prefix relation already handles the `-s` plural ("sciences" starts
+    with "science"). It cannot handle `-ies`, where the stem changes — and
+    that is the plural this data is full of."""
+
+    @pytest.mark.parametrize("original, canonical", [
+        ("Acme Laboratory", "Acme Laboratories"),
+        ("Acme Industry", "Acme Industries"),
+        ("Acme Technology Group", "Acme Technologies Group"),
+    ])
+    def test_an_ies_plural_is_the_same_word(self, original, canonical):
+        assert canonical_preserves_identity(original, canonical) is True
+
+    @pytest.mark.parametrize("original, canonical", [
+        # Not each other, and a looser stemmer would fold them.
+        ("Acme Series Group", "Acme Serial Group"),
+        ("Bayer Group", "Baker Group"),
+        ("Acme Studies Group", "Acme Student Group"),
+    ])
+    def test_it_does_not_fold_words_that_are_not_each_other(
+        self, original, canonical,
+    ):
+        assert canonical_preserves_identity(original, canonical) is False
+
+    def test_an_ies_word_that_is_not_a_plural_folds_to_a_non_word(self):
+        """`series` and `species` are not plurals of `sery` and `specy`, and
+        the fold has no way to know. It is harmless: the fold can only ever
+        make two tokens match, and nothing in the data spells the non-word it
+        produces. Pinned so the cost is visible rather than assumed away."""
+        assert canonical_preserves_identity(
+            "Acme Series Group", "Acme Sery Group",
+        ) is True
