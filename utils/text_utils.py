@@ -1514,7 +1514,92 @@ def canonical_preserves_identity(
         initials = "".join(t[0].lower() for t in canon_words if t)
         if initials == acro or initials.startswith(acro):
             return True
-    return False
+    return _acronym_token_expanded(original, canonical, o, c)
+
+
+def _acronym_token_expanded(
+    original: str, canonical: str, o: set[str], c: set[str],
+) -> bool:
+    """The acronym branch above, for an acronym *inside* a longer name.
+
+    That branch only fires when the whole original is one bare acronym, so
+    ``UTSW Medical Center`` -> ``UT Southwestern Medical Center`` fell to the
+    token test and was refused: ``utsw`` matches none of the canonical's words.
+
+    Measured, that refusal is expensive. On the golden set the grounded
+    resolver — SERP, a page read and three pieces of evidence — proposed
+    exactly that name, and it was dropped here (``grounded_guard_dropped``,
+    ``identity_not_preserved``). The record then shipped the raw SAP string,
+    and the *domain* guard rejected ``utswmed.org`` for not matching the name
+    it still had. Two guards, deadlocked, each missing what the other held.
+
+    Accepted only in the one shape that cannot be an identity replacement:
+
+    * exactly ONE distinctive token of the original is uncovered, so every
+      other word survives into the canonical;
+    * that token is written ALL-CAPS in the original and is 2-6 letters, i.e.
+      it looks like an initialism rather than a word the canonical dropped;
+    * the canonical's new words, **in the canonical's own order**, spell it as
+      a letter subsequence beginning at their first letter —
+      ``utsw`` in ``ut``+``southwestern``. Initials alone are not enough:
+      ``UTSW`` takes its ``W`` from the middle of ``SouthWestern``.
+
+    The order matters and is why the canonical is re-read here rather than the
+    token *set* being used: a set makes ``ut southwestern`` and ``southwestern
+    ut`` the same string, and only one of them spells the acronym.
+
+    What it still refuses, because more than one token is uncovered or the
+    token is not an initialism: ``Iso Group Inc`` -> ``CoStar Group``,
+    ``Liberty Health Sciences`` -> ``Liberty Science Center``, ``Valero
+    Refinery`` -> ``Valero Energy Corporation``, and ``VAMC West LA Visn 22``
+    -> ``VA Greater Los Angeles Healthcare System`` — which is correct, and
+    needs corroboration rather than a looser string test.
+    """
+    uncovered = [t for t in o if not any(_token_covers(t, u) for u in c)]
+    if len(uncovered) != 1:
+        return False
+    token = uncovered[0]
+    # Three letters minimum. A two-letter "acronym" in this data is
+    # overwhelmingly geographic — US, UK, LA, NY — and expanding one is a
+    # different act from expanding an organisation's initialism: `US
+    # Environmental Protection Agency` -> `United States Environmental
+    # Protection Agency` is the same body renamed to a form the corpus does
+    # not use, and it cascaded into a worse Name 2. The bare-acronym branch
+    # above still accepts a two-letter original, where there is no surrounding
+    # name for the expansion to disturb.
+    if not (3 <= len(token) <= 6):
+        return False
+    # An initialism in the source, not a word the canonical happened to drop.
+    shouted = {
+        w.upper() for w in re.findall(r"[A-Za-z]+", original)
+        if w.isupper() and 2 <= len(w) <= 6
+    }
+    if token.upper() not in shouted:
+        return False
+
+    extras = [
+        w.lower() for w in re.findall(r"[A-Za-z0-9]+", canonical)
+        if w.lower() not in _GENERIC_COMPANY_WORDS
+        and not any(_token_covers(t, w.lower()) for t in o)
+    ]
+    # Every replacing word must be a word. Without this the branch also fires
+    # on re-punctuation: `US Environmental Protection Agency` ->
+    # `U.S. Environmental Protection Agency` leaves extras `['u', 's']`, whose
+    # letters trivially spell `us`. That is the same name with full stops in
+    # it, not an acronym expanded, and accepting it let a canonical through
+    # that changed Name 1 and cascaded into Name 2.
+    if not extras or any(len(w) < 2 for w in extras):
+        return False
+    joined = "".join(extras)
+    if not joined.startswith(token[0]):
+        return False
+    at = 0
+    for letter in token:
+        found = joined.find(letter, at)
+        if found < 0:
+            return False
+        at = found + 1
+    return True
 
 
 # Minimum per-token fuzz ratio for two tokens to count as spelling variants of

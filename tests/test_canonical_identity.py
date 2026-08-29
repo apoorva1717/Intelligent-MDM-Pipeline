@@ -355,3 +355,65 @@ class TestThePluralFold:
         assert canonical_preserves_identity(
             "Acme Series Group", "Acme Sery Group",
         ) is True
+
+
+class TestAnAcronymInsideALongerName:
+    """The bare-acronym branch only fires when the whole original IS the
+    acronym, so `UTSW Medical Center` -> `UT Southwestern Medical Center` fell
+    to the token test and was refused: `utsw` matches none of the canonical's
+    words.
+
+    Measured, that refusal was expensive. The grounded resolver — SERP, a page
+    read, three pieces of evidence — proposed exactly that name and it was
+    dropped (`grounded_guard_dropped`, `identity_not_preserved`). The record
+    shipped the raw SAP string, and the domain guard then rejected
+    `utswmed.org` for not matching the name it still had.
+    """
+
+    @pytest.mark.parametrize("original, canonical", [
+        ("UTSW Medical Center", "UT Southwestern Medical Center"),
+        # Initials alone are not enough — UTSW takes its W from the middle of
+        # SouthWestern — so the test is a letter subsequence in the
+        # canonical's own word order.
+        ("MIT Media Lab",
+         "Massachusetts Institute of Technology Media Laboratory"),
+    ])
+    def test_the_acronym_may_sit_inside_the_name(self, original, canonical):
+        assert canonical_preserves_identity(original, canonical) is True
+
+    @pytest.mark.parametrize("original, canonical", [
+        # More than one token uncovered: this needs knowledge, not string
+        # logic, and is right to refuse.
+        ("VAMC West LA Visn 22", "VA Greater Los Angeles Healthcare System"),
+        # The uncovered token is a word, not an initialism.
+        ("Liberty Health Sciences", "Liberty Science Center"),
+        ("Valero Refinery", "Valero Energy Corporation"),
+        ("Huntsman Advanced Chemicals", "Huntsman Advanced Materials"),
+        # A replacement that happens to share a token.
+        ("Iso Group Inc", "CoStar Group"),
+        ("ACME Systems", "Bogus Unrelated Systems"),
+    ])
+    def test_it_refuses_everything_it_refused_before(self, original, canonical):
+        assert canonical_preserves_identity(original, canonical) is False
+
+    def test_re_punctuation_is_not_an_expansion(self):
+        """`U.S.` leaves extras ['u', 's'], whose letters trivially spell
+        `us`. That is the same name with full stops in it. Accepting it let a
+        canonical through that changed Name 1 and cascaded into Name 2."""
+        assert not canonical_preserves_identity(
+            "US Environmental Protection Agency",
+            "U.S. Environmental Protection Agency",
+        )
+
+    def test_a_two_letter_acronym_inside_a_name_is_not_expanded(self):
+        """Two letters is geographic far more often than not — US, UK, LA, NY
+        — and expanding one inside a longer name renames the body to a form
+        the corpus does not use."""
+        assert not canonical_preserves_identity(
+            "US Environmental Protection Agency",
+            "United States Environmental Protection Agency",
+        )
+
+    def test_the_bare_acronym_branch_still_takes_two_letters(self):
+        """Nothing surrounds it there, so there is no name to disturb."""
+        assert canonical_preserves_identity("UF", "University of Florida")
