@@ -158,6 +158,17 @@ it concludes.
   would break `tools/run_diff.py`'s `evidence_network_calls == 0` precondition, and is unnecessary
   once the provider is in the key. Suite at baseline (`5 failed, 2821 passed, 5 skipped`).
   **Every existing SERP entry is now cold** — warm before running the reproducibility gate.
+- [17 — Legal-form suffix `record_type` source](issues/17-legal-suffix-record-type-source.md):
+  **DONE 2026-08-29.** A `legal_form` source now sits between GLEIF and the keyword heuristic —
+  the symmetric counterpart to `_from_keyword`, which could only ever say `research_institution`.
+  Ticket 15's projection **reproduced through the real classifier, not inherited**: `+21 / -0`,
+  S2 exact match 43% -> 64%, S3 unchanged at 0% (still 0 by construction — `government` is not a
+  producible type; ticket 15 finding A, open, user's call). The predicate reads a legal form only
+  in **final position** of the name or of a comma/DBA-delimited segment: any-position scores the
+  same 1.000 precision on these 200 records but claims `Co-operative Research Centre` and
+  `Co Down Health Trust` as companies, and the sample is 200 records where the pipeline runs on
+  ten thousand. One existing test changed — `unknown` is not a contradiction of `company`, and
+  `batch_consensus` already converges the cluster (`batch_consensus.py:143`).
 - [24 — Grounded Name 2 identity guard](issues/24-grounded-name2-identity-guard.md): the guard at
   `grounded_resolver.py:588` is `name1`-only, though `originals` already holds the Name 2 value.
   Confirmed shipping wrong departments on live evidence — `Forensic Science Div` ->

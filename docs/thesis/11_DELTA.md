@@ -57,7 +57,7 @@ document was recomputed from memory or carried over from another pass document.
 | `enrichment/flags.py` | added (520 lines) | 11 flag codes (`ALL_CODES`, `:81-95`), rebuilt once from final state by `compute_flags` (`:375`), rendered by `render` (`:280`), withdrawn only by `retract` (`:326`). |
 | `enrichment/batch_consensus.py` | added (545 lines) | Post-batch field propagation within (address block, canonical name, legal form) groups; `PROPAGATED_FIELDS` (`:77`), `NEVER_PROPAGATED` (`:92`), `CONSENSUS_SOURCE = "batch_consensus"` (`:113`); `apply_batch_consensus` (`:463`). Never merges records and never changes `tier_used`. |
 | `enrichment/elf_codes.py` | added (183 lines) | Static ISO 20275 ELF code sets `NON_COMMERCIAL_ELF` (`:43`) and `COMMERCIAL_ELF` (`:59`), generated at development time from the GLEIF registry. No runtime lookup. |
-| `enrichment/classifier.py` | modified (stub → 192-line module) | Was a docstring-only stub declaring classification REMOVED. Now the single `record_type` authority: `classify(TypeEvidence) -> (record_type, record_type_source)` (`:174-190`) over ranked evidence ROR → GLEIF → keyword → unknown. |
+| `enrichment/classifier.py` | modified (stub → 192-line module) | Was a docstring-only stub declaring classification REMOVED. Now the single `record_type` authority: `classify(TypeEvidence) -> (record_type, record_type_source)` (`:174-190`) over ranked evidence ROR → GLEIF → keyword → unknown. **Superseded 2026-08-29 (ticket 17):** a `legal_form` source now sits between GLEIF and keyword — ROR → GLEIF → legal-form suffix → keyword → unknown. Measured +21/−0 on the 200 labelled records; S2 exact match 43% → 64%. |
 
 ### 1.4 · Tiers and resolution
 

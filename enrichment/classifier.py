@@ -29,10 +29,21 @@ Evidence ranking — first source that yields an answer wins:
 2. **GLEIF entity metadata** — ``entity.category`` and ``entity.legalForm.id``
    from the ``lei-records`` response the pipeline already fetches. See
    :mod:`enrichment.elf_codes`.
-3. **Keyword heuristic** — :func:`utils.text_utils.looks_like_research_institution`.
+3. **Corporate legal-form suffix** —
+   :func:`utils.text_utils.has_corporate_legal_suffix`. It can only ever yield
+   ``company``, and it is the mirror of (4): a legal form is the entity's
+   registered commercial character, stated in its own name. Read off the input
+   and verified against nothing, so it ranks below both registries and can
+   never override one.
+4. **Keyword heuristic** — :func:`utils.text_utils.looks_like_research_institution`.
    It can only ever yield ``research_institution``: the name not looking like an
    institution is not evidence of a company.
-4. **``unknown``** — no source produced an answer.
+5. **``unknown``** — no source produced an answer.
+
+(3) sits above (4) rather than below it because the one name in 200 that carries
+both signals — ``Bio-Rad Laboratory Inc`` — is a company, and because a legal
+form is a statement about the entity where a keyword is a statement about a
+word. The two disagree rarely; when they do, this is the right way round.
 
 An ambiguous or absent field yields *nothing* and falls through, rather than
 guessing. ``unknown`` is a real terminal state meaning "no tier resolved the
@@ -48,7 +59,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from enrichment.elf_codes import COMMERCIAL_ELF, NON_COMMERCIAL_ELF
-from utils.text_utils import looks_like_research_institution
+from utils.text_utils import (
+    has_corporate_legal_suffix,
+    looks_like_research_institution,
+)
 
 RESEARCH = "research_institution"
 COMPANY = "company"
@@ -57,6 +71,7 @@ UNKNOWN = "unknown"
 # Sources reported in `record_type_source`.
 SOURCE_ROR = "ror"
 SOURCE_GLEIF = "gleif"
+SOURCE_LEGAL_FORM = "legal_form"
 SOURCE_KEYWORD = "keyword"
 SOURCE_UNRESOLVED = "unresolved"
 
@@ -165,6 +180,17 @@ def _from_gleif(ev: TypeEvidence) -> str | None:
     return verdict
 
 
+def _from_legal_suffix(ev: TypeEvidence) -> str | None:
+    """A corporate legal form in Name 1, or ``None``.
+
+    Symmetric counterpart to :func:`_from_keyword`, and can only ever yield
+    ``COMPANY`` for the same reason that one can only yield ``RESEARCH``: the
+    absence of a legal suffix is not evidence of anything. Plenty of companies
+    trade under a name that omits it.
+    """
+    return COMPANY if has_corporate_legal_suffix(ev.name1) else None
+
+
 def _from_keyword(ev: TypeEvidence) -> str | None:
     return RESEARCH if looks_like_research_institution(ev.name1) else None
 
@@ -172,13 +198,14 @@ def _from_keyword(ev: TypeEvidence) -> str | None:
 def classify(evidence: TypeEvidence) -> tuple[str, str]:
     """Decide ``record_type`` once. Returns ``(record_type, record_type_source)``.
 
-    ``record_type_source`` is one of ``ror`` | ``gleif`` | ``keyword`` |
-    ``unresolved`` and always matches the verdict: an ``unknown`` type always
-    reports ``unresolved``, and never the other way round.
+    ``record_type_source`` is one of ``ror`` | ``gleif`` | ``legal_form`` |
+    ``keyword`` | ``unresolved`` and always matches the verdict: an ``unknown``
+    type always reports ``unresolved``, and never the other way round.
     """
     for source, fn in (
         (SOURCE_ROR, _from_ror),
         (SOURCE_GLEIF, _from_gleif),
+        (SOURCE_LEGAL_FORM, _from_legal_suffix),
         (SOURCE_KEYWORD, _from_keyword),
     ):
         verdict = fn(evidence)

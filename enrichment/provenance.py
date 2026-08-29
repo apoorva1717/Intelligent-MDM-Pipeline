@@ -855,8 +855,11 @@ def situation_for(
             )
         if decided == "unresolved":
             return SOURCE_INPUT, EvidenceSituation(has_source=False)
-        # `keyword` — the record's own Name 1 read as a research institution.
-        # One source, uncontradicted: the input.
+        # `keyword` and `legal_form` — both read the record's own Name 1, one
+        # for an institution signal and one for a corporate legal form. One
+        # source, uncontradicted: the input. Neither is registry-authored, so
+        # neither can reach `verified` — a suffix is what the record CLAIMS to
+        # be, which is exactly the distinction Scheme B exists to keep.
         return SOURCE_INPUT, EvidenceSituation(has_source=True)
 
     # ── A model ───────────────────────────────────────────────────────────

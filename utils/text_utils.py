@@ -804,6 +804,59 @@ def looks_like_research_institution(name: str | None) -> bool:
     return bool(_RESEARCH_NAME_SIGNALS_RE.search(name))
 
 
+#: Corporate legal-form tokens, for :func:`has_corporate_legal_suffix`.
+#:
+#: Deliberately NOT reused from ``tier1_lei._LEGAL_FORM_TOKENS``, which exists
+#: to *strip* these tokens before a name comparison. Over-inclusion is nearly
+#: free when stripping and expensive when classifying: a token wrongly stripped
+#: costs a little match quality, a token wrongly matched asserts that a research
+#: institute is a company. The two sets happen to overlap heavily; they are not
+#: the same set, and merging them would make a change made for one purpose
+#: silently alter the other.
+_CORPORATE_LEGAL_FORMS: frozenset[str] = frozenset({
+    "inc", "llc", "corp", "corporation", "company", "co", "ltd", "lp",
+    "llp", "plc", "gmbh", "ag", "nv", "bv", "sa", "pty",
+})
+
+#: A legal name is TERMINATED by its legal form, so the token is only read in
+#: final position — of the whole name, or of a segment before a comma or a
+#: "doing business as" marker ("Value Plastics Inc DBA Nordson Medical", which
+#: is a real shape in this SAP data). Position is what makes the short tokens
+#: safe: ``co``, ``ag``, ``sa``, ``nv`` and ``bv`` are ordinary words elsewhere
+#: in a name, and matching them anywhere claims "Co-operative Research Centre",
+#: "AG Research Ltd Kenya Branch" and "Co Down Health Trust" as companies.
+#: Measured on the 200 labelled records: any-position and segment-final both
+#: score precision 1.000, so that sample cannot distinguish them — the
+#: constraint is kept because the sample is 200 records and the pipeline runs
+#: on ten thousand.
+_LEGAL_SEGMENT_SPLIT_RE = re.compile(r",|\bd/?b/?a\b|\baka\b|\bt/a\b", re.IGNORECASE)
+_LEGAL_TOKEN_RE = re.compile(r"[a-z0-9&]+")
+
+
+def has_corporate_legal_suffix(name: str | None) -> bool:
+    """Does *name* end in a corporate legal form (``Inc``, ``LLC``, ``GmbH``…)?
+
+    The mirror image of :func:`looks_like_research_institution`, and the reason
+    it exists. That predicate can only ever yield ``research_institution`` — a
+    name not looking like an institution is not evidence of a company. But a
+    legal-form suffix IS evidence of a company, positively and by definition:
+    it is the entity's registered legal character, stated in its own name.
+    The classifier had no symmetric source for it, so 21 records that say what
+    they are in their own name shipped as ``unknown`` or, worse, as
+    ``research_institution`` on a keyword read of "Laboratories".
+
+    It is a fallback, not an authority: a registry verdict outranks it, because
+    the suffix is read off the input rather than verified against anything.
+    """
+    if not name or not name.strip():
+        return False
+    for segment in _LEGAL_SEGMENT_SPLIT_RE.split(name):
+        tokens = _LEGAL_TOKEN_RE.findall(segment.lower())
+        if tokens and tokens[-1] in _CORPORATE_LEGAL_FORMS:
+            return True
+    return False
+
+
 # A narrower signal than the ROR-miss one above: universities, research
 # institutes, colleges and academies — the org types where a department
 # is genuinely expected somewhere in the name block, so its absence from

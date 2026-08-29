@@ -597,7 +597,9 @@ class EnrichmentResult(BaseModel):
     # "ror" | "gleif" | "keyword" | "unresolved". A record_type of "unknown"
     # always reports "unresolved". Excluded from the response body — the
     # exported column set is unchanged.
-    record_type_source: Literal["ror", "gleif", "keyword", "unresolved"] = Field(
+    record_type_source: Literal[
+        "ror", "gleif", "legal_form", "keyword", "unresolved",
+    ] = Field(
         default="unresolved", exclude=True,
     )
     # Provisional type used for branch selection and tier gating during the run.

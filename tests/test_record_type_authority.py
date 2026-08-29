@@ -34,6 +34,7 @@ from enrichment.classifier import (
     TypeEvidence,
     classify,
 )
+from utils.text_utils import has_corporate_legal_suffix
 from enrichment.elf_codes import COMMERCIAL_ELF, NON_COMMERCIAL_ELF
 from enrichment.orchestrator import Orchestrator, _init_result, finalise
 from tests.conftest import seed
@@ -339,17 +340,31 @@ class TestFinaliseIsTheOnlyWriter:
                     "_gleif_legal_form_id", "_gleif_legal_form_other"):
             assert key not in out
 
-    def test_variant_spellings_of_one_org_share_a_type(self):
-        """Rows 15/16/17: three name forms of "Coastal Diagnostics" must not
-        come out with three different types."""
-        types = set()
+    def test_variant_spellings_of_one_org_never_contradict(self):
+        """Rows 15/16/17: three name forms of "Coastal Diagnostics" must never
+        come out with two DIFFERENT decided types.
+
+        Not "must share one type". Two of the three carry a legal suffix and
+        are therefore decided `company`; the bare form carries no signal at all
+        and is honestly `unknown`. That is not a disagreement — `unknown`
+        asserts nothing, which is exactly how `batch_consensus` treats it
+        (`_UNKNOWN_TYPE`, batch_consensus.py:143): the sole decided value in a
+        cluster propagates to the members that have none. So the three converge
+        on `company` in a real batch, where before this source existed they
+        converged on nothing. `finalise` is called directly here, upstream of
+        that pass, so the invariant to assert at THIS layer is the absence of a
+        contradiction.
+        """
+        decided = set()
         for name, routing in (("Coastal Diagnostics", "unknown"),
                               ("Coastal Diagnostics, Inc.", "company"),
                               ("Coastal Diagnostics Inc", "unknown")):
             out = finalise(_base_result(name1=name, routing_type=routing),
                            time.monotonic())
-            types.add(out["record_type"])
-        assert len(types) == 1
+            if out["record_type"] != "unknown":
+                decided.add(out["record_type"])
+        assert len(decided) <= 1, "one organisation classified two ways"
+        assert decided == {"company"}
 
 
 # ---------------------------------------------------------------------------
@@ -411,3 +426,97 @@ class TestRoutingUnchanged:
         out = await orch._finalise_and_return(
             result, time.monotonic(), rec, BatchCache())
         assert out.department_domain is None
+
+
+# ---------------------------------------------------------------------------
+# The corporate legal-form source (ticket 17)
+#
+# Measured on the 200 labelled eval records: fires on 55, precision 1.000,
+# and changes the verdict on the 21 the registries left undecided --
+# +21 correct / -0 wrong, S2 exact match 43% -> 64%.
+# ---------------------------------------------------------------------------
+
+class TestLegalSuffixPredicate:
+    @pytest.mark.parametrize("name", [
+        "Bio-Rad Laboratory Inc",
+        "Charles River Laboratories, Inc.",
+        "Idexx Reference Laboratories, Inc",
+        "Lockheed Martin Corp",
+        "Sartorius GmbH",
+        "Vanguard Sciences LLC",
+        "Value Plastics Inc DBA Nordson Medical",
+    ])
+    def test_fires_on_a_terminating_legal_form(self, name):
+        assert has_corporate_legal_suffix(name)
+
+    @pytest.mark.parametrize("name", [
+        # The reason position is part of the rule: every one of these carries a
+        # legal-form TOKEN, and none of them is a company by virtue of it.
+        "Co-operative Research Centre",
+        "AG Research Ltd Kenya Branch",
+        "Co Down Health Trust",
+        # No legal-form token at all.
+        "National Institute of Standards and Technology",
+        "Massachusetts Institute of Technology",
+        "Brigham and Women's Hospital",
+        # A word that merely CONTAINS a marker must not split the name.
+        "Akatsuki Holdings",
+        "",
+        None,
+    ])
+    def test_does_not_fire(self, name):
+        assert not has_corporate_legal_suffix(name)
+
+
+class TestLegalSuffixSourceRanking:
+    def test_a_legal_suffix_yields_company(self):
+        t, src = classify(TypeEvidence(name1="Idexx Reference Laboratories, Inc"))
+        assert (t, src) == (COMPANY, "legal_form")
+
+    def test_it_outranks_the_keyword_heuristic(self):
+        """The one name in 200 carrying both signals. `Laboratory` is a word;
+        `Inc` is the entity's registered character."""
+        t, src = classify(TypeEvidence(name1="Bio-Rad Laboratory Inc"))
+        assert (t, src) == (COMPANY, "legal_form")
+
+    def test_a_registry_still_outranks_it(self):
+        """It is a fallback, never an override: read off the input and
+        verified against nothing."""
+        t, src = classify(TypeEvidence(
+            name1="Riverside Institute Inc",
+            ror_is_research=True,
+        ))
+        assert (t, src) == (RESEARCH, "ror")
+
+    def test_gleif_still_outranks_it(self):
+        t, src = classify(TypeEvidence(
+            name1="Bayfront Trustees Ltd",
+            lei_id="X" * 20,
+            gleif_legal_form_id=ELF_EV,
+        ))
+        assert (t, src) == (RESEARCH, "gleif")
+
+    def test_the_keyword_source_still_answers_when_no_suffix(self):
+        t, src = classify(TypeEvidence(name1="University of Stuttgart"))
+        assert (t, src) == (RESEARCH, "keyword")
+
+    def test_absence_of_a_suffix_decides_nothing(self):
+        """The mirror of the keyword rule: plenty of companies trade without a
+        legal form in the name, so its absence is not evidence of anything."""
+        t, src = classify(TypeEvidence(name1="Acme Widgets"))
+        assert (t, src) == (UNKNOWN, "unresolved")
+
+
+class TestLegalSuffixProvenance:
+    def test_it_is_never_registry_verified(self, monkeypatch):
+        """Scheme B: a suffix is what the record CLAIMS to be. Only a registry
+        reaches `verified`."""
+        out = finalise(
+            _base_result(name1="Idexx Reference Laboratories, Inc"),
+            time.monotonic(),
+        )
+        assert out["record_type"] == COMPANY
+        assert out["record_type_source"] == "legal_form"
+        prov = out["record_type_provenance"]
+        assert prov.startswith("input:"), prov
+        assert "verified" not in prov, prov

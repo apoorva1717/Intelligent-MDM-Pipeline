@@ -1374,8 +1374,21 @@ Tier gating reads `routing_type` everywhere. No tier decides `record_type`.
 |---|---|---|---|
 | 1 | **ROR org types** | `education`, `healthcare`, `government`, `facility`, `nonprofit`, `archive`, `other` → `research_institution`; `company` → `company` | `ror` |
 | 2 | **GLEIF entity metadata** | `entity.category` and `entity.legalForm.id` (ISO 20275) from the `lei-records` response already fetched — see below | `gleif` |
-| 3 | **Keyword heuristic** | `looks_like_research_institution()` → `research_institution`. It can *only* yield that: a name not looking institutional is not evidence of a company. | `keyword` |
-| 4 | **Nothing** | `unknown` | `unresolved` |
+| 3 | **Corporate legal-form suffix** | `has_corporate_legal_suffix()` → `company`. It can *only* yield that: the absence of a legal form is not evidence of an institution — plenty of companies trade without one. Read in **final position only** (of the name, or of a segment before a comma or a `DBA` marker), because `Co`, `AG`, `SA`, `NV` and `BV` are ordinary words elsewhere in a name. | `legal_form` |
+| 4 | **Keyword heuristic** | `looks_like_research_institution()` → `research_institution`. It can *only* yield that: a name not looking institutional is not evidence of a company. | `keyword` |
+| 5 | **Nothing** | `unknown` | `unresolved` |
+
+Sources 3 and 4 are mirror images, and 3 outranks 4 deliberately. A legal form is a
+statement about the *entity* — its registered commercial character, in its own name —
+where a keyword is a statement about a *word*. They disagree on one name in 200
+(`Bio-Rad Laboratory Inc`, a company), and this is the order that gets it right.
+Both are read off the input and verified against nothing, so both rank below every
+registry and neither can ever override one; in Scheme B both export as `input`, never
+`verified`.
+
+Measured on the 200 labelled eval records: the legal-suffix source fires on 55,
+**precision 1.000**, and changes the verdict on the 21 the registries left undecided —
+**+21 correct, −0 wrong**, taking S2 exact match from 43% to 64%.
 
 **Tier 3 contributes no evidence and never had any** — it is a last-resort name guesser with no classification signal. A record that reached Tier 3 is classified from whatever other evidence exists, never from having been there.
 
@@ -2720,7 +2733,7 @@ Async ROR API client with hybrid lookup (affiliation + query), sophisticated nam
 
 ### `enrichment/classifier.py` — Record Type Authority
 
-The single place `record_type` is decided. `classify(TypeEvidence)` returns `(record_type, record_type_source)` from ranked evidence — ROR org types, then GLEIF entity metadata, then the keyword heuristic, then `unknown` — with the LEI guard that stops an LEI alone from asserting `company`. Called once, at the end of `finalise`. Every tier before that writes `routing_type` instead, which gates which tiers run and never leaves the pipeline. Full detail in [Record Classification Logic](#record-classification-logic).
+The single place `record_type` is decided. `classify(TypeEvidence)` returns `(record_type, record_type_source)` from ranked evidence — ROR org types, then GLEIF entity metadata, then a corporate legal-form suffix, then the keyword heuristic, then `unknown` — with the LEI guard that stops an LEI alone from asserting `company`. Called once, at the end of `finalise`. Every tier before that writes `routing_type` instead, which gates which tiers run and never leaves the pipeline. Full detail in [Record Classification Logic](#record-classification-logic).
 
 ### `enrichment/elf_codes.py` — ISO 20275 Legal Forms (generated)
 
@@ -3589,7 +3602,7 @@ Rows that share an organisation *and* an address could still leave the batch wit
 - **GLEIF metadata, checked live rather than assumed** — `entity.category` is `GENERAL` for MIT and Pfizer alike and decides almost nothing; `subCategory` was `null` on every record sampled. `entity.legalForm.id` (ISO 20275) is the field that discriminates, via the generated table in `enrichment/elf_codes.py`, with `legalForm.other` covering the `8888`/`9999` catch-alls that MIT and Pfizer Canada both use.
 - **Tier 3 contributes no classification evidence** — and never did in this codebase: it writes no `record_type` at all. The `company` values attributed to it came from the company-canonicalisation branch.
 - **`unknown` documented as a real fourth state** — "no tier resolved the type with confidence", preferred over a `company` default that asserts what the pipeline does not know.
-- **Telemetry** — `record_type_source` (`ror` | `gleif` | `keyword` | `unresolved`) per record, and `routing_type_mismatch_count` per batch for records that ran down the wrong branch. Those records are surfaced, not re-run. Tests `test_record_type_authority.py`.
+- **Telemetry** — `record_type_source` (`ror` | `gleif` | `legal_form` | `keyword` | `unresolved`) per record, and `routing_type_mismatch_count` per batch for records that ran down the wrong branch. Those records are surfaced, not re-run. Tests `test_record_type_authority.py`.
 
 ### Canonical cache keys + Tier 1 re-lookup (newest)
 
