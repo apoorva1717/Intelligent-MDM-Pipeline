@@ -726,3 +726,68 @@ SLOT_ROUTER_PROMPT_VERSION = prompt_version(
     "slot_router", "v1",
     SLOT_ROUTER_SYSTEM_PROMPT, SLOT_ROUTER_USER_PROMPT_TEMPLATE,
 )
+
+
+# ---------------------------------------------------------------------------
+# Abbreviation expansion — is the expanded form a name anyone uses?
+# ---------------------------------------------------------------------------
+#
+# `finalise` expands organisational abbreviations in every non-registry output
+# name (`Lab` -> `Laboratory`, `Ctr` -> `Center`), unconditionally. That is
+# right when the expanded form is what the entity actually publishes, and wrong
+# when the value is an internal site designation whose expansion exists nowhere.
+#
+# Measured on the golden set. Same abbreviation, opposite correct answers:
+#
+#   Bio-Rad Lab Inc                 -> Bio-Rad Laboratories, Inc.   (expand)
+#   Orange County Public Health Lab -> ... Laboratory               (expand)
+#   Baytown Refinery Lab            -> Baytown Refinery Lab         (keep)
+#   Zoetis Ref Lab Cincinnati       -> Zoetis Ref Lab Cincinnati    (keep)
+#
+# Nothing in the string separates them, and neither do the registry or domain
+# signals — the difference is whether the thing has a published name at all.
+# That is a research question, not a spelling convention, which is why it is
+# asked here and not encoded in a map.
+
+EXPANSION_CHECK_SYSTEM_PROMPT = (
+    "You judge whether expanding an abbreviation in an organisation name "
+    "produces a name that entity actually uses, or invents one. Return valid "
+    "JSON only."
+)
+
+EXPANSION_CHECK_USER_PROMPT_TEMPLATE = (
+    "A customer master-data record:\n"
+    "  Organisation: {organisation}\n"
+    "  City: {city}\n"
+    "  Website: {domain}\n\n"
+    "The {column} column holds:\n"
+    "  as supplied: {original}\n"
+    "  expanded:    {expanded}\n\n"
+    "Is the expanded form the name this thing is actually published under?\n\n"
+    "Return JSON:\n"
+    "{{\n"
+    '  "verdict": "expand" | "keep",\n'
+    '  "confidence": "high" | "medium" | "low",\n'
+    '  "reasoning": "<one short sentence>"\n'
+    "}}\n\n"
+    "Answer 'expand' when the expanded form is the entity's real, findable "
+    "name — a registered company (`Bio-Rad Lab Inc` is Bio-Rad Laboratories, "
+    "Inc.), or a public body or facility that publishes itself that way "
+    "(`Orange County Public Health Lab` is the Orange County Public Health "
+    "Laboratory).\n\n"
+    "Answer 'keep' when the value is an INTERNAL designation — a site, "
+    "building, station or desk that a company uses for its own routing and "
+    "publishes nowhere. Expanding one of those manufactures a name that does "
+    "not exist: `Baytown Refinery Lab` and `Zoetis Ref Lab Cincinnati` are "
+    "internal locations, not organisations called `... Laboratory`.\n\n"
+    "The organisation above is context, not the subject: a value naming one "
+    "of ITS sites is internal even though the organisation itself is "
+    "well known. Use 'low' confidence whenever you cannot tell — a "
+    "low-confidence answer is discarded, and the abbreviation is expanded as "
+    "it is today."
+)
+
+EXPANSION_CHECK_PROMPT_VERSION = prompt_version(
+    "expansion_check", "v1",
+    EXPANSION_CHECK_SYSTEM_PROMPT, EXPANSION_CHECK_USER_PROMPT_TEMPLATE,
+)

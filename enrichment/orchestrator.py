@@ -55,6 +55,10 @@ from enrichment.search_terms import (
     has_no_canonical_form,
     identifies_nothing,
 )
+from enrichment.expansion_check import (
+    check_expansions,
+    expansion_declined,
+)
 from enrichment.slot_router import classify_slot_values
 from enrichment.preprocess import (
     _extract_addresses,
@@ -204,6 +208,7 @@ from utils.name_slots import (
     ENRICHED_NAME_FIELDS,
     NAME_SLOTS,
     RECORD_NAME_FIELDS,
+    slot_label,
 )
 from utils.domain_resolver import (
     DomainDecision,
@@ -1278,7 +1283,12 @@ def _slot_input_value(result: Any, slot: str) -> str | None:
     return None
 
 
-def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
+def finalise(
+    result: dict[str, Any],
+    start: float,
+    *,
+    expansion_declined_keys: set[str] | None = None,
+) -> dict[str, Any]:
     """Apply empty-string guards and compute changed flags.
 
     FIX(Bug 5): enriched name fields must NEVER be empty string "".
@@ -1375,12 +1385,20 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # A name written from a registry is skipped: ROR and GLEIF are the
     # authority on their own spelling, and re-processing a verified official
     # name could only corrupt it.
+    #
+    # One more exemption, and the only one that is not structural: a value the
+    # expansion check judged to be an internal site designation. Expanding
+    # `Baytown Refinery Lab` manufactures an organisation that does not exist.
+    # The lane can only ever DECLINE, so a record it never saw, or could not
+    # judge, expands exactly as it always has. See `enrichment.expansion_check`.
     registry_named = result.get("_registry_name_fields") or set()
     for field in NAME_SLOTS:
         if field in registry_named:
             continue
         val = result.get(f"{field}_enriched")
         if val:
+            if expansion_declined(val, expansion_declined_keys):
+                continue
             result.transform(
                 f"{field}_enriched", expand_abbreviations(val) or val,
                 rule_id="fix4:expand-abbreviations",
@@ -4716,9 +4734,44 @@ class Orchestrator:
         # the `entity-superseded` flag.
         await self._check_liveness(record, result, cache)
         await self._run_address_stage(result, record)
-        result = finalise(result, start)
+        # The last thing before `finalise`, because the value being judged is
+        # the SETTLED name — it does not exist until the tiers are done, which
+        # is why this cannot be a pre-pass the way the slot router is.
+        declined = await self._check_name_expansions(record, result)
+        result = finalise(result, start, expansion_declined_keys=declined)
         self._emit_retry_trace(record, result)
         return EnrichmentResult(**result)
+
+    async def _check_name_expansions(
+        self, record: EnrichmentRecord, result: dict[str, Any],
+    ) -> set[str]:
+        """Which settled names should keep the abbreviation they arrived with.
+
+        Offers only names `finalise` is about to change, and only those it
+        would change on its own — a registry-written name is exempt there and
+        is not a candidate here either. Sorted, so the request sequence is a
+        pure function of the record.
+        """
+        registry_named = result.get("_registry_name_fields") or set()
+        candidates: list[tuple[str, str, str]] = []
+        for field in NAME_SLOTS:
+            if field in registry_named:
+                continue
+            value = result.get(f"{field}_enriched")
+            if not (value and str(value).strip()):
+                continue
+            expanded = expand_abbreviations(str(value)) or str(value)
+            if expanded == str(value):
+                continue
+            candidates.append((str(value), expanded, slot_label(field)))
+        if not candidates:
+            return set()
+        return await check_expansions(
+            self._llm_client, sorted(candidates),
+            organisation=result.get("name1_enriched") or record.name1,
+            city=record.city,
+            domain=result.get("domain"),
+        )
 
     async def _corroborate_domain(
         self, record: EnrichmentRecord, result: dict[str, Any],

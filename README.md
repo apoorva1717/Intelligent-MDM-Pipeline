@@ -262,6 +262,42 @@ Detection patterns:
 
 **Person in Name 1 → affiliation lookup.** When the person is extracted from **Name 1** (the institution slot), Name 1 is left empty and `PreprocessResult.name1_was_person` is set. The orchestrator then runs a **person-affiliation lookup** (`enrichment/person_affiliation.py`) that discovers the institution + department from the web and **confirms it against ROR in the record's country** before accepting it — so the record is not left with just a contact and no organisation, and a wrong-country guess is never written. See [Stage 2b](#stage-2b-person-affiliation-lookup).
 
+#### Abbreviation expansion — the LLM lane in front of Fix 4
+
+**File:** `enrichment/expansion_check.py`
+
+`finalise` expands organisational abbreviations in every non-registry output
+name (`Lab` → `Laboratory`, `Ctr` → `Center`), unconditionally. Right far more
+often than not — which is why it stays the default — and wrong in one
+recognisable situation. The golden set holds both halves of the pair:
+
+| as supplied | reference | why |
+|---|---|---|
+| `Bio-Rad Lab Inc` | **expand** | the company *is* Bio-Rad Laboratories, Inc. |
+| `Orange County Public Health Lab` | **expand** | a public laboratory that publishes itself so |
+| `Baytown Refinery Lab` | **keep** | an ExxonMobil site |
+| `Zoetis Ref Lab Cincinnati` | **keep** | a Zoetis site |
+
+Nothing in the strings separates them, and neither do the registry or domain
+signals — measured, both groups contain records with and without a ROR/LEI id,
+and the ExxonMobil sites resolve a domain perfectly well. The difference is
+whether the thing named has a **published name at all**. There is no
+organisation called "Baytown Refinery Laboratory"; expanding an internal site
+designation manufactures one.
+
+That is a research question, not a spelling convention, so it is asked rather
+than encoded in a map. Same shape as the slot router: **decline-only**. A
+verdict can keep the value as supplied and do nothing else, so no verdict, a
+`low`-confidence verdict, an unknown label and a failed call all land on the
+existing behaviour.
+
+**Where it runs.** Unlike the slot router this cannot be a pre-pass — the value
+it judges is the *settled* name, which does not exist until the tiers are done.
+`_finalise_and_return` is the single async convergence point before `finalise`,
+so it runs there and hands the declined keys in. Candidates are the names
+`finalise` is about to change, sorted; a registry-written name is exempt from
+the expansion and is not offered here either.
+
 #### Slot routing — the LLM lane behind the street → name-block move
 
 **File:** `enrichment/slot_router.py`
