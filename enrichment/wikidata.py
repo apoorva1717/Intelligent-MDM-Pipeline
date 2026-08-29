@@ -98,6 +98,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -693,8 +694,16 @@ class WikidataClient:
     """
 
     #: Wikidata asks every client to identify itself; an anonymous bulk caller
-    #: is the one most likely to be rate-limited.
-    USER_AGENT = "BrukerMDM-EnrichmentAPI/1.0 (Wikidata crosswalk lane)"
+    #: is the one most likely to be rate-limited. Since 2025 the policy is
+    #: enforced: a product name alone returns 403 ("Please respect our robot
+    #: policy"), and so does a spoofed browser string — the contact URL or
+    #: address in parentheses is the part that is actually required. Verified
+    #: 2026-08-29: without it 403, with it 200. Override via WIKIDATA_USER_AGENT.
+    USER_AGENT = os.getenv(
+        "WIKIDATA_USER_AGENT",
+        "BrukerMDM-EnrichmentAPI/1.0 "
+        "(https://github.com/apoorva1717/Intelligent-MDM-Pipeline)",
+    )
 
     def __init__(self, settings: Any, cache: PageCache | None = None) -> None:
         self._base_url = settings.wikidata_api_base
