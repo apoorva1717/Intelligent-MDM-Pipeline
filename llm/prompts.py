@@ -660,3 +660,69 @@ GROUNDED_RESOLVER_PROMPT_VERSION = prompt_version(
     "grounded_resolver", "v1",
     GROUNDED_RESOLVER_SYSTEM_PROMPT, GROUNDED_RESOLVER_USER_PROMPT_TEMPLATE,
 )
+
+
+# ---------------------------------------------------------------------------
+# Slot routing — which column does this value belong in?
+# ---------------------------------------------------------------------------
+#
+# SAP master data puts values in the wrong column constantly, and the
+# deterministic predicates that sort them out (`preprocess._street_is_org_name`,
+# `_street_is_department`) work on wording alone. Wording is not enough here:
+# "Scott & White Hospital Modul C" reads as an organisation because it says
+# Hospital, but "Modul C" makes it a *building* — and on the record it was
+# measured on it displaced the real Name 1 and pushed the organisation down to
+# Name 3. "Davie Medical Ctr" reads as a unit and is a building too.
+#
+# So the model is asked the one question the regex cannot answer: what kind of
+# thing is this? It never picks the destination column — the caller does that,
+# and only ever uses a verdict to STOP a move it would otherwise make.
+
+SLOT_ROUTER_SYSTEM_PROMPT = (
+    "You classify one value taken from a customer master-data record into "
+    "the kind of thing it names. You are given the record's organisation and "
+    "city as context. Return valid JSON only."
+)
+
+SLOT_ROUTER_USER_PROMPT_TEMPLATE = (
+    "A customer master-data record for this organisation:\n"
+    "  Organisation: {organisation}\n"
+    "  City: {city}\n\n"
+    "One of its address/name columns ({column}) holds this value:\n"
+    "  {value}\n\n"
+    "What kind of thing does that value name?\n\n"
+    "Return JSON:\n"
+    "{{\n"
+    '  "kind": "organisation" | "unit" | "building" | "room" '
+    '| "street" | "duplicate" | "noise",\n'
+    '  "confidence": "high" | "medium" | "low",\n'
+    '  "reasoning": "<one short sentence>"\n'
+    "}}\n\n"
+    "Definitions:\n"
+    "- organisation: a company, institution, agency or hospital that could "
+    "be the customer itself.\n"
+    "- unit: a department, division, laboratory, institute, group or desk "
+    "*within* the organisation above.\n"
+    "- building: a named building, wing, block, module or site on a campus. "
+    "A value naming a place ON the organisation's premises is a building "
+    "even when it repeats the organisation's own words "
+    '("Scott & White Hospital Modul C", "Davie Medical Ctr", '
+    '"Genomics Bldg").\n'
+    "- room: a room, floor, suite, bay, dock or bench identifier.\n"
+    "- street: a street address, or a fragment of one.\n"
+    "- duplicate: it merely repeats the organisation or city given above and "
+    'adds nothing ("Ashtabula, OH" on a record whose city is Ashtabula).\n'
+    "- noise: a reference code, routing label, comment or anything that "
+    "names nothing.\n\n"
+    "Answer 'organisation' or 'unit' only when the value names the customer "
+    "or a part of it that a person could address post to by name. When a "
+    "value names WHERE something sits rather than WHO it is, it is a "
+    "building, room or street. Use 'low' confidence whenever the value is "
+    "genuinely ambiguous — a low-confidence answer is discarded, which is "
+    "the safe outcome."
+)
+
+SLOT_ROUTER_PROMPT_VERSION = prompt_version(
+    "slot_router", "v1",
+    SLOT_ROUTER_SYSTEM_PROMPT, SLOT_ROUTER_USER_PROMPT_TEMPLATE,
+)

@@ -55,9 +55,11 @@ from enrichment.search_terms import (
     has_no_canonical_form,
     identifies_nothing,
 )
+from enrichment.slot_router import classify_slot_values
 from enrichment.preprocess import (
     _extract_addresses,
     _location_fragment,
+    find_ambiguous_street_routings,
     find_suspicious_plain_names,
     has_multiple_contacts,
     llm_classify_plain_names_async,
@@ -5310,6 +5312,24 @@ class Orchestrator:
                 self._llm_client, suspicious,
             ) if suspicious else {}
 
+            # The second pre-pass, same shape and same reason. The street →
+            # name-block routing below is deterministic and decides from
+            # wording alone, which cannot tell `Scott & White Hospital Modul
+            # C` (a building) from the hospital it is named after. Only the
+            # values a predicate already claims are offered, and a verdict can
+            # only ever STOP the move — see `enrichment.slot_router`.
+            street_candidates = find_ambiguous_street_routings(
+                street1=result["street1_original"],
+                street2=record.street2,
+                street3=record.street3,
+                street4=record.street4,
+                street5=record.street5,
+            )
+            slot_verdicts = await classify_slot_values(
+                self._llm_client, street_candidates,
+                organisation=record.name1, city=record.city,
+            ) if street_candidates else {}
+
             pre = preprocess_record(
                 name1=record.name1,
                 name2=record.name2,
@@ -5325,6 +5345,7 @@ class Orchestrator:
                 street5=record.street5,
                 house_number=record.house_number,
                 llm_person_verdicts=person_verdicts,
+                llm_slot_verdicts=slot_verdicts,
             )
 
             if pre.use_cases:

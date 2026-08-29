@@ -262,6 +262,51 @@ Detection patterns:
 
 **Person in Name 1 → affiliation lookup.** When the person is extracted from **Name 1** (the institution slot), Name 1 is left empty and `PreprocessResult.name1_was_person` is set. The orchestrator then runs a **person-affiliation lookup** (`enrichment/person_affiliation.py`) that discovers the institution + department from the web and **confirms it against ROR in the record's country** before accepting it — so the record is not left with just a contact and no organisation, and a wrong-country guess is never written. See [Stage 2b](#stage-2b-person-affiliation-lookup).
 
+#### Slot routing — the LLM lane behind the street → name-block move
+
+**File:** `enrichment/slot_router.py`
+
+Preprocessing moves a value out of a **street** column and into the **name
+block** when its wording says organisation (`_street_is_org_name`) or unit
+(`_street_is_department`). Wording alone is not enough, and the golden set
+measured what that costs:
+
+| street value | reads as | actually is | what shipped |
+|---|---|---|---|
+| `Scott & White Hospital Modul C` | organisation | a building | **took Name 1**; the real organisation was pushed to Name 3 |
+| `Davie Medical Ctr` | unit | a building | became Name 2 |
+| `Comm. Bruker Scientific LLC` | organisation | a routing comment | became Name 3 |
+
+The lane asks the model the one question the regex cannot answer — *what kind
+of thing is this?* — over the categories `organisation`, `unit`, `building`,
+`room`, `street`, `duplicate`, `noise`.
+
+**It is subtract-only.** A verdict is used in exactly one direction: to decline
+a move preprocessing would otherwise make. The lane never picks a destination
+column, never moves anything itself, and never deletes — a vetoed value stays
+in the street column it arrived in, where a reviewer can still see it. That
+asymmetry is the whole of its safety argument: a lane that can only remove
+placements cannot invent one, so an unavailable model, a refused answer and a
+value the lane never saw all mean the same thing — the deterministic behaviour,
+unchanged.
+
+**What is offered to it.** Only values a predicate already claims, so the lane
+second-guesses a move rather than looking for new ones. Candidates are sorted
+by value (`find_ambiguous_street_routings`), so the sequence of requests is a
+pure function of the record and not of dict ordering — the same requirement
+`tests/test_determinism.py` imposes on every other prompt.
+
+**Where it runs.** Preprocessing is deterministic and synchronous by design, so
+this follows the UC 7 Pattern B2 person classifier exactly: the orchestrator
+runs it as an async pre-pass and passes the verdicts into `preprocess_record`
+as `llm_slot_verdicts`, keyed by the whitespace-collapsed lower-cased value. A
+value that no longer matches by the time preprocessing reaches it simply has no
+verdict.
+
+**Bar.** `high` or `medium` only — the prompt states explicitly that `low`
+means "discard me", and an unknown label is treated as no answer rather than
+inherited.
+
 #### UC 8 — Email Copy (Non-Destructive)
 
 **Pattern:** Standard email regex: `[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`

@@ -135,6 +135,9 @@ escalation** — cheapest and most deterministic first, escalate only on failure
 ```
 Stage 0  overflow_check      UC 0 — is Name1+Name2 one split name?
 Stage 1  preprocess          UC 6-12, 14, 15 — regex only, no network/LLM
+                             (two async pre-passes feed it verdicts: the UC 7
+                             person classifier and `slot_router`, which can
+                             only VETO a street -> name-block move)
 Stage 2  tier1_ror           institutions: ROR API
          tier1_lei           companies: GLEIF/LEI registry
 Stage 2c wikidata            crosswalk lane — pointer or single witness, never an authority

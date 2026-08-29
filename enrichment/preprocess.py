@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 
 from rapidfuzz import fuzz
 
+from enrichment.slot_router import belongs_in_name_block, verdict_key
 from utils.name_slots import (
     ADJACENT_NAME_PAIRS,
     DEPT_SLOTS,
@@ -1551,6 +1552,7 @@ def preprocess_record(
     street5: str | None = None,
     house_number: str | None = None,
     llm_person_verdicts: dict[str, str] | None = None,
+    llm_slot_verdicts: dict[str, str] | None = None,
 ) -> PreprocessResult:
     """Run all deterministic preprocessing.
 
@@ -1558,6 +1560,13 @@ def preprocess_record(
     synchronously from here, so the orchestrator runs an async
     pre-pass over suspicious name fields and passes the verdicts in
     via ``llm_person_verdicts`` (keyed by lowercased text).
+
+    ``llm_slot_verdicts`` arrives the same way, from
+    :mod:`enrichment.slot_router`, and is read at exactly two places: the two
+    blocks below that move a street value into the name block. It can only
+    ever *stop* one of those moves — see the module docstring there for why a
+    subtract-only lane is the safe shape. Absent, every routing decision is
+    the deterministic one.
     """
     res = PreprocessResult(
         name1=name1, name2=name2, name3=name3, name4=name4, name5=name5,
@@ -1778,6 +1787,13 @@ def preprocess_record(
         val = getattr(res, slot)
         if not _street_is_org_name(val):
             continue
+        if not belongs_in_name_block(val, llm_slot_verdicts):
+            # The wording says organisation; the model says the value names a
+            # place, not a customer. `Scott & White Hospital Modul C` took
+            # Name 1 on a record whose organisation was in Name 1 already.
+            res.note(16, f"organisation-shaped {val!r} in {slot} kept out of "
+                         f"the name block (slot router)")
+            continue
         org = val.strip()
         name1 = (res.name1 or "").strip()
         has_institution = bool(name1) and not is_unit_construction(name1)
@@ -1810,6 +1826,11 @@ def preprocess_record(
     for slot in STREET_SLOTS:
         val = getattr(res, slot)
         if not _street_is_department(val):
+            continue
+        if not belongs_in_name_block(val, llm_slot_verdicts):
+            # As above: `Davie Medical Ctr` reads as a unit and is a building.
+            res.note(16, f"unit-shaped {val!r} in {slot} kept out of the "
+                         f"name block (slot router)")
             continue
         dept = val.strip()
         if _name_block_has_department(res):
@@ -2814,6 +2835,42 @@ def find_suspicious_plain_names(*names: str | None) -> list[str]:
         if cand:
             _maybe_add(cand)
     return out
+
+
+def _street_label(slot: str) -> str:
+    """`street2` -> `Street 2`, the header a reviewer sees."""
+    digits = "".join(ch for ch in slot if ch.isdigit())
+    return f"Street {digits}" if digits else slot.title()
+
+
+def find_ambiguous_street_routings(
+    **streets: str | None,
+) -> list[tuple[str, str]]:
+    """Street values the deterministic predicates would move into the names.
+
+    Returns ``(value, column_label)`` pairs for
+    :func:`enrichment.slot_router.classify_slot_values`, sorted by value so
+    the sequence of LLM requests is a pure function of the record rather than
+    of dict ordering — see ``tests/test_determinism.py``.
+
+    Only values a predicate already claims are offered. A value the pipeline
+    would leave in the street column is not a candidate: the lane exists to
+    second-guess a move, not to find new ones.
+    """
+    found: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for slot in STREET_SLOTS:
+        value = streets.get(slot)
+        if not (value and value.strip()):
+            continue
+        if not (_street_is_org_name(value) or _street_is_department(value)):
+            continue
+        key = verdict_key(value)
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append((value.strip(), _street_label(slot)))
+    return sorted(found)
 
 
 PERSON_CLASSIFIER_SYSTEM_PROMPT = (
