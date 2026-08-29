@@ -1,0 +1,32 @@
+{
+ "domain": "entity:q59935463",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q59935463",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Accounts Payable Invoices (NAID 4711963)"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 2668072,
+        "id": "Q2668072"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

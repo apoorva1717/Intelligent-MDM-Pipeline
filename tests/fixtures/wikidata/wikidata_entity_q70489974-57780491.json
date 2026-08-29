@@ -1,0 +1,32 @@
+{
+ "domain": "entity:q70489974",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q70489974",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "accounts payable and receivable"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P279": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 4116214,
+        "id": "Q4116214"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

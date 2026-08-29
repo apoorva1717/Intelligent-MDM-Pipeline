@@ -1,0 +1,181 @@
+{
+ "domain": "entity:q1525831",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q1525831",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "The University of Texas MD Anderson Cancer Center"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "MD Anderson Cancer Center"
+    },
+    {
+     "language": "en",
+     "value": "MD Anderson Hospital"
+    },
+    {
+     "language": "en",
+     "value": "MD Anderson Hospital and Tumor Institute"
+    },
+    {
+     "language": "en",
+     "value": "MDACC"
+    },
+    {
+     "language": "en",
+     "value": "UTMDACC"
+    },
+    {
+     "language": "en",
+     "value": "Anderson Cancer Center"
+    },
+    {
+     "language": "en",
+     "value": "M.D. Anderson Cancer Center"
+    },
+    {
+     "language": "en",
+     "value": "M.D. Anderson"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 16917,
+        "id": "Q16917"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 23002039,
+        "id": "Q23002039"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 3918,
+        "id": "Q3918"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P159": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 16555,
+        "id": "Q16555"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.mdanderson.org/",
+       "type": "string"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.uth.edu/",
+       "type": "string"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.mdanderson.org/",
+       "type": "string"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://utmdacc.uth.tmc.edu/",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P6782": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P6782",
+      "datavalue": {
+       "value": "04twxam07",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

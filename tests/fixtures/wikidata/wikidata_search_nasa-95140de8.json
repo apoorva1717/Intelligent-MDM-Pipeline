@@ -1,0 +1,147 @@
+{
+ "domain": "search:nasa",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "NASA"
+  },
+  "search": [
+   {
+    "id": "Q309751",
+    "title": "Q309751",
+    "pageid": 298011,
+    "concepturi": "http://www.wikidata.org/entity/Q309751",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q309751",
+    "display": {
+     "label": {
+      "value": "Nasa",
+      "language": "en"
+     },
+     "description": {
+      "value": "genus of plants",
+      "language": "en"
+     }
+    },
+    "label": "Nasa",
+    "description": "genus of plants",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Nasa"
+    }
+   },
+   {
+    "id": "Q23548",
+    "title": "Q23548",
+    "pageid": 26937,
+    "concepturi": "http://www.wikidata.org/entity/Q23548",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q23548",
+    "display": {
+     "label": {
+      "value": "National Aeronautics and Space Administration",
+      "language": "en"
+     },
+     "description": {
+      "value": "American space and aeronautics agency",
+      "language": "en"
+     }
+    },
+    "label": "National Aeronautics and Space Administration",
+    "description": "American space and aeronautics agency",
+    "match": {
+     "type": "label",
+     "language": "mul",
+     "text": "NASA"
+    },
+    "aliases": [
+     "NASA"
+    ]
+   },
+   {
+    "id": "Q1963811",
+    "title": "Q1963811",
+    "pageid": 1892922,
+    "concepturi": "http://www.wikidata.org/entity/Q1963811",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q1963811",
+    "display": {
+     "label": {
+      "value": "Nahverkehrsservice Sachsen-Anhalt",
+      "language": "en"
+     },
+     "description": {
+      "value": "subsidiary of the State of Saxony-Anhalt, which plans, appoints and pays for rail passenger transport",
+      "language": "en"
+     }
+    },
+    "label": "Nahverkehrsservice Sachsen-Anhalt",
+    "description": "subsidiary of the State of Saxony-Anhalt, which plans, appoints and pays for rail passenger transport",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "NASA"
+    },
+    "aliases": [
+     "NASA"
+    ]
+   },
+   {
+    "id": "Q60978476",
+    "title": "Q60978476",
+    "pageid": 60831967,
+    "concepturi": "http://www.wikidata.org/entity/Q60978476",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q60978476",
+    "display": {
+     "label": {
+      "value": "NASA",
+      "language": "en"
+     },
+     "description": {
+      "value": "2019 track by Ariana Grande",
+      "language": "en"
+     }
+    },
+    "label": "NASA",
+    "description": "2019 track by Ariana Grande",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "NASA"
+    }
+   },
+   {
+    "id": "Q752099",
+    "title": "Q752099",
+    "pageid": 707677,
+    "concepturi": "http://www.wikidata.org/entity/Q752099",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q752099",
+    "display": {
+     "label": {
+      "value": "Astrophysics Data System",
+      "language": "en"
+     },
+     "description": {
+      "value": "digital library portal for researchers in astronomy and physics, operated by the Smithsonian Astrophysical Observatory",
+      "language": "en"
+     }
+    },
+    "label": "Astrophysics Data System",
+    "description": "digital library portal for researchers in astronomy and physics, operated by the Smithsonian Astrophysical Observatory",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "NASA Astrophysics Data System"
+    },
+    "aliases": [
+     "NASA Astrophysics Data System"
+    ]
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

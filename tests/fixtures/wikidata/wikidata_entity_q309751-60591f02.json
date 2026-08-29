@@ -1,0 +1,32 @@
+{
+ "domain": "entity:q309751",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q309751",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Nasa"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 16521,
+        "id": "Q16521"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

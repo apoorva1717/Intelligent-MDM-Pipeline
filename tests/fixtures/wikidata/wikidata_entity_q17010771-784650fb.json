@@ -1,0 +1,15 @@
+{
+ "domain": "entity:q17010771",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q17010771",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Accounts payable automation"
+   }
+  },
+  "aliases": {},
+  "claims": {}
+ }
+}

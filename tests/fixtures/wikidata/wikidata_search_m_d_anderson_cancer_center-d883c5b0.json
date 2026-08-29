@@ -1,0 +1,90 @@
+{
+ "domain": "search:m d anderson cancer center",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "M.D. Anderson Cancer Center"
+  },
+  "search": [
+   {
+    "id": "Q1525831",
+    "title": "Q1525831",
+    "pageid": 1462852,
+    "concepturi": "http://www.wikidata.org/entity/Q1525831",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q1525831",
+    "display": {
+     "label": {
+      "value": "The University of Texas MD Anderson Cancer Center",
+      "language": "en"
+     },
+     "description": {
+      "value": "hospital in Texas, United States",
+      "language": "en"
+     }
+    },
+    "label": "The University of Texas MD Anderson Cancer Center",
+    "description": "hospital in Texas, United States",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "M.D. Anderson Cancer Center"
+    },
+    "aliases": [
+     "M.D. Anderson Cancer Center"
+    ]
+   },
+   {
+    "id": "Q48338868",
+    "title": "Q48338868",
+    "pageid": 49366876,
+    "concepturi": "http://www.wikidata.org/entity/Q48338868",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q48338868",
+    "display": {
+     "label": {
+      "value": "M.D. Anderson Cancer Center continues award-winning style.",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific article published in November 2005",
+      "language": "en"
+     }
+    },
+    "label": "M.D. Anderson Cancer Center continues award-winning style.",
+    "description": "scientific article published in November 2005",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "M.D. Anderson Cancer Center continues award-winning style."
+    }
+   },
+   {
+    "id": "Q129423769",
+    "title": "Q129423769",
+    "pageid": 123394992,
+    "concepturi": "http://www.wikidata.org/entity/Q129423769",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q129423769",
+    "display": {
+     "label": {
+      "value": "M.D. Anderson Cancer Center Experience with Local Excision and Multimodality Therapy for Rectal Cancer",
+      "language": "en"
+     },
+     "description": {
+      "value": "scholarly article",
+      "language": "en"
+     }
+    },
+    "label": "M.D. Anderson Cancer Center Experience with Local Excision and Multimodality Therapy for Rectal Cancer",
+    "description": "scholarly article",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "M.D. Anderson Cancer Center Experience with Local Excision and Multimodality Therapy for Rectal Cancer"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

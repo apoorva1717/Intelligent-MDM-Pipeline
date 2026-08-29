@@ -1,0 +1,14 @@
+{
+ "domain": "neptunebenson.com",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "status": null,
+  "blocked": false,
+  "error": "ConnectTimeout",
+  "url": "https://neptunebenson.com/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

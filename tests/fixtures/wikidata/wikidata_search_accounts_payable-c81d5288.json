@@ -1,0 +1,133 @@
+{
+ "domain": "search:accounts payable",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Accounts Payable"
+  },
+  "search": [
+   {
+    "id": "Q250058",
+    "title": "Q250058",
+    "pageid": 242717,
+    "concepturi": "http://www.wikidata.org/entity/Q250058",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q250058",
+    "display": {
+     "label": {
+      "value": "accounts payable",
+      "language": "en"
+     },
+     "description": {
+      "value": "money owed by a business to its suppliers",
+      "language": "en"
+     }
+    },
+    "label": "accounts payable",
+    "description": "money owed by a business to its suppliers",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "accounts payable"
+    }
+   },
+   {
+    "id": "Q111172975",
+    "title": "Q111172975",
+    "pageid": 106162953,
+    "concepturi": "http://www.wikidata.org/entity/Q111172975",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q111172975",
+    "display": {
+     "label": {
+      "value": "Accounts Payable",
+      "language": "en"
+     },
+     "description": {
+      "value": "episode of Suits",
+      "language": "en"
+     }
+    },
+    "label": "Accounts Payable",
+    "description": "episode of Suits",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Accounts Payable"
+    }
+   },
+   {
+    "id": "Q70489974",
+    "title": "Q70489974",
+    "pageid": 70147438,
+    "concepturi": "http://www.wikidata.org/entity/Q70489974",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q70489974",
+    "display": {
+     "label": {
+      "value": "accounts payable and receivable",
+      "language": "en"
+     },
+     "description": {
+      "value": "short-term debt obligations and assets occurring in the regular course of operational transactions",
+      "language": "en"
+     }
+    },
+    "label": "accounts payable and receivable",
+    "description": "short-term debt obligations and assets occurring in the regular course of operational transactions",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "accounts payable and receivable"
+    }
+   },
+   {
+    "id": "Q17010771",
+    "title": "Q17010771",
+    "pageid": 18615783,
+    "concepturi": "http://www.wikidata.org/entity/Q17010771",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q17010771",
+    "display": {
+     "label": {
+      "value": "Accounts payable automation",
+      "language": "en"
+     }
+    },
+    "label": "Accounts payable automation",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Accounts payable automation"
+    }
+   },
+   {
+    "id": "Q59935463",
+    "title": "Q59935463",
+    "pageid": 59816908,
+    "concepturi": "http://www.wikidata.org/entity/Q59935463",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q59935463",
+    "display": {
+     "label": {
+      "value": "Accounts Payable Invoices (NAID 4711963)",
+      "language": "en"
+     },
+     "description": {
+      "value": "series in the National Archives and Records Administration's holdings",
+      "language": "en"
+     }
+    },
+    "label": "Accounts Payable Invoices (NAID 4711963)",
+    "description": "series in the National Archives and Records Administration's holdings",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Accounts Payable Invoices (NAID 4711963)"
+    }
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

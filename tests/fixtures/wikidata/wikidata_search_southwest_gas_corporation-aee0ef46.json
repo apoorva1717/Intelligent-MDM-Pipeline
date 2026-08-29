@@ -1,0 +1,11 @@
+{
+ "domain": "search:southwest gas corporation",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "SOUTHWEST GAS CORPORATION"
+  },
+  "search": [],
+  "success": 1
+ }
+}

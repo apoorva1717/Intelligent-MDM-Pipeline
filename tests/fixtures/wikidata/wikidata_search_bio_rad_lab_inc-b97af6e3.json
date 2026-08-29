@@ -1,0 +1,11 @@
+{
+ "domain": "search:bio rad lab inc",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Bio-Rad Lab Inc"
+  },
+  "search": [],
+  "success": 1
+ }
+}

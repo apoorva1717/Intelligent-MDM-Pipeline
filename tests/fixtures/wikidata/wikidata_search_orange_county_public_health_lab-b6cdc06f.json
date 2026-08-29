@@ -1,0 +1,11 @@
+{
+ "domain": "search:orange county public health lab",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Orange County Public Health Lab"
+  },
+  "search": [],
+  "success": 1
+ }
+}

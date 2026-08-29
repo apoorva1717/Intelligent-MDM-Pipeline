@@ -1,0 +1,11 @@
+{
+ "domain": "search:utsw medical center at redbird",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "UTSW Medical Center at RedBird"
+  },
+  "search": [],
+  "success": 1
+ }
+}

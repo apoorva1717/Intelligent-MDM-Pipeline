@@ -1,0 +1,11 @@
+{
+ "domain": "search:scott white hospital modul c",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Scott & White Hospital Modul C"
+  },
+  "search": [],
+  "success": 1
+ }
+}

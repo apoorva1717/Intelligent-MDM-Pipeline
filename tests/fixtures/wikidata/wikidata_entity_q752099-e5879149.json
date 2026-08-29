@@ -1,0 +1,115 @@
+{
+ "domain": "entity:q752099",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q752099",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Astrophysics Data System"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "NASA Astrophysics Data System"
+    },
+    {
+     "language": "en",
+     "value": "ADS"
+    },
+    {
+     "language": "en",
+     "value": "NASA-ADS"
+    },
+    {
+     "language": "en",
+     "value": "The SAO/NASA Astrophysics Data System"
+    },
+    {
+     "language": "en",
+     "value": "SAO/NASA Astrophysics Data System"
+    },
+    {
+     "language": "en",
+     "value": "SAO Astrophysics Data System"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 7096323,
+        "id": "Q7096323"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 1789476,
+        "id": "Q1789476"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 5227240,
+        "id": "Q5227240"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://ui.adsabs.harvard.edu/",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

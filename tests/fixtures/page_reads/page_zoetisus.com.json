@@ -1,0 +1,17 @@
+{
+ "domain": "zoetisus.com",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "status": 200,
+  "blocked": false,
+  "error": null,
+  "url": "https://www.zoetisus.com/",
+  "title": "Zoetis",
+  "h1": "",
+  "text": "Zoetis [/impressum] Zoetis Zoetis",
+  "paths": [
+   "/",
+   "/impressum"
+  ]
+ }
+}

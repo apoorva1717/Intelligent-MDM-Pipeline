@@ -1,0 +1,57 @@
+{
+ "domain": "entity:q250058",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q250058",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "accounts payable"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "AP"
+    },
+    {
+     "language": "en",
+     "value": "account payable"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 151885,
+        "id": "Q151885"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 508295,
+        "id": "Q508295"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

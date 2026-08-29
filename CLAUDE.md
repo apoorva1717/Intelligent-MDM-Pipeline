@@ -73,6 +73,40 @@ Two run artefacts in different provenance schemes are not comparable; `run_diff`
 detects that and refuses. Use `tools/provenance_invariance.py` to compare across
 a scheme migration.
 
+### The golden set
+
+`docs/SAMPLE_DATA/` holds 99 records paired with the enriched row a reviewer
+certified for each, plus the rules for grading every column.
+
+```powershell
+python scripts/eval_golden.py --out-dir logs/golden      # run + grade
+python scripts/eval_golden.py --check-original           # the column-shift check
+python scripts/golden_root_cause.py --eval logs/golden/golden_eval.json
+python scripts/golden_root_cause.py --bucket abbreviation-direction
+```
+
+`tools/golden_eval.py` is the grader and is pure — it reads the reference,
+applies `Match Rules` then `Cell Notes` (most specific wins) and never touches
+the orchestrator, so `tests/test_golden_eval.py` runs it offline.
+
+Two things to hold on to when reading a score from it:
+
+- **It grades the deterministic layer only.** ROR, LEI, Domain, Record Type,
+  Search Terms and every Flag/Provenance column are declared `skip` by the
+  reference itself — 40 of 67 columns are graded. A `skip` is *no claim*, and is
+  excluded from the denominator rather than counted as a pass.
+- **The reference is one reviewer's work, and its Method sheet says so.** Its
+  street and legal-form columns encode conventions the thesis does not specify
+  and that the pipeline deliberately contradicts (`STREET_TYPE_ABBREVIATIONS`
+  abbreviates; the reference expects `OLDEN STREET`). Check a disagreement
+  against the documented rule before treating it as a defect —
+  `golden_eval_report.md` works through all 244 from the 2026-08-29 run.
+
+**Do not feed `test-all-100-original.xlsx` to the pipeline**: 75 of its 99 rows
+have shifted columns (City holds an issue-code list and a date, Region holds the
+eval-set label). The reference's own INPUT rows are the repaired ones and are
+what `eval_golden.py` uses.
+
 ## Architecture
 
 `main.py` (uvicorn) and `function_app.py` (Azure Functions v2 ASGI catch-all)

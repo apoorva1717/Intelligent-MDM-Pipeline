@@ -1,0 +1,11 @@
+{
+ "domain": "search:a w chesterton company",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "A. W. CHESTERTON COMPANY"
+  },
+  "search": [],
+  "success": 1
+ }
+}

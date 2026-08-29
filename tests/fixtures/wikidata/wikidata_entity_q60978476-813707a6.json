@@ -1,0 +1,32 @@
+{
+ "domain": "entity:q60978476",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q60978476",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "NASA"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 55850593,
+        "id": "Q55850593"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

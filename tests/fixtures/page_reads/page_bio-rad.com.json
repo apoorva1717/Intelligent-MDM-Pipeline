@@ -1,0 +1,14 @@
+{
+ "domain": "bio-rad.com",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "status": 403,
+  "blocked": true,
+  "error": null,
+  "url": "https://www.bio-rad.com:443/",
+  "title": "",
+  "h1": "",
+  "text": "",
+  "paths": []
+ }
+}

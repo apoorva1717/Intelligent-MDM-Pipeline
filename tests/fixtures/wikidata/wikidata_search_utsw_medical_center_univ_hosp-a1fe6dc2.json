@@ -1,0 +1,11 @@
+{
+ "domain": "search:utsw medical center univ hosp",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "UTSW Medical Center Univ Hosp"
+  },
+  "search": [],
+  "success": 1
+ }
+}

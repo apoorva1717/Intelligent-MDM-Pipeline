@@ -1,0 +1,11 @@
+{
+ "domain": "search:hca florida university hospital",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "HCA Florida University Hospital"
+  },
+  "search": [],
+  "success": 1
+ }
+}
