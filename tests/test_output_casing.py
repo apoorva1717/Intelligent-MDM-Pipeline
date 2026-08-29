@@ -397,3 +397,86 @@ class TestExitPaths:
             assert val != val.upper() or not any(c.isalpha() for c in val), (
                 f"{field} is still fully upper-case: {val!r}"
             )
+
+
+class TestAnAcronymThatArrivedCorrectIsNotMangled:
+    """Found by the golden set, 2026-08-29.
+
+    Three records arrived with their acronym already right and shipped with it
+    destroyed — `UTSW Medical Center` -> `Utsw`, `VAMC West LA Visn 22` ->
+    `Vamc West la`, `IDEXX Reference Laboratories` -> `Idexx`. All three carried
+    `input:low` provenance afterwards, which reads "left exactly as supplied";
+    they were not.
+
+    Each is vowel-bearing and pronounceable, so `_unpronounceable` cannot reach
+    them — its docstring is explicit that `_KEEP_UPPER_ACRONYMS` is what covers
+    that case, and that is where they went.
+    """
+
+    @pytest.mark.parametrize("value, expected", [
+        ("UTSW Medical Center", "UTSW Medical Center"),
+        ("IDEXX Reference Laboratories, Inc.", "IDEXX Reference Laboratories, Inc."),
+        ("VAMC West LA Visn 22", "VAMC West LA Visn 22"),
+        ("HCA Florida University Hospital", "HCA Florida University Hospital"),
+        ("JEOL USA Inc", "JEOL USA Inc"),
+    ])
+    def test_it_survives(self, value, expected):
+        assert normalise_case(value, mode="name") == expected
+
+
+class TestAnUpperCaseParticleIsNotAParticle:
+    """`LA` in `VAMC West LA Visn 22` is Los Angeles, not the Romance article.
+
+    Everyone who means the article writes it lower case, so an upper-case
+    particle inside a value that is not itself wholly upper-case is a word.
+    Deliberately narrow: an upper-case token is a weak signal in general —
+    `500 TECH Dr` and `Adams Air HYDRAULICS INC` are half-cased input this pass
+    exists to clean — but decisive for a token whose lower-case form is the
+    only one carrying the particle meaning.
+    """
+
+    def test_an_upper_case_particle_in_a_mixed_value_is_kept(self):
+        assert normalise_case("VAMC West LA Visn 22", mode="name") == (
+            "VAMC West LA Visn 22"
+        )
+
+    def test_a_lower_case_particle_is_still_lower_cased(self):
+        assert normalise_case("Universidad de la Republica", mode="name") == (
+            "Universidad de la Republica"
+        )
+
+    def test_a_particle_in_a_wholly_upper_case_value_is_still_lower_cased(self):
+        # Every token is upper here, so none of them means anything by it and
+        # the ordinary rules apply.
+        assert normalise_case("UNIVERSIDAD DE LA REPUBLICA", mode="name") == (
+            "Universidad de la Republica"
+        )
+
+    def test_a_leading_particle_is_still_a_word(self):
+        # `first` already guards the leading position, so the particle rule
+        # never reaches it and the short-token acronym default keeps it upper
+        # in name mode. Unchanged by the rule above, and pinned here so a
+        # later widening of it has to notice.
+        assert normalise_case("LA JOLLA LABORATORIES", mode="name") == (
+            "LA Jolla Laboratories"
+        )
+        # A city goes through text mode, where a short token is a word.
+        assert normalise_case("LA JOLLA", mode="text") == "La Jolla"
+
+    def test_the_half_cased_input_this_pass_exists_for_is_untouched(self):
+        assert normalise_case("Adams Air HYDRAULICS INC", mode="name") == (
+            "Adams Air Hydraulics Inc"
+        )
+        assert normalise_case("500 TECH Dr MS-4", mode="text") == "500 Tech Dr MS-4"
+
+    def test_an_english_connector_is_not_protected_by_the_particle_rule(self):
+        # `OF` upper in half-cased text is an accident — unlike `LA`, it has no
+        # lower-case-only meaning to preserve. Reading it as deliberate was the
+        # first version of the rule above, and it shipped `THE University OF
+        # Texas` for one record before this test existed.
+        assert normalise_case("THE University OF Texas M", mode="name") == (
+            "THE University of Texas M"
+        )
+        assert normalise_case("Center AND Institute", mode="name") == (
+            "Center and Institute"
+        )

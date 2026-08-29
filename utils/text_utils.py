@@ -310,6 +310,12 @@ _KEEP_UPPER_ACRONYMS = {
     # kept by the length rule.
     "UCSF", "UCSD", "UCLA", "UCSB", "UCSC", "SUNY", "CUNY", "UMASS",
     "UPENN", "UCONN",
+    # Found by the golden set, all three arriving already correct in the input
+    # and shipping mangled — "UTSW Medical Center" -> "Utsw", "VAMC West LA"
+    # -> "Vamc", "IDEXX Reference Laboratories" -> "Idexx". Each is
+    # vowel-bearing and pronounceable, so `_unpronounceable` cannot reach them
+    # by design; the allowlist is what that docstring points at for this case.
+    "UTSW", "VAMC", "IDEXX", "VISN", "HCA", "JEOL",
 }
 # Every parent-org acronym is by definition an acronym, so it keeps its casing
 # too. Folded in rather than duplicated: one edit to PARENT_ORG_ACRONYMS is
@@ -602,10 +608,16 @@ _ROMAN_NUMERALS = {
 # Lower-case particles that must stay lower-case mid-value. The English
 # connectors are shared with `smart_title_case`; the rest keep a European
 # institution or a surname readable ("Institut für Physik", "van der Waals").
-_LOWERCASE_PARTICLES = _TITLE_CASE_CONNECTORS | {
+#: Name particles — the Romance and Germanic articles and prepositions that
+#: appear inside a personal or institution name. Kept apart from the English
+#: connectors because only these carry their meaning in lower case: `la` is the
+#: article, `LA` is Los Angeles. An English connector has no such distinction —
+#: an upper-case `OF` in half-cased text is an accident, not a different word.
+_NAME_PARTICLES = {
     "von", "van", "der", "den", "des", "dem", "du", "de", "del", "della",
     "di", "da", "das", "dos", "le", "la", "les", "und", "für", "fuer", "y",
 }
+_LOWERCASE_PARTICLES = _TITLE_CASE_CONNECTORS | _NAME_PARTICLES
 
 _APOSTROPHES = ("'", "’")
 
@@ -646,8 +658,14 @@ def _title_structural(core: str) -> str:
     return "".join(out)
 
 
-def _case_core(core: str, *, mode: str, first: bool) -> str:
-    """Case one token core (leading/trailing punctuation already split off)."""
+def _case_core(
+    core: str, *, mode: str, first: bool, mixed_source: bool = False,
+) -> str:
+    """Case one token core (leading/trailing punctuation already split off).
+
+    *mixed_source* says the whole value this token came from was NOT entirely
+    upper-case. See :func:`normalise_case`.
+    """
     letters = [ch for ch in core if ch.isalpha()]
     if not letters:
         return core
@@ -666,8 +684,21 @@ def _case_core(core: str, *, mode: str, first: bool) -> str:
     if upper in _ROMAN_NUMERALS:
         return upper
     # A connector is only lower-cased mid-value; leading it, it is a word.
+    #
+    # ...and an UPPER-CASE *name particle* inside a value that is not itself
+    # wholly upper-case is not a particle at all. `VAMC West LA Visn 22`
+    # shipped as `Vamc West la Visn 22`: `LA` is Los Angeles, and everyone who
+    # means the Romance article writes it `la`.
+    #
+    # Restricted to `_NAME_PARTICLES`, twice over. An upper-case token is a
+    # weak signal in general — `500 TECH Dr` and `Adams Air HYDRAULICS INC`
+    # are half-cased input this pass exists to clean. And an English connector
+    # has no lower-case-only meaning to protect, so `THE University OF Texas`
+    # must still yield `of`; reading that `OF` as deliberate was this rule's
+    # first attempt and it was wrong.
     if lowered in _LOWERCASE_PARTICLES and not first:
-        return lowered
+        if not (is_upper and mixed_source and lowered in _NAME_PARTICLES):
+            return lowered
     if upper in _KEEP_UPPER_ACRONYMS:
         return upper
     if is_upper:
@@ -703,13 +734,18 @@ def _case_core(core: str, *, mode: str, first: bool) -> str:
             if seg in ("-", "&") or not seg:
                 out.append(seg)
                 continue
-            out.append(_case_core(seg, mode=mode, first=first and seg_index == 0))
+            out.append(_case_core(
+                seg, mode=mode, first=first and seg_index == 0,
+                mixed_source=mixed_source,
+            ))
             seg_index += 1
         return "".join(out)
     return _title_structural(core)
 
 
-def _case_token(token: str, *, mode: str, first: bool) -> str:
+def _case_token(
+    token: str, *, mode: str, first: bool, mixed_source: bool = False,
+) -> str:
     """Case one whitespace-delimited token, preserving its punctuation.
 
     Leading and trailing punctuation is split off and re-attached verbatim, so
@@ -724,7 +760,9 @@ def _case_token(token: str, *, mode: str, first: bool) -> str:
         return _CASE_EXCEPTIONS[token.lower()]
     return (
         m.group("pre")
-        + _case_core(m.group("core"), mode=mode, first=first)
+        + _case_core(
+            m.group("core"), mode=mode, first=first, mixed_source=mixed_source,
+        )
         + m.group("post")
     )
 
@@ -755,6 +793,10 @@ def normalise_case(
     """
     if not value or not value.strip():
         return value
+    # Whether the SOURCE value was written entirely in upper case. When it was
+    # not, an upper-case token in it is a deliberate acronym rather than
+    # something for the heuristics to guess at.
+    mixed_source = value != value.upper()
     parts = re.split(r"(\s+)", value)
     out: list[str] = []
     first = not continuation
@@ -762,7 +804,9 @@ def normalise_case(
         if not part or part.isspace():
             out.append(part)
             continue
-        out.append(_case_token(part, mode=mode, first=first))
+        out.append(_case_token(
+            part, mode=mode, first=first, mixed_source=mixed_source,
+        ))
         first = False
     cased = "".join(out)
     if len(cased) != len(value):  # pragma: no cover — invariant guard
