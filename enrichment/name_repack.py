@@ -22,15 +22,30 @@ Two halves of one operation, run at opposite ends of the pipeline:
     column is the one case with no word boundary to retreat to, and is cut
     where the column ends.
 
-    The boundary retreats once more rather than leave a piece ending on a
-    connector (:data:`CUT_STOPWORDS`). Without that, the cut landed on exactly
-    the boundary SAP's own writer had used: ``Exxonmobil Research &`` went in,
-    was merged and enriched as ``Exxonmobil Research & Engineering Co``, and
-    came back out as ``Exxonmobil Research &`` again — byte-identical to the
-    input, so the repair was invisible and every probe reading the output
-    concluded UC 0 had never fired. A tidier cut can cost a slot, and a piece
-    with no slot is lost, so ``repack_name_block`` falls back to the denser cut
-    rather than push a name out of the block.
+    The cut is dense: it takes every word that fits. It may therefore leave a
+    piece ending on a connector — ``Department of Materials Science and`` —
+    and that is deliberate, because the SAP column is what it is and the
+    reference corpus writes it exactly that way on three independent records.
+
+    It was not always so. While the width was wrongly set to 32 the cut kept
+    landing on precisely the boundary SAP's own writer had used:
+    ``Exxonmobil Research &`` went in, was merged and enriched as
+    ``Exxonmobil Research & Engineering Co``, and came back out as
+    ``Exxonmobil Research &`` again — byte-identical to the input, so the
+    repair was invisible and every probe reading the output concluded UC 0 had
+    never fired. Retreating off the connector (:data:`CUT_STOPWORDS`) was the
+    first answer to that, and it was treating the symptom: the coincidence was
+    the width. Cutting at the real width instead, the repack reproduces its
+    input block on 5 of the golden set's 64 multi-slot records rather than 16 —
+    and four of those five are not split names at all (a name beside its own
+    acronym, a name beside a department, a duplicated row). The retreat then
+    cost six graded cells and contradicted the corpus, so it is off.
+
+    :func:`chunk_name` and :func:`repack_name_block` still take
+    ``avoid_connector_endings`` and still honour it — the consideration is
+    real, and re-enabling it is one argument. A tidier cut can cost a slot, and
+    a piece with no slot is lost, so with it on ``repack_name_block`` falls
+    back to the denser cut rather than push a name out of the block.
 
     Which slot a piece lands in is per-slot state that other rules hold too.
     Registry ownership and the review flags both follow the value across the
@@ -48,11 +63,23 @@ import re
 
 from utils.name_slots import NAME_SLOTS
 
-# The width one SAP name column is cut to. The columns themselves hold 35
-# characters (see `utils.text_utils`); the rewrite targets 32 so a value has
-# room for the trailing punctuation a downstream consumer may add without
-# spilling into the next column again.
-NAME_FIELD_WIDTH = int(os.getenv("NAME_FIELD_WIDTH", "32"))
+# The width one SAP name column holds, and so the width the rewrite cuts to.
+#
+# Measured from the source data rather than assumed. Across every raw input
+# corpus — `docs/thesis/chemspeed_us_100.xlsx`,
+# `docs/SAMPLE_DATA/test-all-100-original.xlsx` and the golden set's own INPUT
+# rows — no name cell exceeds 40 characters, and two independent records are
+# visibly truncated *mid-word* at exactly 40:
+#
+#     "The Salk Institute for Biological Studie"   (40, "Studies" cut)
+#     "Palo Alto Veterans Institute for Researc"   (40, "Research" cut)
+#
+# A column that cuts a word at 40 is a column of 40. This constant was 32 for
+# most of the project's life, derived from a comment asserting the columns held
+# 35 with three characters held back as margin; the data contradicts the 35, and
+# a margin against a width that was never real only re-split names that fit.
+# Cutting to the full 40 is what SAP itself does.
+NAME_FIELD_WIDTH = int(os.getenv("NAME_FIELD_WIDTH", "40"))
 
 # Words a name piece must not end on. A coordinating conjunction, preposition
 # or article at the end of a column reads as a name cut mid-phrase — which is
@@ -148,7 +175,7 @@ def chunk_name(
     value: str,
     width: int = NAME_FIELD_WIDTH,
     *,
-    avoid_connector_endings: bool = True,
+    avoid_connector_endings: bool = False,
 ) -> list[str]:
     """Cut *value* into pieces of at most *width* characters.
 
@@ -202,6 +229,8 @@ def chunk_name(
 def repack_name_block(
     values: list[str | None],
     width: int = NAME_FIELD_WIDTH,
+    *,
+    avoid_connector_endings: bool = False,
 ) -> tuple[list[str | None], list[str], dict[int, int]]:
     """Lay *values* back across the name block in column-width pieces.
 
@@ -215,10 +244,12 @@ def repack_name_block(
     slot index to the source index it came from, so the caller can carry
     per-field state (registry ownership) across the move.
 
-    The connector-aware cut is preferred but not paid for in content: a piece
-    that ends on a connector reads badly, and a piece with no slot to go to is
-    *lost*. When avoiding the connector needs a slot the block does not have,
-    the denser cut is taken instead.
+    The cut is dense by default — see the module docstring for why the
+    connector-aware cut was measured and turned off. With
+    ``avoid_connector_endings`` on it is preferred but never paid for in
+    content: a piece that ends on a connector reads badly, but a piece with no
+    slot to go to is *lost*, so when avoiding the connector needs a slot the
+    block does not have, the denser cut is taken instead.
     """
     def _cut(avoid: bool) -> list[tuple[str, int]]:
         pieces: list[tuple[str, int]] = []
@@ -230,8 +261,8 @@ def repack_name_block(
             )
         return pieces
 
-    pieces = _cut(True)
-    if len(pieces) > len(NAME_SLOTS):
+    pieces = _cut(avoid_connector_endings)
+    if avoid_connector_endings and len(pieces) > len(NAME_SLOTS):
         dense = _cut(False)
         if len(dense) < len(pieces):
             pieces = dense

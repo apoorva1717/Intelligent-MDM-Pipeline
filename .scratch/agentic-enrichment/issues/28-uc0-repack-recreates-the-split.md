@@ -188,3 +188,70 @@ no batch has been re-run.
 `logs/compare/enriched_samples_200.xlsx`; warm `tests/fixtures/llm/` and
 `tests/fixtures/serp/`. `chunk_name` claims are pure and reproduce with
 `from enrichment.name_repack import chunk_name`.
+
+---
+
+## Resolution, 2026-08-29 — part A was the width, not the cut point
+
+The claim above — *"Widening the column does not fix this. The cut point is the
+bug, not the cut width"* — was wrong, and wrong because it accepted a premise it
+never checked: that the SAP name column holds 35 characters. That number came
+from a comment in `utils/text_utils.py` and appears nowhere in the data.
+
+Measured across every raw input corpus — `docs/thesis/chemspeed_us_100.xlsx`,
+`docs/SAMPLE_DATA/test-all-100-original.xlsx`, and the golden set's own INPUT
+rows — **no name cell exceeds 40 characters**, and two independent records
+arrive truncated *mid-word* at exactly 40:
+
+```
+"The Salk Institute for Biological Studie"    (40, "Studies" cut)
+"Palo Alto Veterans Institute for Researc"    (40, "Research" cut)
+```
+
+A column that cuts a word at 40 is a column of 40. `NAME_FIELD_WIDTH` was 32:
+the true width, minus three characters of margin, against a width that was
+itself invented.
+
+**The width was the whole of part A.** Re-measured on the golden set's 64
+multi-slot records, the number where a dense cut reproduces the input block:
+
+| `NAME_FIELD_WIDTH` | blocks reproduced |
+|---|---:|
+| 32 | 16 / 64 |
+| 40 | 5 / 64 |
+
+Four of the surviving five are not split names at all — a name beside its own
+acronym (`Palo Alto Veterans Institute for Researc` + `PAVIR`), a name beside a
+department, a duplicated row. The fifth is `ExxonMobil Technology and
+Engineering` + `Company`, which is exactly what the reference expects.
+
+Of the five shapes tabulated above, one (`Exxonmobil Research & Engineering Co`,
+36 chars) now fits in a single column — two slots in, one slot out, so the
+repair is visible in the output rather than invisible. The rest cut where the
+reference cuts them.
+
+### The connector retreat is off
+
+It was the wrong fix for a real problem, and at the true width it is actively
+against the corpus. The reference writes a piece ending on `and` on three
+independent records — `Department of Materials Science and`, `Department of
+Chemical Engineering and`, `Department of Molecular, Cell and` — because the
+column is what it is and a dense cut fills it.
+
+Measured on the golden set at width 40: dense **3790/3928**, retreat
+**3784/3928**. `chunk_name` and `repack_name_block` still take
+`avoid_connector_endings` and still honour it; the default is off, and
+`TestTheConnectorRetreatIsStillAvailable` keeps it working.
+
+Part B (the flags describing a stale slot layout) stands as written and was
+fixed as described — `flags.relabel_name_slots`.
+
+### Score
+
+| | cells | records |
+|---|---:|---:|
+| before this ticket | 3685 / 3928 (93.8%) | 6 / 99 |
+| after part B + the earlier fixes | 3770 / 3928 (96.0%) | 20 / 99 |
+| after the width correction | **3790 / 3928 (96.5%)** | **23 / 99** |
+
+Name-column failures: 101 -> 81.

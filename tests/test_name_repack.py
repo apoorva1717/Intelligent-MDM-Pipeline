@@ -40,6 +40,7 @@ from enrichment.flags import (
     render,
 )
 from utils.name_slots import NAME_SLOTS
+from utils.text_utils import normalise_case
 from enrichment.name_repack import (
     NAME_FIELD_WIDTH,
     _is_connector,
@@ -132,9 +133,9 @@ class TestChunkName:
         ]
 
     def test_the_cut_retreats_to_a_word_boundary(self):
-        # 41 characters. A cut taken at 32 would land inside "Security".
+        # 41 characters. A cut taken at the width lands inside "LLC".
         assert chunk_name("Lawrence Livermore National Security, LLC") == [
-            "Lawrence Livermore National", "Security, LLC",
+            "Lawrence Livermore National Security,", "LLC",
         ]
 
     def test_no_piece_exceeds_the_width(self):
@@ -144,17 +145,18 @@ class TestChunkName:
         assert all(len(p) <= NAME_FIELD_WIDTH for p in chunk_name(value))
 
     def test_a_piece_may_end_exactly_on_the_width(self):
-        value = "Energy National Renewable Energy Laboratory"
+        value = "Energy National Renewable Energy Systems Laboratory"
         pieces = chunk_name(value)
-        assert pieces[0] == "Energy National Renewable Energy"
+        assert pieces[0] == "Energy National Renewable Energy Systems"
         assert len(pieces[0]) == NAME_FIELD_WIDTH
 
     def test_a_token_longer_than_the_width_is_cut_where_the_column_ends(self):
         # There is no word boundary to retreat to. Cutting mid-word is the
         # only option left, and it beats dropping the tail.
-        pieces = chunk_name("Donaudampfschifffahrtsgesellschaftskapitaen eV")
-        assert pieces[0] == "Donaudampfschifffahrtsgesellscha"
-        assert pieces[1] == "ftskapitaen eV"
+        value = "Donaudampfschifffahrtsgesellschaftskapitaen eV"
+        pieces = chunk_name(value)
+        assert pieces[0] == value[:NAME_FIELD_WIDTH]
+        assert pieces[1] == value[NAME_FIELD_WIDTH:]
         assert "".join(pieces).replace(" ", "") == (
             "DonaudampfschifffahrtsgesellschaftskapitaeneV"
         )
@@ -165,37 +167,80 @@ class TestChunkName:
         assert chunk_name("") == []
 
 
-class TestTheCutNeverStrandsAConnector:
-    """Ticket 28 part A.
+class TestTheCutIsDense:
+    """Ticket 28 part A, as it settled.
 
-    The repack used to cut at the last word boundary that fits and stop, which
-    landed on exactly the boundary SAP's own writer had used — so a name UC 0
-    had just merged and enriched came back out split identically, and every
-    probe reading the output concluded UC 0 never fired.
+    The cut takes every word that fits, and may end a piece on a connector.
+    That is the corpus's own convention: the reference workbook writes
+    `Department of Materials Science and`, `Department of Chemical Engineering
+    and` and `Department of Molecular, Cell and` on three independent records.
+
+    Retreating off the connector was the first answer to ticket 28, when
+    NAME_FIELD_WIDTH was wrongly 32 and the cut kept reproducing SAP's own
+    split. The width was the cause -- see TestTheWidthIsTheColumn.
     """
 
     @pytest.mark.parametrize("value, expected", [
-        # The five shapes measured on the S2/S3 200-record sample.
+        # The five shapes measured on the S2/S3 200-record sample. One of the
+        # five no longer needs cutting at all at the real column width, and
+        # the rest cut where the reference expects -- which is the clearest
+        # statement of what ticket 28 actually was.
         ("Exxonmobil Research & Engineering Co",
-         ["Exxonmobil Research", "& Engineering Co"]),
+         ["Exxonmobil Research & Engineering Co"]),
         ("ExxonMobil Technology and Engineering Company",
-         ["ExxonMobil Technology", "and Engineering Company"]),
+         ["ExxonMobil Technology and Engineering", "Company"]),
         ("Expeditors International of Washington, Inc.",
-         ["Expeditors International", "of Washington, Inc."]),
+         ["Expeditors International of Washington,", "Inc."]),
         ("Novartis Institute for BioMedical Research Inc",
-         ["Novartis Institute", "for BioMedical Research Inc"]),
+         ["Novartis Institute for BioMedical", "Research Inc"]),
         ("Florida Cancer Specialists & Research Institute",
-         ["Florida Cancer Specialists", "& Research Institute"]),
+         ["Florida Cancer Specialists & Research", "Institute"]),
     ])
-    def test_the_measured_shapes_cut_before_the_connector(self, value, expected):
+    def test_the_measured_shapes(self, value, expected):
         assert chunk_name(value) == expected
 
+    def test_a_piece_may_end_on_a_connector(self):
+        # The reference expects exactly this, on three separate records.
+        assert chunk_name("Department of Materials Science and Engineering") \
+            == ["Department of Materials Science and", "Engineering"]
+
+    def test_a_name_ending_on_a_connector_keeps_it(self):
+        assert chunk_name("Smith and") == ["Smith and"]
+
+
+class TestTheWidthIsTheColumn:
+    """NAME_FIELD_WIDTH is measured, not chosen.
+
+    No name cell in any raw input corpus exceeds 40 characters, and two
+    records arrive truncated mid-word at exactly 40. A column that cuts a word
+    at 40 is a column of 40.
+    """
+
+    def test_the_width_is_forty(self):
+        assert NAME_FIELD_WIDTH == 40
+
+    @pytest.mark.parametrize("truncated", [
+        "The Salk Institute for Biological Studie",   # "Studies", cut
+        "Palo Alto Veterans Institute for Researc",   # "Research", cut
+    ])
+    def test_the_corpus_truncations_sit_exactly_on_the_width(self, truncated):
+        assert len(truncated) == NAME_FIELD_WIDTH
+
+
+class TestTheConnectorRetreatIsStillAvailable:
+    """Off by default, but honoured -- the consideration is real, and turning
+    it back on is one argument."""
+
+    def test_it_retreats_off_the_connector(self):
+        assert chunk_name(
+            "Department of Materials Science and Engineering",
+            avoid_connector_endings=True,
+        ) == ["Department of Materials Science", "and Engineering"]
+
     def test_no_piece_but_the_last_ends_on_a_connector(self):
-        value = "National Technology & Engineering Solutions of Sandia"
-        pieces = chunk_name(value)
-        assert pieces == [
-            "National Technology", "& Engineering Solutions", "of Sandia",
-        ]
+        value = "National Institute of Standards and Technology"
+        pieces = chunk_name(value, avoid_connector_endings=True)
+        assert pieces == ["National Institute of Standards", "and Technology"]
         assert not any(
             _is_connector(piece.split(" ")[-1]) for piece in pieces[:-1]
         )
@@ -203,45 +248,36 @@ class TestTheCutNeverStrandsAConnector:
     def test_a_run_of_connectors_retreats_whole(self):
         # The dense cut ends the first piece on "of the"; both words move,
         # rather than retreating one and leaving a piece ending on "of".
-        value = "Genetics Institute of the Massachusetts General Hospital"
-        assert chunk_name(value, avoid_connector_endings=False)[0] == (
-            "Genetics Institute of the"
-        )
-        pieces = chunk_name(value)
-        assert pieces[0] == "Genetics Institute"
+        value = "Advanced Genetics Institute of the Massachusetts General Hospital"
+        assert chunk_name(value)[0] == "Advanced Genetics Institute of the"
+        pieces = chunk_name(value, avoid_connector_endings=True)
+        assert pieces[0] == "Advanced Genetics Institute"
         assert pieces[1].startswith("of the ")
-
-    def test_a_name_ending_on_a_connector_keeps_it(self):
-        # Nothing follows the last piece to carry the word to, and the name
-        # genuinely ends that way.
-        assert chunk_name("Smith and") == ["Smith and"]
 
     def test_the_retreat_is_declined_rather_than_cut_a_word_in_half(self):
         # Carrying "of" forward would leave no room for the long token that
         # follows, and a mid-word cut is worse than a connector at the edge.
-        value = "Bundesanstalt Materialforschung of " + "X" * 31
-        pieces = chunk_name(value)
+        value = "Bundesanstalt Materialforschung of " + "X" * 39
+        pieces = chunk_name(value, avoid_connector_endings=True)
         assert all(len(p) <= NAME_FIELD_WIDTH for p in pieces)
-        assert "X" * 31 in pieces
+        assert "X" * 39 in pieces
 
     def test_it_is_never_paid_for_in_dropped_content(self):
         # The tidier cut costs a slot here, and a piece with no slot is lost.
         # Content wins: the denser cut is taken instead.
-        packed, dropped, _ = repack_name_block([
+        block = [
             "United States Department of Energy National Renewable Energy "
-            "Laboratory Golden Colorado",
-            "Center for Advanced Materials Research",
+            "Laboratory Golden Colorado Campus Site",
+            "Center for Advanced Materials and Interface Research",
             "Photovoltaic Devices Group",
             None, None,
-        ])
-        assert all(packed)
-        assert dropped == ["Photovoltaic Devices Group"]
-
-    def test_the_dense_cut_is_still_available_explicitly(self):
-        assert chunk_name(
-            "Exxonmobil Research & Engineering Co",
-            avoid_connector_endings=False,
-        ) == ["Exxonmobil Research &", "Engineering Co"]
+        ]
+        tidy, tidy_dropped, _ = repack_name_block(
+            block, avoid_connector_endings=True,
+        )
+        assert all(tidy)
+        # The retreat would have cost the last unit a slot, so it was declined.
+        assert tidy_dropped == repack_name_block(block)[1]
 
 
 class TestTheFlagFollowsTheValue:
@@ -283,9 +319,9 @@ class TestTheFlagFollowsTheValue:
 
         assert relabel_name_slots(r, moved) is True
         # The flag now names the slot that holds the string it is about.
-        assert r.flagged_fields == ["name4"]
-        assert packed[NAME_SLOTS.index("name4")] == "LLC"
-        assert "Name 4:" in r.flag_reason
+        assert r.flagged_fields == ["name3"]
+        assert packed[NAME_SLOTS.index("name3")] == "LLC"
+        assert "Name 3:" in r.flag_reason
 
     def test_a_name_cut_across_three_columns_scopes_to_all_three(self):
         r = self._flagged(scopes={DOMAIN_UNVERIFIED: ["name1", "domain"]})
@@ -321,22 +357,34 @@ class TestTheFlagFollowsTheValue:
 class TestAContinuationPieceIsNotTheStartOfAName:
     """Measured on the golden set, 2026-08-29.
 
-    Cutting before the connector puts a lower-case word at the head of a slot,
-    and the output casing pass capitalises the first token of a name — so
+    A cut that puts a lower-case word at the head of a slot meets an output
+    casing pass that capitalises the first token of a name -- so
     `ExxonMobil Technology` + `and Engineering Company` shipped as
     `And Engineering Company`. The repack's own cut point was manufacturing a
     capital in the middle of a name.
+
+    That cut was the connector retreat, which is now off (TestTheCutIsDense),
+    and at NAME_FIELD_WIDTH = 40 no name in any corpus reaches this shape --
+    the scan over all 555 distinct name strings in the three sample workbooks
+    finds zero. The dense cut can still produce one, so the guard stays; its
+    fixture is synthetic rather than measured, and it is pinned at the seam
+    where the rule lives rather than end to end, because the tiers reshape any
+    name long enough to reach it.
     """
 
-    @pytest.mark.asyncio
-    async def test_the_connector_leading_a_slot_stays_lower_case(self):
-        r = await _run(
-            _orch(llm=_SplitLLM({("Name 1", "Name 2")})),
-            name1="ExxonMobil Technology and", name2="Engineering Company",
-        )
-        assert _block(r)[:2] == [
-            "ExxonMobil Technology", "and Engineering Company",
-        ]
+    def test_the_repack_can_still_lead_a_slot_with_a_connector(self):
+        assert chunk_name("Southwest Research Institute Department of Chemistry") \
+            == ["Southwest Research Institute Department", "of Chemistry"]
+
+    def test_a_continuation_slot_keeps_its_leading_connector_lower_case(self):
+        assert normalise_case(
+            "of Chemistry", mode="name", continuation=True,
+        ) == "of Chemistry"
+
+    def test_the_same_string_starting_a_name_is_capitalised(self):
+        assert normalise_case(
+            "of Chemistry", mode="name", continuation=False,
+        ) == "Of Chemistry"
 
     @pytest.mark.asyncio
     async def test_a_slot_that_starts_a_name_is_still_capitalised(self):
@@ -416,7 +464,7 @@ class TestRepackNameBlock:
             "Department of Chemistry", None, None, None,
         ])
         assert packed == [
-            "Lawrence Livermore National", "Security, LLC",
+            "Lawrence Livermore National Security,", "LLC",
             "Department of Chemistry", None, None,
         ]
         assert dropped == []
@@ -434,13 +482,15 @@ class TestRepackNameBlock:
     def test_a_piece_with_no_slot_is_returned_rather_than_dropped(self):
         packed, dropped, _ = repack_name_block([
             "United States Department of Energy National Renewable Energy "
-            "Laboratory Golden Colorado",
-            "Center for Advanced Materials Research",
+            "Laboratory Golden Colorado Campus Site Building Seven",
+            "Center for Advanced Materials and Interface Research",
             "Photovoltaic Devices Group",
             None, None,
         ])
         assert all(packed)
-        assert dropped == ["Photovoltaic Devices Group"]
+        # The organisation name is served first; what is squeezed out is
+        # always the lowest-priority unit.
+        assert dropped == ["Interface Research", "Photovoltaic Devices Group"]
 
     def test_the_origin_map_names_the_slot_each_piece_came_from(self):
         _, _, origin = repack_name_block([
@@ -449,6 +499,7 @@ class TestRepackNameBlock:
         ])
         # Both halves of Name 1 came from Name 1; the department from Name 2.
         assert origin == {0: 0, 1: 0, 2: 1}
+
 
 
 # ---------------------------------------------------------------------------
@@ -468,11 +519,9 @@ class TestSplitRecordsAreEnriched:
         )
         assert "Massachusetts Institute of Technology" in ror.queries
         assert r.ror_id == "https://ror.org/042nb2s44"
-        # 37 characters of official ROR name, written back across two columns.
-        # The cut falls before "of", not after it: a piece ending on a
-        # connector is the shape UC 0 exists to repair, and a repack that
-        # produces one hands back the defect the merge just removed.
-        assert _block(r)[:2] == ["Massachusetts Institute", "of Technology"]
+        # 37 characters of official ROR name -- inside one SAP column, so the
+        # repair is visible in the output: two slots in, one slot out.
+        assert _block(r)[:2] == ["Massachusetts Institute of Technology", None]
 
     @pytest.mark.asyncio
     async def test_a_merged_name_that_fits_empties_the_slot_below_it(self):
@@ -493,7 +542,7 @@ class TestSplitRecordsAreEnriched:
             name3="Department of Chemistry",
         )
         assert _block(r)[:3] == [
-            "Lawrence Livermore National", "Security, LLC",
+            "Lawrence Livermore National Security,", "LLC",
             "Department of Chemistry",
         ]
 
@@ -513,8 +562,8 @@ class TestSplitRecordsAreEnriched:
         r = await _run(
             _orch(),
             name1="United States Department of Energy National Renewable",
-            name2="Energy Laboratory Golden Colorado Campus Building",
-            name3="Center for Advanced Materials Research",
+            name2="Energy Laboratory Golden Colorado Campus Building Seven",
+            name3="Center for Advanced Materials and Interface Research",
             name4="Photovoltaic Devices Group",
             name5="Thin Film Deposition Facility",
         )

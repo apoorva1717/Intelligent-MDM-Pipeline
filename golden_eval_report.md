@@ -284,10 +284,19 @@ and the content is identical:
 
 The reference writes name values of **34–38 characters** into Name 1
 (`University of California, Riverside`, `California Department of Public Health`,
-`Lewis-Sigler Institute for Integrative`). `NAME_FIELD_WIDTH` is 32, against a
-real 35-character SAP column. **The reference asserts no width limit at all**,
-so it can never agree with any cut the pipeline makes. This is a disagreement
-about the schema, not about the name.
+`Lewis-Sigler Institute for Integrative`), against a `NAME_FIELD_WIDTH` of 32.
+
+**Resolved — the pipeline was wrong about the schema.** The 32 was derived from
+a comment asserting a 35-character SAP column, which appears nowhere in the
+data. No name cell in any raw input corpus exceeds **40** characters, and two
+records arrive truncated mid-word at exactly 40 (`The Salk Institute for
+Biological Studie`, `Palo Alto Veterans Institute for Researc`). A column that
+cuts a word at 40 is a column of 40; the reference and the pipeline were
+measuring the same schema, and the pipeline had it three characters short of a
+number that was itself five characters short.
+
+Correcting `NAME_FIELD_WIDTH` to 40 recovered 20 graded cells and 3 records,
+and took the connector-aware cut with it — see ticket 28's resolution.
 
 ## 8. A regression this evaluation caught in my own earlier change
 

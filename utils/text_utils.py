@@ -479,7 +479,7 @@ def smart_title_case(value: str | None) -> str | None:
 _BRACKETED_SPAN_RE = re.compile(r"\s*[(\[{][^(){}\[\]]*[)\]}]\s*")
 
 # An opening bracket with no closing partner, to end of string. SAP name
-# columns are 35 characters, so "Bayer (Leverkusen Werk" — a truncated
+# columns are 40 characters (see `name_repack.NAME_FIELD_WIDTH`), so "Bayer (Leverkusen Werk" — a truncated
 # disambiguator — is as common as the closed form.
 _UNCLOSED_BRACKET_RE = re.compile(r"\s*[(\[{][^(){}\[\]]*$")
 
