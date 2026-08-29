@@ -1,0 +1,43 @@
+{
+ "domain": "entity:q27713755",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q27713755",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "U. S. Navy medicine"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "US Navy Med"
+    },
+    {
+     "language": "en",
+     "value": "U.S. Navy medicine"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 5633421,
+        "id": "Q5633421"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

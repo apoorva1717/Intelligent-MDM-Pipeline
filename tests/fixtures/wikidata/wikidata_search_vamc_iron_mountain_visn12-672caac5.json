@@ -1,0 +1,11 @@
+{
+ "domain": "search:vamc iron mountain visn12",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Vamc Iron Mountain Visn12"
+  },
+  "search": [],
+  "success": 1
+ }
+}

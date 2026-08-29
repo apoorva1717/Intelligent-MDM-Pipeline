@@ -1,0 +1,131 @@
+{
+ "domain": "entity:q17986161",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q17986161",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Bureau of Medicine and Surgery"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "US Navy Bureau of Medicine and Surgery"
+    },
+    {
+     "language": "en",
+     "value": "U.S. Navy Bureau of Medicine and Surgery"
+    },
+    {
+     "language": "en",
+     "value": "BUMED"
+    },
+    {
+     "language": "en",
+     "value": "Navy Bureau of Medicine and Surgery"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 176799,
+        "id": "Q176799"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 7890833,
+        "id": "Q7890833"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P159": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 408744,
+        "id": "Q408744"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.med.navy.mil/Pages/default.aspx",
+       "type": "string"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.med.navy.mil/Bureau-of-Medicine-and-Surgery/",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P6782": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P6782",
+      "datavalue": {
+       "value": "01e2k1j30",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

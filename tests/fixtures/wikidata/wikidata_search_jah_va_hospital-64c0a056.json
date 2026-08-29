@@ -1,0 +1,11 @@
+{
+ "domain": "search:jah va hospital",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "JAH VA Hospital"
+  },
+  "search": [],
+  "success": 1
+ }
+}

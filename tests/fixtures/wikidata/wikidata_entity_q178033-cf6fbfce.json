@@ -1,0 +1,125 @@
+{
+ "domain": "entity:q178033",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q178033",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "United States Navy SEALs"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Navy SEALs"
+    },
+    {
+     "language": "en",
+     "value": "U.S. Navy SEALs"
+    },
+    {
+     "language": "en",
+     "value": "US Navy SEALs"
+    },
+    {
+     "language": "en",
+     "value": "SEALs"
+    },
+    {
+     "language": "en",
+     "value": "United States Navy Sea, Air, and Land Teams"
+    },
+    {
+     "language": "en",
+     "value": "Navy\u2019s Sea, Air and Land Forces"
+    },
+    {
+     "language": "en",
+     "value": "Frogmen"
+    },
+    {
+     "language": "en",
+     "value": "Greenfaces"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 234497,
+        "id": "Q234497"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 176799,
+        "id": "Q176799"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P159": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 3337216,
+        "id": "Q3337216"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.sealswcc.com/become-navy-seal.html",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

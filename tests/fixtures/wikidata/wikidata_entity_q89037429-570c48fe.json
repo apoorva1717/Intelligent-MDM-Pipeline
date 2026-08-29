@@ -1,0 +1,71 @@
+{
+ "domain": "entity:q89037429",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q89037429",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "West Roxbury VA Medical Center"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "VA Medical Center"
+    },
+    {
+     "language": "en",
+     "value": "VA Hospital"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 16917,
+        "id": "Q16917"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.boston.va.gov/locations/directions.asp",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

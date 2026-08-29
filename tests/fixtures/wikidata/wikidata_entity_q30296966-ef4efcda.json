@@ -1,0 +1,101 @@
+{
+ "domain": "entity:q30296966",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q30296966",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "United States Department of Energy Office of International Affairs"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Office of International Affairs"
+    },
+    {
+     "language": "en",
+     "value": "US Department of Energy Office of International Affairs"
+    },
+    {
+     "language": "en",
+     "value": "U.S. Department of Energy Office of International Affairs"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 327333,
+        "id": "Q327333"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 2366457,
+        "id": "Q2366457"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://energy.gov/ia/office-international-affairs",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P6782": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P6782",
+      "datavalue": {
+       "value": "05ek3m339",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

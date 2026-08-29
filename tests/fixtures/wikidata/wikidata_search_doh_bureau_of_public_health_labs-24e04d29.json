@@ -1,0 +1,11 @@
+{
+ "domain": "search:doh bureau of public health labs",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "DOH Bureau of Public Health Labs"
+  },
+  "search": [],
+  "success": 1
+ }
+}

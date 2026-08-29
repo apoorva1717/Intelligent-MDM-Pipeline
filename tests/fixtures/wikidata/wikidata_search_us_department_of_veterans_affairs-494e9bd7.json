@@ -1,0 +1,141 @@
+{
+ "domain": "search:us department of veterans affairs",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "US Department of Veterans Affairs"
+  },
+  "search": [
+   {
+    "id": "Q592576",
+    "title": "Q592576",
+    "pageid": 557631,
+    "concepturi": "http://www.wikidata.org/entity/Q592576",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q592576",
+    "display": {
+     "label": {
+      "value": "United States Department of Veterans Affairs",
+      "language": "en"
+     },
+     "description": {
+      "value": "department of the United States government",
+      "language": "en"
+     }
+    },
+    "label": "United States Department of Veterans Affairs",
+    "description": "department of the United States government",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "US Department of Veterans Affairs"
+    },
+    "aliases": [
+     "US Department of Veterans Affairs"
+    ]
+   },
+   {
+    "id": "Q45331153",
+    "title": "Q45331153",
+    "pageid": 46504727,
+    "concepturi": "http://www.wikidata.org/entity/Q45331153",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q45331153",
+    "display": {
+     "label": {
+      "value": "US Department of Veterans Affairs (VA) efforts to promote psychosocial rehabilitation and recovery.",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific article published in January 2010",
+      "language": "en"
+     }
+    },
+    "label": "US Department of Veterans Affairs (VA) efforts to promote psychosocial rehabilitation and recovery.",
+    "description": "scientific article published in January 2010",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "US Department of Veterans Affairs (VA) efforts to promote psychosocial rehabilitation and recovery."
+    }
+   },
+   {
+    "id": "Q45334650",
+    "title": "Q45334650",
+    "pageid": 46507954,
+    "concepturi": "http://www.wikidata.org/entity/Q45334650",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q45334650",
+    "display": {
+     "label": {
+      "value": "US Department of Veterans Affairs medical care system as a resource to epidemiologists",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific article published in February 2000",
+      "language": "en"
+     }
+    },
+    "label": "US Department of Veterans Affairs medical care system as a resource to epidemiologists",
+    "description": "scientific article published in February 2000",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "US Department of Veterans Affairs medical care system as a resource to epidemiologists"
+    }
+   },
+   {
+    "id": "Q24672738",
+    "title": "Q24672738",
+    "pageid": 26636876,
+    "concepturi": "http://www.wikidata.org/entity/Q24672738",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q24672738",
+    "display": {
+     "label": {
+      "value": "US Department of Veterans Affairs disability policies for posttraumatic stress disorder: administrative trends and implications for treatment, rehabilitation, and research",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific article",
+      "language": "en"
+     }
+    },
+    "label": "US Department of Veterans Affairs disability policies for posttraumatic stress disorder: administrative trends and implications for treatment, rehabilitation, and research",
+    "description": "scientific article",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "US Department of Veterans Affairs disability policies for posttraumatic stress disorder: administrative trends and implications for treatment, rehabilitation, and research"
+    }
+   },
+   {
+    "id": "Q40366692",
+    "title": "Q40366692",
+    "pageid": 41707843,
+    "concepturi": "http://www.wikidata.org/entity/Q40366692",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q40366692",
+    "display": {
+     "label": {
+      "value": "US Department of Veterans Affairs Primary Care Provider Turnover and Patient Satisfaction",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific article published on November 2015",
+      "language": "en"
+     }
+    },
+    "label": "US Department of Veterans Affairs Primary Care Provider Turnover and Patient Satisfaction",
+    "description": "scientific article published on November 2015",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "US Department of Veterans Affairs Primary Care Provider Turnover and Patient Satisfaction"
+    }
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

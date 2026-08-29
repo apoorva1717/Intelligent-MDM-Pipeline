@@ -1,0 +1,11 @@
+{
+ "domain": "search:billerud us prod holding llc",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Billerud US Prod Holding LLC"
+  },
+  "search": [],
+  "success": 1
+ }
+}

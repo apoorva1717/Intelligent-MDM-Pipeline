@@ -1,0 +1,79 @@
+{
+ "domain": "entity:q40040",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q40040",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Amazonas"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "State of Amazonas"
+    },
+    {
+     "language": "en",
+     "value": "AM"
+    },
+    {
+     "language": "en",
+     "value": "Amazonas (Brazil)"
+    },
+    {
+     "language": "en",
+     "value": "Amazonas State"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 485258,
+        "id": "Q485258"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 155,
+        "id": "Q155"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.amazonas.am.gov.br/",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,39 @@
+{
+ "domain": "entity:q137176215",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q137176215",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "3M Mincom"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "3M Company Mincom division"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 783794,
+        "id": "Q783794"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

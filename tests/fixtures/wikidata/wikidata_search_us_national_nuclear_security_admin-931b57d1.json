@@ -1,0 +1,11 @@
+{
+ "domain": "search:us national nuclear security admin",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "US National Nuclear Security Admin"
+  },
+  "search": [],
+  "success": 1
+ }
+}

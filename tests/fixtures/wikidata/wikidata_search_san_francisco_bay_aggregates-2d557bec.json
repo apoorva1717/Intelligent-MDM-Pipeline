@@ -1,0 +1,11 @@
+{
+ "domain": "search:san francisco bay aggregates",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "San Francisco Bay Aggregates"
+  },
+  "search": [],
+  "success": 1
+ }
+}

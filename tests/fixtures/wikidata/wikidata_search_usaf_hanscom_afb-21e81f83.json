@@ -1,0 +1,11 @@
+{
+ "domain": "search:usaf hanscom afb",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Usaf Hanscom AFB"
+  },
+  "search": [],
+  "success": 1
+ }
+}

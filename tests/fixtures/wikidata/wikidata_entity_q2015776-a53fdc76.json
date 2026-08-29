@@ -1,0 +1,121 @@
+{
+ "domain": "entity:q2015776",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q2015776",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Office of Scientific and Technical Information"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "US Department of Energy, Office of Scientific and Technical Information"
+    },
+    {
+     "language": "en",
+     "value": "Department of Energy, Office of Scientific and Technical Information"
+    },
+    {
+     "language": "en",
+     "value": "United States Department of Energy, Office of Scientific and Technical Information"
+    },
+    {
+     "language": "en",
+     "value": "OSTI"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 20857065,
+        "id": "Q20857065"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 124457458,
+        "id": "Q124457458"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P159": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 48809,
+        "id": "Q48809"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.osti.gov/",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P6782": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P6782",
+      "datavalue": {
+       "value": "031478740",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

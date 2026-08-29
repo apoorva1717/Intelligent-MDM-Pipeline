@@ -1,0 +1,11 @@
+{
+ "domain": "search:mi department of health human services",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "MI Department Of Health & Human Services"
+  },
+  "search": [],
+  "success": 1
+ }
+}

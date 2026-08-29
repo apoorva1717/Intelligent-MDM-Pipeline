@@ -1,0 +1,11 @@
+{
+ "domain": "search:microsemi corp",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Microsemi Corp"
+  },
+  "search": [],
+  "success": 1
+ }
+}

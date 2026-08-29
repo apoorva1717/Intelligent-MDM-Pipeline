@@ -1,0 +1,83 @@
+{
+ "domain": "entity:q7161972",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q7161972",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Pembroke Refinery"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Popton Refinery"
+    },
+    {
+     "language": "en",
+     "value": "Pembroke Oil Refinery"
+    },
+    {
+     "language": "en",
+     "value": "Rhoscrowther Refinery"
+    },
+    {
+     "language": "en",
+     "value": "Regent Refinery, Rhoscrowther"
+    },
+    {
+     "language": "en",
+     "value": "Texaco Refinery, Rhoscrowther"
+    },
+    {
+     "language": "en",
+     "value": "Chevron Refinery, Rhoscrowther"
+    },
+    {
+     "language": "en",
+     "value": "Valero Refinery, Rhoscrowther"
+    },
+    {
+     "language": "en",
+     "value": "Angle Bay Refinery"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 12353044,
+        "id": "Q12353044"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 145,
+        "id": "Q145"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

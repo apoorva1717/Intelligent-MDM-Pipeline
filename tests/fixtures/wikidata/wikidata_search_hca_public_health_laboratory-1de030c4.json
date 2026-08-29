@@ -1,0 +1,11 @@
+{
+ "domain": "search:hca public health laboratory",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "HCA Public Health Laboratory"
+  },
+  "search": [],
+  "success": 1
+ }
+}

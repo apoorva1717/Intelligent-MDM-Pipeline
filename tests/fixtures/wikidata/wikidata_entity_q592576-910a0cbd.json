@@ -1,0 +1,147 @@
+{
+ "domain": "entity:q592576",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q592576",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "United States Department of Veterans Affairs"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "VA"
+    },
+    {
+     "language": "en",
+     "value": "Veterans Affairs Department"
+    },
+    {
+     "language": "en",
+     "value": "Department of Veterans Affairs"
+    },
+    {
+     "language": "en",
+     "value": "DVA"
+    },
+    {
+     "language": "en",
+     "value": "US Department of Veterans Affairs"
+    },
+    {
+     "language": "en",
+     "value": "U.S. Department of Veterans Affairs"
+    },
+    {
+     "language": "en",
+     "value": "U.S. Dept. of Veterans Affairs"
+    },
+    {
+     "language": "en",
+     "value": "The United States Government as Represented by the Department of Veterans Affairs (Washington, DC)"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 910252,
+        "id": "Q910252"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 92786122,
+        "id": "Q92786122"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P159": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 61,
+        "id": "Q61"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.va.gov/",
+       "type": "string"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.va.gov/",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P6782": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P6782",
+      "datavalue": {
+       "value": "05rsv9s98",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

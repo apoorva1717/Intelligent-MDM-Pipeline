@@ -1,0 +1,11 @@
+{
+ "domain": "search:zoetis ref laboratory cincinnati",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Zoetis Ref Laboratory Cincinnati"
+  },
+  "search": [],
+  "success": 1
+ }
+}

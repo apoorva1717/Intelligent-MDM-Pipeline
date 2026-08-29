@@ -1,0 +1,11 @@
+{
+ "domain": "search:medical center supply service 90",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Medical Center Supply Service 90"
+  },
+  "search": [],
+  "success": 1
+ }
+}

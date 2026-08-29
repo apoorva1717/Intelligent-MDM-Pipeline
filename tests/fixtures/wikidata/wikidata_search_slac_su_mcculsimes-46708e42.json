@@ -1,0 +1,11 @@
+{
+ "domain": "search:slac su_mcculsimes",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Slac/su_mcculsimes"
+  },
+  "search": [],
+  "success": 1
+ }
+}

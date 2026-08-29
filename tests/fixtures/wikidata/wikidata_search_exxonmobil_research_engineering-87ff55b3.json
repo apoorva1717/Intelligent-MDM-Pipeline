@@ -1,0 +1,11 @@
+{
+ "domain": "search:exxonmobil research engineering",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "ExxonMobil Research & Engineering"
+  },
+  "search": [],
+  "success": 1
+ }
+}

@@ -1,0 +1,75 @@
+{
+ "domain": "entity:q201162",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q201162",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Amazonas Department"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Amazonas department"
+    },
+    {
+     "language": "en",
+     "value": "Amazonas, Peru"
+    },
+    {
+     "language": "en",
+     "value": "Amazonas region"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 861184,
+        "id": "Q861184"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 419,
+        "id": "Q419"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.regionamazonas.gob.pe",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

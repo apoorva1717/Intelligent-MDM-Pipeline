@@ -1,0 +1,32 @@
+{
+ "domain": "entity:q42719676",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q42719676",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "US Department of Defense contributions to malaria surveillance"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 13442814,
+        "id": "Q13442814"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

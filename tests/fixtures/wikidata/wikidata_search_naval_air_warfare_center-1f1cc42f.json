@@ -1,0 +1,138 @@
+{
+ "domain": "search:naval air warfare center",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Naval Air Warfare Center"
+  },
+  "search": [
+   {
+    "id": "Q6981731",
+    "title": "Q6981731",
+    "pageid": 6853318,
+    "concepturi": "http://www.wikidata.org/entity/Q6981731",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q6981731",
+    "display": {
+     "label": {
+      "value": "Naval Air Warfare Center",
+      "language": "en"
+     },
+     "description": {
+      "value": "research organization in the US Navy",
+      "language": "en"
+     }
+    },
+    "label": "Naval Air Warfare Center",
+    "description": "research organization in the US Navy",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Naval Air Warfare Center"
+    }
+   },
+   {
+    "id": "Q3015273",
+    "title": "Q3015273",
+    "pageid": 2882811,
+    "concepturi": "http://www.wikidata.org/entity/Q3015273",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q3015273",
+    "display": {
+     "label": {
+      "value": "Naval Air Warfare Center Warminster",
+      "language": "en"
+     },
+     "description": {
+      "value": "former naval aviation research facility in Pennsylvania, United States of America",
+      "language": "en"
+     }
+    },
+    "label": "Naval Air Warfare Center Warminster",
+    "description": "former naval aviation research facility in Pennsylvania, United States of America",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Naval Air Warfare Center Warminster"
+    }
+   },
+   {
+    "id": "Q30273890",
+    "title": "Q30273890",
+    "pageid": 31886664,
+    "concepturi": "http://www.wikidata.org/entity/Q30273890",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q30273890",
+    "display": {
+     "label": {
+      "value": "Naval Air Warfare Center Weapons Division",
+      "language": "en"
+     },
+     "description": {
+      "value": "facility in China Lake Acres, United States",
+      "language": "en"
+     }
+    },
+    "label": "Naval Air Warfare Center Weapons Division",
+    "description": "facility in China Lake Acres, United States",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Naval Air Warfare Center Weapons Division"
+    }
+   },
+   {
+    "id": "Q45136046",
+    "title": "Q45136046",
+    "pageid": 46314287,
+    "concepturi": "http://www.wikidata.org/entity/Q45136046",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q45136046",
+    "display": {
+     "label": {
+      "value": "Naval Air Warfare Center, Weapons Division",
+      "language": "en"
+     },
+     "description": {
+      "value": "government organization in United States of America",
+      "language": "en"
+     }
+    },
+    "label": "Naval Air Warfare Center, Weapons Division",
+    "description": "government organization in United States of America",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Naval Air Warfare Center, Weapons Division"
+    }
+   },
+   {
+    "id": "Q6981734",
+    "title": "Q6981734",
+    "pageid": 6853321,
+    "concepturi": "http://www.wikidata.org/entity/Q6981734",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q6981734",
+    "display": {
+     "label": {
+      "value": "Naval Air Warfare Center Training Systems Division",
+      "language": "en"
+     },
+     "description": {
+      "value": "military unit",
+      "language": "en"
+     }
+    },
+    "label": "Naval Air Warfare Center Training Systems Division",
+    "description": "military unit",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Naval Air Warfare Center Training Systems Division"
+    }
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

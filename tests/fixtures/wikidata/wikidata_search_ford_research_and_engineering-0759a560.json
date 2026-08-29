@@ -1,0 +1,11 @@
+{
+ "domain": "search:ford research and engineering",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Ford Research and Engineering"
+  },
+  "search": [],
+  "success": 1
+ }
+}

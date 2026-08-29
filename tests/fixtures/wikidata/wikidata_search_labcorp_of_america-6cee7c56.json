@@ -1,0 +1,11 @@
+{
+ "domain": "search:labcorp of america",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Labcorp of America"
+  },
+  "search": [],
+  "success": 1
+ }
+}

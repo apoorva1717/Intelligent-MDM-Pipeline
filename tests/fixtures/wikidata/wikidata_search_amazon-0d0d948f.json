@@ -1,0 +1,141 @@
+{
+ "domain": "search:amazon",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Amazon"
+  },
+  "search": [
+   {
+    "id": "Q3884",
+    "title": "Q3884",
+    "pageid": 4788,
+    "concepturi": "http://www.wikidata.org/entity/Q3884",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q3884",
+    "display": {
+     "label": {
+      "value": "Amazon",
+      "language": "en"
+     },
+     "description": {
+      "value": "American multinational technology company",
+      "language": "en"
+     }
+    },
+    "label": "Amazon",
+    "description": "American multinational technology company",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Amazon"
+    }
+   },
+   {
+    "id": "Q40040",
+    "title": "Q40040",
+    "pageid": 42397,
+    "concepturi": "http://www.wikidata.org/entity/Q40040",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q40040",
+    "display": {
+     "label": {
+      "value": "Amazonas",
+      "language": "en"
+     },
+     "description": {
+      "value": "state in the North Region of Brazil",
+      "language": "en"
+     }
+    },
+    "label": "Amazonas",
+    "description": "state in the North Region of Brazil",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Amazonas"
+    }
+   },
+   {
+    "id": "Q456065",
+    "title": "Q456065",
+    "pageid": 430238,
+    "concepturi": "http://www.wikidata.org/entity/Q456065",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q456065",
+    "display": {
+     "label": {
+      "value": "Amazon",
+      "language": "en"
+     },
+     "description": {
+      "value": "1984 video game",
+      "language": "en"
+     }
+    },
+    "label": "Amazon",
+    "description": "1984 video game",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Amazon"
+    }
+   },
+   {
+    "id": "Q136469",
+    "title": "Q136469",
+    "pageid": 138206,
+    "concepturi": "http://www.wikidata.org/entity/Q136469",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q136469",
+    "display": {
+     "label": {
+      "value": "Amazon Kindle",
+      "language": "mul"
+     },
+     "description": {
+      "value": "e-book reading device",
+      "language": "en"
+     }
+    },
+    "label": "Amazon Kindle",
+    "description": "e-book reading device",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "Amazon Kindle product line"
+    },
+    "aliases": [
+     "Amazon Kindle product line"
+    ]
+   },
+   {
+    "id": "Q201162",
+    "title": "Q201162",
+    "pageid": 197845,
+    "concepturi": "http://www.wikidata.org/entity/Q201162",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q201162",
+    "display": {
+     "label": {
+      "value": "Amazonas Department",
+      "language": "en"
+     },
+     "description": {
+      "value": "department of Peru",
+      "language": "en"
+     }
+    },
+    "label": "Amazonas Department",
+    "description": "department of Peru",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Amazonas Department"
+    }
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

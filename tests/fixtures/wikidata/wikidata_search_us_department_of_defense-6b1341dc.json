@@ -1,0 +1,137 @@
+{
+ "domain": "search:us department of defense",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "US Department of Defense"
+  },
+  "search": [
+   {
+    "id": "Q17659414",
+    "title": "Q17659414",
+    "pageid": 19254223,
+    "concepturi": "http://www.wikidata.org/entity/Q17659414",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q17659414",
+    "display": {
+     "label": {
+      "value": "US Department of Defense reports Iraqi Al Qaeda \"safe house\" hit",
+      "language": "en"
+     },
+     "description": {
+      "value": "Wikinews article",
+      "language": "en"
+     }
+    },
+    "label": "US Department of Defense reports Iraqi Al Qaeda \"safe house\" hit",
+    "description": "Wikinews article",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "US Department of Defense reports Iraqi Al Qaeda \"safe house\" hit"
+    }
+   },
+   {
+    "id": "Q42719676",
+    "title": "Q42719676",
+    "pageid": 43978276,
+    "concepturi": "http://www.wikidata.org/entity/Q42719676",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q42719676",
+    "display": {
+     "label": {
+      "value": "US Department of Defense contributions to malaria surveillance",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific article published on April 2013",
+      "language": "en"
+     }
+    },
+    "label": "US Department of Defense contributions to malaria surveillance",
+    "description": "scientific article published on April 2013",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "US Department of Defense contributions to malaria surveillance"
+    }
+   },
+   {
+    "id": "Q115032123",
+    "title": "Q115032123",
+    "pageid": 109685609,
+    "concepturi": "http://www.wikidata.org/entity/Q115032123",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q115032123",
+    "display": {
+     "label": {
+      "value": "US Department of Defense Prepares Cybercrime Database",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific article published in 2000",
+      "language": "en"
+     }
+    },
+    "label": "US Department of Defense Prepares Cybercrime Database",
+    "description": "scientific article published in 2000",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "US Department of Defense Prepares Cybercrime Database"
+    }
+   },
+   {
+    "id": "Q101573558",
+    "title": "Q101573558",
+    "pageid": 98807962,
+    "concepturi": "http://www.wikidata.org/entity/Q101573558",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q101573558",
+    "display": {
+     "label": {
+      "value": "US Department of Defense Warfighter Brain Health Initiative: Maximizing performance on and off the battlefield",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific article published on 01 November 2020",
+      "language": "en"
+     }
+    },
+    "label": "US Department of Defense Warfighter Brain Health Initiative: Maximizing performance on and off the battlefield",
+    "description": "scientific article published on 01 November 2020",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "US Department of Defense Warfighter Brain Health Initiative: Maximizing performance on and off the battlefield"
+    }
+   },
+   {
+    "id": "Q129527338",
+    "title": "Q129527338",
+    "pageid": 123497564,
+    "concepturi": "http://www.wikidata.org/entity/Q129527338",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q129527338",
+    "display": {
+     "label": {
+      "value": "US Department of Defense funds high-risk innovative materials research",
+      "language": "en"
+     },
+     "description": {
+      "value": "scholarly article",
+      "language": "en"
+     }
+    },
+    "label": "US Department of Defense funds high-risk innovative materials research",
+    "description": "scholarly article",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "US Department of Defense funds high-risk innovative materials research"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

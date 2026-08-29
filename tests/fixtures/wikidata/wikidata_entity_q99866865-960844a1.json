@@ -1,0 +1,48 @@
+{
+ "domain": "entity:q99866865",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q99866865",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "US Environmental Protection Agency"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 35127,
+        "id": "Q35127"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

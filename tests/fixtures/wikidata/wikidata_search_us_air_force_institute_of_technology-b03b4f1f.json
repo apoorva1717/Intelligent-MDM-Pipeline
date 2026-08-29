@@ -1,0 +1,11 @@
+{
+ "domain": "search:us air force institute of technology",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "US Air Force Institute of Technology"
+  },
+  "search": [],
+  "success": 1
+ }
+}

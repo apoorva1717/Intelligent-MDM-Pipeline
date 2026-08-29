@@ -1,0 +1,147 @@
+{
+ "domain": "search:va medical center",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "VA Medical Center"
+  },
+  "search": [
+   {
+    "id": "Q7906562",
+    "title": "Q7906562",
+    "pageid": 7844546,
+    "concepturi": "http://www.wikidata.org/entity/Q7906562",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q7906562",
+    "display": {
+     "label": {
+      "value": "VA Boston Healthcare System",
+      "language": "en"
+     },
+     "description": {
+      "value": "organization",
+      "language": "en"
+     }
+    },
+    "label": "VA Boston Healthcare System",
+    "description": "organization",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "VA Medical Center"
+    },
+    "aliases": [
+     "VA Medical Center"
+    ]
+   },
+   {
+    "id": "Q95984744",
+    "title": "Q95984744",
+    "pageid": 94790469,
+    "concepturi": "http://www.wikidata.org/entity/Q95984744",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q95984744",
+    "display": {
+     "label": {
+      "value": "Veterans Administration hospital",
+      "language": "en"
+     },
+     "description": {
+      "value": "United States hospital administered by the VA",
+      "language": "en"
+     }
+    },
+    "label": "Veterans Administration hospital",
+    "description": "United States hospital administered by the VA",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "VA Medical Center"
+    },
+    "aliases": [
+     "VA Medical Center"
+    ]
+   },
+   {
+    "id": "Q7906570",
+    "title": "Q7906570",
+    "pageid": 7844554,
+    "concepturi": "http://www.wikidata.org/entity/Q7906570",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q7906570",
+    "display": {
+     "label": {
+      "value": "VA Medical Center",
+      "language": "en"
+     },
+     "description": {
+      "value": "light rail station in Minneapolis, Minnesota",
+      "language": "en"
+     }
+    },
+    "label": "VA Medical Center",
+    "description": "light rail station in Minneapolis, Minnesota",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "VA Medical Center"
+    }
+   },
+   {
+    "id": "Q7906568",
+    "title": "Q7906568",
+    "pageid": 7844552,
+    "concepturi": "http://www.wikidata.org/entity/Q7906568",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q7906568",
+    "display": {
+     "label": {
+      "value": "VA Medical Center",
+      "language": "en"
+     },
+     "description": {
+      "value": "DART light rail station",
+      "language": "en"
+     }
+    },
+    "label": "VA Medical Center",
+    "description": "DART light rail station",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "VA Medical Center"
+    }
+   },
+   {
+    "id": "Q89037429",
+    "title": "Q89037429",
+    "pageid": 88263019,
+    "concepturi": "http://www.wikidata.org/entity/Q89037429",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q89037429",
+    "display": {
+     "label": {
+      "value": "West Roxbury VA Medical Center",
+      "language": "en"
+     },
+     "description": {
+      "value": "Boston VA Medical Center West Roxbury division",
+      "language": "en"
+     }
+    },
+    "label": "West Roxbury VA Medical Center",
+    "description": "Boston VA Medical Center West Roxbury division",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "VA Medical Center"
+    },
+    "aliases": [
+     "VA Medical Center"
+    ]
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

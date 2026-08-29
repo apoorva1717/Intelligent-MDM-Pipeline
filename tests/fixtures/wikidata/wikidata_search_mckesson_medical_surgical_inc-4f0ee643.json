@@ -1,0 +1,11 @@
+{
+ "domain": "search:mckesson medical surgical inc",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "McKesson Medical-Surgical Inc"
+  },
+  "search": [],
+  "success": 1
+ }
+}

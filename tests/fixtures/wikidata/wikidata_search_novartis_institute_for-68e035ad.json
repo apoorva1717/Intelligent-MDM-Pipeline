@@ -1,0 +1,65 @@
+{
+ "domain": "search:novartis institute for",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Novartis Institute for"
+  },
+  "search": [
+   {
+    "id": "Q5533504",
+    "title": "Q5533504",
+    "pageid": 5293890,
+    "concepturi": "http://www.wikidata.org/entity/Q5533504",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q5533504",
+    "display": {
+     "label": {
+      "value": "Genomics Institute of the Novartis Research Foundation",
+      "language": "en"
+     },
+     "description": {
+      "value": "American research institute",
+      "language": "en"
+     }
+    },
+    "label": "Genomics Institute of the Novartis Research Foundation",
+    "description": "American research institute",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "Novartis Institute for Functional Genomics"
+    },
+    "aliases": [
+     "Novartis Institute for Functional Genomics"
+    ]
+   },
+   {
+    "id": "Q7064459",
+    "title": "Q7064459",
+    "pageid": 6956077,
+    "concepturi": "http://www.wikidata.org/entity/Q7064459",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q7064459",
+    "display": {
+     "label": {
+      "value": "Novartis Institute for Tropical Diseases",
+      "language": "en"
+     },
+     "description": {
+      "value": "singapore-based research institute",
+      "language": "en"
+     }
+    },
+    "label": "Novartis Institute for Tropical Diseases",
+    "description": "singapore-based research institute",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Novartis Institute for Tropical Diseases"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

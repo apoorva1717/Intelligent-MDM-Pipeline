@@ -1,0 +1,93 @@
+{
+ "domain": "search:3m company",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "3M Company"
+  },
+  "search": [
+   {
+    "id": "Q159433",
+    "title": "Q159433",
+    "pageid": 160363,
+    "concepturi": "http://www.wikidata.org/entity/Q159433",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q159433",
+    "display": {
+     "label": {
+      "value": "3M",
+      "language": "en"
+     },
+     "description": {
+      "value": "American multinational corporation",
+      "language": "en"
+     }
+    },
+    "label": "3M",
+    "description": "American multinational corporation",
+    "match": {
+     "type": "alias",
+     "language": "mul",
+     "text": "3M Company"
+    },
+    "aliases": [
+     "3M Company"
+    ]
+   },
+   {
+    "id": "Q137176215",
+    "title": "Q137176215",
+    "pageid": 130857826,
+    "concepturi": "http://www.wikidata.org/entity/Q137176215",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q137176215",
+    "display": {
+     "label": {
+      "value": "3M Mincom",
+      "language": "en"
+     },
+     "description": {
+      "value": "Pro audio tape recorder division of giant 3M",
+      "language": "en"
+     }
+    },
+    "label": "3M Mincom",
+    "description": "Pro audio tape recorder division of giant 3M",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "3M Company Mincom division"
+    },
+    "aliases": [
+     "3M Company Mincom division"
+    ]
+   },
+   {
+    "id": "Q71538539",
+    "title": "Q71538539",
+    "pageid": 71196807,
+    "concepturi": "http://www.wikidata.org/entity/Q71538539",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q71538539",
+    "display": {
+     "label": {
+      "value": "3M company: determination of the solubilities of gases in perfluorocarbon fluids",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific article published on 01 September 1970",
+      "language": "en"
+     }
+    },
+    "label": "3M company: determination of the solubilities of gases in perfluorocarbon fluids",
+    "description": "scientific article published on 01 September 1970",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "3M company: determination of the solubilities of gases in perfluorocarbon fluids"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

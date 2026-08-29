@@ -1,0 +1,139 @@
+{
+ "domain": "entity:q217810",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q217810",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "United States Department of Energy"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "DOE"
+    },
+    {
+     "language": "en",
+     "value": "Department of Energy"
+    },
+    {
+     "language": "en",
+     "value": "US Department of Energy"
+    },
+    {
+     "language": "en",
+     "value": "U.S. Department of Energy"
+    },
+    {
+     "language": "en",
+     "value": "energy.gov"
+    },
+    {
+     "language": "en",
+     "value": "USDOE"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 910252,
+        "id": "Q910252"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 19973795,
+        "id": "Q19973795"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P159": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 61,
+        "id": "Q61"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.energy.gov",
+       "type": "string"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.energy.gov/",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P6782": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P6782",
+      "datavalue": {
+       "value": "01bj3aw27",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

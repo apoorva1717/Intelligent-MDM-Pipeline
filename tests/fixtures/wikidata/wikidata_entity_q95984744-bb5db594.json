@@ -1,0 +1,79 @@
+{
+ "domain": "entity:q95984744",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q95984744",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Veterans Administration hospital"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "veterans' hospital"
+    },
+    {
+     "language": "en",
+     "value": "veteran's hospital"
+    },
+    {
+     "language": "en",
+     "value": "Veterans Affairs Medical Center"
+    },
+    {
+     "language": "en",
+     "value": "Veterans Administration Hospital"
+    },
+    {
+     "language": "en",
+     "value": "Veterans Affairs Hospital"
+    },
+    {
+     "language": "en",
+     "value": "VA Medical Center"
+    },
+    {
+     "language": "en",
+     "value": "VA Hospital"
+    }
+   ]
+  },
+  "claims": {
+   "P279": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P279",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 16917,
+        "id": "Q16917"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

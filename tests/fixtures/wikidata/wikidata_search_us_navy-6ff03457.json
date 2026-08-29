@@ -1,0 +1,153 @@
+{
+ "domain": "search:us navy",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "US Navy"
+  },
+  "search": [
+   {
+    "id": "Q11220",
+    "title": "Q11220",
+    "pageid": 12710,
+    "concepturi": "http://www.wikidata.org/entity/Q11220",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q11220",
+    "display": {
+     "label": {
+      "value": "United States Navy",
+      "language": "en"
+     },
+     "description": {
+      "value": "maritime branch of the United States military",
+      "language": "en"
+     }
+    },
+    "label": "United States Navy",
+    "description": "maritime branch of the United States military",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "US Navy"
+    },
+    "aliases": [
+     "US Navy"
+    ]
+   },
+   {
+    "id": "Q27713755",
+    "title": "Q27713755",
+    "pageid": 29430020,
+    "concepturi": "http://www.wikidata.org/entity/Q27713755",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q27713755",
+    "display": {
+     "label": {
+      "value": "U. S. Navy medicine",
+      "language": "en"
+     },
+     "description": {
+      "value": "journal",
+      "language": "en"
+     }
+    },
+    "label": "U. S. Navy medicine",
+    "description": "journal",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "US Navy Med"
+    },
+    "aliases": [
+     "US Navy Med"
+    ]
+   },
+   {
+    "id": "Q3550750",
+    "title": "Q3550750",
+    "pageid": 3379890,
+    "concepturi": "http://www.wikidata.org/entity/Q3550750",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q3550750",
+    "display": {
+     "label": {
+      "value": "United States Navy Reserve",
+      "language": "en"
+     },
+     "description": {
+      "value": "Reserve Component (RC) of the United States Navy",
+      "language": "en"
+     }
+    },
+    "label": "United States Navy Reserve",
+    "description": "Reserve Component (RC) of the United States Navy",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "US Navy Reserve"
+    },
+    "aliases": [
+     "US Navy Reserve"
+    ]
+   },
+   {
+    "id": "Q178033",
+    "title": "Q178033",
+    "pageid": 177486,
+    "concepturi": "http://www.wikidata.org/entity/Q178033",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q178033",
+    "display": {
+     "label": {
+      "value": "United States Navy SEALs",
+      "language": "en"
+     },
+     "description": {
+      "value": "US Navy special operations force",
+      "language": "en"
+     }
+    },
+    "label": "United States Navy SEALs",
+    "description": "US Navy special operations force",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "US Navy SEALs"
+    },
+    "aliases": [
+     "US Navy SEALs"
+    ]
+   },
+   {
+    "id": "Q17986161",
+    "title": "Q17986161",
+    "pageid": 19519284,
+    "concepturi": "http://www.wikidata.org/entity/Q17986161",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q17986161",
+    "display": {
+     "label": {
+      "value": "Bureau of Medicine and Surgery",
+      "language": "en"
+     },
+     "description": {
+      "value": "agency of the United States Department of the Navy",
+      "language": "en"
+     }
+    },
+    "label": "Bureau of Medicine and Surgery",
+    "description": "agency of the United States Department of the Navy",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "US Navy Bureau of Medicine and Surgery"
+    },
+    "aliases": [
+     "US Navy Bureau of Medicine and Surgery"
+    ]
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

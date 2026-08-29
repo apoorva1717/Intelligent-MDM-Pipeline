@@ -1,0 +1,138 @@
+{
+ "domain": "search:us environmental protection agency",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "US Environmental Protection Agency"
+  },
+  "search": [
+   {
+    "id": "Q99866865",
+    "title": "Q99866865",
+    "pageid": 97738686,
+    "concepturi": "http://www.wikidata.org/entity/Q99866865",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q99866865",
+    "display": {
+     "label": {
+      "value": "US Environmental Protection Agency",
+      "language": "en"
+     },
+     "description": {
+      "value": "archived website with the title in the label",
+      "language": "en"
+     }
+    },
+    "label": "US Environmental Protection Agency",
+    "description": "archived website with the title in the label",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "US Environmental Protection Agency"
+    }
+   },
+   {
+    "id": "Q32016442",
+    "title": "Q32016442",
+    "pageid": 33492413,
+    "concepturi": "http://www.wikidata.org/entity/Q32016442",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q32016442",
+    "display": {
+     "label": {
+      "value": "US Environmental Protection Agency's revised Guidelines for Carcinogen Risk Assessment: incorporating mode of action data",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific article published on September 20, 1998",
+      "language": "en"
+     }
+    },
+    "label": "US Environmental Protection Agency's revised Guidelines for Carcinogen Risk Assessment: incorporating mode of action data",
+    "description": "scientific article published on September 20, 1998",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "US Environmental Protection Agency's revised Guidelines for Carcinogen Risk Assessment: incorporating mode of action data"
+    }
+   },
+   {
+    "id": "Q74438448",
+    "title": "Q74438448",
+    "pageid": 74061253,
+    "concepturi": "http://www.wikidata.org/entity/Q74438448",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q74438448",
+    "display": {
+     "label": {
+      "value": "US Environmental Protection Agency Method 326.0, a new method for monitoring inorganic oxyhalides and optimization of the postcolumn derivatization for the selective determination of trace levels of bromate",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific article published on 01 May 2002",
+      "language": "en"
+     }
+    },
+    "label": "US Environmental Protection Agency Method 326.0, a new method for monitoring inorganic oxyhalides and optimization of the postcolumn derivatization for the selective determination of trace levels of bromate",
+    "description": "scientific article published on 01 May 2002",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "US Environmental Protection Agency Method 326.0, a new method for monitoring inorganic oxyhalides and optimization of the postcolumn derivatization for the selective determination of trace levels of bromate"
+    }
+   },
+   {
+    "id": "Q46985068",
+    "title": "Q46985068",
+    "pageid": 48094947,
+    "concepturi": "http://www.wikidata.org/entity/Q46985068",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q46985068",
+    "display": {
+     "label": {
+      "value": "US Environmental Protection Agency Method 314.1, an automated sample preconcentration/matrix elimination suppressed conductivity method for the analysis of trace levels (0.50 microg/L) of perchlorate in drinking water.",
+      "language": "en"
+     },
+     "description": {
+      "value": "scientific article published on 10 March 2006",
+      "language": "en"
+     }
+    },
+    "label": "US Environmental Protection Agency Method 314.1, an automated sample preconcentration/matrix elimination suppressed conductivity method for the analysis of trace levels (0.50 microg/L) of perchlorate in drinking water.",
+    "description": "scientific article published on 10 March 2006",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "US Environmental Protection Agency Method 314.1, an automated sample preconcentration/matrix elimination suppressed conductivity method for the analysis of trace levels (0.50 microg/L) of perchlorate in drinking water."
+    }
+   },
+   {
+    "id": "Q71873905",
+    "title": "Q71873905",
+    "pageid": 71531059,
+    "concepturi": "http://www.wikidata.org/entity/Q71873905",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q71873905",
+    "display": {
+     "label": {
+      "value": "US Environmental Protection Agency faces eleventh-hour shake-up",
+      "language": "en"
+     },
+     "description": {
+      "value": "journal article; published in Nature on 2008-12-19",
+      "language": "en"
+     }
+    },
+    "label": "US Environmental Protection Agency faces eleventh-hour shake-up",
+    "description": "journal article; published in Nature on 2008-12-19",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "US Environmental Protection Agency faces eleventh-hour shake-up"
+    }
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

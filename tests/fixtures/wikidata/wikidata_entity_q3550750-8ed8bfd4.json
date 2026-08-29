@@ -1,0 +1,91 @@
+{
+ "domain": "entity:q3550750",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q3550750",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "United States Navy Reserve"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "USNR"
+    },
+    {
+     "language": "en",
+     "value": "USNRF"
+    },
+    {
+     "language": "en",
+     "value": "US Naval Reserve Force"
+    },
+    {
+     "language": "en",
+     "value": "U.S. Navy Reserve"
+    },
+    {
+     "language": "en",
+     "value": "U.S. Navy Reserves"
+    },
+    {
+     "language": "en",
+     "value": "US Navy Reserve"
+    },
+    {
+     "language": "en",
+     "value": "United States Naval Reserve"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 1144991,
+        "id": "Q1144991"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.navyreserve.navy.mil",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,59 @@
+{
+ "domain": "entity:q7906570",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q7906570",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "VA Medical Center"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "VA Medical Center Station"
+    },
+    {
+     "language": "en",
+     "value": "VA Hospital Station"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 2175765,
+        "id": "Q2175765"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,153 @@
+{
+ "domain": "search:us department of energy",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "US Department of Energy"
+  },
+  "search": [
+   {
+    "id": "Q217810",
+    "title": "Q217810",
+    "pageid": 212897,
+    "concepturi": "http://www.wikidata.org/entity/Q217810",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q217810",
+    "display": {
+     "label": {
+      "value": "United States Department of Energy",
+      "language": "en"
+     },
+     "description": {
+      "value": "cabinet-level department of the United States government",
+      "language": "en"
+     }
+    },
+    "label": "United States Department of Energy",
+    "description": "cabinet-level department of the United States government",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "US Department of Energy"
+    },
+    "aliases": [
+     "US Department of Energy"
+    ]
+   },
+   {
+    "id": "Q2015776",
+    "title": "Q2015776",
+    "pageid": 1943921,
+    "concepturi": "http://www.wikidata.org/entity/Q2015776",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q2015776",
+    "display": {
+     "label": {
+      "value": "Office of Scientific and Technical Information",
+      "language": "en"
+     },
+     "description": {
+      "value": "component of the Office of Science within the U.S. Department of Energy",
+      "language": "en"
+     }
+    },
+    "label": "Office of Scientific and Technical Information",
+    "description": "component of the Office of Science within the U.S. Department of Energy",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "US Department of Energy, Office of Scientific and Technical Information"
+    },
+    "aliases": [
+     "US Department of Energy, Office of Scientific and Technical Information"
+    ]
+   },
+   {
+    "id": "Q7079213",
+    "title": "Q7079213",
+    "pageid": 6972301,
+    "concepturi": "http://www.wikidata.org/entity/Q7079213",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q7079213",
+    "display": {
+     "label": {
+      "value": "Office of Critical Minerals and Energy Innovation",
+      "language": "en"
+     },
+     "description": {
+      "value": "program office of the United States Department of Energy",
+      "language": "en"
+     }
+    },
+    "label": "Office of Critical Minerals and Energy Innovation",
+    "description": "program office of the United States Department of Energy",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "US Department of Energy Office of Critical Minerals and Energy Innovation"
+    },
+    "aliases": [
+     "US Department of Energy Office of Critical Minerals and Energy Innovation"
+    ]
+   },
+   {
+    "id": "Q30296966",
+    "title": "Q30296966",
+    "pageid": 31909578,
+    "concepturi": "http://www.wikidata.org/entity/Q30296966",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q30296966",
+    "display": {
+     "label": {
+      "value": "United States Department of Energy Office of International Affairs",
+      "language": "en"
+     },
+     "description": {
+      "value": "government organization under Department of Energy in Washington D.C., United States",
+      "language": "en"
+     }
+    },
+    "label": "United States Department of Energy Office of International Affairs",
+    "description": "government organization under Department of Energy in Washington D.C., United States",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "US Department of Energy Office of International Affairs"
+    },
+    "aliases": [
+     "US Department of Energy Office of International Affairs"
+    ]
+   },
+   {
+    "id": "Q140352363",
+    "title": "Q140352363",
+    "pageid": 133789362,
+    "concepturi": "http://www.wikidata.org/entity/Q140352363",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q140352363",
+    "display": {
+     "label": {
+      "value": "Office of Oil and Gas",
+      "language": "en"
+     },
+     "description": {
+      "value": "government organization in Washington, United States",
+      "language": "en"
+     }
+    },
+    "label": "Office of Oil and Gas",
+    "description": "government organization in Washington, United States",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "US Department of Energy Hydrocarbons and Geothermal Office of Subsurface Energy Office of Oil and Gas"
+    },
+    "aliases": [
+     "US Department of Energy Hydrocarbons and Geothermal Office of Subsurface Energy Office of Oil and Gas"
+    ]
+   }
+  ],
+  "search-continue": 5,
+  "success": 1
+ }
+}

@@ -1,0 +1,60 @@
+{
+ "domain": "entity:q7064459",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q7064459",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Novartis Institute for Tropical Diseases"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 31855,
+        "id": "Q31855"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 334,
+        "id": "Q334"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P6782": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P6782",
+      "datavalue": {
+       "value": "00cn3vx82",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

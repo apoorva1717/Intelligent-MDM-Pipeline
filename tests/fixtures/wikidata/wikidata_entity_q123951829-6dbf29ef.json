@@ -1,0 +1,95 @@
+{
+ "domain": "entity:q123951829",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q123951829",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Facility for Advanced Accelerator Experimental Tests-II"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "United States Department of Energy Office of Science SLAC National Accelerator Laboratory Facility for Advanced Accelerator Experimental Tests-II"
+    },
+    {
+     "language": "en",
+     "value": "U.S. Department of Energy Office of Science SLAC National Accelerator Laboratory Facility for Advanced Accelerator Experimental Tests-II"
+    },
+    {
+     "language": "en",
+     "value": "SLAC National Accelerator Laboratory Facility for Advanced Accelerator Experimental Tests-II"
+    },
+    {
+     "language": "en",
+     "value": "FACET-II"
+    },
+    {
+     "language": "en",
+     "value": "SLAC FACET-II"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 13226383,
+        "id": "Q13226383"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://facet-ii.slac.stanford.edu",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P6782": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P6782",
+      "datavalue": {
+       "value": "023py8175",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

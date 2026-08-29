@@ -1,0 +1,32 @@
+{
+ "domain": "entity:q456065",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q456065",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Amazon"
+   }
+  },
+  "aliases": {},
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 7889,
+        "id": "Q7889"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

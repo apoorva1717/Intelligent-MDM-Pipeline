@@ -1,0 +1,37 @@
+{
+ "domain": "search:detroit police department",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Detroit Police Department"
+  },
+  "search": [
+   {
+    "id": "Q3024788",
+    "title": "Q3024788",
+    "pageid": 2891814,
+    "concepturi": "http://www.wikidata.org/entity/Q3024788",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q3024788",
+    "display": {
+     "label": {
+      "value": "Detroit Police Department",
+      "language": "en"
+     },
+     "description": {
+      "value": "law enforcement agency in Detroit, Michigan, USA",
+      "language": "en"
+     }
+    },
+    "label": "Detroit Police Department",
+    "description": "law enforcement agency in Detroit, Michigan, USA",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Detroit Police Department"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

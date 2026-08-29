@@ -1,0 +1,90 @@
+{
+ "domain": "search:valero refinery",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "Valero Refinery"
+  },
+  "search": [
+   {
+    "id": "Q7161972",
+    "title": "Q7161972",
+    "pageid": 7062421,
+    "concepturi": "http://www.wikidata.org/entity/Q7161972",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q7161972",
+    "display": {
+     "label": {
+      "value": "Pembroke Refinery",
+      "language": "en"
+     },
+     "description": {
+      "value": "oil refinery in Rhoscrowther, Pembrokeshire, Wales, UK",
+      "language": "en"
+     }
+    },
+    "label": "Pembroke Refinery",
+    "description": "oil refinery in Rhoscrowther, Pembrokeshire, Wales, UK",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "Valero Refinery, Rhoscrowther"
+    },
+    "aliases": [
+     "Valero Refinery, Rhoscrowther"
+    ]
+   },
+   {
+    "id": "Q116714904",
+    "title": "Q116714904",
+    "pageid": 111479550,
+    "concepturi": "http://www.wikidata.org/entity/Q116714904",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q116714904",
+    "display": {
+     "label": {
+      "value": "Valero Refinery Cogeneration Unit 1",
+      "language": "en"
+     },
+     "description": {
+      "value": "power station with capacity >1MW in Solano County, California",
+      "language": "en"
+     }
+    },
+    "label": "Valero Refinery Cogeneration Unit 1",
+    "description": "power station with capacity >1MW in Solano County, California",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Valero Refinery Cogeneration Unit 1"
+    }
+   },
+   {
+    "id": "Q116712547",
+    "title": "Q116712547",
+    "pageid": 111477203,
+    "concepturi": "http://www.wikidata.org/entity/Q116712547",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q116712547",
+    "display": {
+     "label": {
+      "value": "Valero Refinery Corpus Christi West",
+      "language": "en"
+     },
+     "description": {
+      "value": "power station with capacity >1MW in Nueces County, Texas",
+      "language": "en"
+     }
+    },
+    "label": "Valero Refinery Corpus Christi West",
+    "description": "power station with capacity >1MW in Nueces County, Texas",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "Valero Refinery Corpus Christi West"
+    }
+   }
+  ],
+  "success": 1
+ }
+}

@@ -1,0 +1,177 @@
+{
+ "domain": "entity:q7079213",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "id": "Q7079213",
+  "labels": {
+   "en": {
+    "language": "en",
+    "value": "Office of Critical Minerals and Energy Innovation"
+   }
+  },
+  "aliases": {
+   "en": [
+    {
+     "language": "en",
+     "value": "Office of Energy Efficiency & Renewable Energy"
+    },
+    {
+     "language": "en",
+     "value": "EERE"
+    },
+    {
+     "language": "en",
+     "value": "United States Department of Energy Office of Energy Efficiency and Renewable Energy"
+    },
+    {
+     "language": "en",
+     "value": "U.S. Department of Energy Office of Energy Efficiency and Renewable Energy"
+    },
+    {
+     "language": "en",
+     "value": "CMEI"
+    },
+    {
+     "language": "en",
+     "value": "United States Department of Energy Office of Critical Minerals and Energy Innovation"
+    },
+    {
+     "language": "en",
+     "value": "US Department of Energy Office of Critical Minerals and Energy Innovation"
+    }
+   ]
+  },
+  "claims": {
+   "P31": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 2366457,
+        "id": "Q2366457"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 20857065,
+        "id": "Q20857065"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P31",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 121182,
+        "id": "Q121182"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P17": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P17",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 30,
+        "id": "Q30"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P159": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P159",
+      "datavalue": {
+       "value": {
+        "entity-type": "item",
+        "numeric-id": 61,
+        "id": "Q61"
+       },
+       "type": "wikibase-entityid"
+      }
+     }
+    }
+   ],
+   "P856": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.energy.gov/eere/office-energy-efficiency-renewable-energy",
+       "type": "string"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.energy.gov/eere",
+       "type": "string"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "http://www.eere.energy.gov/",
+       "type": "string"
+      }
+     }
+    },
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P856",
+      "datavalue": {
+       "value": "https://www.energy.gov/eere/office-energy-efficiency-renewable-energy",
+       "type": "string"
+      }
+     }
+    }
+   ],
+   "P6782": [
+    {
+     "mainsnak": {
+      "snaktype": "value",
+      "property": "P6782",
+      "datavalue": {
+       "value": "02xznz413",
+       "type": "string"
+      }
+     }
+    }
+   ]
+  }
+ }
+}

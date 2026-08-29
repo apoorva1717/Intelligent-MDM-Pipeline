@@ -1,0 +1,65 @@
+{
+ "domain": "search:slac national accelerator",
+ "fetched_at": "2026-08-29",
+ "payload": {
+  "searchinfo": {
+   "search": "SLAC National Accelerator"
+  },
+  "search": [
+   {
+    "id": "Q915217",
+    "title": "Q915217",
+    "pageid": 865672,
+    "concepturi": "http://www.wikidata.org/entity/Q915217",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q915217",
+    "display": {
+     "label": {
+      "value": "SLAC National Accelerator Laboratory",
+      "language": "en"
+     },
+     "description": {
+      "value": "research center at Stanford University",
+      "language": "en"
+     }
+    },
+    "label": "SLAC National Accelerator Laboratory",
+    "description": "research center at Stanford University",
+    "match": {
+     "type": "label",
+     "language": "en",
+     "text": "SLAC National Accelerator Laboratory"
+    }
+   },
+   {
+    "id": "Q123951829",
+    "title": "Q123951829",
+    "pageid": 118138109,
+    "concepturi": "http://www.wikidata.org/entity/Q123951829",
+    "repository": "wikidata",
+    "url": "//www.wikidata.org/wiki/Q123951829",
+    "display": {
+     "label": {
+      "value": "Facility for Advanced Accelerator Experimental Tests-II",
+      "language": "en"
+     },
+     "description": {
+      "value": "facility in Menlo Park, United States",
+      "language": "en"
+     }
+    },
+    "label": "Facility for Advanced Accelerator Experimental Tests-II",
+    "description": "facility in Menlo Park, United States",
+    "match": {
+     "type": "alias",
+     "language": "en",
+     "text": "SLAC National Accelerator Laboratory Facility for Advanced Accelerator Experimental Tests-II"
+    },
+    "aliases": [
+     "SLAC National Accelerator Laboratory Facility for Advanced Accelerator Experimental Tests-II"
+    ]
+   }
+  ],
+  "success": 1
+ }
+}
