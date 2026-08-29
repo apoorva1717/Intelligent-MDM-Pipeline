@@ -347,6 +347,29 @@ Recognized variants (case-insensitive):
 
 **Action:** Flags the field as containing an opaque code, not a valid organization name. Prevents the pipeline from trying to "enrich" a code number into an organization name.
 
+#### Orphaned labels — a slot holding only the word that introduced a value
+
+Part of the UC 13 residual cleanup (`_strip_dept_slot_junk`), which runs after
+the structured extractors on every slot **below Name 1**.
+
+Those extractors take the payload and leave the label:
+
+| in | extracted to | left behind |
+|---|---|---|
+| `email to: GlobalAPUS@celanese.com` | Email | `Email To:` |
+| `REF# , Attn: RECG` | Contact (`RECG`) | `REF#` |
+
+Both shipped as organisation names — `Email To:`, `REF#` and `Ref#` are all in
+the S2/S3 enriched output. When the **whole** remainder is a label
+(`_LABEL_ONLY_RE`: e-mail, attn, ref, c/o, mail/ship/bill/invoice/remit to,
+contact, phone, tel, fax) the slot is emptied, and UC 14 packs the block
+upward. A label still carrying a payload is not residue and is left alone —
+`Reference Laboratory` and `Contact Lens Division` are units, not labels.
+
+Name 1 is excluded, as it is for opaque codes: it is the identity the record
+supplied, and UC 10 flags it for a reviewer rather than leaving the record
+nameless.
+
 ---
 
 ### Stage 2: Tier 1 — ROR API Lookup

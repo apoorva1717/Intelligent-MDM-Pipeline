@@ -769,9 +769,35 @@ _PHONE_RE = re.compile(
 _OPAQUE_CODE_TOKEN_RE = re.compile(r"^(?:\d{4,}|[A-Za-z]{1,4}-?\d{2,})$")
 
 
+# A slot left holding nothing but the label that introduced a value already
+# taken out of it. "email to: GlobalAPUS@celanese.com" hands its address to the
+# Email column and leaves "email to:" standing as an organisation name;
+# "REF# , Attn: RECG" hands over its contact and leaves "REF#". Both shipped
+# that way — `Email To:`, `REF#`, `Ref#` are all in the S2/S3 enriched output.
+#
+# The whole remainder must be the label, so the match is anchored at both ends:
+# a label still carrying its payload is not residue (the structured extractors
+# above have first claim on it), and one real word alongside means the slot
+# still says something. Punctuation is stripped before the test rather than
+# being part of it — the label is as likely to arrive "Ref No." as "REF#".
+_LABEL_ONLY_RE = re.compile(
+    r"^(?:"
+    r"e-?mail(?:\s+(?:to|address|addr))?"
+    r"|attn|attention"
+    r"|ref(?:erence)?(?:\s*(?:no|number))?"
+    r"|c/o|care\s+of"
+    r"|(?:mail|send|ship|bill|invoice|remit)\s+to"
+    r"|contact(?:\s+(?:name|person))?"
+    r"|tel(?:ephone)?|phone|fax"
+    r")$",
+    re.IGNORECASE,
+)
+
+
 def _strip_dept_slot_junk(value: str) -> str | None:
-    """Strip URLs, phone/fax numbers and standalone opaque codes from a
-    department-slot value, returning the tidied remainder (or None).
+    """Strip URLs, phone/fax numbers, standalone opaque codes and orphaned
+    labels from a department-slot value, returning the tidied remainder (or
+    None).
 
     Applies to every slot below Name 1. Name 3 was the original overflow
     slot this cleaned, but the same stray URL / phone / code residue lands
@@ -786,6 +812,8 @@ def _strip_dept_slot_junk(value: str) -> str | None:
         if not _OPAQUE_CODE_TOKEN_RE.match(tok.strip(",;:|/"))
     ]
     out = re.sub(r"\s+", " ", " ".join(kept)).strip(" ,;/|-")
+    if _LABEL_ONLY_RE.match(out.strip(" ,;:|/#.-")):
+        return None
     return out or None
 
 
