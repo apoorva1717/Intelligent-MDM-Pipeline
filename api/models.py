@@ -476,7 +476,9 @@ class EnrichmentResult(BaseModel):
     # ships, in `name1_provenance` / `name2_provenance`.
     flag_low_confidence: List[str] = Field(default_factory=list, exclude=True)
     error: Optional[str] = None
-    record_type: Literal["research_institution", "company", "unknown"] = "unknown"
+    record_type: Literal[
+        "research_institution", "company", "government", "unknown",
+    ] = "unknown"
     # Registry identifiers — both surface in the JSON (not excluded) so the
     # dedup phase can converge records on a shared identifier: ror_id for
     # institutions, lei_id for companies (e.g. "Pfizer AG" / "Pfizer").
@@ -674,6 +676,9 @@ class EnrichmentSummary(BaseModel):
     failed: int = 0
     research_institution_count: int = 0
     company_count: int = 0
+    #: Added with the `government` record type. Without it a public body
+    #: counted in neither of the two above and the summary under-reported.
+    government_count: int = 0
     tier1_resolved: int = 0
     # Tier 1 LEI (GLEIF) telemetry — the company registry step.
     tier1_lei_count: int = 0

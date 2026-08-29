@@ -66,6 +66,12 @@ from utils.text_utils import (
 
 RESEARCH = "research_institution"
 COMPANY = "company"
+#: A public body. ROR reports it as an org type and GLEIF as an entity
+#: category; both used to be folded into ``research_institution``, so a
+#: registry that had correctly identified a government agency had its answer
+#: discarded on the way out. Measured on the 200 labelled records: 55 of the
+#: 61 S3 errors were exactly that, 50 of them decided by ``ror:verified``.
+GOVERNMENT = "government"
 UNKNOWN = "unknown"
 
 # Sources reported in `record_type_source`.
@@ -84,8 +90,11 @@ _CATEGORY_TYPE: dict[str, str] = {
     "SOLE_PROPRIETOR": COMPANY,
     "FUND": COMPANY,
     "BRANCH": COMPANY,
-    "RESIDENT_GOVERNMENT_ENTITY": RESEARCH,
-    "INTERNATIONAL_ORGANIZATION": RESEARCH,
+    # Both were RESEARCH until `government` existed to receive them. The
+    # comment below still holds: they map the way ROR's own "government" org
+    # type maps — which is now to GOVERNMENT, on both sides.
+    "RESIDENT_GOVERNMENT_ENTITY": GOVERNMENT,
+    "INTERNATIONAL_ORGANIZATION": GOVERNMENT,
 }
 
 # ``legalForm.other`` free text, used only when the code is a catch-all (8888
@@ -117,6 +126,9 @@ class TypeEvidence:
     ror_is_research
         ``True``/``False`` when ROR matched (already mapped from its org types
         by the ROR client), ``None`` when ROR never matched.
+    ror_org_types
+        The org types ROR actually published, unflattened. Only ``government``
+        is read from them; the boolean above still decides everything else.
     lei_id
         Present when GLEIF verified a match. On its own it is NOT evidence of a
         company — see :func:`_from_gleif`.
@@ -126,13 +138,35 @@ class TypeEvidence:
     """
     name1: str | None = None
     ror_is_research: bool | None = None
+    ror_org_types: "tuple[str, ...] | None" = None
     lei_id: str | None = None
     gleif_category: str | None = None
     gleif_legal_form_id: str | None = None
     gleif_legal_form_other: str | None = None
 
 
+#: ROR org types that mean a public body rather than a research organisation.
+#: ``government`` is ROR's own word; ``archive`` is deliberately NOT here — a
+#: national archive is a collection, and the label set treats it as research.
+_ROR_GOVERNMENT_TYPES = frozenset({"government"})
+
+
 def _from_ror(ev: TypeEvidence) -> str | None:
+    """ROR's verdict, no longer flattened.
+
+    ``ror_is_research`` is a boolean built from seven org types collapsed into
+    one (`tier1_ror.ROR_RESEARCH_TYPES`), which is the right granularity for
+    *routing* — every one of those seven takes the same branch — and the wrong
+    granularity for the *answer*. ``ror_org_types`` carries what ROR actually
+    said, so ``government`` survives to the output.
+
+    The boolean is still authoritative for everything else: types are read only
+    to separate a public body from the rest, never to overturn ROR's own
+    research/company split.
+    """
+    types = {t.strip().lower() for t in (ev.ror_org_types or ())}
+    if types & _ROR_GOVERNMENT_TYPES:
+        return GOVERNMENT
     if ev.ror_is_research is None:
         return None
     return RESEARCH if ev.ror_is_research else COMPANY

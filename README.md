@@ -1372,7 +1372,7 @@ Tier gating reads `routing_type` everywhere. No tier decides `record_type`.
 
 | # | Source | Yields | `record_type_source` |
 |---|---|---|---|
-| 1 | **ROR org types** | `education`, `healthcare`, `government`, `facility`, `nonprofit`, `archive`, `other` → `research_institution`; `company` → `company` | `ror` |
+| 1 | **ROR org types** | `government` → `government`; `education`, `healthcare`, `facility`, `nonprofit`, `archive`, `other` → `research_institution`; `company` → `company`. ROR's types reach the classifier **unflattened** (`ror_org_types`): `is_research_institution` is a boolean built from all seven, which is the right granularity for *routing* — they take the same branch — and the wrong granularity for the *answer*. | `ror` |
 | 2 | **GLEIF entity metadata** | `entity.category` and `entity.legalForm.id` (ISO 20275) from the `lei-records` response already fetched — see below | `gleif` |
 | 3 | **Corporate legal-form suffix** | `has_corporate_legal_suffix()` → `company`. It can *only* yield that: the absence of a legal form is not evidence of an institution — plenty of companies trade without one. Read in **final position only** (of the name, or of a segment before a comma or a `DBA` marker), because `Co`, `AG`, `SA`, `NV` and `BV` are ordinary words elsewhere in a name. | `legal_form` |
 | 4 | **Keyword heuristic** | `looks_like_research_institution()` → `research_institution`. It can *only* yield that: a name not looking institutional is not evidence of a company. | `keyword` |
@@ -1391,6 +1391,22 @@ Measured on the 200 labelled eval records: the legal-suffix source fires on 55,
 **+21 correct, −0 wrong**, taking S2 exact match from 43% to 64%.
 
 **Tier 3 contributes no evidence and never had any** — it is a last-resort name guesser with no classification signal. A record that reached Tier 3 is classified from whatever other evidence exists, never from having been there.
+
+### `government` is a first-class value
+
+Added 2026-08-29. It used to be unproducible: ROR's own `government` org type was folded into
+`research_institution`, so a registry that had **correctly identified a public body** had its answer
+discarded on the way out. Measured on the 200 labelled records, that single fold accounted for
+**55 of the 61 errors** on the government-labs set, 50 of them decided by `ror:verified` — the
+pipeline had the right answer and no word for it. GLEIF's two public-body categories
+(`RESIDENT_GOVERNMENT_ENTITY`, `INTERNATIONAL_ORGANIZATION`) map here too, for the same reason they
+previously mapped to `research_institution`: there had been nothing else to receive them.
+
+Effect on that set: **0 → 34 correct of 100**, wrong 62 → 34.
+
+Only `government` is read off the org types. The boolean still decides everything else, so no other
+ROR type changes meaning — `archive` is deliberately not included, because a national archive is a
+collection rather than an agency.
 
 ### `unknown` is a real fourth state
 

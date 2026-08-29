@@ -29,6 +29,7 @@ from api.models import EnrichmentRecord
 from config import Settings
 from enrichment.classifier import (
     COMPANY,
+    GOVERNMENT,
     RESEARCH,
     UNKNOWN,
     TypeEvidence,
@@ -520,3 +521,82 @@ class TestLegalSuffixProvenance:
         prov = out["record_type_provenance"]
         assert prov.startswith("input:"), prov
         assert "verified" not in prov, prov
+
+
+# ---------------------------------------------------------------------------
+# `government` is a fourth record_type (ticket 15A / 23)
+#
+# It was not producible: `tier1_ror.ROR_RESEARCH_TYPES` folds ROR's own
+# `government` org type into `research_institution`, so a registry that had
+# correctly identified a public body had its answer discarded on the way out.
+# Measured on the 200 labelled records: 55 of the 61 S3 errors were exactly
+# that, and 50 of those were decided by `ror:verified`.
+# ---------------------------------------------------------------------------
+
+class TestGovernmentIsProducible:
+    def test_ror_government_survives_to_the_answer(self):
+        t, src = classify(TypeEvidence(
+            name1="National Aeronautics and Space Administration",
+            ror_is_research=True,
+            ror_org_types=("government",),
+        ))
+        assert (t, src) == (GOVERNMENT, "ror")
+
+    def test_the_other_six_ror_types_are_unchanged(self):
+        """Only `government` is read off the types. The boolean still decides
+        everything else, so no other org type changes meaning."""
+        for org_type in ("education", "healthcare", "facility", "nonprofit",
+                         "archive", "other"):
+            t, _ = classify(TypeEvidence(
+                name1="Some Institute", ror_is_research=True,
+                ror_org_types=(org_type,),
+            ))
+            assert t == RESEARCH, org_type
+
+    def test_a_ror_company_is_still_a_company(self):
+        t, _ = classify(TypeEvidence(
+            name1="Bruker Corporation", ror_is_research=False,
+            ror_org_types=("company",),
+        ))
+        assert t == COMPANY
+
+    def test_types_are_optional_and_absent_means_the_old_behaviour(self):
+        """Every call site that does not carry types must behave exactly as
+        before — the field is additive."""
+        t, src = classify(TypeEvidence(name1="X", ror_is_research=True))
+        assert (t, src) == (RESEARCH, "ror")
+
+    def test_a_government_type_without_a_ror_match_decides_nothing(self):
+        """Types come WITH a ROR match; they are not an independent source."""
+        t, src = classify(TypeEvidence(name1="X"))
+        assert (t, src) == (UNKNOWN, "unresolved")
+
+    @pytest.mark.parametrize("category", [
+        "RESIDENT_GOVERNMENT_ENTITY", "INTERNATIONAL_ORGANIZATION",
+    ])
+    def test_gleif_public_body_categories_are_government(self, category):
+        """Both mapped to RESEARCH only because nothing else existed to receive
+        them; the comment in `_CATEGORY_TYPE` said they map the way ROR's own
+        `government` type maps, and now they both do."""
+        t, src = classify(TypeEvidence(
+            name1="Some Agency", lei_id="X" * 20, gleif_category=category,
+        ))
+        assert (t, src) == (GOVERNMENT, "gleif")
+
+    def test_a_registry_government_verdict_is_registry_authored(self):
+        """Scheme B: it came from ROR, so it must not degrade to `input`."""
+        out = finalise(
+            _base_result(name1="NASA", _ror_is_research=True,
+                         _ror_org_types=("government",)),
+            time.monotonic(),
+        )
+        assert out["record_type"] == GOVERNMENT
+        assert out["record_type_provenance"].startswith("ror:")
+
+    def test_the_evidence_key_does_not_reach_the_output(self):
+        out = finalise(
+            _base_result(name1="NASA", _ror_is_research=True,
+                         _ror_org_types=("government",)),
+            time.monotonic(),
+        )
+        assert "_ror_org_types" not in out

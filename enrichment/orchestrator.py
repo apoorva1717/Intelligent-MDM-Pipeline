@@ -1871,6 +1871,7 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # assignment is out of scope here.
     result.pop("_tier1_retry_type_conflict", None)
     result.pop("_ror_is_research", None)
+    result.pop("_ror_org_types", None)
     result.pop("_gleif_category", None)
     result.pop("_gleif_sub_category", None)
     result.pop("_gleif_legal_form_id", None)
@@ -2020,6 +2021,7 @@ def _classify_record(result: dict[str, Any]) -> None:
     evidence = TypeEvidence(
         name1=_domain_evidence_name1(result),
         ror_is_research=result.get("_ror_is_research"),
+        ror_org_types=result.get("_ror_org_types"),
         lei_id=result.get("lei_id"),
         gleif_category=result.get("_gleif_category"),
         gleif_legal_form_id=result.get("_gleif_legal_form_id"),
@@ -3468,6 +3470,7 @@ class Orchestrator:
             result["source"] = "ROR"
             result["confidence"] = "medium"
             result["_ror_is_research"] = bool(confirmed.get("is_research_institution"))
+            result["_ror_org_types"] = tuple(confirmed.get("org_types") or ())
             result["routing_type"] = (
                 "research_institution"
                 if confirmed.get("is_research_institution")
@@ -3647,6 +3650,7 @@ class Orchestrator:
                     result["_ror_is_research"] = bool(
                         res.get("is_research_institution"),
                     )
+                    result["_ror_org_types"] = tuple(res.get("org_types") or ())
                 else:
                     # A department / sub-entity that is its own registered
                     # body. The identifier is kept because the dedup phase
@@ -3930,6 +3934,7 @@ class Orchestrator:
             result["_ror_is_research"] = bool(
                 ror_res.get("is_research_institution")
             )
+            result["_ror_org_types"] = tuple(ror_res.get("org_types") or ())
             _note_type_conflict(
                 "ROR",
                 "research_institution"
@@ -4233,6 +4238,7 @@ class Orchestrator:
         result["confidence"] = "high"
         result["enrichment_status"] = "enriched"
         result["_ror_is_research"] = bool(ror_res.get("is_research_institution"))
+        result["_ror_org_types"] = tuple(ror_res.get("org_types") or ())
         result["routing_type"] = (
             "research_institution"
             if ror_res.get("is_research_institution")
@@ -5578,6 +5584,9 @@ class Orchestrator:
                     result["_ror_is_research"] = bool(
                         ror_parent.get("is_research_institution")
                     )
+                    result["_ror_org_types"] = tuple(
+                        ror_parent.get("org_types") or ()
+                    )
                     result["routing_type"] = (
                         "research_institution"
                         if ror_parent.get("is_research_institution")
@@ -6554,6 +6563,8 @@ class Orchestrator:
                 summary.research_institution_count += 1
             elif r.record_type == "company":
                 summary.company_count += 1
+            elif r.record_type == "government":
+                summary.government_count += 1
 
             if r.tier_used == 1:
                 summary.tier1_resolved += 1
