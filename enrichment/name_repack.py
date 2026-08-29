@@ -22,6 +22,20 @@ Two halves of one operation, run at opposite ends of the pipeline:
     column is the one case with no word boundary to retreat to, and is cut
     where the column ends.
 
+    The boundary retreats once more rather than leave a piece ending on a
+    connector (:data:`CUT_STOPWORDS`). Without that, the cut landed on exactly
+    the boundary SAP's own writer had used: ``Exxonmobil Research &`` went in,
+    was merged and enriched as ``Exxonmobil Research & Engineering Co``, and
+    came back out as ``Exxonmobil Research &`` again — byte-identical to the
+    input, so the repair was invisible and every probe reading the output
+    concluded UC 0 had never fired. A tidier cut can cost a slot, and a piece
+    with no slot is lost, so ``repack_name_block`` falls back to the denser cut
+    rather than push a name out of the block.
+
+    Which slot a piece lands in is per-slot state that other rules hold too.
+    Registry ownership and the review flags both follow the value across the
+    move — see ``origin`` below, and ``flags.relabel_name_slots``.
+
 Only a record whose block was merged is repacked. A record that arrived whole
 keeps whatever slot layout the pipeline gave it — widening the rewrite to every
 row would re-split names that ship correctly today.
@@ -40,9 +54,44 @@ from utils.name_slots import NAME_SLOTS
 # spilling into the next column again.
 NAME_FIELD_WIDTH = int(os.getenv("NAME_FIELD_WIDTH", "32"))
 
+# Words a name piece must not end on. A coordinating conjunction, preposition
+# or article at the end of a column reads as a name cut mid-phrase — which is
+# precisely the shape UC 0 exists to repair, so a repack that produces it hands
+# back the defect the merge just removed. `Exxonmobil Research &` is the case
+# that named this: the merge joined it, enrichment resolved the whole name, and
+# the cut put the fragment back byte-for-byte.
+#
+# Only whole words belong here. A trailing comma or full stop is not a
+# continuation — `Security, LLC` cuts cleanly after `Security,` — so
+# punctuation is stripped before the test rather than being a signal itself.
+CUT_STOPWORDS = frozenset({
+    "&", "+", "-", "/",
+    "a", "an", "and", "at", "de", "del", "der", "des", "die", "et", "for",
+    "in", "of", "on", "or", "the", "to", "und", "van", "von", "y",
+})
+
 
 def _norm(value: str | None) -> str:
     return re.sub(r"\s+", " ", (value or "").strip())
+
+
+def _is_connector(word: str) -> bool:
+    return word.strip(".,;:").casefold() in CUT_STOPWORDS
+
+
+def _retreat_from_connector(chunk: str) -> tuple[str, str]:
+    """Split *chunk* so it does not end on a connector.
+
+    Returns ``(emitted, carried)`` — the piece to write, and the words moved
+    off its end to lead the next piece. A run of connectors retreats whole
+    (``Department of the`` carries ``of the``), and a piece of one word has
+    nothing to retreat to and is emitted as it stands.
+    """
+    words = chunk.split(" ")
+    carried: list[str] = []
+    while len(words) > 1 and _is_connector(words[-1]):
+        carried.insert(0, words.pop())
+    return " ".join(words), " ".join(carried)
 
 
 def merge_split_runs(
@@ -95,12 +144,31 @@ def merge_split_runs(
     return merged, [run for run in runs if len(run) > 1]
 
 
-def chunk_name(value: str, width: int = NAME_FIELD_WIDTH) -> list[str]:
+def chunk_name(
+    value: str,
+    width: int = NAME_FIELD_WIDTH,
+    *,
+    avoid_connector_endings: bool = True,
+) -> list[str]:
     """Cut *value* into pieces of at most *width* characters.
 
     The cut is taken at *width* and then retreated to the last word boundary
     that fits, so a piece never ends mid-word. A single token longer than
     *width* has no boundary to retreat to and is cut at the column edge.
+
+    The boundary retreats a second time when it would leave a piece ending on
+    a connector (:data:`CUT_STOPWORDS`) — that word leads the next piece
+    instead. The retreat is declined when carrying the connector forward would
+    push the following piece past *width*, because cutting a word in half is
+    worse than a connector at a column edge.
+
+    The final piece is never retreated: nothing follows it to carry a word to,
+    and a name that genuinely ends on a connector ends on one.
+
+    *avoid_connector_endings* turns the second retreat off. It costs a slot
+    often enough to matter — a shorter piece is a piece that fits less — and
+    :func:`repack_name_block` falls back to the denser cut rather than let a
+    tidier one push a name out of the block entirely.
     """
     text = _norm(value)
     if not text:
@@ -114,8 +182,13 @@ def chunk_name(value: str, width: int = NAME_FIELD_WIDTH) -> list[str]:
         elif len(current) + 1 + len(word) <= width:
             current = f"{current} {word}"
         else:
-            chunks.append(current)
-            current = word
+            emitted, carried = current, ""
+            if avoid_connector_endings:
+                emitted, carried = _retreat_from_connector(current)
+                if carried and len(carried) + 1 + len(word) > width:
+                    emitted, carried = current, ""
+            chunks.append(emitted)
+            current = f"{carried} {word}" if carried else word
         # An over-long token: emit its full-width pieces and carry the
         # remainder, which can still take the words that follow it.
         while len(current) > width:
@@ -141,12 +214,27 @@ def repack_name_block(
     they are content the field split cannot place), and a map from destination
     slot index to the source index it came from, so the caller can carry
     per-field state (registry ownership) across the move.
+
+    The connector-aware cut is preferred but not paid for in content: a piece
+    that ends on a connector reads badly, and a piece with no slot to go to is
+    *lost*. When avoiding the connector needs a slot the block does not have,
+    the denser cut is taken instead.
     """
-    pieces: list[tuple[str, int]] = []
-    for source, value in enumerate(values):
-        pieces.extend(
-            (chunk, source) for chunk in chunk_name(value or "", width)
-        )
+    def _cut(avoid: bool) -> list[tuple[str, int]]:
+        pieces: list[tuple[str, int]] = []
+        for source, value in enumerate(values):
+            pieces.extend(
+                (chunk, source) for chunk in chunk_name(
+                    value or "", width, avoid_connector_endings=avoid,
+                )
+            )
+        return pieces
+
+    pieces = _cut(True)
+    if len(pieces) > len(NAME_SLOTS):
+        dense = _cut(False)
+        if len(dense) < len(pieces):
+            pieces = dense
 
     packed: list[str | None] = [None] * len(NAME_SLOTS)
     origin: dict[int, int] = {}

@@ -65,7 +65,12 @@ from enrichment.preprocess import (
 )
 from dedup.signatures import normalize_key
 from enrichment.classifier import TypeEvidence, classify
-from enrichment.flags import OVERFLOW, compute_flags, raise_after
+from enrichment.flags import (
+    OVERFLOW,
+    compute_flags,
+    raise_after,
+    relabel_name_slots,
+)
 from enrichment.liveness import (
     gleif_verdict as liveness_gleif_verdict,
     probe_ror_status as liveness_probe_ror_status,
@@ -1035,12 +1040,19 @@ def normalise_output_fields(result: dict[str, Any]) -> dict[str, Any]:
     touched — they are codes, and their case is meaningful.
     """
     registry_named = result.get("_registry_name_fields") or set()
+    # Slots holding the second or later piece of one name (UC 0 repack). Their
+    # first token is not the start of a name, so it is cased as any other —
+    # see `normalise_case(continuation=…)`.
+    continuations = result.get("_uc0_continuation_slots") or set()
     for field in _CASE_NAME_FIELDS:
-        if field[: -len("_enriched")] in registry_named:
+        slot = field[: -len("_enriched")]
+        if slot in registry_named:
             continue
         val = result.get(field)
         if val:
-            _cased = normalise_case(str(val), mode="name")
+            _cased = normalise_case(
+                str(val), mode="name", continuation=slot in continuations,
+            )
             if isinstance(result, EnrichedRecord):
                 result.transform(field, _cased, rule_id="rule7:output-casing")
             else:
@@ -1165,6 +1177,17 @@ def _repack_merged_name_block(result: dict[str, Any]) -> None:
             ),
         )
 
+    # Which slots hold the second or later piece of one value. The casing pass
+    # needs this: the head of a continuation piece is the middle of a name, and
+    # capitalising it turns `... Technology` + `and Engineering Company` into
+    # `And Engineering Company`. Transient, and dropped in `finalise` with the
+    # other underscore keys.
+    result["_uc0_continuation_slots"] = {
+        NAME_SLOTS[dest]
+        for dest, source in origin.items()
+        if origin.get(dest - 1) == source and dest > 0
+    }
+
     # Registry ownership follows the value. Both halves of a name ROR spelled
     # are still ROR's spelling, and the casing pass below must skip them for
     # the same reason it skipped the whole.
@@ -1186,6 +1209,19 @@ def _repack_merged_name_block(result: dict[str, Any]) -> None:
             and enriched != original
             and str(enriched).casefold() != str(original or "").casefold()
         )
+
+    # The flag columns follow the value for the same reason registry ownership
+    # does, and were the one piece of per-slot state that did not. `Name 2:
+    # the canonical form could not be established` was rendered against the
+    # merged block — where Name 2 held `LLC` — and then displayed against
+    # whatever this rewrite moved into Name 2, which was a different string.
+    # Relabelled through the same `origin` map, in flags.py, so `render`
+    # stays the only thing that builds these columns.
+    moved: dict[str, tuple[str, ...]] = {}
+    for dest, source in sorted(origin.items()):
+        moved.setdefault(NAME_SLOTS[source], ())
+        moved[NAME_SLOTS[source]] += (NAME_SLOTS[dest],)
+    relabel_name_slots(result, moved)
 
     if dropped:
         logger.info({
@@ -1863,6 +1899,9 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     result.pop("_wikidata_qid", None)
     result.pop("_wikidata_website", None)
     result.pop("_registry_name_fields", None)
+    # UC 0 repack — which slots continue the slot above them. Consumed by the
+    # casing pass just above and never serialised.
+    result.pop("_uc0_continuation_slots", None)
     # Fix D — the per-source identity claims the gate above consumed.
     for _src_key in SOURCE_KEYS:
         result.pop(_src_key, None)

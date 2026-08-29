@@ -722,12 +722,24 @@ def _case_token(token: str, *, mode: str, first: bool) -> str:
     )
 
 
-def normalise_case(value: str | None, *, mode: str = "text") -> str | None:
+def normalise_case(
+    value: str | None,
+    *,
+    mode: str = "text",
+    continuation: bool = False,
+) -> str | None:
     """Token-level casing for an output field.
 
     ``mode`` is ``"name"`` for Name 1-4 (a short upper-case token defaults to
     an acronym) and ``"text"`` for street, city, PO box, c/o and contact (a
     short upper-case token defaults to a word).
+
+    ``continuation`` says this value is the middle of a name rather than the
+    start of one — the second and later pieces of a name the UC-0 repack cut
+    across columns. The first token is then cased as any other, so a piece
+    beginning on a connector keeps it lower case: ``ExxonMobil Technology`` +
+    ``and Engineering Company``, never ``And Engineering Company``. Without
+    this the repack's own cut point manufactures a capital mid-name.
 
     Whitespace is preserved exactly — the value is split on whitespace runs and
     rejoined with the same runs, so nothing is collapsed. The length invariant
@@ -738,7 +750,7 @@ def normalise_case(value: str | None, *, mode: str = "text") -> str | None:
         return value
     parts = re.split(r"(\s+)", value)
     out: list[str] = []
-    first = True
+    first = not continuation
     for part in parts:
         if not part or part.isspace():
             out.append(part)

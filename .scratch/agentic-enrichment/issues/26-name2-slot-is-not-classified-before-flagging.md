@@ -17,7 +17,7 @@ canonical form could not be established"* — classified by **what the Name 2 sl
 |---|---:|---|
 | **E. a genuine department, unresolved** | **23** | `Baytown Refinery Laboratory` under `ExxonMobil` |
 | F. a company name, not a department | 17 | `Edata Solutions` under `Economic Policy Institute` |
-| A. Name 1 overflow | 8 | `Engineering Solutions of Sandia` under `National Technology &` |
+| A. Name 1 overflow *(amended: 6 of 8 are ticket-28 part B, see below)* | 8 | `Engineering Solutions of Sandia` under `National Technology &` |
 | C. a trading name / fragment | 5 | `DBA Community Fuels` under `American Biodiesel Inc` |
 | B. an admin or form label | 3 | `Ref#` under `Genzyme Corp`, `Email To:` under `Celanese Corp` |
 | D. a duplicate of Name 1 | 1 | `Veracyte, Inc. - South San Francisco, CA` under `Veracyte, Inc.` |
@@ -39,6 +39,30 @@ unresolved Name 2 values are admin desks, phrases naming nothing, or Name-1 over
 was used to argue Tier 2B should not be revived. It applies equally here, and nothing acted on it.
 
 ## The compounding effect: 8 of the 34 are a defect telling on itself
+
+> **Amended 2026-08-29.** The classification below is right that these 8 are not a
+> department. It is wrong about *why*, because the probe read post-repack slot values
+> against pre-repack flags. See `research/uc0-repack-recreates-the-split.md`.
+>
+> **6 of the 8 are the ticket-28 part-B defect: the flag does not name the string the
+> slot shows.** UC 0 detected the Sandia split, merged it (`is_overflow=true`, `high`),
+> and `compute_flags` then ran against the *merged* block, where Name 2 held `LLC`:
+>
+> ```
+> after UC0 merge  name1='National Technology & Engineering Solutions of Sandia'  name2='LLC'
+>                  compute_flags() flags name2 -> 'LLC'
+> after repack     name2='Engineering Solutions of Sandia'
+> ```
+>
+> The flag was raised about `LLC` — a legal suffix stranded in a name slot, which *is*
+> a real finding. It is displayed against `Engineering Solutions of Sandia`, which is
+> not. So this row belongs under **C. a trading name / fragment**, not A, and the
+> reviewer-facing defect is the mislabelling, not the classification.
+>
+> The remaining 2 (`Expeditors International of`, `DOH - Bureau of`) are as described.
+>
+> **These 8 are therefore not removable by "fixing Stage 0" — Stage 0 is not broken.**
+> Ticket 28 part B removes 6 of them; the other 2 remain this ticket's to classify.
 
 The `A. Name 1 overflow` rows are the ticket-28 defect surfacing as a Name 2 complaint. `National
 Technology &` + `Engineering Solutions of Sandia` is **one name split across two slots**. The

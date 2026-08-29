@@ -51,7 +51,10 @@ and a supplier directory all satisfy.
 
 ## Related
 
-Both affected records are also ticket 28's overflow (`Exxonmobil Research &` + `Engineering Co`).
+Both affected records are also ticket 28's repack (`Exxonmobil Research &` + `Engineering Co`).
+**Amended 2026-08-29:** ticket 28 no longer claims the split causes this. The SERP cache shows the
+search ran on the whole merged name (`exxonmobil research engineering co annandale nj`), so this
+ticket stands entirely on its own — repairing the cut point will not change the domain.
 The record whose name is whole — `ExxonMobil Research & Engineering` — resolves to
 `exxonmobil.com` at `verified+domain`. **A truncated name is what sent the search somewhere else.**
 Fixing 28 may remove this instance without addressing the class, which is why they are separate

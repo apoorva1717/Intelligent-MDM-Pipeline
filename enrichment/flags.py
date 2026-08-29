@@ -806,6 +806,79 @@ def retract(result: Any, codes: Iterable[str], field: str) -> tuple[str, ...]:
     return tuple(withdrawn)
 
 
+def relabel_name_slots(
+    result: Any,
+    moved: dict[str, tuple[str, ...]],
+) -> bool:
+    """Point an already-rendered flag at the slots its values now occupy.
+
+    The second exception to rule 1, and the same shape as :func:`retract`: not
+    a re-judgement, a relabelling. ``compute_flags`` runs before the UC-0
+    repack (`orchestrator._repack_merged_name_block`), which then decides
+    *which slot* each piece of a settled name sits in. The scope map still
+    names the slots as they were, so a reviewer read
+    ``"Name 2: the canonical form could not be established"`` against whatever
+    the repack had since moved into Name 2 — a flag about one string displayed
+    against another.
+
+    *moved* maps each source slot to the destination slots its value now
+    occupies: ``{"name2": ("name4",)}``. A name cut across three columns maps
+    to all three, because the doubt is about the whole name and every column
+    holding a piece of it is in scope. A source with no destination had its
+    content dropped — it leaves the scope, and a code whose scope empties is
+    dropped with it, exactly as in :func:`retract`.
+
+    Nothing outside the name block is touched: ``domain``, ``contact``,
+    ``email`` and ``address`` are not slots the repack can move.
+    """
+    def remap(fields: Iterable[str]) -> set[str]:
+        out: set[str] = set()
+        for field in fields or ():
+            if field in NAME_SLOTS:
+                out.update(moved.get(field, ()))
+            else:
+                out.add(field)
+        return out
+
+    scopes_before = {
+        code: set(fields or ())
+        for code, fields in (getattr(result, "flag_scopes", None) or {}).items()
+    }
+    low_before = list(getattr(result, "flag_low_confidence", None) or ())
+
+    scopes_after = {}
+    for code, fields in scopes_before.items():
+        # A record-level code carries an empty scope and must keep it — an
+        # empty scope means "about the record", not "about no field", and
+        # remapping would leave it looking the same while meaning nothing.
+        if not fields:
+            scopes_after[code] = fields
+            continue
+        remapped = remap(fields)
+        if remapped:
+            scopes_after[code] = remapped
+    low_after = _sorted_fields(remap(low_before))
+
+    if scopes_after == scopes_before and low_after == low_before:
+        return False
+
+    details = dict(getattr(result, "flag_details", None) or {})
+    notes = dict(getattr(result, "flag_notes", None) or {})
+    kept_details = {c: v for c, v in details.items() if c in scopes_after}
+    kept_notes = {c: v for c, v in notes.items() if c in scopes_after}
+    for key, value in render(
+        scopes_after, kept_details, kept_notes, low_after,
+    ).items():
+        setattr(result, key, value)
+    logger.info({
+        "record_id": getattr(result, "record_id", None),
+        "step": "flags_relabelled_after_repack",
+        "moved": {k: list(v) for k, v in moved.items()},
+        "flagged_fields": getattr(result, "flagged_fields", None),
+    })
+    return True
+
+
 def compute_flags(result: dict[str, Any]) -> None:
     """Rebuild ``flag_codes``, ``flagged_fields``, ``flag_for_review`` and
     ``flag_reason`` from *result*'s final state, and drop the evidence keys.

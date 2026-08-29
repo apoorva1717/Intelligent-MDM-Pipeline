@@ -30,8 +30,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from api.models import EnrichmentOptions, EnrichmentRecord
 from config import Settings
+from types import SimpleNamespace
+
+from enrichment.flags import (
+    DOMAIN_UNVERIFIED,
+    ENTITY_SUPERSEDED,
+    UNVERIFIED_INFERENCE,
+    relabel_name_slots,
+    render,
+)
+from utils.name_slots import NAME_SLOTS
 from enrichment.name_repack import (
     NAME_FIELD_WIDTH,
+    _is_connector,
     chunk_name,
     merge_split_runs,
     repack_name_block,
@@ -154,6 +165,190 @@ class TestChunkName:
         assert chunk_name("") == []
 
 
+class TestTheCutNeverStrandsAConnector:
+    """Ticket 28 part A.
+
+    The repack used to cut at the last word boundary that fits and stop, which
+    landed on exactly the boundary SAP's own writer had used — so a name UC 0
+    had just merged and enriched came back out split identically, and every
+    probe reading the output concluded UC 0 never fired.
+    """
+
+    @pytest.mark.parametrize("value, expected", [
+        # The five shapes measured on the S2/S3 200-record sample.
+        ("Exxonmobil Research & Engineering Co",
+         ["Exxonmobil Research", "& Engineering Co"]),
+        ("ExxonMobil Technology and Engineering Company",
+         ["ExxonMobil Technology", "and Engineering Company"]),
+        ("Expeditors International of Washington, Inc.",
+         ["Expeditors International", "of Washington, Inc."]),
+        ("Novartis Institute for BioMedical Research Inc",
+         ["Novartis Institute", "for BioMedical Research Inc"]),
+        ("Florida Cancer Specialists & Research Institute",
+         ["Florida Cancer Specialists", "& Research Institute"]),
+    ])
+    def test_the_measured_shapes_cut_before_the_connector(self, value, expected):
+        assert chunk_name(value) == expected
+
+    def test_no_piece_but_the_last_ends_on_a_connector(self):
+        value = "National Technology & Engineering Solutions of Sandia"
+        pieces = chunk_name(value)
+        assert pieces == [
+            "National Technology", "& Engineering Solutions", "of Sandia",
+        ]
+        assert not any(
+            _is_connector(piece.split(" ")[-1]) for piece in pieces[:-1]
+        )
+
+    def test_a_run_of_connectors_retreats_whole(self):
+        # The dense cut ends the first piece on "of the"; both words move,
+        # rather than retreating one and leaving a piece ending on "of".
+        value = "Genetics Institute of the Massachusetts General Hospital"
+        assert chunk_name(value, avoid_connector_endings=False)[0] == (
+            "Genetics Institute of the"
+        )
+        pieces = chunk_name(value)
+        assert pieces[0] == "Genetics Institute"
+        assert pieces[1].startswith("of the ")
+
+    def test_a_name_ending_on_a_connector_keeps_it(self):
+        # Nothing follows the last piece to carry the word to, and the name
+        # genuinely ends that way.
+        assert chunk_name("Smith and") == ["Smith and"]
+
+    def test_the_retreat_is_declined_rather_than_cut_a_word_in_half(self):
+        # Carrying "of" forward would leave no room for the long token that
+        # follows, and a mid-word cut is worse than a connector at the edge.
+        value = "Bundesanstalt Materialforschung of " + "X" * 31
+        pieces = chunk_name(value)
+        assert all(len(p) <= NAME_FIELD_WIDTH for p in pieces)
+        assert "X" * 31 in pieces
+
+    def test_it_is_never_paid_for_in_dropped_content(self):
+        # The tidier cut costs a slot here, and a piece with no slot is lost.
+        # Content wins: the denser cut is taken instead.
+        packed, dropped, _ = repack_name_block([
+            "United States Department of Energy National Renewable Energy "
+            "Laboratory Golden Colorado",
+            "Center for Advanced Materials Research",
+            "Photovoltaic Devices Group",
+            None, None,
+        ])
+        assert all(packed)
+        assert dropped == ["Photovoltaic Devices Group"]
+
+    def test_the_dense_cut_is_still_available_explicitly(self):
+        assert chunk_name(
+            "Exxonmobil Research & Engineering Co",
+            avoid_connector_endings=False,
+        ) == ["Exxonmobil Research &", "Engineering Co"]
+
+
+class TestTheFlagFollowsTheValue:
+    """Ticket 28 part B.
+
+    `compute_flags` runs before the repack, so the scope map named the slots
+    as the merged block had them. The repack then moved the values and left
+    the scope standing — a flag raised about one string, displayed against
+    another.
+    """
+
+    @staticmethod
+    def _flagged(**rendered):
+        r = SimpleNamespace(record_id="t")
+        for key, value in render(**rendered).items():
+            setattr(r, key, value)
+        return r
+
+    def test_the_measured_sandia_case(self):
+        # What compute_flags saw: the merged block, where Name 2 held "LLC".
+        merged, _ = merge_split_runs({
+            "name1": "National Technology &",
+            "name2": "Engineering Solutions of Sandia",
+            "name3": "LLC",
+            "name4": None, "name5": None,
+        }, [("name1", "name2")])
+        assert merged["name2"] == "LLC"
+
+        r = self._flagged(scopes={}, low_confidence=["name2"])
+        assert r.flagged_fields == ["name2"]
+
+        packed, _, origin = repack_name_block(
+            [merged[s] for s in NAME_SLOTS],
+        )
+        moved: dict[str, tuple[str, ...]] = {}
+        for dest, source in sorted(origin.items()):
+            moved.setdefault(NAME_SLOTS[source], ())
+            moved[NAME_SLOTS[source]] += (NAME_SLOTS[dest],)
+
+        assert relabel_name_slots(r, moved) is True
+        # The flag now names the slot that holds the string it is about.
+        assert r.flagged_fields == ["name4"]
+        assert packed[NAME_SLOTS.index("name4")] == "LLC"
+        assert "Name 4:" in r.flag_reason
+
+    def test_a_name_cut_across_three_columns_scopes_to_all_three(self):
+        r = self._flagged(scopes={DOMAIN_UNVERIFIED: ["name1", "domain"]})
+        relabel_name_slots(r, {"name1": ("name1", "name2", "name3")})
+        assert r.flagged_fields == ["name1", "name2", "name3", "domain"]
+
+    def test_a_field_outside_the_name_block_is_untouched(self):
+        r = self._flagged(scopes={DOMAIN_UNVERIFIED: ["domain"]})
+        assert relabel_name_slots(r, {"name1": ("name2",)}) is False
+        assert r.flagged_fields == ["domain"]
+
+    def test_a_dropped_source_leaves_the_scope_and_empties_the_code(self):
+        # name3's content had no slot to go to. Nothing is left to confirm,
+        # so the code goes with it rather than pointing at a vanished value.
+        r = self._flagged(scopes={UNVERIFIED_INFERENCE: ["name3"]})
+        assert relabel_name_slots(r, {"name3": ()}) is True
+        assert r.flag_codes == []
+        assert r.flagged_fields == []
+
+    def test_a_record_level_code_keeps_its_empty_scope(self):
+        r = self._flagged(scopes={ENTITY_SUPERSEDED: []})
+        relabel_name_slots(r, {"name1": ("name2",)})
+        assert r.flag_codes == [ENTITY_SUPERSEDED]
+        assert r.flagged_fields == []
+
+    def test_an_identity_move_changes_nothing(self):
+        r = self._flagged(scopes={UNVERIFIED_INFERENCE: ["name1"]})
+        before = r.flag_reason
+        assert relabel_name_slots(r, {"name1": ("name1",)}) is False
+        assert r.flag_reason == before
+
+
+class TestAContinuationPieceIsNotTheStartOfAName:
+    """Measured on the golden set, 2026-08-29.
+
+    Cutting before the connector puts a lower-case word at the head of a slot,
+    and the output casing pass capitalises the first token of a name — so
+    `ExxonMobil Technology` + `and Engineering Company` shipped as
+    `And Engineering Company`. The repack's own cut point was manufacturing a
+    capital in the middle of a name.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_connector_leading_a_slot_stays_lower_case(self):
+        r = await _run(
+            _orch(llm=_SplitLLM({("Name 1", "Name 2")})),
+            name1="ExxonMobil Technology and", name2="Engineering Company",
+        )
+        assert _block(r)[:2] == [
+            "ExxonMobil Technology", "and Engineering Company",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_slot_that_starts_a_name_is_still_capitalised(self):
+        # The continuation rule must not leak to Name 1, or to a department
+        # slot holding a value of its own.
+        r = await _run(
+            _orch(llm=_SplitLLM(set())),
+            name1="us army corps", name2="of engineers",
+        )
+        assert _block(r)[0].startswith("Us ") or _block(r)[0].startswith("US ")
+
+
 # ---------------------------------------------------------------------------
 # The merge
 # ---------------------------------------------------------------------------
@@ -274,7 +469,10 @@ class TestSplitRecordsAreEnriched:
         assert "Massachusetts Institute of Technology" in ror.queries
         assert r.ror_id == "https://ror.org/042nb2s44"
         # 37 characters of official ROR name, written back across two columns.
-        assert _block(r)[:2] == ["Massachusetts Institute of", "Technology"]
+        # The cut falls before "of", not after it: a piece ending on a
+        # connector is the shape UC 0 exists to repair, and a repack that
+        # produces one hands back the defect the merge just removed.
+        assert _block(r)[:2] == ["Massachusetts Institute", "of Technology"]
 
     @pytest.mark.asyncio
     async def test_a_merged_name_that_fits_empties_the_slot_below_it(self):
