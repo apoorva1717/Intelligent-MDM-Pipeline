@@ -390,6 +390,134 @@ class TestOutputNameExpansion:
 
 
 # ---------------------------------------------------------------------------
+# The same rule, for the legal-suffix collapse
+# ---------------------------------------------------------------------------
+
+class TestTheIncumbentIsTheNameTheRecordStates:
+    """`_preferred_registry_variant` keeps the record's own form when the
+    registry publishes it. Which string is "the record's own form" is the
+    whole of whether it can ever fire.
+
+    Two call sites passed the pipeline's own intermediate value instead: the
+    Fix 2 retry passed `canonical` — the corrected name it had just queried
+    with — and the ROR parent match passed `name1_cleaned`, which preprocess
+    has already rewritten (UC 17 collapses "Corporation" to "Corp").
+
+    On the case the preference exists to serve, the tier's proposal and the
+    registry's display name are the SAME string, so the comparison asked
+    whether the pipeline agreed with itself and the answer was always yes.
+    NASA is the record that names this: ROR publishes "NASA" as an acronym of
+    ror.org/027ka1x80, the record says "NASA", and the canonicaliser had
+    already proposed "National Aeronautics and Space Administration".
+
+    `_slot_input_value` is the existing authority on what a record states.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_acronym_the_registry_publishes_survives_the_retry(self):
+        """The Fix 2 retry path, which is where NASA actually resolves.
+
+        ROR misses the bare acronym, the canonicaliser expands it, and the
+        retry matches on the expansion — so at the moment of the registry
+        write the pipeline is holding its own proposal, and that is what the
+        incumbent used to be.
+        """
+        expanded = "National Aeronautics and Space Administration"
+
+        class _CanonicalisingLLM:
+            async def extract_json(self, system, user, **k):
+                if "NASA" in user:
+                    return {"official_name": expanded, "confidence": "high"}
+                return {}
+
+            async def aclose(self):
+                pass
+
+        # Misses "nasa", hits the expansion — the retry is the only way in.
+        ror = _StubROR({expanded.lower(): _ror_org(
+            ror_id="https://ror.org/027ka1x80",
+            official_name=expanded,
+            name_variants=[expanded, "NASA", "NASA HQ", "NASA Headquarters"],
+            domain="nasa.gov", website="https://www.nasa.gov",
+        )})
+        orch = Orchestrator(Settings(), mock_clients={
+            "ror": ror, "lei": MockLEIClient(Settings()),
+            "search": _NoSearch(), "page_fetcher": MockPageFetcher(),
+            "llm": _CanonicalisingLLM(),
+        })
+        r = await _run(orch, name1="NASA", city="Washington")
+        assert r.name1_enriched == "NASA"
+        # The identifier is still ROR's — this preference is about which of
+        # ROR's names to display, never about whether the match happened.
+        assert r.ror_id == "https://ror.org/027ka1x80"
+
+    @pytest.mark.asyncio
+    async def test_a_name_the_registry_does_not_publish_still_loses(self):
+        """The guard that keeps this from becoming "never correct a name".
+        "Mayo Clinic FLA" matches no variant, so the display name wins — the
+        behaviour without the preference at all."""
+        ror = _StubROR({"mayo clinic fla": _ror_org(
+            name_variants=["Mayo Clinic in Florida", "Mayo Clinic Jacksonville"],
+        )})
+        r = await _run(_orch(ror), name1="Mayo Clinic FLA",
+                       city="Jacksonville", state="Florida")
+        assert r.name1_enriched == "Mayo Clinic in Florida"
+
+
+class TestRegistryNamesAreNotLegalSuffixCollapsed:
+    """UC 17 collapses "… Incorporated" -> "… Inc" so a company resolves on
+    one path whichever legal form the source recorded. It runs in preprocess,
+    on the INPUT, which is where that purpose is served.
+
+    It also ran in `finalise`, over every output name field and explicitly
+    "regardless of source (input passthrough, ROR, GLEIF, or LLM)". That
+    overrode the one source that is authoritative about the name, and the
+    field kept the registry's provenance while doing so: GLEIF's "SOUTHWEST
+    GAS CORPORATION" shipped as "Southwest Gas Corp" attributed to
+    `gleif:verified`, a string GLEIF has never published. Same rule as the
+    expansion pass above it — a registry owns its own spelling.
+    """
+
+    def test_a_registry_name_keeps_its_long_legal_form(self):
+        result = _init_result(EnrichmentRecord(record_id="t", country="US"))
+        _write_registry_name(
+            result, "name1", "SOUTHWEST GAS CORPORATION", "GLEIF",
+        )
+        out = finalise(result, time.monotonic())
+        assert out["name1_enriched"] == "Southwest Gas Corporation"
+
+    def test_the_same_value_IS_collapsed_when_it_is_not_registry_sourced(self):
+        """Control for the test above — the marker is what makes the
+        difference, not the string. UC 17 still backstops every other path."""
+        result = _init_result(EnrichmentRecord(record_id="t", country="US"))
+        seed(result, name1_enriched="Southwest Gas Corporation")
+        out = finalise(result, time.monotonic())
+        assert out["name1_enriched"] == "Southwest Gas Corp"
+
+    def test_incorporated_is_kept_on_a_registry_name(self):
+        """The second half of the map, and the case that names the defect on
+        Quest Diagnostics: GLEIF publishes "INCORPORATED" in full."""
+        result = _init_result(EnrichmentRecord(record_id="t", country="US"))
+        _write_registry_name(
+            result, "name1", "QUEST DIAGNOSTICS INCORPORATED", "GLEIF",
+        )
+        out = finalise(result, time.monotonic())
+        assert out["name1_enriched"] == "Quest Diagnostics Incorporated"
+
+    def test_a_registry_name_in_a_lower_slot_is_protected_too(self):
+        """The pass walks every name field, so the exemption has to as well."""
+        result = _init_result(EnrichmentRecord(record_id="t", country="US"))
+        seed(result, name2_enriched="Vaccines Division Incorporated")
+        _write_registry_name(
+            result, "name3", "Diagnostics Aktiengesellschaft", "ROR",
+        )
+        out = finalise(result, time.monotonic())
+        assert out["name3_enriched"] == "Diagnostics Aktiengesellschaft"
+        # …and the unprotected sibling in the same record still collapses.
+        assert out["name2_enriched"] == "Vaccines Division Inc"
+
+
+# ---------------------------------------------------------------------------
 # Separation of the two layers
 # ---------------------------------------------------------------------------
 
