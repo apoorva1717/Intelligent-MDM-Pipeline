@@ -576,6 +576,42 @@ def low_confidence_core_fields(result: Any) -> list[str]:
     return low
 
 
+def _low_confidence_raises_review() -> bool:
+    """Does a core field at ``low`` confidence, on its own, queue a review?
+
+    Default yes, which is the behaviour this module was built with and the one
+    every other rule here assumes.
+
+    ``FLAG_REVIEW_ON_LOW_CONFIDENCE=false`` turns it off, for a deployment that
+    has to cap the review queue. Measured on the golden set, the trade is
+    steep and one-directional:
+
+    ==========================  =======  ========  =======  ========
+    setting                     flagged  caught    false    SILENT
+    ==========================  =======  ========  =======  ========
+    true (default)              46 (46%)  30        16       29
+    false                       19 (19%)  12         7       47
+    ==========================  =======  ========  =======  ========
+
+    Precision barely moves (65% -> 63%); RECALL HALVES (51% -> 20%). The 19
+    records still queued are the ones carrying a substantive code; the 27 that
+    stop being queued are those whose only evidence problem is that nothing
+    corroborated the value — which on Name 1 is the single most predictive
+    signal the pipeline has (a ``low`` Name 1 is right 54% of the time against
+    76% for ``verified``).
+
+    So this switch does not make the pipeline better; it makes the queue
+    shorter. The prose still ships in ``flag_reason`` either way, so nothing is
+    lost from the record — only from the review request.
+    """
+    from config import get_settings
+
+    try:
+        return bool(get_settings().flag_review_on_low_confidence)
+    except Exception:  # noqa: BLE001 — a flag must never fail a record
+        return True
+
+
 def render(
     scopes: dict[str, Iterable[str]],
     details: dict[str, str] | None = None,
@@ -665,7 +701,8 @@ def render(
         # carrying an advisory code alongside a substantive one is still
         # queued, by the substantive one.
         "flag_for_review": (
-            bool(set(ordered) - ADVISORY_CODES) or bool(low)
+            bool(set(ordered) - ADVISORY_CODES)
+            or (bool(low) and _low_confidence_raises_review())
         ),
         "flag_reason": "; ".join(reasons) if reasons else None,
         "flag_scopes": scoped,
