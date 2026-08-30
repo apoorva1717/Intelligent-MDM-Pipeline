@@ -579,3 +579,64 @@ class TestSplitRecordsAreEnriched:
             name2="Training Command Jacksonville",
         )
         assert all(len(v) <= NAME_FIELD_WIDTH for v in _block(r) if v)
+
+
+# ---------------------------------------------------------------------------
+# The one over-width case an unmerged record is repaired for
+# ---------------------------------------------------------------------------
+
+class TestAnOverWidthDepartmentIsCut:
+    """The repack is gated on the merge, because re-cutting every row would
+    re-split names that ship correctly today. One case escapes that gate.
+
+    Preprocess expands abbreviations in a department slot — "Dept of Materials
+    Science & Eng" becomes "Department of Materials Science and Engineering",
+    46 characters into a 40-character field — and nothing afterwards can put
+    it back. The reference writes exactly the dense cut for this record.
+
+    Name 1 is deliberately not a trigger: measured on the golden set, gating
+    on *any* over-width value cost 12 cells to win 3, because an over-width
+    Name 1 is nearly always a wrong name rather than a mis-split one, and
+    cutting it spreads one wrong value across two cells. 40 is also not a
+    limit the reference imposes on its own output — it writes a 41-character
+    Name 1 on two records.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_department_too_long_for_its_column_is_cut(self):
+        r = await _run(
+            _orch(llm=_SplitLLM(pairs=set())),
+            name1="University of California, Riverside",
+            name2="Department of Materials Science and Engineering",
+        )
+        block = _block(r)
+        assert all(len(v) <= NAME_FIELD_WIDTH for v in block if v)
+        assert block[0] == "University of California, Riverside"
+        assert block[1] == "Department of Materials Science and"
+        assert block[2] == "Engineering"
+
+    @pytest.mark.asyncio
+    async def test_a_block_that_fits_is_left_exactly_as_it_is(self):
+        """The control: no merge, nothing over width, no rewrite."""
+        r = await _run(
+            _orch(llm=_SplitLLM(pairs=set())),
+            name1="University of California, Riverside",
+            name2="Department of Chemistry",
+        )
+        assert _block(r)[:2] == [
+            "University of California, Riverside", "Department of Chemistry",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_an_over_width_name1_is_not_cut(self):
+        """An over-long Name 1 is a wrong name, not a mis-split one. Leaving
+        it whole keeps the error in one cell instead of cascading it down the
+        block and displacing the department that follows."""
+        r = await _run(
+            _orch(llm=_SplitLLM(pairs=set())),
+            name1="The University of Texas MD Anderson Cancer Center",
+            name2="Accounts Payable",
+        )
+        block = _block(r)
+        assert len(block[0]) > NAME_FIELD_WIDTH
+        assert block[1] == "Accounts Payable"
