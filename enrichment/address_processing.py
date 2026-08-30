@@ -750,6 +750,38 @@ def _looks_unambiguous(value: str | None) -> bool:
     return _looks_like_street(value)
 
 
+#: A trailing label the building-code extractor leaves attached to the name it
+#: orphans — "Mary Moody Northern Building L CODE: L14" keeps "L" and "L14" and
+#: hands back "Mary Moody Northern Code:". The word labelled the code, not the
+#: building, and it leaves with it.
+_TRAILING_CODE_LABEL_RE = re.compile(
+    r"[\s,;-]*\b(?:code|mail\s+code|ms|mc)\b[\s:.]*$",
+    re.IGNORECASE,
+)
+
+
+def _is_bare_code(value: str | None) -> bool:
+    """True when *value* is an identifier rather than a name.
+
+    A name has a word in it. "1219B-MA", "L", "A302" have no run of three or
+    more letters and are codes; "Equad", "Genomics", "Mary Moody Northern" do.
+    """
+    return not re.search(r"[A-Za-z]{3,}", value or "")
+
+
+def _orphaned_building_name(residual: str | None) -> str | None:
+    """*residual* as a building name, or None when it is not one.
+
+    The residual left after a building/room extraction is that building's
+    name — but only when it reads as a name: wordy, and carrying no digits of
+    its own (a residual with digits is a second code, not a name).
+    """
+    text = _TRAILING_CODE_LABEL_RE.sub("", (residual or "").strip()).strip(" ,;-.")
+    if not text or any(ch.isdigit() for ch in text):
+        return None
+    return text if not _is_bare_code(text) else None
+
+
 async def _apply_residual_llm(
     res: AddressResult,
     secondary: dict[str, str | None],
@@ -782,6 +814,57 @@ async def _apply_residual_llm(
             continue
 
         if cls == "DEPARTMENT":
+            # A DEPARTMENT verdict is the one residual class that writes into
+            # the NAME block, so it is the one that needs a second signal.
+            # Measured on the golden set, the model reads an orphaned BUILDING
+            # NAME as a department, because that is what the extractor leaves
+            # behind: `Genomics Bldg 1219B-MA` keeps `1219B-MA` as the
+            # building and offers `Genomics`; `Mary Moody Northern Building L`
+            # keeps `L`; `Equad A302` keeps `A302` as the room. Each residual
+            # is the building's own name, and each shipped in a name slot the
+            # reference wants empty.
+            #
+            # `_looks_like_department` is the corroboration. It recognises the
+            # constructions a department is actually written in ("Chemistry
+            # Dept.", "Department of Chemistry"), and recognises none of the
+            # three above. Without it the value stays where it is — address
+            # content left in an address slot, with the existing
+            # unclassified-residual issue raised against it — which is the
+            # behaviour before the residual lane existed at all.
+            if not _looks_like_department(current):
+                # Where the orphan belongs, when the record says so. A segment
+                # that yielded a room or a bare building CODE was a building
+                # line, so its leftover words are that building's NAME — and
+                # the reference agrees on every one of them: `Equad A302` is
+                # Building "Equad" / Room "A302"; `Genomics Bldg 1219B-MA` is
+                # Building "Genomics" / Room "1219B-MA". Only a wordy residual
+                # qualifies, and only into an empty Building: a residual
+                # carrying its own digits is a code, not a name, and a
+                # Building already filled is not overwritten from here.
+                orphan = _orphaned_building_name(current)
+                if orphan and (res.room or res.mail_code or res.building):
+                    # …and when Building is already holding the CODE, the two
+                    # are simply the wrong way round. `Genomics Bldg 1219B-MA`
+                    # parses to Building "1219B-MA" with "Genomics" orphaned;
+                    # the reference reads it as Building "Genomics", Room
+                    # "1219B-MA". A value with no word in it is an identifier,
+                    # not a name, so it moves to Room and the name takes the
+                    # column it belongs in.
+                    if res.building and _is_bare_code(res.building):
+                        if not res.room:
+                            res.room = res.building
+                            res.building = None
+                        elif not res.mail_code:
+                            res.mail_code = res.building
+                            res.building = None
+                        # Both taken: nothing is discarded to make room for a
+                        # name, so the swap is declined and Building stands.
+                    if res.building is None:
+                        res.building = smart_title_case(orphan) or orphan
+                        secondary[slot_name] = None
+                        continue
+                res.issue("G1-ADDR-009")
+                continue
             res.issue("G1-ADDR-011")
             if res.department_addendum is None:
                 res.department_addendum = current.strip()
