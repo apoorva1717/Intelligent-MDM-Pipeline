@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from enrichment.registry_match import _legal_forms, names_match_verbatim
+
 from llm.openai_client import OpenAIClient
 from llm.prompts import (
     COMPANY_CANONICAL_SYSTEM_PROMPT,
@@ -107,6 +109,29 @@ async def run_company_canonical(
         # than discard it outright. success stays False — this is NOT an
         # accepted name.
         result.proposed_name = cleaned
+        return result
+
+    # A proposal that differs from the record ONLY by legal form is not a
+    # canonicalisation. "Paper Money Guaranty" -> "Paper Money Guaranty, LLC"
+    # adds a suffix the record did not state and nothing verified; the reverse
+    # drops one the record did state. Either way the model has restated the
+    # record's own name with the register's decoration, and the record is the
+    # authority on its own spelling until a register says otherwise -- which is
+    # a different lane, with an identifier behind it.
+    #
+    # Same rule the registry write applies in `_preferred_registry_variant`,
+    # and for the same reason: the legal form is a suffix, not a distinguishing
+    # token. A proposal carrying a DIFFERENT legal form is not this case and is
+    # left alone -- "Smith Inc" and "Smith LLC" are two legal entities.
+    if (
+        names_match_verbatim(name1, cleaned)
+        and _legal_forms(name1) != _legal_forms(cleaned)
+    ):
+        logger.info(
+            "[%s] Company canonical: '%s' -> '%s' differs only by legal form; "
+            "the record's own name stands",
+            record_id, name1, cleaned,
+        )
         return result
 
     result.success = True

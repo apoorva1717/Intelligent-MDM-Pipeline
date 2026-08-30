@@ -506,10 +506,18 @@ class TestCrosswalk:
 
         assert await _run_lane(orch, record, result) is True
         assert result["lei_id"] == PFIZER_LEI
-        assert result["name1_enriched"] == "PFIZER AG"
         assert result["source"] == "gleif"
+
+        # GLEIF establishes the IDENTITY — that is what this lane is for, and
+        # the LEI above is it. It does not thereby establish the display name:
+        # the record says "Pfizer" and the register says "PFIZER AG", which is
+        # the same name plus a legal form, so the record's own spelling stands
+        # and is attributed to the record. See `_preferred_registry_variant`.
+        # A register that carried a genuinely different name, or a different
+        # legal form, would still win here.
+        assert result["name1_enriched"] == "Pfizer"
         event = result.provenance.attributing_event("name1_enriched")
-        assert event.producer_chain == ("gleif",)
+        assert event.producer_chain == ("input",)
 
     @pytest.mark.asyncio
     async def test_a_pointer_to_a_record_that_does_not_exist_is_a_clean_miss(self):
