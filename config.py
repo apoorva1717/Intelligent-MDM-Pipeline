@@ -341,6 +341,26 @@ class Settings:
             os.getenv("PAGE_CORROBORATION_ENABLED"), default=True,
         )
     )
+    # One LLM call per record whose `record_type` the deterministic classifier
+    # settled on its two weakest rungs — a keyword read off a single word, or
+    # nothing at all. A record ROR, GLEIF or a legal form classified never
+    # reaches the lane and never costs a call. Measured on the 200 labelled
+    # records, that gate admits 70 of them. See `enrichment.type_classifier`.
+    # Does a core field at `low` confidence, on its own, queue a review?
+    # Default true — the behaviour `enrichment.flags` was built with. Setting
+    # it false caps the queue at the cost of recall: measured on the golden
+    # set, flagged 46 -> 19 while SILENT failures go 29 -> 47. See
+    # `enrichment.flags._low_confidence_raises_review` for the full table.
+    flag_review_on_low_confidence: bool = field(
+        default_factory=lambda: _bool(
+            os.getenv("FLAG_REVIEW_ON_LOW_CONFIDENCE"), default=True,
+        )
+    )
+    record_type_llm_enabled: bool = field(
+        default_factory=lambda: _bool(
+            os.getenv("RECORD_TYPE_LLM_ENABLED"), default=True,
+        )
+    )
     # rapidfuzz token_sort_ratio (0-100) an extracted page name must reach
     # against Name 1 before the page counts as naming this organisation.
     #

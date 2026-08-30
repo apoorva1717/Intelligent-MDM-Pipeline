@@ -606,11 +606,13 @@ class EnrichmentResult(BaseModel):
         Literal["unchanged-verified", "unchanged-confirmed", "unchanged-unresolved"]
     ] = Field(default=None, exclude=True)
     # Which evidence source decided `record_type` (enrichment/classifier.py):
-    # "ror" | "gleif" | "keyword" | "unresolved". A record_type of "unknown"
-    # always reports "unresolved". Excluded from the response body — the
-    # exported column set is unchanged.
+    # "ror" | "gleif" | "legal_form" | "keyword" | "unresolved" | "llm". A
+    # record_type of "unknown" always reports "unresolved". "llm" is
+    # `enrichment.type_classifier`, which may only speak over the last two —
+    # a keyword read off one word, or a record nothing resolved. Excluded from
+    # the response body — the exported column set is unchanged.
     record_type_source: Literal[
-        "ror", "gleif", "legal_form", "keyword", "unresolved",
+        "ror", "gleif", "legal_form", "keyword", "unresolved", "llm",
     ] = Field(
         default="unresolved", exclude=True,
     )

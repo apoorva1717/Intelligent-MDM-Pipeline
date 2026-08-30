@@ -791,3 +791,50 @@ EXPANSION_CHECK_PROMPT_VERSION = prompt_version(
     "expansion_check", "v1",
     EXPANSION_CHECK_SYSTEM_PROMPT, EXPANSION_CHECK_USER_PROMPT_TEMPLATE,
 )
+
+RECORD_TYPE_SYSTEM_PROMPT = (
+    "You classify what KIND of organisation a customer master-data record "
+    "names: a business, a public body, or a research organisation. Return "
+    "valid JSON only."
+)
+
+RECORD_TYPE_USER_PROMPT_TEMPLATE = (
+    "A customer master-data record:\n"
+    "  Name 1:  {name1}\n"
+    "  Name 2:  {name2}\n"
+    "  Website: {domain}\n"
+    "  Located: {city}, {state}, {country}\n\n"
+    "What kind of organisation is this?\n\n"
+    "Return JSON:\n"
+    "{{\n"
+    '  "record_type": "company" | "government" | "research_institution" | "unknown",\n'
+    '  "confidence": "high" | "medium" | "low",\n'
+    '  "reasoning": "<one short sentence>"\n'
+    "}}\n\n"
+    "company - a business, including its research arms and its "
+    "laboratories. `ExxonMobil Research & Engineering` and `Zoetis "
+    "Reference Laboratory Cincinnati` are parts of companies, not "
+    "research institutes; the words `Research` and `Laboratory` in a "
+    "name say nothing on their own.\n\n"
+    "government - a public body at any level: a federal agency or its "
+    "laboratories, a state or county department, a military or veterans "
+    "facility, a public health laboratory.\n\n"
+    "research_institution - a university, college, teaching hospital, or "
+    "an independent research institute that exists to do research rather "
+    "than to trade.\n\n"
+    "The WEBSITE is usually the strongest signal you have, and it "
+    "outranks the wording of the name: a `.gov` or `.mil` site is a "
+    "public body, and a company domain means a company however academic "
+    "the name sounds. Judge the organisation the record NAMES, not the "
+    "parent whose domain it shares - a national laboratory operated "
+    "under contract is still a public body.\n\n"
+    "Answer 'unknown', or use 'low' "
+    "confidence, whenever you cannot tell. Both are discarded and the "
+    "record keeps the type it already has, so a guess costs more than an "
+    "abstention."
+)
+
+RECORD_TYPE_PROMPT_VERSION = prompt_version(
+    "record_type", "v1",
+    RECORD_TYPE_SYSTEM_PROMPT, RECORD_TYPE_USER_PROMPT_TEMPLATE,
+)
