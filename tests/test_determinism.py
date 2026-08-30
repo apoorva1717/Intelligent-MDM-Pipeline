@@ -1109,9 +1109,12 @@ class TestNoRecordShipsTwoIdentities:
             name1="BIC Corp", city="Milford", state="CT",
         )
         assert result.lei_id == "LEI00BIC0000000000001"
-        # GLEIF's "BIC CORPORATION", after UC 17's legal-suffix collapse and
-        # output casing — the record's own identity, not Centene's.
-        assert result.name1_enriched == "BIC Corp"
+        # GLEIF's "BIC CORPORATION" under output casing — the record's own
+        # identity, not Centene's. The name is GLEIF's verbatim: UC 17's
+        # legal-suffix collapse no longer rewrites a registry-written name,
+        # because shipping "BIC Corp" under `gleif:verified` attributed to
+        # GLEIF a string GLEIF never published. See `_write_registry_name`.
+        assert result.name1_enriched == "BIC Corporation"
         assert result.ror_id is None
         assert result.domain is None
         assert SOURCE_CONFLICT in result.flag_codes

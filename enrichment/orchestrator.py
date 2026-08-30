@@ -60,6 +60,11 @@ from enrichment.expansion_check import (
     expansion_declined,
 )
 from enrichment.slot_router import classify_slot_values
+from enrichment.type_classifier import (
+    SOURCE_LLM as TYPE_SOURCE_LLM,
+    classify_record_type,
+    may_override as type_may_override,
+)
 from enrichment.preprocess import (
     _extract_addresses,
     _location_fragment,
@@ -131,7 +136,7 @@ from enrichment.grounded_resolver import (
     GroundedResult,
     run_grounded_resolver,
 )
-from enrichment.registry_match import names_match_verbatim
+from enrichment.registry_match import _legal_forms, names_match_verbatim
 from enrichment.tier1_lei import LEIClient, clear_lei_cache, lei_normalised_hits
 from enrichment.tier1_ror import RORClient, clear_ror_cache, ror_normalised_hits
 from enrichment.page_corroborator import (
@@ -850,11 +855,46 @@ def _preferred_registry_variant(
     """
     if not (incumbent and incumbent.strip()):
         return display
+    # Asked FIRST, because the display name is itself one of the published
+    # names — GLEIF's `entity_names` opens with the legal name and ROR's
+    # `names` with `ror_display` — so the variant loop below would otherwise
+    # match the display name against the incumbent and hand back the
+    # register's own spelling, which is the thing this branch exists to avoid.
+    if (
+        names_match_verbatim(incumbent, display)
+        and _legal_forms(incumbent) != _legal_forms(display)
+    ):
+        return incumbent.strip()
     for variant in variants or ():
         if not (variant and variant.strip()):
             continue
         if names_match_verbatim(incumbent, variant):
             return variant.strip()
+    # …and one case where the registry publishes no variant to fall back to,
+    # because the difference is not a different NAME at all. When the record's
+    # name and the register's differ only in legal form — "Quest Diagnostics"
+    # against "QUEST DIAGNOSTICS INCORPORATED", "Celanese" against "Celanese
+    # Corporation", "Brigham and Women's Hospital Inc" against the same
+    # hospital without the "Inc" — there is nothing for the registry to
+    # correct. :func:`names_match_verbatim` is the test, and its own rule says
+    # why: the legal form is the register's suffix, not a distinguishing token.
+    #
+    # A registry that carries a DIFFERENT legal form is not covered and must
+    # not be: "Neptune Benson, Inc." against "Neptune-Benson, LLC" is two legal
+    # entities, and the register is the authority that says so.
+    #
+    # Nor is a pure case or punctuation difference, which is why the legal
+    # forms must actually DIFFER rather than merely be forgiven.
+    # `names_match_verbatim` forgives punctuation too, and on "University of
+    # California Riverside" against ROR's "University of California, Riverside"
+    # there is no legal form in play at all — the registry's comma is its
+    # spelling of its own name, and keeping SAP's instead is exactly the churn
+    # the display name exists to prevent.
+    #
+    # The incumbent is returned as the record wrote it, so the caller writes it
+    # under `input` provenance rather than the registry's — see
+    # :func:`_write_registry_name`. Claiming `gleif:verified` for a string GLEIF
+    # does not publish is the defect this whole area keeps producing.
     return display
 
 
@@ -912,7 +952,46 @@ def _write_registry_name(
     """
     if not (value and value.strip()):
         return
-    value = _preferred_registry_variant(incumbent, value.strip(), variants)
+    display = value.strip()
+    value = _preferred_registry_variant(incumbent, display, variants)
+
+    # The preference kept the record's own string rather than one the registry
+    # publishes. The registry still owns the IDENTIFIER — the caller writes it —
+    # but it does not own this spelling, so the write is attributed to the input
+    # and the field is not marked registry-owned. Same shape as
+    # `tier2:company-canonical-confirms-input`, where a source that merely
+    # AGREES with the record does not get to restate the record's value as its
+    # own. Leaving the field unmarked also lets the normal casing and expansion
+    # passes in `finalise` treat it like any other input value, which is what it
+    # is.
+    kept_incumbent = (
+        incumbent is not None
+        and value == (incumbent or "").strip()
+        and value != display
+    )
+    if kept_incumbent:
+        _write(
+            result, f"{field}_enriched", value,
+            deterministic_evidence(
+                f"registry-name:{registry.lower()}-confirms-input",
+                producer="input", tier=1,
+                evidence_ref={
+                    "registry": registry,
+                    "identifier": identifier,
+                    "registry_name": display,
+                    "differs_by": "legal form only",
+                },
+            ),
+        )
+        logger.info({
+            "record_id": result.get("record_id"),
+            "step": "registry_name_confirms_input",
+            "field": field,
+            "registry": registry,
+            "kept": value,
+            "registry_name": display,
+        })
+        return
     # ``identifier`` is the evidence_ref — the registry id a reviewer opens to
     # check the name. A registry-supplied name is exact by definition: the
     # scored comparison happened upstream, at the match, and its score is
@@ -1154,10 +1233,34 @@ def _repack_merged_name_block(result: dict[str, Any]) -> None:
     rather than a new one, late, through :func:`enrichment.flags.raise_after`.
     """
     merged_runs = (result.get("_uc0_merged") or {}).get("runs")
-    if not merged_runs:
-        return
-
     values = [result.get(f"{slot}_enriched") for slot in NAME_SLOTS]
+
+    # A record that arrived whole keeps the slot layout the pipeline gave it:
+    # re-cutting every row would re-split names that ship correctly today, and
+    # that is why this pass has always been gated on the merge.
+    #
+    # One narrow case is repaired anyway. Preprocess expands abbreviations in
+    # a DEPARTMENT slot — "Dept of Materials Science & Eng" becomes
+    # "Department of Materials Science and Engineering", 46 characters into a
+    # 40-character field — and the value then has no way back into the block.
+    # Cutting it is the repair, and the reference agrees: it writes exactly the
+    # dense cut, "Department of Materials Science and" + "Engineering".
+    #
+    # Name 1 is deliberately NOT a trigger, and the measurement is why. An
+    # over-width Name 1 is almost always a WRONG name rather than a mis-split
+    # one — "The University of Texas MD Anderson Cancer Center" for a record
+    # whose name is "M.D. Anderson Cancer Center" — and cutting it spreads one
+    # wrong value across two cells instead of containing it in one. Gating on
+    # any over-width value cost 12 cells to win 3. Note also that 40 is not a
+    # limit the reference enforces on its own output: it writes "Palo Alto
+    # Veterans Institute for Research", 41 characters, into Name 1.
+    dept_overflows = any(
+        value and len(value) > NAME_FIELD_WIDTH
+        for value in values[1:]
+    )
+    name1_fits = not (values[0] and len(values[0]) > NAME_FIELD_WIDTH)
+    if not merged_runs and not (dept_overflows and name1_fits):
+        return
     packed, dropped, origin = repack_name_block(values)
     if packed == values and not dropped:
         return
@@ -1288,6 +1391,7 @@ def finalise(
     start: float,
     *,
     expansion_declined_keys: set[str] | None = None,
+    llm_record_type: str | None = None,
 ) -> dict[str, Any]:
     """Apply empty-string guards and compute changed flags.
 
@@ -1404,11 +1508,23 @@ def finalise(
                 rule_id="fix4:expand-abbreviations",
             )
 
-    # Guarantee the short legal form on the final output regardless of source
-    # (input passthrough, ROR, GLEIF, or LLM): "… Aktiengesellschaft" → "… AG",
-    # "… Incorporated" → "… Inc". Preprocess (UC 17) already does this on the
-    # input; this backstops any long form a downstream tier introduces.
+    # Guarantee the short legal form on the final output: "… Aktiengesellschaft"
+    # → "… AG", "… Incorporated" → "… Inc". Preprocess (UC 17) already does this
+    # on the input; this backstops any long form a downstream tier introduces.
+    #
+    # A registry-written name is exempt, on the same rule as the expansion pass
+    # directly above and for the same reason `_write_registry_name` states: ROR
+    # and GLEIF are the authority on their own spelling. Collapsing it here
+    # shipped a string the registry never published while the field still
+    # carried that registry's `verified` provenance — GLEIF's "SOUTHWEST GAS
+    # CORPORATION" went out as "Southwest Gas Corp" attributed to GLEIF, and
+    # "QUEST DIAGNOSTICS INCORPORATED" as "Quest Diagnostics Inc". The purpose
+    # of the collapse is to put long and short forms on one enrichment path,
+    # which preprocess achieves on the input; re-imposing it on the OUTPUT
+    # overrode the one source that is authoritative about the name.
     for field in ENRICHED_NAME_FIELDS:
+        if field[: -len("_enriched")] in registry_named:
+            continue
         val = result.get(field)
         if val:
             result.transform(
@@ -1856,7 +1972,7 @@ def finalise(
 
     # Single classification authority — every tier before this point wrote
     # `routing_type`, never `record_type`.
-    _classify_record(result)
+    _classify_record(result, llm_record_type=llm_record_type)
 
     # UC 0, second half. Last of the rules that move name content, and after
     # every rule that reads a name as a whole. No-ops on a record whose block
@@ -2080,7 +2196,9 @@ def _record_gleif_evidence(result: dict[str, Any], lei_res: dict[str, Any]) -> N
     result["_gleif_registration_status"] = lei_res.get("registration_status")
 
 
-def _classify_record(result: dict[str, Any]) -> None:
+def _classify_record(
+    result: dict[str, Any], *, llm_record_type: str | None = None,
+) -> None:
     """Decide ``record_type`` once, from ranked evidence. The ONLY place the
     field is written.
 
@@ -2098,6 +2216,21 @@ def _classify_record(result: dict[str, Any]) -> None:
         gleif_legal_form_other=result.get("_gleif_legal_form_other"),
     )
     record_type, source = classify(evidence)
+
+    # The LLM lane speaks only over the two weakest rungs — a keyword read off
+    # one word, and a record nothing resolved at all. A type decided by ROR,
+    # GLEIF or a legal form is left exactly as the registry left it. No
+    # verdict, a low-confidence verdict and a failed call all arrive here as
+    # None and change nothing. See `enrichment.type_classifier`.
+    if llm_record_type and type_may_override(source):
+        logger.info({
+            "record_id": result.get("record_id"),
+            "step": "record_type_llm_override",
+            "deterministic": record_type,
+            "deterministic_source": source,
+            "llm": llm_record_type,
+        })
+        record_type, source = llm_record_type, TYPE_SOURCE_LLM
     # `record_type` is decided from RANKED evidence, not from a score: a ROR
     # research flag outranks a GLEIF category, which outranks a keyword. The
     # rule that fired is the attribution, and `record_type_source` names it.
@@ -3978,9 +4111,19 @@ class Orchestrator:
                 result, "name1", ror_res.get("official_name"), registry="ROR",
                 identifier=ror_res["ror_id"],
                 rule_id="fix2:tier1-retry-after-canonicalisation",
-                # The corrected name the retry queried with — if ROR publishes
-                # it as one of this organisation's names, it stands.
-                incumbent=canonical,
+                # The name the RECORD states — if ROR publishes it as one of
+                # this organisation's names, it stands.
+                #
+                # Not `canonical`: that is the corrected name this retry
+                # queried with, i.e. the pipeline's own proposal. Comparing
+                # ROR's display name against the tier's proposal asks whether
+                # the pipeline agrees with itself, and for the case the
+                # preference exists to serve the two are the same string, so
+                # it could never fire. "NASA" is the example — ROR publishes
+                # "NASA" as an acronym of ror.org/027ka1x80, the record says
+                # "NASA", and the canonicaliser had already proposed the
+                # display name.
+                incumbent=_slot_input_value(result, "name1"),
                 variants=ror_res.get("name_variants"),
             )
             record_registry_identity(
@@ -4081,6 +4224,13 @@ class Orchestrator:
             result, "name1", lei_res.get("legal_name"), registry="GLEIF",
             identifier=lei_res.get("lei_id"),
             rule_id="fix2:tier1-retry-after-canonicalisation",
+            # The name the record states. GLEIF publishes every name it holds
+            # for an entity in `entity_names`; when the record's own is one of
+            # them, that is not an abbreviation GLEIF is correcting, it is the
+            # same organisation named by a name the register itself carries.
+            # See `_preferred_registry_variant`.
+            incumbent=_slot_input_value(result, "name1"),
+            variants=lei_res.get("entity_names"),
         )
         record_registry_identity(
             result, "GLEIF", lei_res, name=lei_res.get("legal_name"),
@@ -4283,6 +4433,12 @@ class Orchestrator:
             result, "name1", ror_res.get("official_name"), registry="ROR",
             identifier=ror_res["ror_id"],
             rule_id="wikidata:crosswalk-ror",
+            # The crosswalk picks the organisation without reading its name,
+            # which makes it the one lane most likely to replace a name the
+            # record states with ROR's keyspace form. Same preference as every
+            # other ROR write.
+            incumbent=_slot_input_value(result, "name1"),
+            variants=ror_res.get("name_variants"),
         )
         # Fix D — what ROR says this organisation is called, where it is
         # registered, and which website it states. The crosswalk lane was the
@@ -4380,6 +4536,13 @@ class Orchestrator:
             result, "name1", lei_res.get("legal_name"), registry="GLEIF",
             identifier=lei_res.get("lei_id"),
             rule_id="wikidata:crosswalk-lei",
+            # The name the record states. GLEIF publishes every name it holds
+            # for an entity in `entity_names`; when the record's own is one of
+            # them, that is not an abbreviation GLEIF is correcting, it is the
+            # same organisation named by a name the register itself carries.
+            # See `_preferred_registry_variant`.
+            incumbent=_slot_input_value(result, "name1"),
+            variants=lei_res.get("entity_names"),
         )
         # Fix D — as on the ROR crosswalk above, and for the same reason.
         record_registry_identity(
@@ -4738,9 +4901,54 @@ class Orchestrator:
         # the SETTLED name — it does not exist until the tiers are done, which
         # is why this cannot be a pre-pass the way the slot router is.
         declined = await self._check_name_expansions(record, result)
-        result = finalise(result, start, expansion_declined_keys=declined)
+        llm_type = await self._classify_type_llm(record, result)
+        result = finalise(
+            result, start,
+            expansion_declined_keys=declined,
+            llm_record_type=llm_type,
+        )
         self._emit_retry_trace(record, result)
         return EnrichmentResult(**result)
+
+    async def _classify_type_llm(
+        self, record: EnrichmentRecord, result: dict[str, Any],
+    ) -> str | None:
+        """Ask the type lane, but only for a record the deterministic layer
+        could not settle on registry evidence.
+
+        The gate is run HERE rather than inside `finalise` so a record ROR or
+        GLEIF already classified never costs a call. `classify` is pure, so
+        asking it twice is free, and asking it now is the only way to know
+        which rung is about to decide.
+
+        Every failure mode returns None, and None means `finalise` classifies
+        exactly as it does today.
+        """
+        if not self._settings.record_type_llm_enabled:
+            return None
+
+        evidence = TypeEvidence(
+            name1=_domain_evidence_name1(result),
+            ror_is_research=result.get("_ror_is_research"),
+            ror_org_types=result.get("_ror_org_types"),
+            lei_id=result.get("lei_id"),
+            gleif_category=result.get("_gleif_category"),
+            gleif_legal_form_id=result.get("_gleif_legal_form_id"),
+            gleif_legal_form_other=result.get("_gleif_legal_form_other"),
+        )
+        _decided, source = classify(evidence)
+        if not type_may_override(source):
+            return None
+
+        return await classify_record_type(
+            self._llm_client,
+            name1=evidence.name1,
+            name2=result.get("name2_enriched"),
+            domain=result.get("domain"),
+            city=getattr(record, "city", None),
+            state=getattr(record, "state", None),
+            country=getattr(record, "country", None),
+        )
 
     async def _check_name_expansions(
         self, record: EnrichmentRecord, result: dict[str, Any],
@@ -5242,6 +5450,13 @@ class Orchestrator:
             result, "name1", lei_res.get("legal_name"), registry="GLEIF",
             identifier=lei_res.get("lei_id"),
             rule_id="tier1-lei:name-verified",
+            # The name the record states. GLEIF publishes every name it holds
+            # for an entity in `entity_names`; when the record's own is one of
+            # them, that is not an abbreviation GLEIF is correcting, it is the
+            # same organisation named by a name the register itself carries.
+            # See `_preferred_registry_variant`.
+            incumbent=_slot_input_value(result, "name1"),
+            variants=lei_res.get("entity_names"),
         )
         # Fix D — GLEIF's claim about this organisation's identity and
         # registered address, for the cross-source gate in finalise.
@@ -5676,7 +5891,13 @@ class Orchestrator:
                         # itself one of ROR's published names for this
                         # organisation, that variant is written rather than
                         # the display name. See `_preferred_registry_variant`.
-                        incumbent=name1_cleaned,
+                        #
+                        # The record's stated value, not `name1_cleaned`:
+                        # preprocessing has already rewritten that one (UC 17
+                        # collapses "Corporation" to "Corp"), so it is the
+                        # pipeline's string by the time it gets here, not the
+                        # record's.
+                        incumbent=_slot_input_value(result, "name1"),
                         variants=ror_parent.get("name_variants"),
                     )
                     # Fix D — what ROR says this organisation is called, and
@@ -6061,6 +6282,17 @@ class Orchestrator:
                         result["confidence"] = "low"
                         result["tier_used"] = 1
                         result["routing_type"] = "unknown"
+                        # A record the canonicaliser could not improve is
+                        # UNRESOLVED, not failed. This branch never said so,
+                        # and `_build_summary` counts anything that never set
+                        # the field as `failed` — so a row holding a perfectly
+                        # good passthrough name was reported as a failure. That
+                        # was always true here; it became visible when the
+                        # legal-form guard started declining rewrites that are
+                        # not corrections, which routes more records through
+                        # this branch. `finalise` still settles the final value
+                        # via `unchanged_state.enrichment_status_for`.
+                        result["enrichment_status"] = "unresolved"
                     # else: research-institution passthrough already set above
 
                     # The ROR-miss default. A registry step INSIDE this block
