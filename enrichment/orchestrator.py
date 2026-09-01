@@ -57,7 +57,10 @@ from enrichment.search_terms import (
 )
 from enrichment.preprocess import (
     _extract_addresses,
+    _is_ap_reference,
     _location_fragment,
+    _split_ap_suffix,
+    _trailing_ap_phrase,
     find_suspicious_plain_names,
     has_multiple_contacts,
     llm_classify_plain_names_async,
@@ -1443,6 +1446,17 @@ def _echoes_name1(value: str | None, name1: str | None) -> bool:
     return introduces_nothing_new(name1, value)
 
 
+#: The one spelling of the accounts-payable desk. Every reference to it — with
+#: a suffix ("Accounts Payable Dept"), abbreviated ("A/P", "Accts Payable"), or
+#: bare — ships as this, because the desk has no other name to reach for.
+AP_CANONICAL = "Accounts Payable"
+
+
+def _is_ap_canonical(value: str | None) -> bool:
+    """True when *value* is already the settled accounts-payable desk name."""
+    return bool(value) and str(value).strip().lower() == AP_CANONICAL.lower()
+
+
 def _dropped_unit_word(supplied: str | None, proposed: str | None) -> str | None:
     """The unit word *proposed* lost, or None.
 
@@ -1771,6 +1785,29 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
                 rule_id="rule7:smart-title-case",
             )
 
+    # UC 6, restated on the way out. Preprocessing normalises every
+    # accounts-payable reference to `AP_CANONICAL`, and the two passes below
+    # are the ones that would put a suffix back if any lane between here and
+    # there had reintroduced one: `expand_abbreviations` turns a restored
+    # "Dept" into "Department", and UC 5 turns "Accounts Payable Department"
+    # into "Department of Accounts Payable". Neither is a spelling of the desk
+    # — the desk is called "Accounts Payable" — so the invariant is asserted
+    # here, ahead of both, rather than left to hold by luck along the path.
+    # The one shape held back is UC 6's own exception: a field that is an
+    # organisation AND a desk ("McLaren HealthCare Corp/Acct Pay"). UC 6 gives
+    # the desk its own slot when one is free and otherwise leaves the field
+    # alone deliberately — replacing it here would throw the customer away and
+    # leave the record with no name to enrich.
+    for field in DEPT_ENRICHED_FIELDS:
+        val = result.get(field)
+        if not val or _is_ap_canonical(val) or not _is_ap_reference(val):
+            continue
+        if _split_ap_suffix(val) or _trailing_ap_phrase(val):
+            continue
+        result.transform(
+            field, AP_CANONICAL, rule_id="uc6:accounts-payable-normalised",
+        )
+
     # Expand organisational abbreviations in the OUTPUT name fields. Before
     # Fix 4 `expand_abbreviations` only ever reached an output name via
     # `clean_passthrough_org_name` (name1, and only when source ==
@@ -1829,10 +1866,19 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # there. It carries the address line's wording and casing ("Center For Def
     # Scnce Studies"), and shipping that verbatim is not respecting an input,
     # it is exporting an address line as a name.
+    # An admin desk has no canonical form to reach for. "Accounts Payable Dept"
+    # IS the name of that desk, so "Department of Accounts Payable" is not the
+    # official spelling of anything — it is one the pipeline invented. The
+    # granularity guard does not catch it (a desk is not a lab), so ask the
+    # predicate the other three callers ask: §0 of search_terms, Tier 2 and
+    # flags all decline to look for a canonical form here, and this, the fourth
+    # caller, is the one that WRITES.
     for field in DEPT_ENRICHED_FIELDS:
         val = result.get(field)
         slot = field[: -len("_enriched")]
-        if val and (slot in _names_from_street or not is_granular_unit(val)):
+        if val and not has_no_canonical_form(val, result) and (
+            slot in _names_from_street or not is_granular_unit(val)
+        ):
             canonical = canonicalise_unit_name(val)
             if canonical and canonical != val:
                 result.transform(
@@ -5470,6 +5516,16 @@ class Orchestrator:
             # something else, and "the unit word was dropped" is not a fault
             # but the point. `subject_preserved` is what tells the two apart.
             if not subject_preserved(supplied, enriched):
+                continue
+            # UC 6 is the one repair whose WHOLE JOB is to drop the unit word.
+            # "Accounts Payable Dept" and "Accounts Payable" are not a lab and
+            # its parent — they are one back-office desk written two ways, and
+            # the desk's name is "Accounts Payable". Restoring the supplied
+            # form here undoes UC 6 on exactly the AP values that needed it
+            # (record 13084068 shipped "Accounts Payable Department", the
+            # restored "Dept" expanded downstream), while the ten AP rows whose
+            # input carried no unit word never reached this branch at all.
+            if _is_ap_reference(supplied) and _is_ap_canonical(enriched):
                 continue
             lost = _dropped_unit_word(supplied, enriched)
             if not lost:

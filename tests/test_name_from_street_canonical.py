@@ -31,7 +31,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from api.models import EnrichmentRecord
-from enrichment.orchestrator import _init_result, finalise
+from enrichment.orchestrator import Orchestrator, _init_result, finalise
 from enrichment.preprocess import preprocess_record
 from tests.conftest import seed
 
@@ -179,3 +179,108 @@ def test_the_marker_never_reaches_the_output():
         from_street={"name2": "Center For Def Scnce Studies"},
     )
     assert "_names_from_street" not in r
+
+
+class TestAnAdminDeskHasNoDepartmentOfForm:
+    """Record 13084068 shipped `Accounts Payable Dept` as `Department of
+    Accounts Payable`.
+
+    Nobody calls it that. An admin desk is not a draft of a canonical form —
+    it IS the canonical form — so there is nothing for the canonicaliser to
+    reach for and "Department of X" is a name the pipeline invented. UC 5's
+    only guard here was granularity, and a desk is not a lab, so every desk in
+    a department slot passed straight through it.
+    """
+
+    @pytest.mark.parametrize("value", [
+        "Accounts Payable Dept",
+        "Purchasing Dept",
+        "Receiving Dept",
+        "Billing Dept",
+        "Shipping Department",
+    ])
+    def test_a_desk_is_never_reworded_into_department_of(self, value):
+        r = _finalised(
+            {"name1": "Acme Corp", "name2": value},
+            {"name1": "Acme Corp", "name2": value},
+        )
+        assert "Department of" not in r["name2_enriched"]
+
+    def test_an_academic_department_still_canonicalises(self):
+        # The regression guard: the rule above must not cost UC 5 its job.
+        r = _finalised(
+            {"name1": "Stanford University", "name2": "Chemistry Dept"},
+            {"name1": "Stanford University", "name2": "Chemistry Dept"},
+        )
+        assert r["name2_enriched"] == "Department of Chemistry"
+
+
+# ── UC 6: the accounts-payable desk is called "Accounts Payable" ────────────
+
+def _post_checked(inputs, enriched):
+    """Run the settled name block through `_name_post_checks` alone."""
+    r = _init_result(EnrichmentRecord(record_id="t", country="US", **inputs))
+    seed(r, **{f"{slot}_enriched": value for slot, value in enriched.items()})
+    Orchestrator._name_post_checks(r)
+    return r
+
+
+class TestTheUnitWordGuardDoesNotUndoUC6:
+    """Record 13084068 shipped `Accounts Payable Department`.
+
+    UC 6 did fire — preprocessing normalised `Accounts Payable Dept` to
+    `Accounts Payable` and the orchestrator wrote it. The unit-word post-check
+    then read the dropped "Dept" as a repair that had deleted the unit and put
+    the supplied form back, and `expand_abbreviations` grew the restored "Dept"
+    into "Department". UC 6's whole job is to drop that word, so the guard
+    stands aside for it.
+    """
+
+    def test_the_jeol_row_keeps_the_normalised_desk(self):
+        r = _post_checked(
+            {"name1": "Jeol USA Inc", "name2": "Accounts Payable Dept"},
+            {"name1": "Jeol USA Inc", "name2": "Accounts Payable"},
+        )
+        assert r["name2_enriched"] == "Accounts Payable"
+
+    def test_a_real_dropped_unit_is_still_restored(self):
+        # The regression guard: the exemption is AP-only. A lab is not a desk,
+        # and deleting its unit word still changes what the record points at.
+        r = _post_checked(
+            {"name1": "ExxonMobil", "name2": "Baytown Refinery Lab"},
+            {"name1": "ExxonMobil", "name2": "Baytown Refinery"},
+        )
+        assert r["name2_enriched"] == "Baytown Refinery Lab"
+
+
+class TestFinaliseNormalisesEveryAPReference:
+    """The backstop. UC 6 already settles these in preprocessing; this asserts
+    the invariant on the way out, ahead of the two passes that would put a
+    suffix back — `expand_abbreviations` ("Dept" → "Department") and UC 5
+    ("Accounts Payable Department" → "Department of Accounts Payable").
+    """
+
+    @pytest.mark.parametrize("value", [
+        "Accounts Payable Dept",
+        "Accounts Payable Department",
+        "Accts Payable Dept",
+        "A/P Dept",
+        "Accounts Payable Office",
+    ])
+    def test_every_spelling_ships_as_the_desk(self, value):
+        r = _finalised(
+            {"name1": "Acme Corp", "name2": value},
+            {"name1": "Acme Corp", "name2": value},
+        )
+        assert r["name2_enriched"] == "Accounts Payable"
+
+    def test_an_organisation_carrying_a_desk_is_left_alone(self):
+        # UC 6's own exception: this field is a customer AND a desk. UC 6 gives
+        # the desk its own slot when one is free and otherwise leaves the field
+        # in place — replacing it here would throw the customer away.
+        value = "McLaren HealthCare Corp/Acct Pay"
+        r = _finalised(
+            {"name1": "McLaren", "name2": value},
+            {"name1": "McLaren", "name2": value},
+        )
+        assert r["name2_enriched"] == value
