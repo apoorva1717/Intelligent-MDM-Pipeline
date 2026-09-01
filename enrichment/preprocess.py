@@ -31,9 +31,16 @@ from dataclasses import dataclass, field
 
 from rapidfuzz import fuzz
 
+from enrichment.locality import (
+    CONTRADICTED,
+    compare_locality,
+    split_site_suffix,
+)
+from utils.domain_resolver import EMAIL_SEPARATOR, split_emails
 from utils.name_slots import (
     ADJACENT_NAME_PAIRS,
     DEPT_SLOTS,
+    NAME_SLOT_LABELS,
     NAME_SLOTS,
 )
 from utils.text_utils import (
@@ -104,11 +111,59 @@ class PreprocessResult:
     # not slot names, because the packing moves a value between slots — a slot
     # recorded at routing time would name the wrong value by the end.
     street_sourced_values: list[str] = field(default_factory=list)
+    # A site qualifier taken off a name slot whose place CONTRADICTS the
+    # record's own city/state — "Veracyte, Inc. - South San Francisco, CA" on
+    # a record addressed in Pine Brook, NJ. The qualifier comes off the name
+    # either way (it is not part of the organisation's name, and carrying it
+    # there is why no registry matches), but the two places are a question
+    # only a steward can settle, so the finding is handed up rather than
+    # dropped with the text. Rendered as `name-states-another-site`; the first
+    # such conflict wins, and it reads "Name 2 states X; record says Y".
+    site_conflict: str | None = None
 
     def note(self, uc: int, reason: str) -> None:
         if uc not in self.use_cases:
             self.use_cases.append(uc)
         self.flags.append(reason)
+
+    def add_email(self, address: str) -> str:
+        """Record *address* in ``email``, keeping every address already there.
+
+        Returns ``"new"`` (the field was empty), ``"duplicate"`` (this address
+        is already on the record) or ``"conflict"`` (a DIFFERENT address was
+        already captured) — the caller raises ``email-conflict`` on the last.
+
+        A conflict APPENDS, and that is the whole point of this method. Both
+        addresses are the record's own and the pipeline has no basis for
+        choosing between them: "USE6-INVOICES@SHELL.COM" in a name column and
+        "email invoices to: USG5-Invoices@Shell.com" in a street line are two
+        routing addresses one Shell record carries, not one right answer and
+        one mistake. Keeping the first and abandoning the second lost the
+        second — left in a Name column, where no consumer looks for an email,
+        or (UC 15) discarded with the slot. Both ship, in the column that
+        means "email", and the flag asks a steward which one the mail is for.
+
+        ``utils.domain_resolver`` reads the column back the same way, so a
+        second address does not change what any domain or affiliation lookup
+        resolves — those take the first (:func:`~utils.domain_resolver.
+        first_email`).
+        """
+        candidate = (address or "").strip()
+        if not candidate:
+            return "empty"
+        existing = split_emails(self.email)
+        if not existing:
+            # A non-blank field holding something that does not parse as an
+            # address is still what the record states; it is not overwritten.
+            raw = (self.email or "").strip()
+            existing = [raw] if raw else []
+        if not existing:
+            self.email = candidate
+            return "new"
+        if any(e.lower() == candidate.lower() for e in existing):
+            return "duplicate"
+        self.email = EMAIL_SEPARATOR.join([*existing, candidate])
+        return "conflict"
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +210,53 @@ _AP_DELIM_RE = re.compile(r"\s*[|,;]\s*|\s+[-\u2013\u2014]\s+|\s*/\s*")
 #: A slash between two single letters is the "A/P" abbreviation, not a
 #: delimiter — "Acme Corp/A/P" splits once, before the "A/P".
 _ABBREV_SLASH_RE = re.compile(r"(?<![A-Za-z])[A-Za-z]\s*/\s*[A-Za-z](?![A-Za-z])")
+
+
+def _trailing_ap_phrase(text: str) -> str | None:
+    """The organisation when *text* ends with an undelimited AP desk.
+
+    ``"Wyss Inst Accounts Payable"`` → ``"Wyss Inst"``. The delimited form is
+    :func:`_split_ap_suffix`'s job; this is the same value written without the
+    separator, which SAP records routinely are.
+
+    Why it matters: `_is_ap_reference` matches anywhere in the field, and the
+    caller used to replace the WHOLE field on a match. For a value that is
+    only a desk ("Accounts Payable Department") that is right. For a value
+    that names an organisation AND a desk it threw the organisation away —
+    "Wyss Inst Accounts Payable" shipped as "Accounts Payable", and the record
+    lost the only name it had. Returns None when the remainder is not a
+    plausible organisation, so a desk-only value still flattens as before.
+    """
+    if not text or not text.strip():
+        return None
+    best: int | None = None
+    for pattern in _AP_PATTERNS:
+        for match in pattern.finditer(text):
+            # Only a TRAILING desk. An AP phrase in the middle is part of
+            # whatever the field is really saying, and cutting there would
+            # leave a fragment.
+            if text[match.end():].strip(" .,-/|;"):
+                continue
+            best = match.start() if best is None else min(best, match.start())
+    if best is None:
+        return None
+    remainder = text[:best].strip(" .,-/|;")
+    if not remainder:
+        return None            # the value was the desk and nothing else
+    if _is_ap_reference(remainder) or _segment_is_ap(remainder):
+        return None            # still all desk after the cut
+    # The remainder has to read as an organisation, or the split trades one
+    # loss for another. "LSG Accts Payable" leaves "LSG" — a three-letter
+    # internal code that names no customer, and the record is better served by
+    # the desk it really states than by a fragment of one. Two tokens, or one
+    # long enough to be a name, is the line: "Wyss Inst" and "Acme Corp" pass,
+    # a bare code does not.
+    words = re.findall(r"[A-Za-z0-9&.]+", remainder)
+    if not words or not re.search(r"[A-Za-z]{2,}", remainder):
+        return None
+    if len(words) < 2 and len(re.sub(r"[^A-Za-z]", "", remainder)) < 5:
+        return None
+    return remainder
 
 
 def _split_ap_suffix(text: str) -> str | None:
@@ -207,17 +309,51 @@ _EMAIL_RE = re.compile(
 )
 
 
-def _find_email(text: str) -> str | None:
-    """Return the first email found in *text*, or None.
+#: What a source system writes in FRONT of an address it is routing mail to:
+#: "email invoices to:", "remit to", "AP e-mail". Once UC 8 has taken the
+#: address into its own column this is all that is left of the field, and it
+#: names nothing. Tested only on a field an address was just removed FROM, so
+#: a slot that says "Invoices" and nothing else — a routing desk, like
+#: Accounts Payable — is never read as a label.
+_EMAIL_LABEL_WORDS = frozenset({
+    "email", "e", "mail", "mailto", "send", "sent", "submit", "forward",
+    "to", "for", "at", "via", "please", "all",
+    "invoice", "invoices", "invoicing", "billing", "bill", "bills",
+    "remit", "remittance", "remittances", "payment", "payments",
+    "statement", "statements", "ap", "a", "p", "accounts", "payable",
+    "address", "addresses", "contact",
+})
 
-    The source string is intentionally NOT modified — UC 8 copies the
-    email into the dedicated email field but leaves the original
-    name/address field untouched (per business rule).
+
+def _is_email_label_only(text: str | None) -> bool:
+    """True when *text* is nothing but the label that introduced an address."""
+    if not text or not text.strip():
+        return False
+    words = [w.lower() for w in re.findall(r"[A-Za-z0-9]+", text)]
+    return bool(words) and all(w in _EMAIL_LABEL_WORDS for w in words)
+
+
+def _find_emails(text: str) -> list[str]:
+    """Every email address in *text*, in order, deduplicated case-insensitively.
+
+    All of them, not the first: one field routinely carries two ("Invoices
+    ap@acme.com / ap2@acme.com"), and returning one meant the rest were
+    stripped out of the field by UC 8's removal pass without ever reaching
+    the Email column.
+
+    The source string is not modified here; UC 8 removes what it captured.
     """
     if not text:
-        return None
-    m = _EMAIL_RE.search(text)
-    return m.group(0) if m else None
+        return []
+    found: list[str] = []
+    seen: set[str] = set()
+    for match in _EMAIL_RE.finditer(text):
+        value = match.group(0)
+        if value.lower() in seen:
+            continue
+        seen.add(value.lower())
+        found.append(value)
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +466,115 @@ def _duplicates_existing_street(
     return False
 
 
+# ---------------------------------------------------------------------------
+# A street line carrying a delivery instruction, written into a name slot
+# ---------------------------------------------------------------------------
+#
+# "Crystalline Dr. Loading Dock" — a street line and the instruction telling
+# the carrier where to unload, in one field, in the NAME block.
+# `_ADDRESS_PATTERNS` cannot see it: the unnumbered-street pattern is anchored
+# to the whole value and the qualifier trails it, and every other pattern wants
+# a house number this record keeps in its own column. With nothing to route it,
+# the slot reached the grounded lane, which classified it `noise` — the
+# classification is right, and clearing the field on it threw the address away.
+#
+# `enrichment.address_processing._split_location_qualifier` splits the same
+# shape off a STREET slot. It is not reused here because it requires a house
+# number in the street part, which is exactly what a value sitting in the name
+# block does not have; the vocabulary below is that function's, and the two are
+# meant to stay in step.
+_NAME_STREET_TYPES = (
+    r"St|Street|Ave|Avenue|Blvd|Boulevard|Rd|Road|Dr|Drive|Ln|Lane|"
+    r"Hwy|Highway|Pkwy|Parkway|Ct|Court|Way|Pl|Place|Ter|Terrace|Cir|Circle"
+)
+_NAME_ACCESS_PREPOSITIONS = (
+    r"Near|Behind|Beside|Adjacent|Across|Opposite|Next\s+To|In\s+Front\s+Of"
+)
+_NAME_ACCESS_LEAD = (
+    rf"{_NAME_ACCESS_PREPOSITIONS}|"
+    r"Gate|Dock|Loading|Unloading|Warehouse|Entrance|Entry|Bay|Ramp|Elevator|"
+    r"Receiving|Shipping"
+)
+_NAME_ACCESS_PREPOSITION_RE = re.compile(
+    rf"^(?:{_NAME_ACCESS_PREPOSITIONS})\b", re.IGNORECASE,
+)
+_NAME_STREET_ACCESS_RE = re.compile(
+    rf"^(?P<street>\S+(?:\s+\S+)*?\s+(?:{_NAME_STREET_TYPES})\b\.?)\s+"
+    rf"(?P<qual>(?:{_NAME_ACCESS_LEAD})\b.*)$",
+    re.IGNORECASE,
+)
+
+
+def _split_street_access_qualifier(value: str | None) -> tuple[str, str] | None:
+    """Split "<street line> <delivery instruction>" into its two halves.
+
+    ``"Crystalline Dr. Loading Dock"`` → ``("Crystalline Dr", "Loading
+    Dock")``. Returns None when *value* is not that shape.
+
+    The street part needs at least one word in front of the street-type word,
+    so a value that IS the instruction ("Dock Loading Bay") has no street to
+    split off and is left for the address stage's logistics extractor. A part
+    that reads as an organisation is refused outright — "Park Lane Shipping"
+    is a company, not a street with an instruction after it.
+    """
+    if not value or not value.strip():
+        return None
+    match = _NAME_STREET_ACCESS_RE.match(value.strip())
+    if not match:
+        return None
+    street = match.group("street").strip(" ,;-.")
+    qualifier = match.group("qual").strip(" ,;-")
+    if not street or not qualifier:
+        return None
+    if _street_is_org_name(street) or _street_is_org_name(value.strip()):
+        return None
+    # A one-word instruction is not enough to cut a name in two: "Park Lane
+    # Shipping" is a company whose last word happens to be a logistics one,
+    # and splitting it would file the company as a street. Either the
+    # instruction names a place ("Loading Dock", "Receiving Bay") or it leads
+    # with a positional preposition, which nothing else in a name does.
+    if (
+        len(qualifier.split()) < 2
+        and not _NAME_ACCESS_PREPOSITION_RE.match(qualifier)
+    ):
+        return None
+    return street, qualifier
+
+
+def _record_site_conflict(
+    res: PreprocessResult,
+    field_name: str,
+    place: str,
+    city: str | None,
+    region: str | None,
+) -> None:
+    """Note a site qualifier whose place the record's address contradicts.
+
+    Silent when the two agree ("Merck Research Laboratories - Rahway, NJ" on a
+    Rahway record says nothing new) and when the record states no place of its
+    own to compare against — a contradiction needs two claims, and one is not
+    manufactured out of a blank column.
+
+    Only the first conflict is kept. A second one is the same finding about
+    the same record, and a reason listing both asks a reviewer to settle two
+    questions where there is one: which place this record is for.
+    """
+    if res.site_conflict is not None:
+        return
+    site_city, _, site_region = place.partition(",")
+    verdict, _detail, _scope = compare_locality(
+        stated_city=site_city.strip(),
+        stated_region=site_region.strip(),
+        city=city,
+        region=region,
+    )
+    if verdict != CONTRADICTED:
+        return
+    label = NAME_SLOT_LABELS.get(field_name, field_name)
+    stated = ", ".join(p for p in ((city or "").strip(), (region or "").strip()) if p)
+    res.site_conflict = f"{label} states {place}; record says {stated}"
+
+
 def _extract_addresses(text: str) -> tuple[list[str], str]:
     """Return (list of address fragments found, text with them removed)."""
     if not text:
@@ -404,10 +649,28 @@ _OPAQUE_CODE_RE = re.compile(
 )
 
 
+#: A label a source system writes in front of a reference number — "Ref#
+#: E004120188", "No. 4471120". The label is not part of a name and does not
+#: turn the code into one, so it is removed before the code test.
+_CODE_LABEL_RE = re.compile(
+    r"^\s*(?:ref(?:erence)?|no|nbr|num(?:ber)?|acct|account|id|code|po)\s*"
+    r"[#:.\-]*\s*",
+    re.IGNORECASE,
+)
+
+
 def _is_opaque_code(text: str) -> bool:
     if not text:
         return False
-    return bool(_OPAQUE_CODE_RE.match(text.strip()))
+    stripped = text.strip()
+    if _OPAQUE_CODE_RE.match(stripped):
+        return True
+    # "Ref# E004120188" is the same value as "E004120188" with a label on the
+    # front. Without this the label alone was enough to make the code read as
+    # a name, and the record shipped asking a steward to establish the
+    # canonical form of a reference number.
+    labelled = _CODE_LABEL_RE.sub("", stripped)
+    return bool(labelled != stripped and _OPAQUE_CODE_RE.match(labelled))
 
 
 # A leading account/customer code: 1-4 letters then ≥2 digits ("B800000123",
@@ -1141,11 +1404,19 @@ def _extract_co_attn_from_slot(
         email = email_match.group(0)
         payload_is_just_email = re.sub(r"\s+", " ", payload).strip() == email
         if had_prefix or payload_is_just_email:
-            if res.email and res.email.strip() and res.email.strip().lower() != email.lower():
-                res.note(15, f"Case D: email '{email}' in {slot} but Email already populated — flag for review")
-                res.flags.append("email-conflict")
+            outcome = res.add_email(email)
+            if outcome == "conflict":
+                # Both are kept. This branch used to record neither — it
+                # flagged the conflict and then cleared the slot regardless,
+                # so the address it had just refused to write went nowhere.
+                res.note(
+                    15,
+                    f"Case D: second email '{email}' in {slot} — kept "
+                    f"alongside the address already captured, flag for review",
+                )
+                if "email-conflict" not in res.flags:
+                    res.flags.append("email-conflict")
             else:
-                res.email = email
                 res.note(15, f"Case D: email extracted from {slot} ({email})")
             setattr(res, slot, None)
             return True
@@ -1482,6 +1753,8 @@ def preprocess_record(
     street4: str | None = None,
     street5: str | None = None,
     house_number: str | None = None,
+    city: str | None = None,
+    region: str | None = None,
     llm_person_verdicts: dict[str, str] | None = None,
 ) -> PreprocessResult:
     """Run all deterministic preprocessing.
@@ -1490,6 +1763,12 @@ def preprocess_record(
     synchronously from here, so the orchestrator runs an async
     pre-pass over suspicious name fields and passes the verdicts in
     via ``llm_person_verdicts`` (keyed by lowercased text).
+
+    ``city`` / ``region`` are the record's own place, read by UC 12 to decide
+    whether a trailing "- <City>, <ST>" on a name names a place at all. They
+    are optional: without them the suffix rule keeps only its shape test and
+    accepts strictly less (see
+    :func:`enrichment.locality.split_site_suffix`).
     """
     res = PreprocessResult(
         name1=name1, name2=name2, name3=name3, name4=name4, name5=name5,
@@ -1828,7 +2107,10 @@ def preprocess_record(
         # the record has — and give the desk its own slot. Replacing the whole
         # field, the way a desk-only value is replaced below, would throw the
         # customer away and leave the record with nothing to enrich.
-        organisation = _split_ap_suffix(val)
+        # The delimited form first, then the same value written without a
+        # separator. Both mean "an organisation and a desk in one field", and
+        # both keep the organisation where it is.
+        organisation = _split_ap_suffix(val) or _trailing_ap_phrase(val)
         if organisation:
             target = _first_empty_name_slot(res)
             if target is None:
@@ -1851,38 +2133,98 @@ def preprocess_record(
             res.note(6, f"{field_name} normalised to Accounts Payable (was {val!r})")
 
     # ---------------------------------------------------------------
-    # UC 8 — Email copy. Scan name and address fields for an email
-    # address. When found, move it to the dedicated email field and
-    # strip it from the source field so the cleaned name/street value
-    # is not polluted with a stray email. The only exception is a
-    # conflict (a DIFFERENT email already populated): keep the source
-    # value intact and flag it so a reviewer can reconcile the two.
+    # UC 8 — Email copy. Scan name and address fields for email addresses,
+    # move every one of them to the dedicated email field, and strip them
+    # from the source field so the cleaned name/street value is not polluted
+    # with a stray address.
+    #
+    # A SECOND, different address does not displace the first and is no
+    # longer left where it was found: `add_email` appends it and the record
+    # carries both, with `email-conflict` raised so a steward decides which
+    # one the mail is for. Leaving it in place shipped an email in a Name
+    # column, where nothing downstream looks for one.
     # ---------------------------------------------------------------
     for field_name in (*NAME_SLOTS, *STREET_SLOTS):
         val = getattr(res, field_name)
         if not val:
             continue
-        email_found = _find_email(val)
-        if not email_found:
+        found = _find_emails(val)
+        if not found:
             continue
-        if (
-            res.email and res.email.strip()
-            and res.email.strip().lower() != email_found.lower()
-        ):
-            # Different email already captured — leave the source field
-            # untouched for manual review.
-            res.note(8, f"email present in {field_name} ({email_found}) but Email already populated — flag for review")
-            res.flags.append("email-conflict")
-            continue
-        if not (res.email and res.email.strip()):
-            res.email = email_found
-            res.note(8, f"copied email from {field_name}")
+        for address in found:
+            outcome = res.add_email(address)
+            if outcome == "conflict":
+                res.note(
+                    8,
+                    f"second email {address!r} found in {field_name} — kept "
+                    f"alongside the address already captured, flag for review",
+                )
+                if "email-conflict" not in res.flags:
+                    res.flags.append("email-conflict")
+            elif outcome == "new":
+                res.note(8, f"copied email from {field_name}")
         # Remove the email token(s) from the source field and tidy residue.
         stripped = _EMAIL_RE.sub("", val)
-        stripped = re.sub(r"\s+", " ", stripped).strip(" ,;/|-")
+        stripped = re.sub(r"\s+", " ", stripped).strip(" ,;:/|-")
+        # "email invoices to: ap@acme.com" leaves "email invoices to", which
+        # is the label and not a value. The address it introduced is in the
+        # Email column; the label has nothing left to introduce.
+        if _is_email_label_only(stripped):
+            res.note(
+                8,
+                f"{field_name} cleared — routing label with no value left "
+                f"(was {val!r})",
+            )
+            stripped = ""
         if stripped != val:
             setattr(res, field_name, stripped or None)
-            res.note(8, f"removed email from {field_name}")
+            if stripped:
+                res.note(8, f"removed email from {field_name}")
+
+    # ---------------------------------------------------------------
+    # UC 9 — A street line and a delivery instruction sharing one department
+    # slot ("Crystalline Dr. Loading Dock"). Both halves are address content
+    # and neither is a department: the street goes to a street slot, and the
+    # instruction goes to one too, where the address stage's logistics
+    # extractor moves it on to Unloading Point. Runs BEFORE the extraction
+    # loop below, which cannot see this shape at all — see
+    # `_split_street_access_qualifier`. Name 1 is the organisation and is
+    # never touched.
+    # ---------------------------------------------------------------
+    for field_name in DEPT_SLOTS:
+        val = getattr(res, field_name)
+        split = _split_street_access_qualifier(val)
+        if not split:
+            continue
+        parts = [
+            part for part in split
+            if not _duplicates_existing_street(part, res, house_number)
+        ]
+        free = [
+            slot for slot in STREET_SLOTS
+            if not (getattr(res, slot) or "").strip()
+        ]
+        if len(free) < len(parts):
+            # Nothing moves unless every half has somewhere to go. Splitting a
+            # value and placing only one half is the silent loss this block
+            # exists to stop, in a second form.
+            if "street-slots-full" not in res.flags:
+                res.flags.append("street-slots-full")
+            res.note(
+                9,
+                f"street + delivery instruction in {field_name} but too few "
+                f"free street slots — left in place ({val!r})",
+            )
+            continue
+        for slot, part in zip(free, parts):
+            setattr(res, slot, part)
+        setattr(res, field_name, None)
+        res.note(
+            9,
+            f"street + delivery instruction split out of {field_name} "
+            f"(was {val!r}) → "
+            + ", ".join(f"{s}={p!r}" for s, p in zip(free, parts)),
+        )
 
     # ---------------------------------------------------------------
     # UC 9 — Address extraction
@@ -1948,6 +2290,25 @@ def preprocess_record(
                 res.note(12, f"leading bracketed org kept in {field_name} "
                              f"({org!r}); remainder moved to {target} ({rest!r})")
             continue
+        # The dash form of the same disambiguator: "Veracyte, Inc. - South
+        # San Francisco, CA", "Merck Research Laboratories - Rahway, NJ". It
+        # says which SITE the record is about, which the address block already
+        # says, and it costs the name twice over: no registry matches it, and
+        # the identity guard reads the canonical form that drops it as naming
+        # a DIFFERENT unit — so the record shipped its own input back with
+        # "the canonical form could not be established". Dropped BEFORE the
+        # parenthetical strip so a value carrying both loses both.
+        site = split_site_suffix(val, city=city, region=region)
+        if site:
+            core, place = site
+            setattr(res, field_name, core)
+            res.note(
+                12,
+                f"site qualifier {place!r} dropped from {field_name} "
+                f"(was {val!r})",
+            )
+            _record_site_conflict(res, field_name, place, city, region)
+            val = core
         stripped = strip_parentheticals(val)
         if stripped != val:
             setattr(res, field_name, stripped or None)

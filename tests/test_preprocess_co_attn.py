@@ -159,13 +159,16 @@ class TestEdgeCases:
         assert res.name2 == "Department of Chemistry"
         assert res.care_of is None
 
-    def test_email_does_not_overwrite_existing(self):
+    def test_a_second_email_is_added_beside_the_one_on_file(self):
+        """Case D used to flag the conflict, write nothing, and clear the slot
+        anyway — so the address it refused went nowhere at all. Both are the
+        record's own; both are kept and the flag asks which is current."""
         res = _run(
             "Some Org",
             "Attn: foo@bar.com",
             email="existing@example.com",
         )
-        assert res.email == "existing@example.com"
+        assert res.email == "existing@example.com; foo@bar.com"
         assert "email-conflict" in res.flags
 
 
@@ -195,9 +198,11 @@ class TestUC8EmailStrip:
         assert res.email == "jsmith@acme.com"
         assert res.name3 is None
 
-    def test_conflicting_email_kept_for_review(self):
-        """A different email already on file → source field is left intact
-        and a conflict is flagged (not silently stripped)."""
+    def test_conflicting_email_joins_the_column_and_is_flagged(self):
+        """A different email already on file → BOTH ship in the Email column
+        and the conflict is flagged. The source field is cleaned either way:
+        leaving the second address in Name 3 kept it where no consumer looks
+        for an email."""
         from enrichment.preprocess import preprocess_record
 
         res = preprocess_record(
@@ -205,8 +210,8 @@ class TestUC8EmailStrip:
             "Research Lab foo@x.com",
             None, "existing@y.com", None, None, None,
         )
-        assert res.email == "existing@y.com"
-        assert "foo@x.com" in (res.name3 or "")
+        assert res.email == "existing@y.com; foo@x.com"
+        assert res.name3 == "Research Lab"
         assert "email-conflict" in res.flags
 
 

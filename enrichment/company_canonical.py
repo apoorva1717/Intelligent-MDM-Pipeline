@@ -1,7 +1,15 @@
 """LLM-only canonicalisation of company name1 — UC 2/3 for companies.
 
-Zero SerpAPI calls. Single LLM call. Only accepts high-confidence
-answers. Falls through silently on any uncertainty.
+Zero SerpAPI calls. Single LLM call.
+
+Confidence is no longer a write gate (§1a). It was: an answer below ``high``
+was discarded, which threw away correct canonical names for every record whose
+input the model could read but not certify — and the record then shipped its
+raw input under a flag saying the canonical form "could not be established",
+which was not what had happened. What the model returned is recorded as
+``self_reported`` provenance and drives how selectively the record is flagged;
+whether the answer may be WRITTEN is decided by identity alone, in
+:mod:`enrichment.name_gate`, and only a ``different`` verdict refuses.
 """
 
 from __future__ import annotations
@@ -14,7 +22,8 @@ from llm.prompts import (
     COMPANY_CANONICAL_SYSTEM_PROMPT,
     COMPANY_CANONICAL_USER_PROMPT_TEMPLATE,
 )
-from utils.text_utils import canonical_preserves_identity
+from utils.name_identity import DIFFERENT, SAME, classify_name_change
+from dedup.signatures import normalize_key
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +47,10 @@ class CompanyCanonicalResult:
     # model was only medium-confident about the wording it chose.
     returned_name: str | None = None
     returned_confidence: str = "none"
+    #: ``same`` / ``undecidable`` / ``different`` for the returned name against
+    #: the record's own. Read by the caller to decide the flag, never to decide
+    #: the write — the gate does that.
+    verdict: str = SAME
 
 
 async def run_company_canonical(
@@ -49,6 +62,7 @@ async def run_company_canonical(
     llm_client: OpenAIClient,
     street: str | None = None,
     postal_code: str | None = None,
+    authoritative: bool = True,
 ) -> CompanyCanonicalResult:
     result = CompanyCanonicalResult()
     if not name1 or not name1.strip():
@@ -86,35 +100,49 @@ async def run_company_canonical(
     result.returned_name = cleaned
     result.returned_confidence = confidence
 
-    if confidence != "high":
-        logger.info(
-            "[%s] Company canonical: rejecting '%s' (confidence=%s)",
-            record_id, cleaned, confidence,
-        )
-        return result
+    # Identity is the only write gate. A canonical form must still name the
+    # SAME company — reformatting, an abbreviation expansion or a repaired
+    # truncation, not a different entity. Three verdicts rather than a
+    # boolean: `undecidable` (the record states codes the canonical name has
+    # no duty to repeat) writes and is flagged, where the boolean guard
+    # discarded it exactly as it discarded "Iso Group Inc" → "CoStar Group".
+    verdict = classify_name_change(name1, cleaned)
+    result.verdict = verdict
 
-    # Identity guard: a canonical form must still be the SAME company —
-    # reformatting or acronym expansion, not a different entity. Blocks LLM
-    # hallucinations like "Iso Group Inc" → "CoStar Group".
-    if not canonical_preserves_identity(name1, cleaned):
+    if verdict == DIFFERENT:
         logger.warning(
             "[%s] Company canonical: REJECTED '%s' → '%s' "
             "(different entity — identity not preserved)",
             record_id, name1, cleaned,
         )
-        # Surface the high-confidence proposal so the orchestrator can, for a
-        # plausible spelling correction, re-verify it against GLEIF rather
-        # than discard it outright. success stays False — this is NOT an
-        # accepted name.
+        # Surfaced so the orchestrator can re-verify a plausible spelling
+        # correction against GLEIF, and so the flag can name the proposal
+        # instead of leaving the reviewer to rediscover it. success stays
+        # False — this is NOT an accepted name.
         result.proposed_name = cleaned
+        return result
+
+    if not authoritative and confidence != "high":
+        # Legacy acceptance policy, kept for the A/B baseline.
+        logger.info(
+            "[%s] Company canonical: rejecting '%s' (confidence=%s, legacy)",
+            record_id, cleaned, confidence,
+        )
         return result
 
     result.success = True
     result.name1_enriched = cleaned
     result.confidence = confidence
+    # Surfaced on an ACCEPTED answer too. The orchestrator re-queries GLEIF on
+    # a spelling correction to attach the LEI; under the old gate that only
+    # happened because the identity guard had refused the name, so accepting
+    # the correction would have silently cost the record its identifier. The
+    # re-verification is an upgrade on a written value, never a veto (§1f).
+    if normalize_key(cleaned) != normalize_key(name1 or ""):
+        result.proposed_name = cleaned
 
     logger.info(
-        "[%s] Company canonical: '%s' → '%s' (high)",
-        record_id, name1, cleaned,
+        "[%s] Company canonical: '%s' → '%s' (%s, %s)",
+        record_id, name1, cleaned, confidence, verdict,
     )
     return result

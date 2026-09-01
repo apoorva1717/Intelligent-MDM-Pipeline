@@ -1032,6 +1032,17 @@ def _derive_search_term_2(result: dict[str, Any]) -> str | None:
 
     dept_domain = (result.get("department_domain") or "").strip() or None
 
+    # 0c. The acronym the unit's OWN registry publishes. Preferred over every
+    #     derivation below because it is stated rather than inferred: ROR lists
+    #     "NIWC Pacific" for the Naval Information Warfare Center Pacific,
+    #     while the subdomain reads "niwcpacific" — one concatenated token that
+    #     `_subdomain_acronym` rightly declines to split — and the phrase
+    #     fallback slices the first two words into "NAVAL INFORMATION", a
+    #     handle that matches half the US Navy.
+    registry_acronym = (result.get("_dept_acronym") or "").strip() or None
+    if registry_acronym:
+        return registry_acronym
+
     # 1. Subdomain acronym from the department domain, when it truly is one.
     sub = _subdomain_acronym(dept_domain, domain, name2)
     if sub:

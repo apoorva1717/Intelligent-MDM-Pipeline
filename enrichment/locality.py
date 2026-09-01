@@ -162,6 +162,77 @@ def normalise_region(value: str | None) -> str:
     return US_REGION_CODES.get(text, text).lower()
 
 
+#: A site qualifier appended to an organisation name with a spaced dash:
+#: "Veracyte, Inc. - South San Francisco, CA", "Merck Research Laboratories -
+#: Rahway, NJ". The dash form of the bracketed disambiguator preprocessing
+#: already drops ("3M (Detroit)") and the same kind of thing — it says which
+#: SITE of the organisation the record is about, not what the organisation is
+#: called. The dash must carry whitespace on its left so a hyphenated name
+#: ("Wal-Mart Stores, AR") is never cut at its own hyphen.
+_SITE_SUFFIX_RE = re.compile(
+    r"^(?P<core>.+?)\s+[-–—]\s*"
+    r"(?P<city>[A-Za-z][A-Za-z.'’-]*(?:\s+[A-Za-z][A-Za-z.'’-]*)*)"
+    r"\s*,\s*(?P<region>[A-Za-z][A-Za-z ]*?)\s*\.?$",
+)
+
+#: Every spelling of a US region the suffix rule accepts, lowercased.
+_REGION_SPELLINGS: frozenset[str] = frozenset(
+    list(US_REGION_CODES) + [v.lower() for v in US_REGION_CODES.values()],
+)
+
+
+def split_site_suffix(
+    value: str | None,
+    *,
+    city: str | None = None,
+    region: str | None = None,
+) -> tuple[str, str] | None:
+    """Split ``"<name> - <City>, <ST>"`` into ``(name, "City, ST")``.
+
+    Returns None when *value* is not that shape. Two conditions, and both
+    have to hold:
+
+    * the trailing segment ends in a US region — a code or its full name —
+      which is what separates a place from a legal form ("Jones, PA" is a
+      professional association far more often than it is Pennsylvania);
+    * the segment is a place this record can recognise: its region is the
+      record's own, or its city is, or the city is more than one word
+      ("South San Francisco" names a city; "Jones" does not name one on its
+      own evidence).
+
+    The caller supplies the record's ``city`` / ``region``; with neither, only
+    the multi-word case is accepted.
+
+    Why it is here and not in the module that strips it: two callers need the
+    same answer. Preprocessing takes the suffix OFF the name field, and the
+    name gate has to take it off the record's raw value before comparing an
+    incumbent against a canonical form — otherwise the gate reads the very
+    rewrite that drops it as naming a different entity, which is how "Merck
+    Research Laboratories - Rahway, NJ" refused its own canonical form and
+    shipped as supplied.
+    """
+    if not value or not value.strip():
+        return None
+    match = _SITE_SUFFIX_RE.match(value.strip())
+    if not match:
+        return None
+    site_region = match.group("region").strip(" .")
+    if site_region.lower() not in _REGION_SPELLINGS:
+        return None
+    core = match.group("core").strip(" ,;-")
+    site_city = match.group("city").strip(" ,;-")
+    if not core or not site_city:
+        return None
+    recognised = (
+        (region and normalise_region(region) == normalise_region(site_region))
+        or (city and _norm(city) == _norm(site_city))
+        or len(site_city.split()) > 1
+    )
+    if not recognised:
+        return None
+    return core, f"{site_city}, {site_region}"
+
+
 def postal_matches(stated: str | None, record: str | None) -> bool:
     """Postal codes compared on digits/letters only — "12345-6789" and "12345"
     are the same place written two ways, and a 5-digit ZIP is the part both

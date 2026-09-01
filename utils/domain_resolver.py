@@ -338,6 +338,49 @@ class DomainDecision:
 # Ownership conditions
 # ---------------------------------------------------------------------------
 
+#: How several addresses are joined when one Email column carries more than
+#: one. A record routinely states two ("USE6-INVOICES@SHELL.COM" in a name
+#: column and "email invoices to: USG5-Invoices@Shell.com" in a street line),
+#: and both are the record's own — see
+#: :meth:`enrichment.preprocess.PreprocessResult.add_email`. Anything in
+#: ``_EMAIL_SPLIT_RE`` reads back, so a consumer that splits on commas or
+#: whitespace is not broken by the choice; the semicolon is used because an
+#: address may not contain one.
+EMAIL_SEPARATOR = "; "
+
+
+def split_emails(value: str | None) -> list[str]:
+    """The addresses in a possibly multi-valued email field, in order.
+
+    Separators are ``;``, ``,`` and whitespace — the set this module has
+    always split on. Fragments with no ``@`` are dropped, so a label the
+    source system wrote beside the address ("email invoices to:") does not
+    come back as an address.
+    """
+    if not value or not value.strip():
+        return []
+    return [
+        part
+        for part in (
+            fragment.strip().strip("<>()[],;")
+            for fragment in _EMAIL_SPLIT_RE.split(value.strip())
+        )
+        if "@" in part
+    ]
+
+
+def first_email(value: str | None) -> str | None:
+    """The first address in a possibly multi-valued email field.
+
+    For the callers that need ONE address — a host to corroborate a registry
+    match with, a domain to query a person's affiliation on. They read a
+    column that may now hold two, and ``rsplit("@")`` on the whole string
+    silently answers with the LAST one.
+    """
+    found = split_emails(value)
+    return found[0] if found else None
+
+
 def email_domain(email: str | None) -> str | None:
     """Registrable domain of *email*, or ``None`` when absent or generic.
 
@@ -346,9 +389,7 @@ def email_domain(email: str | None) -> str | None:
     """
     if not email or not email.strip():
         return None
-    for part in _EMAIL_SPLIT_RE.split(email.strip()):
-        if "@" not in part:
-            continue
+    for part in split_emails(email):
         host = part.rsplit("@", 1)[-1].strip().strip("<>()[]").rstrip(".")
         domain = canonicalise_domain(host)
         if not domain or is_generic_email_domain(domain):

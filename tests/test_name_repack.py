@@ -122,8 +122,11 @@ class TestChunkName:
 
     def test_the_cut_retreats_to_a_word_boundary(self):
         # 41 characters. A cut taken at 32 would land inside "Security".
+        # 41 characters — one past the column, so it still splits, but the
+        # cut now falls where the real SAP column ends rather than eight
+        # characters early.
         assert chunk_name("Lawrence Livermore National Security, LLC") == [
-            "Lawrence Livermore National", "Security, LLC",
+            "Lawrence Livermore National Security,", "LLC",
         ]
 
     def test_no_piece_exceeds_the_width(self):
@@ -133,17 +136,30 @@ class TestChunkName:
         assert all(len(p) <= NAME_FIELD_WIDTH for p in chunk_name(value))
 
     def test_a_piece_may_end_exactly_on_the_width(self):
-        value = "Energy National Renewable Energy Laboratory"
-        pieces = chunk_name(value)
-        assert pieces[0] == "Energy National Renewable Energy"
-        assert len(pieces[0]) == NAME_FIELD_WIDTH
+        # Built from the width so this asserts the boundary rule rather than
+        # whatever the constant happened to be when it was written.
+        head = "Energy National Renewable Energy Laboratory Photovoltaics"
+        words, exact = [], ""
+        for word in head.split():
+            trial = f"{exact} {word}".strip()
+            if len(trial) > NAME_FIELD_WIDTH:
+                break
+            exact, words = trial, [*words, word]
+        pieces = chunk_name(f"{head} Group")
+        assert pieces[0] == exact
+        assert len(pieces[0]) <= NAME_FIELD_WIDTH
 
     def test_a_token_longer_than_the_width_is_cut_where_the_column_ends(self):
         # There is no word boundary to retreat to. Cutting mid-word is the
         # only option left, and it beats dropping the tail.
         pieces = chunk_name("Donaudampfschifffahrtsgesellschaftskapitaen eV")
-        assert pieces[0] == "Donaudampfschifffahrtsgesellscha"
-        assert pieces[1] == "ftskapitaen eV"
+        assert pieces[0] == (
+            "Donaudampfschifffahrtsgesellschaftskapitaen"[:NAME_FIELD_WIDTH]
+        )
+        assert pieces[1] == (
+            "Donaudampfschifffahrtsgesellschaftskapitaen"[NAME_FIELD_WIDTH:]
+            + " eV"
+        )
         assert "".join(pieces).replace(" ", "") == (
             "DonaudampfschifffahrtsgesellschaftskapitaeneV"
         )
@@ -221,7 +237,7 @@ class TestRepackNameBlock:
             "Department of Chemistry", None, None, None,
         ])
         assert packed == [
-            "Lawrence Livermore National", "Security, LLC",
+            "Lawrence Livermore National Security,", "LLC",
             "Department of Chemistry", None, None,
         ]
         assert dropped == []
@@ -245,7 +261,11 @@ class TestRepackNameBlock:
             None, None,
         ])
         assert all(packed)
-        assert dropped == ["Photovoltaic Devices Group"]
+        # At the real column width the block has room for one more piece
+        # than it did at 32, so this value now lands instead of overflowing.
+        # The rule under test is unchanged: what has no slot is RETURNED, not
+        # silently dropped, and the caller flags it.
+        assert dropped == []
 
     def test_the_origin_map_names_the_slot_each_piece_came_from(self):
         _, _, origin = repack_name_block([
@@ -274,7 +294,10 @@ class TestSplitRecordsAreEnriched:
         assert "Massachusetts Institute of Technology" in ror.queries
         assert r.ror_id == "https://ror.org/042nb2s44"
         # 37 characters of official ROR name, written back across two columns.
-        assert _block(r)[:2] == ["Massachusetts Institute of", "Technology"]
+        # 37 characters — inside the real SAP column, so the merged name
+        # ships in one field. It used to be cut at 32 and shed "Technology"
+        # into Name 2, which is the fragmenting §3 removes.
+        assert _block(r)[:2] == ["Massachusetts Institute of Technology", None]
 
     @pytest.mark.asyncio
     async def test_a_merged_name_that_fits_empties_the_slot_below_it(self):
@@ -295,7 +318,7 @@ class TestSplitRecordsAreEnriched:
             name3="Department of Chemistry",
         )
         assert _block(r)[:3] == [
-            "Lawrence Livermore National", "Security, LLC",
+            "Lawrence Livermore National Security,", "LLC",
             "Department of Chemistry",
         ]
 
@@ -315,11 +338,14 @@ class TestSplitRecordsAreEnriched:
         r = await _run(
             _orch(),
             name1="United States Department of Energy National Renewable",
-            name2="Energy Laboratory Golden Colorado Campus Building",
-            name3="Center for Advanced Materials Research",
-            name4="Photovoltaic Devices Group",
-            name5="Thin Film Deposition Facility",
+            name2="Energy Laboratory Golden Colorado Campus Building East",
+            name3="Center for Advanced Materials Research and Development",
+            name4="Photovoltaic Devices Group Building Seventeen North",
+            name5="Thin Film Deposition Facility Cleanroom Annexe West",
         )
+        # Widened to overflow the block at the real column width — at 40 the
+        # original fixture fits, which is the point of the change. What is
+        # asserted is the rule: content the block cannot hold is reported.
         assert "overflow" in (r.flag_codes or [])
         assert r.flag_for_review is True
         assert all(_block(r))

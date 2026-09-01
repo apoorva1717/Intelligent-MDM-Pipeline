@@ -68,8 +68,8 @@ from llm.prompts import (
 from search.base import SearchClient, SearchResult
 from search.page_fetcher import PageContent, PageFetcher
 from utils.cache import BatchCache, cached_serp
+from utils.name_identity import DIFFERENT, classify_name_change
 from utils.text_utils import (
-    canonical_preserves_identity,
     looks_like_research_institution,
 )
 
@@ -181,6 +181,11 @@ class GroundedProposal:
     registry_response: dict[str, Any] | None = None
     evidence_index: int | None = None
     source_url: str | None = None
+    #: `same` | `undecidable` — the identity verdict for `proposed` against
+    #: the value the record supplied. `different` never becomes a proposal;
+    #: it is refused below and travels in `dropped` / `suggestions` so the
+    #: flag can name it. Read by the caller to decide flag selectivity.
+    verdict: str = "same"
 
     @property
     def from_registry(self) -> bool:
@@ -209,6 +214,13 @@ class GroundedResult:
     #: Fields whose proposal a deterministic guard refused, with the reason.
     #: The record keeps its original value for these; nothing else changes.
     dropped: dict[str, str] = dc_field(default_factory=dict)
+
+    #: field → the refused proposal, verbatim. A refusal is a decision about
+    #: the FIELD, never a reason to destroy what the model said: the caller
+    #: renders this into the flag detail so a reviewer sees the candidate the
+    #: pipeline declined and can accept it in one step. Before §1 this text
+    #: existed only in a log line.
+    suggestions: dict[str, str] = dc_field(default_factory=dict)
 
     #: field → the model's proposal, for fields where the proposal REPRODUCED
     #: the value the record already held and no registry improved on it.
@@ -579,17 +591,26 @@ async def run_grounded_resolver(
     # "Liberty Health Sciences" is how a wrong entity acquires a real
     # identifier, which is the one outcome worse than not resolving.
     originals = {"name1": name1, "name2": name2}
+    verdicts: dict[str, str] = {}
     for field in list(proposals):
         value = proposals[field]
         if _is_address_like_name(value, street):
             result.dropped[field] = "address_like"
+            result.suggestions[field] = value
             del proposals[field]
             continue
-        if field == "name1" and not canonical_preserves_identity(
-            originals.get(field), value,
-        ):
-            result.dropped[field] = "identity_not_preserved"
-            del proposals[field]
+        if field == "name1":
+            # Three verdicts, not a boolean (§1b). `same` and `undecidable`
+            # both proceed — an input full of opaque codes ("VA MC West LA
+            # Visn 22") leaves tokens the canonical name cannot account for,
+            # and that is an unanswered question, not a contradiction. Only
+            # `different` refuses, and even then the proposal is kept so the
+            # flag can carry it.
+            verdicts[field] = classify_name_change(originals.get(field), value)
+            if verdicts[field] == DIFFERENT:
+                result.dropped[field] = "identity_not_preserved"
+                result.suggestions[field] = value
+                del proposals[field]
     for field, why in result.dropped.items():
         logger.info({
             "record_id": record_id,
@@ -645,6 +666,7 @@ async def run_grounded_resolver(
                     registry_response=res,
                     evidence_index=idx,
                     source_url=item.url if item else None,
+                    verdict=verdicts.get(field, "same"),
                 )
                 setattr(result, field, proposal)
                 if field == "name1":
@@ -688,6 +710,7 @@ async def run_grounded_resolver(
             self_reported=self_reported,
             evidence_index=idx,
             source_url=item.url if item else None,
+            verdict=verdicts.get(field, "same"),
         ))
         logger.info({
             "record_id": record_id,

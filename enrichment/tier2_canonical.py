@@ -5,11 +5,11 @@ a match in the institution's ROR children list. Uses the LLM's existing
 knowledge of well-known institutions to return the canonical form the
 institution itself uses on its own website. Zero SerpAPI calls.
 
-The result is used when confidence=high, or when confidence=medium AND
-the answer is deterministically verified to be a PURE RE-WORDING of the
-input (see `_is_pure_recanonicalisation`). Any other confidence level (or
-a null answer) means we could not canonicalise, and the caller falls
-through to the next tier.
+Confidence no longer decides whether the answer is used (§1a). The subject
+the record supplied must survive (`subject_preserved`) and the answer must
+not be a prefix downgrade; those are identity questions and they are the only
+refusals. What the model reported travels on as provenance and decides how
+selectively the record is flagged.
 """
 
 from __future__ import annotations
@@ -171,6 +171,9 @@ class Tier2CanonicalResult:
     name2_enriched: str | None = None
     confidence: str = "none"
     reasoning: str = ""
+    #: A refused proposal, kept so the flag can name it rather than leaving
+    #: the reviewer to rediscover what the pipeline already knew.
+    proposed_name: str | None = None
 
 
 async def run_tier2_canonical(
@@ -178,6 +181,7 @@ async def run_tier2_canonical(
     institution: str,
     name2: str,
     llm_client: OpenAIClient,
+    authoritative: bool = True,
 ) -> Tier2CanonicalResult:
     """Single LLM call. No page fetch, no SERP."""
     result = Tier2CanonicalResult()
@@ -218,12 +222,24 @@ async def run_tier2_canonical(
     verified_recanonicalisation = (
         confidence == "medium" and _is_pure_recanonicalisation(name2, cleaned)
     )
-    if confidence != "high" and not verified_recanonicalisation:
+    # Confidence is not a write gate (§1a). The restriction to high answers,
+    # or medium ones that were provably pure re-wordings, discarded correct
+    # unit names for exactly the records whose wording the model could not
+    # certify — which is most abbreviated SAP department text. Identity
+    # decides the write: `subject_preserved` below, and the gate at the write
+    # point. What the model reported is recorded and drives the flag.
+    if not authoritative and confidence != "high" and not verified_recanonicalisation:
         logger.info(
-            "[%s] Tier 2 canonical: rejecting '%s' (confidence=%s)",
+            "[%s] Tier 2 canonical: rejecting '%s' (confidence=%s, legacy)",
             record_id, cleaned, confidence,
         )
         return result
+
+    # The subject check is NOT repeated here. `subject_preserved` is applied
+    # once, at the write point, by `enrichment.name_gate` — §2's single gate.
+    # Running it in the tier as well would put two implementations of "is this
+    # still the same unit" on the same value, free to disagree, and would
+    # discard the proposal before the gate could put it in the flag detail.
 
     # Guard against a DOWNGRADE: never accept a canonical that is just the input
     # with a unit prefix stripped ("Department of Biology" → "Biology"). The

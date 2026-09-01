@@ -111,6 +111,15 @@ from enrichment.consistency import (
     registry_location_unconfirmed_count,
     reset_consistency_counters,
 )
+from enrichment import name_gate
+from enrichment.tier2_canonical import subject_preserved
+from utils.name_identity import (
+    SAME as VERDICT_SAME,
+    UNDECIDABLE as VERDICT_UNDECIDABLE,
+    classify_name_change,
+    introduces_nothing_new,
+    is_pure_repair,
+)
 from enrichment.grounded_resolver import (
     ORIGIN_LEI,
     ORIGIN_LLM,
@@ -202,6 +211,7 @@ from utils.domain_resolver import (
     DomainDecision,
     DomainEvidence,
     canonicalise_host,
+    first_email,
     resolve_domain,
     write_domain,
 )
@@ -794,14 +804,15 @@ def _record_domain_hint(result: dict[str, Any], record: Any = None) -> str | Non
     accepted = (result.get("domain") or "").strip()
     if accepted:
         return accepted
-    email = (
+    # The FIRST address: the column can hold more than one (a record stating
+    # two invoice addresses keeps both — see `PreprocessResult.add_email`),
+    # and `rsplit("@")` over the whole string answers with the last one.
+    email = first_email(
         result.get("email_enriched")
         or result.get("email_original")
-        or getattr(record, "email", None)
-        or ""
+        or getattr(record, "email", None),
     )
-    email = str(email).strip()
-    if "@" not in email:
+    if not email:
         return None
     host = email.rsplit("@", 1)[-1].strip().lower().rstrip(".")
     return host or None
@@ -864,6 +875,147 @@ def _canonical_short_circuit_enriched(
     )
 
 
+def _match_was_exact(
+    result: dict[str, Any], registry: str | None, match_tier: str | None,
+) -> bool:
+    """Whether the registry match rested on the record's own wording.
+
+    Prefers the tier the registry client computed for THIS match, passed in by
+    the caller that has the response in hand. The locality-derived fallback
+    below is only reachable when no tier was supplied — and it cannot be the
+    primary source, because the locality verdict is recorded AFTER the name is
+    written, so at write time it is not there yet. That ordering is what let a
+    fuzzy ROR match write "Economic Policy Institute" unchecked.
+    """
+    from enrichment.registry_match import is_exact_tier
+
+    if match_tier:
+        return bool(is_exact_tier(match_tier))
+    return _registry_match_was_exact(result, registry)
+
+
+def _registry_match_was_exact(
+    result: dict[str, Any], registry: str | None,
+) -> bool:
+    """True when the record stated the registry's name verbatim.
+
+    §2 withholds a FUZZY registry accept from a record with no usable country
+    — without one there is nothing to check a same-named entity in another
+    jurisdiction against. An exact name match needs no such check, and the
+    tier that decides it is the registry client's own
+    (:func:`enrichment.registry_match.name_match_tier`), recorded on the
+    result. Absent that record the match is treated as exact: this gate exists
+    to stop an unverifiable FUZZY adoption, and refusing a match whose tier
+    was never recorded would withhold names the pipeline has always written.
+    """
+    from enrichment.registry_match import is_exact_tier
+
+    for key, name in (
+        ("_src_locality_gleif", "GLEIF"),
+        ("_src_locality_ror", "ROR"),
+    ):
+        if registry and name.lower() != str(registry).lower():
+            continue
+        info = result.get(key)
+        if isinstance(info, dict) and info.get("tier"):
+            return bool(is_exact_tier(info.get("tier")))
+    return True
+
+
+def _settings_for(result: dict[str, Any]) -> Any:
+    """The batch Settings, stashed on the result by the orchestrator.
+
+    `_write_registry_name` is a module function with no orchestrator in hand,
+    and the gate needs to know which acceptance policy is in force. Returns
+    None when absent, which the gate reads as the default (authoritative).
+    """
+    return result.get("_settings")
+
+
+def _dept_domain_from_registry(
+    result: dict[str, Any], slot: str, proposal: Any,
+) -> None:
+    """Take the department's own domain from the registry that identified it.
+
+    A unit re-verified as its own registered body comes with the website that
+    body publishes, and that IS the department domain — the thing the
+    site-restricted probe is trying to discover and frequently cannot reach.
+    ROR states `niwcpacific.navy.mil` for the Naval Information Warfare Center
+    Pacific; the probe issues one SERP call against `navy.mil`, finds nothing,
+    and the column ships empty while the answer sits in the response the lane
+    already fetched.
+
+    It also settles `search_term_2` as a side effect, because that chain reads
+    a subdomain acronym before it falls back to slicing the unit's name — which
+    is what produced "NAVAL INFORMATION" instead of "NIWC".
+
+    Name 2 only, and never over a host the probe already verified:
+    `department_domain` is one column and names the unit the record is about.
+    """
+    if slot != "name2" or not getattr(proposal, "website", None):
+        return
+    if result.get("department_domain"):
+        return
+    host = canonicalise_host(proposal.website)
+    if not host or host == result.get("domain"):
+        return
+    acronym = _registry_unit_acronym(
+        getattr(proposal, "value", None), getattr(proposal, "variants", None),
+    )
+    if acronym and not result.get("_dept_acronym"):
+        result["_dept_acronym"] = acronym
+
+    result["department_domain"] = host
+    logger.info({
+        "record_id": result.get("record_id"),
+        "step": "dept_domain_from_registry",
+        "field": slot,
+        "registry": getattr(proposal, "registry", None),
+        "host": host,
+    })
+
+
+def _registry_unit_acronym(
+    official_name: str | None, variants: Any,
+) -> str | None:
+    """The unit's acronym, taken from the names its registry publishes.
+
+    ROR lists every name it holds for an entity. For the Naval Information
+    Warfare Center Pacific that is "NIWC Pacific", "SPAWAR", "SSC Pacific" and
+    the full form — and only the first is an acronym OF THE CURRENT NAME. The
+    others are former identities, and shipping one as this record's handle
+    would send a reviewer to the wrong organisation.
+
+    So a variant qualifies only when its leading token spells the official
+    name out: N-I-W-C over "Naval Information Warfare Center". That is the
+    same acronym resolver the identity verdict uses, asked here for a
+    different purpose.
+    """
+    from utils.name_identity import _acronym_expansion, _tokens
+
+    if not official_name or not variants:
+        return None
+    target = _tokens(official_name)
+    if not target:
+        return None
+    best: str | None = None
+    for variant in variants:
+        head = str(variant or "").split()
+        if not head:
+            continue
+        token = head[0].strip(".,")
+        if not (token.isupper() and 2 <= len(token) <= 6 and token.isalpha()):
+            continue
+        if not any(
+            _acronym_expansion(token.lower(), target, i) >= 2
+            for i in range(len(target))
+        ):
+            continue
+        if best is None or len(token) < len(best):
+            best = token
+    return best
+
+
 def _write_registry_name(
     result: dict[str, Any],
     field: str,
@@ -876,7 +1028,9 @@ def _write_registry_name(
     rule_id: str | None = None,
     incumbent: str | None = None,
     variants: Sequence[str] | None = None,
-) -> None:
+    model_proposed: bool = False,
+    match_tier: str | None = None,
+) -> bool:
     """Write a registry's official name into an output name field and record
     that the field is registry-owned.
 
@@ -899,8 +1053,96 @@ def _write_registry_name(
     re-processed.
     """
     if not (value and value.strip()):
-        return
+        return False
     value = _preferred_registry_variant(incumbent, value.strip(), variants)
+
+    # §2 — the same gate an LLM candidate passes. A registry name used to
+    # reach the column on the strength of the match alone: "if the match was
+    # good enough to attach `ror_id`, it is good enough to attach the name".
+    # That holds for the identity question and not for the country one, which
+    # the match never asked in the record's terms — which is how a
+    # UK-registered Dow entity (LEI 549300REWQ7P00QFXU51) came to ship
+    # `gleif:verified` onto a Midland, Michigan record. The identifier is a
+    # separate decision and is left alone; this refuses only the NAME, and
+    # says so where a reviewer can see it.
+    incumbent_value = (
+        result.get("name1_original") if field == "name1"
+        else _slot_input_value(result, field)
+    )
+    decision = name_gate.evaluate(
+        result, field, value,
+        incumbent=incumbent_value,
+        street=result.get("street1_original"),
+        country=result.get("country_region_key") or result.get("country"),
+        registry=registry,
+        from_registry=True,
+        exact_name_match=_registry_match_was_exact(result, registry),
+        # Two routes need the identity question asked, and one does not.
+        #
+        # NOT asked: an EXACT registry match, or a pointer followed to an id.
+        # There the entity was identified by something other than a name
+        # similarity — the record stated the registry's own name, or a QID led
+        # to it — and re-litigating that suppresses correct registry names
+        # (ROR's "Mayo Clinic in Florida" against a record saying
+        # "Jacksonville"), which is the defect Fix 4 removed.
+        #
+        # Asked: a query the MODEL worded, and — this is the case the gate was
+        # missing — any FUZZY match. A fuzzy match IS a name-similarity guess,
+        # so checking it with a name comparator re-does nothing; it does the
+        # check for the first time. ROR's query fallback returned "Economic
+        # Policy Institute" at score 1.00 for "Infineon Technologies EPI Svcs"
+        # — it had latched onto "EPI" — and the record shipped a Washington
+        # think tank as `ror:verified` for a Long Beach semiconductor site,
+        # its own `infineon.com` e-mail sitting two columns away.
+        check_identity=(
+            model_proposed
+            or not _match_was_exact(result, registry, match_tier)
+        ),
+        settings=_settings_for(result),
+    )
+    if not decision.allow:
+        result.setdefault("_ev_name_suggestion", {})[field] = (
+            decision.suggestion or value
+        )
+        # The refusal is about the CANDIDATE, not about the column. A field
+        # left empty here would be a worse outcome than the one being
+        # prevented — the record would ship with no name at all — so the
+        # value the record supplied stands, attributed to the input that
+        # produced it.
+        if not result.get(f"{field}_enriched") and incumbent_value:
+            _write(
+                result, f"{field}_enriched", str(incumbent_value).strip(),
+                deterministic_evidence(
+                    "name-gate:registry-refused-input-kept",
+                    producer="input", tier=1,
+                    evidence_ref={
+                        "registry": registry,
+                        "refused": value,
+                        "reason": decision.reason,
+                    },
+                ),
+            )
+        if decision.reason in (
+            name_gate.REASON_COUNTRY_CONFLICT,
+            name_gate.REASON_DIFFERENT_ENTITY,
+        ):
+            # Scoped to the field whose value was refused, per §2 — a country
+            # contradiction blocks the name write; city and state differences
+            # stay advisory and are reported by `registry-location-mismatch`.
+            # A `different` verdict is recorded here too, because the caller
+            # has to know: the identifier it is about to attach names the
+            # entity whose NAME was just refused, and shipping one without the
+            # other leaves a record pointing at an organisation it is not.
+            result.setdefault("_ev_registry_name_refused", set()).add(field)
+        logger.info({
+            "record_id": result.get("record_id"),
+            "step": "registry_name_write_refused",
+            "field": field,
+            "registry": registry,
+            "reason": decision.reason,
+            "value": value,
+        })
+        return False
     # ``identifier`` is the evidence_ref — the registry id a reviewer opens to
     # check the name. A registry-supplied name is exact by definition: the
     # scored comparison happened upstream, at the match, and its score is
@@ -914,6 +1156,13 @@ def _write_registry_name(
         ),
     )
     result.setdefault("_registry_name_fields", set()).add(field)
+    accepted = True
+    counts = result.get("_name_counts")
+    if counts is not None and result.get("_ev_name_verdict", {}).get(field):
+        # A field a model had already written, now carrying a registry's name
+        # and provenance: the re-verification ran as an UPGRADE, which is what
+        # §1f requires of it — never as a veto.
+        counts["registry_upgraded"] += 1
     logger.info({
         "record_id": result.get("record_id"),
         "step": "registry_name_write",
@@ -921,6 +1170,7 @@ def _write_registry_name(
         "registry": registry,
         "value": value.strip(),
     })
+    return accepted
 
 
 def _write(result: Any, field: str, value: Any, evidence: Evidence) -> None:
@@ -1109,6 +1359,196 @@ def _raise_unattributed_flag(result: Any, fields: list[str]) -> None:
     prose = f"{', '.join(fields)}: {UNATTRIBUTED_REASON}"
     existing = result.get("flag_reason")
     result["flag_reason"] = f"{existing}; {prose}" if existing else prose
+
+
+#: Words that say WHAT KIND of unit a department slot names. Dropping one
+#: changes the thing the slot points at, however tidy the result reads.
+_UNIT_WORDS_KEPT = {
+    "lab", "labs", "laboratory", "laboratories", "center", "centre",
+    "institute", "group", "division", "department", "dept", "office",
+    "facility", "plant", "works", "school", "faculty", "college", "clinic",
+    "programme", "program", "unit", "branch", "section", "bureau",
+}
+
+
+def _identity_tokens_present(value: str | None) -> bool:
+    """True when *value* carries at least one distinctive word.
+
+    "Company" and "Inc" do not: they are the generic tail a repack leaves in
+    the next slot, and they must never be mistaken for an alias of Name 1.
+    """
+    from utils.name_identity import _tokens as _identity_tokens
+
+    return bool(_identity_tokens(value))
+
+
+def _echoes_name1(value: str | None, name1: str | None) -> bool:
+    """True when a department slot says nothing Name 1 does not already say.
+
+    Exact equality is the obvious case and was the only one checked. The one
+    the corpus actually contains is an ACRONYM: record 13345790 holds
+    "Palo Alto Veterans Institute for Research" in Name 1 and "PAVIR" in
+    Name 2, which is the same organisation written twice. Textually they
+    share nothing, so a string comparison sees two different values and the
+    slot ships — carrying a review flag asking a steward to confirm the
+    canonical form of an abbreviation of the name directly above it.
+
+    `classify_name_change` already answers this: it resolves an acronym
+    against the tokens that spell it out, so "PAVIR" reads as SAME while
+    "Ames Research Center" against NASA, or "Clinton Twp Facility" against
+    ExxonMobil, read as DIFFERENT and are left alone. The comparison is run
+    in the direction slot->Name 1, because the question is whether the SLOT
+    adds anything, not whether Name 1 does.
+    """
+    if not (value and value.strip() and name1 and name1.strip()):
+        return False
+    if value.strip().lower() == name1.strip().lower():
+        return True
+    # An alias never carries MORE than the organisation name it abbreviates.
+    if len(value.strip()) > len(name1.strip()):
+        return False
+
+    # A single-token fragment, compared RAW. The verdict below normalises
+    # both sides first, and normalisation is what hides this case: LabCorp's
+    # Name 2 arrives as "LAB", `expand_abbreviations` reads that as the word
+    # "Laboratory", and "laboratory" no longer looks like the first syllable
+    # of "labcorp". Restricted to a one-word value so a real unit — which
+    # always says more than a fragment does — is never swallowed.
+    raw = re.sub(r"[^A-Za-z0-9]", "", value).lower()
+    if raw and " " not in value.strip():
+        for token in re.findall(r"[A-Za-z0-9]+", name1.lower()):
+            if len(raw) >= 3 and token.startswith(raw):
+                return True
+
+    # The SAME verdict only means "an alias" when the slot HAS identity to
+    # compare. A value made entirely of generic words ("Company") reduces to
+    # no distinctive tokens at all, and `classify_name_change` is permissive
+    # by design on an empty side — it returns SAME, which here would read as
+    # "this repeats Name 1" and clear the tail of a repacked name.
+    if _identity_tokens_present(value) and (
+        classify_name_change(value, name1) == VERDICT_SAME
+    ):
+        return True
+    # Every word of the slot already present in Name 1. The verdict above is
+    # a two-way identity question and answers "no" here, correctly: Name 1
+    # says more than the slot does ("Wayne State University" is not in
+    # "School of Medicine"). But the question this rule asks is one-way — does
+    # the SLOT add anything Name 1 has not already said — and for a slot that
+    # merely repeats Name 1's own tail the answer is no.
+    #
+    # Safe against a repack continuation, which is the case that must NOT be
+    # cleared: there Name 1 holds the head and the slot holds the TAIL, so the
+    # tail's words are absent from Name 1 ("Company" is not in "ExxonMobil
+    # Research and Engineering") and this returns False.
+    return introduces_nothing_new(name1, value)
+
+
+def _dropped_unit_word(supplied: str | None, proposed: str | None) -> str | None:
+    """The unit word *proposed* lost, or None.
+
+    Only fires when the supplied value ENDS on a unit word — that is the
+    position where the word states what the slot names ("Baytown Refinery
+    Lab") rather than merely appearing in it ("Lab Services Group").
+    """
+    if not (supplied and proposed):
+        return None
+    tail = re.findall(r"[A-Za-z]+", supplied)
+    if not tail:
+        return None
+    unit = tail[-1].lower().rstrip(".")
+    if unit not in _UNIT_WORDS_KEPT:
+        return None
+    kept = {w.lower().rstrip(".") for w in re.findall(r"[A-Za-z]+", proposed)}
+    if unit in kept:
+        return None
+    # An expansion of the same word is not a loss ("Lab" -> "Laboratory").
+    for word in kept:
+        if word.startswith(unit) or unit.startswith(word):
+            if word in _UNIT_WORDS_KEPT:
+                return None
+    return tail[-1]
+
+
+#: Label words a source system writes in FRONT of a value it is routing
+#: somewhere ("email to: …", "REF# …", "Attn: …"). Once the value itself has
+#: been extracted into its own column the label is all that remains, and a
+#: label alone names no organisation.
+_ROUTING_LABEL_WORDS = {
+    "email", "e", "mail", "to", "ref", "reference", "attn", "attention",
+    "no", "number", "num", "nbr", "id", "code", "c", "o", "care", "of",
+    "cc", "fao", "re", "acct", "account",
+}
+
+
+def _slot_is_noise(
+    value: str | None, city: str | None, region: str | None,
+    captured_email: bool = False,
+) -> str | None:
+    """Why *value* names nothing, or None when it names something.
+
+    Two shapes, both of which the corpus leaves behind after the deterministic
+    passes have taken what they wanted:
+
+    * a routing LABEL whose value has already been moved to its own column —
+      "email to:" once UC 8 has the address, "REF#" once the reference is
+      gone. What is left is punctuation and a preposition.
+    * the record's own PLACE, restated. "Ashtabula, OH" in Name 2 of a record
+      whose City is ASHTABULA and Region OH is the address written twice; it
+      names no unit, and a reviewer asked to confirm it has nothing to check.
+    """
+    if not value or not value.strip():
+        return None
+    # An e-mail address the record routed mail to. UC 8 lifts the address
+    # into the `email` column; what is left behind is the label that
+    # introduced it ("email to:"), which names no unit. The address is
+    # removed before the label test so the two are judged as what they are —
+    # and only when the address was actually captured, so a slot is never
+    # emptied of the only copy of something.
+    text = value
+    if captured_email:
+        text = re.sub(r"[\w.+-]+@[\w-]+\.[\w.-]+", " ", text)
+
+    words = [w.lower() for w in re.findall(r"[A-Za-z0-9]+", text)]
+    if not words:
+        return "punctuation only"
+    if all(w in _ROUTING_LABEL_WORDS for w in words):
+        return "routing label with no value"
+
+    place = {
+        w.lower()
+        for source in (city, region)
+        for w in re.findall(r"[A-Za-z0-9]+", source or "")
+    }
+    if place and all(w in place for w in words):
+        return "restates the record's own city/region"
+    return None
+
+
+def _protected_name_fields(result: dict[str, Any]) -> set[str]:
+    """Name fields whose spelling has already been settled by an authority.
+
+    §3 — "a name that passed the gate is final". Three ways a field earns it:
+
+    * a **registry** wrote it (``_registry_name_fields``) — ROR and GLEIF are
+      the authority on their own entity's spelling;
+    * the **gate** passed a candidate for it (``_ev_name_verdict``) — the
+      value was compared against the record and accepted, and a cosmetic pass
+      re-cutting it afterwards undoes the decision that was just taken;
+    * Name 1 is ``input:verified+web`` — a page independently corroborated the
+      record's own spelling, which is a stronger statement about the wording
+      than any house style.
+
+    Returned as OUTPUT field names (``name1_enriched``) because that is what
+    the transform loops iterate.
+    """
+    protected: set[str] = set()
+    for slot in result.get("_registry_name_fields") or ():
+        protected.add(f"{slot}_enriched")
+    for slot in result.get("_ev_name_verdict") or ():
+        protected.add(f"{slot}_enriched")
+    if result.get("unchanged_name1_state") == "unchanged-verified":
+        protected.add("name1_enriched")
+    return protected
 
 
 def _repack_merged_name_block(result: dict[str, Any]) -> None:
@@ -1311,6 +1751,14 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # canonical names are never ALL-CAPS, so for those we only run the (no-op
     # on mixed-case) title-case as a safety net and never touch their wording.
     name1_val = result.get("name1_enriched")
+    # NOT skipped for a settled name, unlike the suffix rule above. §3 groups
+    # casing with the transforms that overrule an authority, but the two are
+    # not the same operation: `smart_title_case` fires only on an ALL-CAPS
+    # value, and an ALL-CAPS value is precisely what GLEIF publishes as a
+    # legal name ("BAYER AG"). Skipping it there would ship the registry's
+    # shouting rather than protect its spelling. What §3 is really about —
+    # not GUESSING a shape for a token — is fixed inside `_case_segment`,
+    # where an unknown short token now keeps the case it arrived with.
     if name1_val:
         if result.get("source") == "passthrough":
             result.transform(
@@ -1352,7 +1800,15 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # (input passthrough, ROR, GLEIF, or LLM): "… Aktiengesellschaft" → "… AG",
     # "… Incorporated" → "… Inc". Preprocess (UC 17) already does this on the
     # input; this backstops any long form a downstream tier introduces.
+    protected = _protected_name_fields(result)
     for field in ENRICHED_NAME_FIELDS:
+        if field in protected:
+            # §3. "Genzyme Corporation" is how the company writes its name and
+            # how the registry records it; rewriting it to "Genzyme Corp"
+            # afterwards is a house style overruling the source that was just
+            # accepted as the authority. The backstop below still applies to
+            # every field no authority settled.
+            continue
         val = result.get(field)
         if val:
             result.transform(
@@ -1544,6 +2000,39 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
         canon = canonicalise_unit_name(str(v)) or str(v)
         return re.sub(r"\s+", " ", canon.strip()).lower()
 
+    # A slot whose SUPPLIED text has been absorbed by the slot above it was a
+    # continuation of that value, not a unit of its own — whatever it was then
+    # resolved to rests on a fragment. Texas A&M records state "ENGINEERING
+    # Dept of Biomedical" in Name 2 and "Engineering" in Name 3: one unit
+    # split across two columns. UC 0 asks the model whether that is an
+    # overflow and it answered no, so the halves stayed apart, Name 2
+    # canonicalised to "Department of Biomedical Engineering" — absorbing the
+    # tail — and Name 3's leftover "Engineering" was independently resolved to
+    # "College of Engineering", a real unit the record never named.
+    #
+    # Checked against the SUPPLIED value, and only once the slot above has
+    # absorbed it: while Name 2 still reads "Department of Materials Science
+    # and", its Name 3 "Engineering" is a genuine continuation and is kept.
+    for _i, _f in enumerate(DEPT_ENRICHED_FIELDS):
+        if _i == 0:
+            continue
+        _above = result.get(DEPT_ENRICHED_FIELDS[_i - 1])
+        _val = result.get(_f)
+        _supplied = _slot_input_value(result, _f.replace("_enriched", ""))
+        if not (_above and _val and _supplied):
+            continue
+        if introduces_nothing_new(str(_above), str(_supplied)):
+            logger.info({
+                "record_id": result.get("record_id"),
+                "step": f"{_f}_continuation_absorbed",
+                "supplied": _supplied,
+                "absorbed_by": _above,
+                "dropped": _val,
+            })
+            result.transform(
+                _f, None, rule_id="dept-slot-continuation:absorbed",
+            )
+
     kept_vals: list[Any] = []
     kept_norms: list[str] = []
     for f in DEPT_ENRICHED_FIELDS:
@@ -1552,6 +2041,37 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
         if not n:
             continue
         if any(n == kn or fuzz.ratio(n, kn) >= 92 for kn in kept_norms):
+            continue
+        # A TRUNCATED duplicate, which the ratio cannot see. "Department of
+        # Biologica" is the same unit as "Department of Biological Sciences"
+        # with the tail cut off by the field width, and the missing letters
+        # score it at 82 — under the 92 threshold — so both slots survived and
+        # the fragment shipped in Name 4. Word coverage answers what the ratio
+        # cannot: every word of the fragment is accounted for by the fuller
+        # value, and it adds none of its own.
+        covered = next(
+            (
+                i for i, kv in enumerate(kept_vals)
+                if introduces_nothing_new(str(kv), str(val))
+            ),
+            None,
+        )
+        if covered is not None:
+            continue
+        # The same relation the other way round: the value already kept is the
+        # fragment and this one completes it. Keep the fuller form rather than
+        # the cut one — the slot order decides which arrives first, and that
+        # is not a statement about which is right.
+        fuller = next(
+            (
+                i for i, kv in enumerate(kept_vals)
+                if introduces_nothing_new(str(val), str(kv))
+            ),
+            None,
+        )
+        if fuller is not None:
+            kept_vals[fuller] = val
+            kept_norms[fuller] = n
             continue
         kept_vals.append(val)
         kept_norms.append(n)
@@ -1651,9 +2171,109 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
             return False
         return str(enr).casefold() != str(orig or "").casefold()
 
+    # A department slot that names no organisational thing is cleared (§3).
+    # Placed here rather than in `_name_post_checks`: a slot the record KEPT
+    # is populated by the passthrough above, so at the earlier point the
+    # residue this catches is not yet in the field to be caught.
+    # A department slot that only repeats Name 1 names nothing new — the same
+    # organisation written twice, most often as its acronym ("Palo Alto
+    # Veterans Institute for Research" / "PAVIR").
+    _n1 = result.get("name1_enriched")
+    if _n1:
+        for _slot in DEPT_SLOTS:
+            _val = result.get(f"{_slot}_enriched")
+            # Tested against the value the record SUPPLIED as well as the one
+            # the slot now holds. `expand_abbreviations` runs before this and
+            # rewrites the abbreviation that made the echo visible: LabCorp's
+            # Name 2 arrives as "LAB" — plainly a fragment of Name 1 — and by
+            # the time this rule sees it, it reads "Laboratory", which is not
+            # a fragment of anything and ships as though it were a department.
+            # …but only while the slot still HOLDS what the record supplied.
+            # On a merged record the original Name 2 was absorbed into Name 1
+            # and the slot was refilled with something else entirely — the
+            # supplied "National Security, LLC" echoes Name 1, the slot now
+            # holds "Department of Chemistry", and testing one to drop the
+            # other deletes a real department.
+            _supplied = _slot_input_value(result, _slot)
+            _same_value = bool(_supplied) and is_pure_repair(_supplied, _val)
+            if _val and (
+                _echoes_name1(_val, _n1)
+                or (_same_value and _echoes_name1(_supplied, _n1))
+            ):
+                logger.info({
+                    "record_id": result.get("record_id"),
+                    "step": f"{_slot}_equals_name1_dropped",
+                    "value": _val,
+                })
+                result.transform(
+                    f"{_slot}_enriched", None,
+                    rule_id="dept-slot-echoes-name1:dropped",
+                )
+
+    _city, _region = result.get("city"), result.get("region")
+    for _slot in DEPT_SLOTS:
+        _value = result.get(f"{_slot}_enriched")
+        _why = _slot_is_noise(
+            _value, _city, _region,
+            captured_email=bool(result.get("email_enriched") or result.get("email")),
+        )
+        if not _why:
+            continue
+        logger.info({
+            "record_id": result.get("record_id"),
+            "step": f"{_slot}_noise_cleared",
+            "value": _value,
+            "reason": _why,
+        })
+        result.transform(
+            f"{_slot}_enriched", None,
+            rule_id="name-post-check:slot-names-nothing",
+        )
+
     for f in (*NAME_SLOTS, "care_of", "contact",
               "email", "street1", "street2", "street3", "street4", "street5"):
         result[f"{f}_changed"] = _changed(f)
+
+    # §1f — the two facts the flag layer needs about a CHANGED name, recorded
+    # where the change is settled rather than re-derived inside the flag rules.
+    #
+    # `_ev_pure_repair`: the rewrite only expanded, completed or corrected the
+    # record's own text. `_ev_name_was`: what the record arrived with, so a
+    # flag can name it. Both are transient and never ship as columns.
+    # Compared BLOCK against BLOCK, not slot against slot. Where a name
+    # overflowed its column, UC 0 merges the halves and the repack lays the
+    # result out again, so a slot's "original" and its "enriched" value are
+    # not two versions of one string — they are two different cuts of the
+    # block. Judged per slot, "Exxonmobil Research & Engineering" + "Co"
+    # against "ExxonMobil Research and Engineering Company" makes "Company"
+    # look invented, and a record whose only change was `&`->`and` and an
+    # expanded `Co` shipped flagged as an unverified inference. Joined, the
+    # question is the one that was actually asked: does the block say
+    # anything the record did not?
+    def _block(kind: str) -> str:
+        return " ".join(
+            str(result.get(f"{slot}_{kind}") or "").strip()
+            for slot in NAME_SLOTS
+            if str(result.get(f"{slot}_{kind}") or "").strip()
+        )
+
+    block_is_repair = introduces_nothing_new(
+        _block("original"), _block("enriched"),
+    )
+
+    pure_repair: set[str] = set()
+    name_was: dict[str, str] = {}
+    for slot in NAME_SLOTS:
+        if not result.get(f"{slot}_changed"):
+            continue
+        orig = result.get(f"{slot}_original")
+        enr = result.get(f"{slot}_enriched")
+        if orig:
+            name_was[slot] = str(orig)
+        if block_is_repair or is_pure_repair(orig, enr):
+            pure_repair.add(slot)
+    result["_ev_pure_repair"] = pure_repair
+    result["_ev_name_was"] = name_was
 
     # Domain fallback: if ROR didn't supply a domain but a successful
     # tier produced a source_url, offer its host as a candidate. Tier 2A's
@@ -1848,6 +2468,7 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     for _slot in DEPT_SLOTS:
         result.pop(f"_{_slot}_from_tier3", None)
     result.pop("_ror_acronym", None)
+    result.pop("_dept_acronym", None)
     result.pop("_website_raw", None)
     result.pop("_source_title", None)
     result.pop("_source_h1", None)
@@ -2238,6 +2859,19 @@ def _apply_tier2a(
         )
 
     if tier2a.name2_enriched and tier2a.name2_enriched.strip():
+        # `2A_population` means the slot was EMPTY and this value came from
+        # the contact's own affiliation — the record never stated a
+        # department, and what ships is an inference about the individual in
+        # the Contact column. That is the same kind of claim `dept-via-lab`
+        # exists to caveat (a parent inferred from a lab's page rather than
+        # read from a stated department), so it is reported the same way.
+        #
+        # `2A_verification` is deliberately NOT marked: there the record
+        # stated a department and this lane confirmed it, which is the
+        # opposite situation — evidence for a value the record already had.
+        if tier2a.mode == "2A_population":
+            result["_ev_dept_via_person"] = True
+
         # One value, produced by three tools in sequence: the search that found
         # the contact's page, the fetch that retrieved it, and the model that
         # read the department off its structured elements.
@@ -2284,13 +2918,33 @@ def _apply_tier3(
     written: set[str] = result.setdefault("_ev_tier3_wrote", set())
 
     if tier3.success:
+        if not (tier3.name1_suggestion and tier3.name1_suggestion.strip()):
+            # The model was asked and returned nothing for this field. §1f
+            # makes this the ONLY state in which "left exactly as supplied"
+            # is a true sentence, so it is recorded rather than inferred.
+            result.setdefault("_ev_llm_returned_null", set()).add("name1")
+            counts = result.get("_name_counts")
+            if counts is not None:
+                counts["llm_returned_null"] += 1
         if tier3.name1_suggestion and tier3.name1_suggestion.strip():
             suggestion = tier3.name1_suggestion.strip()
-            # Identity guard: never let the LLM swap name1 for a different
-            # entity (e.g. "Iso Group Inc" → "CoStar Group"). Accept only a
-            # reformatting / acronym expansion of the original.
+            # §2 — the one gate. It used to be `canonical_preserves_identity`,
+            # a boolean that collapsed "this is another entity" and "the
+            # record states codes this name does not repeat" into a single
+            # rejection. "VA MC West LA Visn 22" → "VA Greater Los Angeles
+            # Healthcare System" is the second of those, and it was discarded
+            # as though it were the first — the record then shipped its raw
+            # input saying the canonical form could not be established, about
+            # a form Tier 3 had just established.
             original_name1 = result.get("name1_original")
-            if canonical_preserves_identity(original_name1, suggestion):
+            decision = name_gate.evaluate(
+                result, "name1", suggestion,
+                incumbent=original_name1,
+                street=result.get("street1_original"),
+                country=result.get("country_region_key") or result.get("country"),
+                settings=_settings_for(result),
+            )
+            if decision.allow:
                 _write(
                     result, "name1_enriched", suggestion,
                     llm_evidence(
@@ -2300,14 +2954,36 @@ def _apply_tier3(
                         deployment=deployment,
                         self_reported=tier3.confidence,
                         rule_id="tier3:name1_suggestion",
+                        extra={
+                            "input_value": original_name1,
+                            "verdict": decision.verdict,
+                        },
                     ),
                 )
                 written.add("name1")
+                result.setdefault("_ev_name_verdict", {})["name1"] = (
+                    decision.verdict
+                )
+                counts = result.get("_name_counts")
+                if counts is not None:
+                    counts["llm_name_written"] += 1
+                    if decision.verdict == VERDICT_UNDECIDABLE:
+                        counts["flagged_undecidable"] += 1
+                    if tier3.confidence == "low":
+                        counts["flagged_low"] += 1
             else:
+                # Refused, and SAID so. The candidate goes to the flag detail
+                # rather than into a log line no reviewer reads.
+                result.setdefault("_ev_name_suggestion", {})["name1"] = (
+                    decision.suggestion or suggestion
+                )
+                counts = result.get("_name_counts")
+                if counts is not None:
+                    counts["suggestion_only"] += 1
                 logger.warning(
-                    "[%s] Tier 3: REJECTED name1 '%s' → '%s' "
-                    "(different entity — identity not preserved)",
+                    "[%s] Tier 3: REJECTED name1 '%s' → '%s' (%s)",
                     result.get("record_id"), original_name1, suggestion,
+                    decision.reason,
                 )
         # Every department slot takes its suggestion the same way. Name 2
         # additionally records that Tier 3 authored it, because finalisation
@@ -2448,6 +3124,7 @@ class Orchestrator:
 
         # Per-batch GLEIF/LEI telemetry counters (reset in enrich_batch).
         self._lei_counts: dict[str, int] = self._new_lei_counts()
+        self._name_counts: dict[str, int] = self._new_name_counts()
         # Per-batch Tier 1 re-lookup telemetry (reset in enrich_batch).
         self._tier1_retry_counts: dict[str, int] = self._new_tier1_retry_counts()
         # Per-batch page-read telemetry (reset in enrich_batch).
@@ -2475,6 +3152,26 @@ class Orchestrator:
         self._serp_cache = SerpCache(
             disk=self._evidence_cache.namespace("serp"),
         )
+
+    @staticmethod
+    def _new_name_counts() -> dict[str, int]:
+        """Fresh per-batch name-acceptance counters (§4).
+
+        The acceptance policy's own ledger: what was written, what a registry
+        then improved, what was flagged and why, and what the gate refused.
+        `llm_returned_null` is the denominator that makes "left exactly as
+        supplied" auditable — after §1f that phrase renders only for a field
+        the model actually declined, so the two numbers must agree.
+        """
+        return {
+            "llm_name_written": 0,
+            "registry_upgraded": 0,
+            "flagged_low": 0,
+            "flagged_undecidable": 0,
+            "suggestion_only": 0,
+            "llm_returned_null": 0,
+            "gate_rejected_registry": 0,
+        }
 
     @staticmethod
     def _new_lei_counts() -> dict[str, int]:
@@ -2578,6 +3275,7 @@ class Orchestrator:
         clear_lei_cache()  # likewise for the GLEIF/LEI cache
         reset_consistency_counters()  # and the Fix D(2) batch counter
         self._lei_counts = self._new_lei_counts()  # reset per-batch telemetry
+        self._name_counts = self._new_name_counts()
         self._tier1_retry_counts = self._new_tier1_retry_counts()
         self._page_counts = self._new_page_counts()
         self._wikidata_counts = self._new_wikidata_counts()
@@ -3583,10 +4281,57 @@ class Orchestrator:
             if proposal is None:
                 continue
             field = proposal.field
+            # The value the lane was actually ASKED about. For a record whose
+            # name overflowed its column, UC 0 rejoins the halves before any
+            # tier runs, and the merged string is what the model answered on
+            # — so the merged string is what its answer must be judged
+            # against. Reading the raw slot here compares the reply to a
+            # fragment: "Novartis Inst for BioMedical" against "Novartis
+            # Institute for Biomedical Research Inc." makes "Research" look
+            # invented, and the gate refuses the very name it asked for.
             incumbent = (
-                result.get("name1_original") if field == "name1"
-                else _slot_input_value(result, field)
+                (result.get("_lane_inputs") or {}).get("name1")
+                or result.get("_pp_name1")
+                or result.get("name1_original")
+            ) if field == "name1" else _slot_input_value(result, field)
+
+            # §2 — one gate, recomputed here, for a registry name and a model
+            # name alike. The lane already asked the identity question; asking
+            # it again at the write point is what makes "nothing is written
+            # unchecked" a property of the write rather than a promise each
+            # lane keeps separately.
+            decision = name_gate.evaluate(
+                result, field, proposal.value,
+                incumbent=incumbent,
+                street=result.get("street1_original"),
+                country=result.get("country_region_key") or result.get("country"),
+                registry=proposal.registry,
+                from_registry=proposal.from_registry,
+                exact_name_match=_same_name_text(incumbent, proposal.value),
+                settings=self._settings,
             )
+            if not decision.allow:
+                self._name_counts[
+                    "gate_rejected_registry" if proposal.from_registry
+                    else "suggestion_only"
+                ] += 1
+                result.setdefault("_ev_name_suggestion", {})[field] = (
+                    decision.suggestion or proposal.value
+                )
+                logger.info({
+                    "record_id": result.get("record_id"),
+                    "step": "name_gate_refused_grounded",
+                    "field": field,
+                    "reason": decision.reason,
+                    "candidate": proposal.value,
+                })
+                continue
+            result.setdefault("_ev_name_verdict", {})[field] = decision.verdict
+            if decision.verdict == VERDICT_UNDECIDABLE:
+                self._name_counts["flagged_undecidable"] += 1
+            if proposal.self_reported == "low":
+                self._name_counts["flagged_low"] += 1
+            self._name_counts["llm_name_written"] += 1
 
             # The model's claim, recorded whether or not a registry then
             # confirmed it. On the non-registry paths this IS the write; on
@@ -3655,6 +4400,7 @@ class Orchestrator:
                     # names the ORGANISATION the record is about, and it is
                     # not exported.
                     result["name2_registry_id"] = proposal.registry_id
+                    _dept_domain_from_registry(result, field, proposal)
             elif proposal.source_url:
                 result["source_url"] = proposal.source_url
 
@@ -3687,6 +4433,25 @@ class Orchestrator:
         ):
             result["_canonical_proposal"] = grounded.confirmed["name1"]
 
+        # The same statement about a DEPARTMENT slot. Name 1 has had a
+        # vocabulary for this since Fix 2 — `unchanged-confirmed` — and Name 2
+        # had none, so a model that was shown the evidence and returned the
+        # record's own unit name back was recorded nowhere, and the slot
+        # shipped `input:low` under "the canonical form could not be
+        # established". It had been established, by the lane, twice over:
+        # NASA's "Ames Research Center" is confirmed by the grounded lane AND
+        # resolved by Tier 2, and was flagged regardless.
+        for slot, value in grounded.confirmed.items():
+            if slot == "name1" or not value:
+                continue
+            result.setdefault("_ev_input_confirmed", set()).add(slot)
+            logger.info({
+                "record_id": result.get("record_id"),
+                "step": "dept_input_confirmed",
+                "field": slot,
+                "value": value,
+            })
+
         if not wrote:
             if grounded.confirmed:
                 # Nothing was rewritten because nothing needed rewriting. The
@@ -3697,9 +4462,26 @@ class Orchestrator:
                 # lane established that the record was already right, and
                 # relabelling it would be the same loss as the write was.
                 return
-            # The lane ran and established nothing — every field null, or
-            # every proposal refused by a guard. The record ends exactly where
-            # the passthrough it came from would have left it.
+            if grounded.suggestions:
+                # The lane HELD a proposal and the gate refused it. Stamping
+                # `passthrough / low / unresolved` here is what produced the
+                # outcome §1 was written against: a record that had been
+                # searched, read and answered shipped its raw input under
+                # "the canonical form could not be established", which was
+                # not what happened — a form was established and declined.
+                # The refusal is a fact about the candidate and is reported as
+                # one, in the flag detail, with the candidate named.
+                for field, text in grounded.suggestions.items():
+                    result.setdefault("_ev_name_suggestion", {})[field] = text
+                logger.info({
+                    "record_id": result.get("record_id"),
+                    "step": "grounded_proposal_refused",
+                    "fields": sorted(grounded.suggestions),
+                })
+                return
+            # The lane ran and established nothing — every field null. The
+            # record ends exactly where the passthrough it came from would
+            # have left it.
             result["source"] = "passthrough"
             result["confidence"] = "low"
             result["enrichment_status"] = "unresolved"
@@ -3902,6 +4684,7 @@ class Orchestrator:
             # guards as the first pass, so a hit here is equally verified.
             _write_registry_name(
                 result, "name1", ror_res.get("official_name"), registry="ROR",
+                model_proposed=True,
                 identifier=ror_res["ror_id"],
                 rule_id="fix2:tier1-retry-after-canonicalisation",
                 # The corrected name the retry queried with — if ROR publishes
@@ -4615,6 +5398,363 @@ class Orchestrator:
             "detail": detail,
         })
 
+    def _name1_unresolved(self, result: dict[str, Any]) -> bool:
+        """True when nothing has established what Name 1 should say.
+
+        Not "the field is empty" — a passthrough writes the record's own value
+        into it. The question is whether any AUTHORITY spoke: a registry
+        identifier, an enriched status, or a model proposal already recorded.
+        """
+        if result.get("ror_id") or result.get("lei_id"):
+            return False
+        if result.get("_registry_name_fields"):
+            return False
+        if result.get("enrichment_status") == "failed":
+            # `failed` is an outcome, not an open question: a tier raised and
+            # the record records that. Re-resolving it would relabel a failure
+            # as an ordinary unresolved record and lose the only trace of it.
+            return False
+        # `enriched` is deliberately NOT a stop. It is a statement about the
+        # RECORD, and a record is marked enriched when any slot resolves — so
+        # a Tier 2 canonicalisation of Name 3 was enough to declare Name 1
+        # settled and skip this lane entirely. "Wayne State University School
+        # of Medicin" shipped with its truncation intact for exactly that
+        # reason: ROR missed at 0.70 because of the missing letter, Name 3
+        # resolved, and no model was ever asked about Name 1. Whether NAME 1
+        # is resolved is asked below, of Name 1.
+        if result.get("_ev_name_verdict") or result.get("_ev_name_suggestion"):
+            # A candidate has already been through the gate for this record.
+            return False
+        # `_canonical_proposal` is deliberately NOT a resolution. It records
+        # that the company-canonical model was ASKED and answered; whether the
+        # answer reached the field is a separate fact, and conflating the two
+        # is what left "VA MC West LA Visn 22" unresolved after a proposal had
+        # been made and dropped.
+        name1 = (result.get("_lane_inputs") or {}).get("name1")
+        if not name1:
+            return False
+        enriched = result.get("name1_enriched")
+        # Still holding what it arrived with — nothing rewrote it.
+        return not enriched or _same_name_text(enriched, name1)
+
+    @staticmethod
+    def _name_post_checks(result: dict[str, Any]) -> None:
+        """The two rules a settled name block must satisfy, on every path.
+
+        §3 — "post-checks on every return path". Both of these existed, and
+        one of them ran only on the main exit: eleven branches return straight
+        to finalisation, so a record that left early was never asked either
+        question. Placed here, in the choke point every return passes through,
+        the answer no longer depends on which branch produced the record.
+        """
+        # The dept-echoes-Name-1 rule is NOT here. It needs to see the slot a
+        # record KEPT, and a retained slot is only populated by the
+        # passthrough inside `finalise` — later than this. It runs there,
+        # beside the noise rule, for the same reason.
+
+        # 2. A Name 2 repair may not drop the UNIT word. "Baytown Refinery
+        #    Lab" and "Baytown Refinery" are different things — one is a
+        #    laboratory inside the other — and a canonicalisation that quietly
+        #    deletes the unit changes what the record points at while looking
+        #    like a tidy-up. The subject comparator cannot see this: it drops
+        #    unit words from both sides by design, which is right for "is this
+        #    the same unit" and wrong for "is this still a unit".
+        for slot in DEPT_SLOTS:
+            enriched = result.get(f"{slot}_enriched")
+            supplied = _slot_input_value(result, slot)
+            if not (enriched and supplied):
+                continue
+            # Only a REPAIR of the same unit is policed. When the slot was
+            # reassigned — the lab resolver moving a lab down and putting its
+            # parent department in Name 2 — the value is deliberately about
+            # something else, and "the unit word was dropped" is not a fault
+            # but the point. `subject_preserved` is what tells the two apart.
+            if not subject_preserved(supplied, enriched):
+                continue
+            lost = _dropped_unit_word(supplied, enriched)
+            if not lost:
+                continue
+            logger.info({
+                "record_id": result.get("record_id"),
+                "step": f"{slot}_unit_word_dropped_restored",
+                "supplied": supplied,
+                "proposed": enriched,
+                "unit_word": lost,
+            })
+            result.setdefault("_ev_name_suggestion", {})[slot] = enriched
+            _write(
+                result, f"{slot}_enriched", supplied.strip(),
+                deterministic_evidence(
+                    "name-post-check:unit-word-dropped",
+                    producer="input", tier=3,
+                    evidence_ref={"refused": enriched, "unit_word": lost},
+                ),
+            )
+
+    def _dept_slots_needing_search(
+        self, result: dict[str, Any],
+    ) -> list[str]:
+        """Department slots that hold a value nothing has resolved.
+
+        The Name 1 counterpart of this question is `_name1_unresolved`. A
+        department slot gets exactly one chance today — a local fuzzy match
+        against the children ROR publishes for the parent — and when that
+        misses, nothing else is offered the slot. That is correct for a unit
+        that really is a child ("Department of Chemistry" under MIT) and wrong
+        for one that is a separate organisation at the same address: Baylor
+        publishes two children, the Texas Heart Institute is not among them,
+        and the slot ended the record as "Texas Heart Inst" with an expanded
+        abbreviation and no search ever issued.
+
+        Excluded, deliberately, because a search would buy nothing:
+
+        * a slot a REGISTRY wrote — the child match already succeeded;
+        * a slot a lane has already dispositioned (`_ev_name_verdict`);
+        * an administrative desk. "Accounts Payable" has no page, no registry
+          entry and no institutional spelling, and spending a SERP call on one
+          is the cost this filter exists to avoid.
+        """
+        from utils.text_utils import is_admin_unit
+
+        registry_named = result.get("_registry_name_fields") or set()
+        dispositioned = result.get("_ev_name_verdict") or {}
+        out: list[str] = []
+        for slot in DEPT_SLOTS:
+            value = result.get(f"{slot}_enriched")
+            if not (value and str(value).strip()):
+                continue
+            if slot in registry_named or slot in dispositioned:
+                continue
+            if is_admin_unit(str(value)):
+                continue
+            out.append(slot)
+        return out
+
+    async def _dept_fallthrough(
+        self,
+        result: dict[str, Any],
+        record: EnrichmentRecord,
+        cache: BatchCache,
+    ) -> None:
+        """Search the open web for each unresolved department slot, then read it.
+
+        One SERP + fetch + LLM per slot, through the same grounded lane Name 1
+        uses and the same write gate, so a department resolved here is checked
+        exactly as a Name 1 is. Runs once per record.
+        """
+        if not self._settings.llm_fallback_authoritative:
+            return
+        if result.get("_dept_lane_ran"):
+            return
+        slots = self._dept_slots_needing_search(result)
+        if not slots:
+            return
+        result["_dept_lane_ran"] = True
+
+        name1 = result.get("name1_enriched") or ""
+        for slot in slots:
+            value = str(result.get(f"{slot}_enriched") or "").strip()
+            logger.info({
+                "record_id": record.record_id,
+                "step": "dept_fallthrough",
+                "field": slot,
+                "value": value,
+            })
+            try:
+                grounded = await run_grounded_resolver(
+                    record.record_id,
+                    name1=name1,
+                    name2=value,
+                    street=result.get("street1_original") or record.street,
+                    city=record.city,
+                    state=record.state,
+                    country=record.country,
+                    country_code=(
+                        result.get("_tier1_country_code")
+                        or country_to_iso_code(record.country)
+                    ),
+                    routing_type=result.get("routing_type") or "unknown",
+                    domain=result.get("domain"),
+                    name1_registry_ids=[
+                        i for i in (result.get("ror_id"), result.get("lei_id"))
+                        if i
+                    ],
+                    search_client=self._search_client,
+                    page_fetcher=self._page_fetcher,
+                    llm_client=self._llm_client,
+                    ror_client=self._ror_client,
+                    lei_client=self._lei_client,
+                    cache=cache,
+                    settings=self._settings,
+                )
+            except Exception:
+                logger.exception(
+                    "[%s] dept fall-through failed for %s",
+                    record.record_id, slot,
+                )
+                continue
+
+            # The lane answers in two ways, and this path only ever read one
+            # of them. A CONFIRMATION — the model was shown the evidence, was
+            # never told what the record said, and produced the record's own
+            # value back — establishes the canonical form; it arrives in
+            # `confirmed` with no proposal attached. `_apply_grounded` records
+            # it (`_ev_input_confirmed`, which is what stops the derived
+            # "left exactly as supplied" flag); this path fell straight
+            # through the `proposal is None` check below and recorded
+            # nothing, so a department the lane HAD established shipped
+            # `input:low` under "the canonical form could not be
+            # established" — Boston Children's "Harvard Medical School",
+            # confirmed against the web and flagged anyway.
+            #
+            # The lane reports every department under `name2`, whichever slot
+            # it was asked about; `slot` is the one this record's value lives
+            # in.
+            if grounded.confirmed.get("name2"):
+                result.setdefault("_ev_input_confirmed", set()).add(slot)
+                logger.info({
+                    "record_id": record.record_id,
+                    "step": "dept_input_confirmed",
+                    "field": slot,
+                    "value": grounded.confirmed["name2"],
+                })
+
+            proposal = grounded.name2
+            if proposal is None or not proposal.value:
+                continue
+
+            decision = name_gate.evaluate(
+                result, slot, proposal.value,
+                incumbent=value,
+                street=result.get("street1_original"),
+                country=result.get("country_region_key") or result.get("country"),
+                registry=proposal.registry,
+                from_registry=proposal.from_registry,
+                settings=self._settings,
+            )
+            if not decision.allow:
+                result.setdefault("_ev_name_suggestion", {})[slot] = (
+                    decision.suggestion or proposal.value
+                )
+                continue
+
+            if proposal.from_registry:
+                _write_registry_name(
+                    result, slot, proposal.value,
+                    registry=proposal.registry or "ROR",
+                    identifier=proposal.registry_id,
+                    rule_id="dept-fallthrough:registry-reverified",
+                    incumbent=value,
+                    variants=proposal.variants,
+                )
+                _dept_domain_from_registry(result, slot, proposal)
+            else:
+                _write(
+                    result, f"{slot}_enriched", proposal.value,
+                    llm_evidence(
+                        ("serp", "fetch", "llm_grounded")
+                        if proposal.evidence_index is not None
+                        else ("llm_grounded",),
+                        tier=3,
+                        prompt_version=GROUNDED_RESOLVER_PROMPT_VERSION,
+                        deployment=self._settings.openai_model,
+                        self_reported=proposal.self_reported,
+                        source_url=proposal.source_url,
+                        rule_id=f"dept-fallthrough:{slot}",
+                        extra={
+                            "input_value": value,
+                            "evidence_index": proposal.evidence_index,
+                        },
+                    ),
+                )
+            result.setdefault("_ev_name_verdict", {})[slot] = decision.verdict
+            counts = result.get("_name_counts")
+            if counts is not None:
+                counts["llm_name_written"] += 1
+
+    async def _grounded_fallthrough(
+        self,
+        result: dict[str, Any],
+        record: EnrichmentRecord,
+        cache: BatchCache,
+    ) -> None:
+        """Offer an unresolved record to the grounded lane before finalising.
+
+        The early returns this backstops are all of the form "this branch has
+        nothing more to contribute" — which was read as "the record is
+        finished". For a record whose Name 1 no registry matched, those are
+        different statements, and treating them as one is what put 37 records
+        into "left exactly as supplied" without a model ever being asked.
+
+        Runs at most once per record (`_lane_ran`), and only under
+        LLM_FALLBACK_AUTHORITATIVE, so the legacy A/B arm keeps the old
+        control flow exactly.
+        """
+        if not self._settings.llm_fallback_authoritative:
+            return
+        if result.get("_lane_ran") or not self._name1_unresolved(result):
+            return
+        result["_lane_ran"] = True
+
+        inputs = result.get("_lane_inputs") or {}
+        logger.info({
+            "record_id": record.record_id,
+            "step": "grounded_fallthrough",
+            "name1": inputs.get("name1"),
+            "reason": "early_return_left_name1_unresolved",
+        })
+        try:
+            grounded = await run_grounded_resolver(
+                record.record_id,
+                name1=inputs.get("name1"),
+                name2=inputs.get("name2"),
+                street=inputs.get("street1") or record.street,
+                city=record.city,
+                state=record.state,
+                country=record.country,
+                country_code=(
+                    result.get("_tier1_country_code")
+                    or country_to_iso_code(record.country)
+                ),
+                routing_type=result.get("routing_type") or "unknown",
+                domain=result.get("domain"),
+                name1_registry_ids=[
+                    i for i in (result.get("ror_id"), result.get("lei_id")) if i
+                ],
+                search_client=self._search_client,
+                page_fetcher=self._page_fetcher,
+                llm_client=self._llm_client,
+                ror_client=self._ror_client,
+                lei_client=self._lei_client,
+                cache=cache,
+                settings=self._settings,
+            )
+        except Exception:
+            logger.exception(
+                "[%s] grounded fall-through failed", record.record_id,
+            )
+            return
+
+        if grounded.degraded:
+            tier3_result: Tier3Result = await run_tier3(
+                record_id=record.record_id,
+                name1=inputs.get("name1"),
+                name2=inputs.get("name2"),
+                name3=inputs.get("name3"),
+                name4=inputs.get("name4"),
+                name5=inputs.get("name5"),
+                contact=inputs.get("contact"),
+                street=inputs.get("street1") or record.street,
+                city=record.city,
+                state=record.state,
+                zip_code=record.zip,
+                country=record.country,
+                llm_client=self._llm_client,
+            )
+            _apply_tier3(result, tier3_result, self._settings.openai_model)
+        else:
+            self._apply_grounded(result, grounded)
+
     async def _finalise_and_return(
         self,
         result: dict[str, Any],
@@ -4623,7 +5763,15 @@ class Orchestrator:
         cache: BatchCache,
     ) -> EnrichmentResult:
         """Resolve website (B/C if needed), probe for unit URL, run
-        address Stage 1, finalise, and return."""
+        address Stage 1, finalise, and return.
+
+        Also the §1d fall-through: a record arriving here with Name 1 still
+        unresolved has not yet been offered to the grounded lane, and is,
+        before it is finalised.
+        """
+        await self._grounded_fallthrough(result, record, cache)
+        await self._dept_fallthrough(result, record, cache)
+        self._name_post_checks(result)
         # Tier 1 retry FIRST: a registry hit here supplies both the id and a
         # domain with registry provenance, which must be in place before the
         # website paths propose a candidate and before finalise decides whether
@@ -5166,6 +6314,12 @@ class Orchestrator:
     ) -> EnrichmentResult:
         """Run the full tier-escalation pipeline for one record."""
         result = _init_result(record)
+        # The batch Settings, reachable by the module-level write helpers.
+        # `_write_registry_name` runs the §2 gate and has to know which
+        # acceptance policy is in force; it has no orchestrator in hand.
+        # Transient, popped with the other markers before the record ships.
+        result["_settings"] = self._settings
+        result["_name_counts"] = self._name_counts
         start = time.monotonic()
         # Fix B — so a frozen-cache miss five frames down can name the record
         # it left short of evidence. asyncio gives each concurrently-enriched
@@ -5268,6 +6422,8 @@ class Orchestrator:
                 street4=record.street4,
                 street5=record.street5,
                 house_number=record.house_number,
+                city=record.city,
+                region=record.state,
                 llm_person_verdicts=person_verdicts,
             )
 
@@ -5391,6 +6547,21 @@ class Orchestrator:
             pp_contact = pre.contact
             pp_street1 = pre.street1
 
+            # §1d. The preprocessed block, kept where `_finalise_and_return`
+            # can reach it. Eleven branches return straight to finalisation,
+            # and the ones that do so with Name 1 still unresolved used to end
+            # the record before any LLM had seen it — a UTSW-class record (no
+            # Name 2, no contact, ROR missed) exited at the research
+            # passthrough and no acceptance fix downstream could ever reach it.
+            # Rather than restructure eleven returns inside a deeply nested
+            # branch, the fall-through is applied once, at the choke point they
+            # all pass through.
+            result["_lane_inputs"] = {
+                "name1": pp_name1, "name2": pp_name2, "name3": pp_name3,
+                "name4": pp_name4, "name5": pp_name5,
+                "contact": pp_contact, "street1": pp_street1,
+            }
+
             # ── Person-only Name 1: discover the contact's affiliation ───
             # Name 1 held only a person's name (now moved to Contact), leaving
             # no organisation for the tiers to enrich. Fetching the contact's
@@ -5442,6 +6613,12 @@ class Orchestrator:
                 result["_ev_overflow"] = True
             if any("email-conflict" == f for f in pre.flags):
                 result["_ev_email_conflict"] = True
+            # A site qualifier preprocessing took off a name field whose place
+            # the record's own address contradicts. The name is already
+            # settled; this is the question the pipeline cannot answer and a
+            # steward can — see `flags.NAME_STATES_ANOTHER_SITE`.
+            if pre.site_conflict:
+                result["_ev_name_site_conflict"] = pre.site_conflict
 
             institution_domain: str | None = None
 
@@ -5504,6 +6681,46 @@ class Orchestrator:
                     "domain": ror_parent.get("domain"),
                 })
 
+                # A FUZZY match whose name the gate reads as a different
+                # organisation is demoted to a miss, here, before the branch
+                # is taken. ROR's query fallback returned "Economic Policy
+                # Institute" at score 1.00 for "Infineon Technologies EPI
+                # Svcs" — it had matched on the token "EPI" — and refusing
+                # only the NAME later would leave the record carrying that
+                # organisation's identifier, website and type verdict while
+                # displaying Infineon's name. The identifier is the half a
+                # downstream consumer follows, so the whole match goes or
+                # none of it does. Demoting rather than special-casing means
+                # the existing ROR-miss path handles the record exactly as it
+                # handles any other unmatched one.
+                if (
+                    ror_parent["matched"]
+                    and not _match_was_exact(
+                        result, "ROR", ror_parent.get("name_match_tier"),
+                    )
+                    and name_gate.evaluate(
+                        result, "name1", ror_parent.get("official_name"),
+                        incumbent=name1_cleaned,
+                        street=pp_street1 or record.street,
+                        country=record.country,
+                        registry="ROR",
+                        from_registry=True,
+                        settings=self._settings,
+                    ).reason == name_gate.REASON_DIFFERENT_ENTITY
+                ):
+                    logger.info({
+                        "record_id": record.record_id,
+                        "step": "tier1_ror_match_demoted_different_entity",
+                        "queried": name1_cleaned,
+                        "official_name": ror_parent.get("official_name"),
+                        "ror_id": ror_parent.get("ror_id"),
+                        "name_match_tier": ror_parent.get("name_match_tier"),
+                    })
+                    result.setdefault("_ev_name_suggestion", {})["name1"] = (
+                        ror_parent.get("official_name") or ""
+                    )
+                    ror_parent = dict(ror_parent, matched=False)
+
                 if ror_parent["matched"]:
                     # Write name1 enrichment IMMEDIATELY so later tier
                     # failures don't lose it.
@@ -5541,6 +6758,10 @@ class Orchestrator:
                         registry="ROR",
                         identifier=ror_parent["ror_id"],
                         rule_id="tier1-ror:parent-match",
+                        # ROR's own verdict on how it found this entity. A
+                        # `fuzzy` tier means the match IS a name guess, and
+                        # the gate checks it rather than deferring to it.
+                        match_tier=ror_parent.get("name_match_tier"),
                         # …with one exception, and it is not a second
                         # threshold: if the name the record already states is
                         # itself one of ROR's published names for this
@@ -6494,31 +7715,10 @@ class Orchestrator:
                             ),
                         )
 
-            # Rule: no department slot should echo name1_enriched. A unit
-            # value equal to the institution names nothing new, at whichever
-            # slot it landed.
-            _n1 = result.get("name1_enriched")
-            if _n1:
-                for _slot in DEPT_SLOTS:
-                    _val = result.get(f"{_slot}_enriched")
-                    if (
-                        _val
-                        and _val.strip().lower() == _n1.strip().lower()
-                    ):
-                        logger.info({
-                            "record_id": record.record_id,
-                            "step": f"{_slot}_equals_name1_dropped",
-                            "value": _val,
-                        })
-                        _write(
-                            result, f"{_slot}_enriched", None,
-                            deterministic_evidence(
-                                "dept-slot-echoes-name1:dropped",
-                                producer="pipeline", tier=3,
-                                evidence_ref={"dropped": _val},
-                            ),
-                        )
-
+            # The dept-echoes-Name-1 rule used to live here, on the main exit
+            # only. It is now one of `_name_post_checks`, run from
+            # `_finalise_and_return` — which every return path passes through,
+            # including the ten that leave before this line (§3).
             return await self._finalise_and_return(result, start, record, cache)
 
         except Exception as exc:

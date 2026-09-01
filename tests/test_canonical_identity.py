@@ -119,8 +119,17 @@ def test_spelling_variant_rejects_non_typos(original, canonical):
 
 
 def test_company_canonical_surfaces_typo_proposal_for_reverify():
-    """A high-confidence spelling correction the identity guard blocks must be
-    exposed via proposed_name so the orchestrator can re-verify it (GLEIF)."""
+    """A spelling correction is ACCEPTED and still surfaced for re-verification.
+
+    Changed deliberately by the name-acceptance rework (§1a/§1f). The old
+    contract refused "Bayr AG" → "Bayer AG" — a typo repair is not a prefix or
+    an acronym of the original, so the binary identity guard read it as a
+    different entity — and `proposed_name` existed only to let the orchestrator
+    recover it via GLEIF. Repairing a misspelling is now the model's stated
+    duty, so the name is written; `proposed_name` still travels, because the
+    GLEIF re-query is what attaches the LEI, and it runs as an upgrade on a
+    written value rather than as the veto it used to be.
+    """
     import asyncio
 
     class _FakeLLM:
@@ -133,9 +142,9 @@ def test_company_canonical_surfaces_typo_proposal_for_reverify():
         record_id="R2", name1="Bayr AG",
         city="Leverkusen", state=None, country="DE", llm_client=_FakeLLM(),
     ))
-    assert res.success is False            # identity guard still blocks it
-    assert res.name1_enriched is None
-    assert res.proposed_name == "Bayer AG"  # …but the proposal is surfaced
+    assert res.success is True              # the repair is written
+    assert res.name1_enriched == "Bayer AG"
+    assert res.proposed_name == "Bayer AG"  # …and still re-verifiable
     assert canonical_is_spelling_variant("Bayr AG", res.proposed_name) is True
 
 

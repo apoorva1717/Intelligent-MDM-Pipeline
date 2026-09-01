@@ -34,11 +34,20 @@ import re
 
 from utils.name_slots import NAME_SLOTS
 
-# The width one SAP name column is cut to. The columns themselves hold 35
-# characters (see `utils.text_utils`); the rewrite targets 32 so a value has
-# room for the trailing punctuation a downstream consumer may add without
-# spilling into the next column again.
-NAME_FIELD_WIDTH = int(os.getenv("NAME_FIELD_WIDTH", "32"))
+# The width one SAP name column holds. `api/models.py` declares no length on
+# the name fields, so the constraint is not stated anywhere in this codebase;
+# it is the source column's. SAP's address name components are CHAR(40)
+# (`ADRC-NAME1`), and the corpus agrees exactly — the longest Name 1 and the
+# longest Name 2 in the 99-record reference input are both 40 characters, the
+# signature of values written to the edge of a 40-wide column.
+#
+# It was 32: a 35-char assumption minus three characters of headroom for
+# punctuation "a downstream consumer may add". Both halves were wrong, and the
+# cost was paid on values that fit the real column perfectly well — "University
+# of California, Riverside" is 34 characters and shipped cut at 32, with
+# "Riverside" pushed into Name 2 as a fragment and the row still marked
+# `ror:verified`. A name is not split unless it genuinely does not fit (§3).
+NAME_FIELD_WIDTH = int(os.getenv("NAME_FIELD_WIDTH", "40"))
 
 
 def _norm(value: str | None) -> str:

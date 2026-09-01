@@ -28,6 +28,7 @@ from llm.prompts import (
 )
 from search.base import SearchClient
 from utils.cache import BatchCache, cached_serp
+from utils.domain_resolver import first_email
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,9 @@ def _clean(value: object) -> str | None:
 
 
 def _email_domain(email: str | None) -> str | None:
+    # The first address only. The Email column can carry two (see
+    # `PreprocessResult.add_email`), and the query is built from one domain.
+    email = first_email(email)
     if not email or "@" not in email:
         return None
     dom = email.rsplit("@", 1)[1].strip().lower().rstrip(".")

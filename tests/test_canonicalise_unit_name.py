@@ -21,7 +21,18 @@ from utils.text_utils import canonicalise_unit_name as c
     ("Biology Division", "Division of Biology"),
     ("Biomedical Engineering Dept", "Department of Biomedical Engineering"),
     ("Department of Chemistry", "Department of Chemistry"),
-    ("Cancer Research Center", "Center for Cancer Research"),
+    # Changed deliberately. The "<Subject> <Unit>" -> "<Unit> of <Subject>"
+    # inversion now applies only to Department / Division / Faculty, the unit
+    # words where the two forms are interchangeable. "Center", "Institute",
+    # "Laboratory", "College" and "School" NAME an organisation when they
+    # trail, and inverting them fabricated units nobody calls by that name:
+    # "Texas Heart Institute" shipped as "Institute of Texas Heart", the Salk
+    # Institute would have become the "Institute of Salk", and "Harvard
+    # Medical School" shipped as "School of Harvard Medical". A record that
+    # states one of those is stating a name, so it is left as supplied. See
+    # tests/test_named_school_not_inverted.py for the School half.
+    ("Cancer Research Center", "Cancer Research Center"),
+    ("Harvard Medical School", "Harvard Medical School"),
     # Truncated subjects → left unchanged (no fabricated "Department of X").
     ("Biomed Dept", "Biomed Dept"),
     ("Biomed Department", "Biomed Department"),

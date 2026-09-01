@@ -1102,7 +1102,12 @@ class TestNoRecordShipsTwoIdentities:
         assert result.lei_id == "LEI00BIC0000000000001"
         # GLEIF's "BIC CORPORATION", after UC 17's legal-suffix collapse and
         # output casing — the record's own identity, not Centene's.
-        assert result.name1_enriched == "BIC Corp"
+        # §3 — changed deliberately. GLEIF wrote this name, so the legal form
+        # it publishes is the authority on its own spelling; the house rule
+        # that shortened "Corporation" to "Corp" no longer runs on a field a
+        # registry or the gate settled. What this test is about — the record
+        # keeps ONE identity, GLEIF's, and ROR's is nulled — is unchanged.
+        assert result.name1_enriched == "BIC Corporation"
         assert result.ror_id is None
         assert result.domain is None
         assert SOURCE_CONFLICT in result.flag_codes
@@ -1205,8 +1210,17 @@ class TestTheRegistryLocationCheck:
         assert REGISTRY_LOCATION_MISMATCH not in result.flag_codes
 
 
-class TestTheFlagVocabularyGrewByExactlyTwo:
-    def test_only_the_two_authorised_codes_were_added(self):
+class TestTheFlagVocabularyIsClosed:
+    """Every code a record can carry, listed here and nowhere else.
+
+    A flag code is a promise to a reviewer about what a row means, so the
+    vocabulary only grows deliberately: adding one means editing this list and
+    saying, in the comment beside it, what the code is for. It was named
+    "grew by exactly two" for the Fix D work that added the first pair; the
+    guard is the same, and the list below is now the whole of it.
+    """
+
+    def test_no_code_was_added_without_being_authorised_here(self):
         from enrichment.flags import ALL_CODES
 
         assert set(ALL_CODES) == {
@@ -1214,8 +1228,14 @@ class TestTheFlagVocabularyGrewByExactlyTwo:
             "person-unresolved", "overflow", "opaque-code",
             "domain-unverified", "email-conflict", "name3-not-demoted",
             "multiple-contacts", "unverified-inference", "entity-superseded",
-            # The two this work authorised, and nothing else.
+            # The two Fix D authorised.
             "source-conflict", "registry-location-mismatch",
+            # The record contradicts ITSELF: a site qualifier on a name field
+            # ("Veracyte, Inc. - South San Francisco, CA") named a place the
+            # address block denies. Distinct from
+            # `registry-location-mismatch`, which is a disagreement with an
+            # outside register and is advisory for that reason.
+            "name-states-another-site",
             # `low-confidence-unchanged` was RETIRED by the provenance
             # migration — it said exactly what `input:low` on the field says,
             # and the flag is now derived from that. Its prose survives on the

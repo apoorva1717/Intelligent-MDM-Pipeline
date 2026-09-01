@@ -109,6 +109,15 @@ OPTIONAL_VARS_WITH_DEFAULTS = {
     "DOMAIN_NAME_MATCH_THRESHOLD": "82",
     "DOMAIN_OWNERSHIP_GUARD_ENABLED": "true",
     "FUZZY_MATCH_THRESHOLD": "80",
+    # The name-acceptance rework (§1). Off restores the legacy gates — the
+    # `confidence=="high"` floors, the binary identity guard, the
+    # established-nothing passthrough — so the thesis can A/B the two
+    # acceptance policies against one batch without two checkouts.
+    "LLM_FALLBACK_AUTHORITATIVE": "true",
+    # Whether an `undecidable` verdict WRITES (flagged `unverified-inference`,
+    # one steward click from a revert) or is held back as a suggestion. On is
+    # the policy the rework argues for; off narrows writes to `same` only.
+    "UNDECIDABLE_WRITES": "on",
     "MAX_PAGE_CONTENT_CHARS": "3000",
     "DEFAULT_MAX_CONCURRENCY": "5",
     # Golden-record election: a duplicate merge whose adjudication confidence is
@@ -224,6 +233,25 @@ class Settings:
     # Was: separate 0.8 for institutions, 0.9 for companies.
     ror_confidence_threshold: float = field(
         default_factory=lambda: float(os.getenv("ROR_CONFIDENCE_THRESHOLD", "0.8"))
+    )
+
+    # ── Name acceptance (§1) ────────────────────────────────────────────
+    # "Write unless disproven". When False every gate below reverts to the
+    # legacy "reject unless certain" behaviour, which is the A/B baseline.
+    llm_fallback_authoritative: bool = field(
+        default_factory=lambda: _bool(
+            os.getenv("LLM_FALLBACK_AUTHORITATIVE"), default=True,
+        )
+    )
+    # `undecidable` — unmatchable tokens, no contradiction — writes by
+    # default. Accepts on/off as well as true/false: the switch is described
+    # as `UNDECIDABLE_WRITES: on|off` wherever the policy is documented.
+    undecidable_writes: bool = field(
+        default_factory=lambda: _bool(
+            (os.getenv("UNDECIDABLE_WRITES") or "").replace("on", "true")
+            .replace("off", "false") or None,
+            default=True,
+        )
     )
 
     # GLEIF / LEI (Tier 1 company registry — the company counterpart to ROR)

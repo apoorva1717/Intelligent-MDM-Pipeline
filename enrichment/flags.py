@@ -107,6 +107,10 @@ OPAQUE_CODE = "opaque-code"
 #: that do NOT ship, of which the substantive one is a page read refuting the
 #: site outright.
 DOMAIN_UNVERIFIED = "domain-unverified"
+#: The record states more than one email address. BOTH ship, joined in the
+#: `email` column — they are both the record's own, and the pipeline has no
+#: basis for choosing between them. The flag asks a steward which one the mail
+#: is for; it does not report a value that was discarded, because none was.
 EMAIL_CONFLICT = "email-conflict"
 NAME3_NOT_DEMOTED = "name3-not-demoted"
 MULTIPLE_CONTACTS = "multiple-contacts"
@@ -135,6 +139,22 @@ SOURCE_CONFLICT = "source-conflict"
 #: different case entirely and never gets this far: Fix C(3) refuses that
 #: match in the registry client.)
 REGISTRY_LOCATION_MISMATCH = "registry-location-mismatch"
+#: The record states two different places. A site qualifier written into a
+#: name field — "Veracyte, Inc. - South San Francisco, CA" on a record
+#: addressed in Pine Brook, NJ — named a city or a state the record's own
+#: address block contradicts. Preprocessing takes the qualifier OFF the name
+#: whatever the verdict: it is not part of the organisation's name, and
+#: carrying it there is why no registry matches the field. Which of the two
+#: places this record is FOR is a different question and not one the pipeline
+#: can answer — one is a site someone typed into a name column, the other is
+#: where the mail goes, and only a steward knows which is stale.
+#:
+#: NOT advisory, unlike `registry-location-mismatch`. That code compares the
+#: record against an external register, where an incorporation address
+#: differing from an operating site is ordinary and means nothing about the
+#: record. This one compares the record against ITSELF, and a row stating two
+#: places disagrees with nobody but itself.
+NAME_STATES_ANOTHER_SITE = "name-states-another-site"
 
 #: Every code that can appear in `flag_codes`. `LOW_CONFIDENCE_UNCHANGED` is
 #: deliberately absent — see its definition above.
@@ -152,6 +172,7 @@ ALL_CODES: tuple[str, ...] = (
     ENTITY_SUPERSEDED,
     SOURCE_CONFLICT,
     REGISTRY_LOCATION_MISMATCH,
+    NAME_STATES_ANOTHER_SITE,
 )
 
 #: Codes that do NOT on their own put a record in the review queue.
@@ -209,6 +230,7 @@ _CODE_ORDER: tuple[str, ...] = (
     NO_MATCH,
     UNVERIFIED_INFERENCE,
     LOW_CONFIDENCE_UNCHANGED,
+    NAME_STATES_ANOTHER_SITE,
     REGISTRY_LOCATION_MISMATCH,
     DEPT_VIA_LAB,
     NAME3_NOT_DEMOTED,
@@ -250,9 +272,11 @@ _REASONS: dict[str, str] = {
         "the domain shown was found on the web but nothing independently "
         "tied it to this organisation — confirm it"
     ),
+    # No semicolon in the prose: `render` joins one code's clause to the next
+    # with "; ", and a semicolon inside a clause reads as a second code.
     EMAIL_CONFLICT: (
-        "an email found in the record differs from the one already on file "
-        "— confirm which address is correct"
+        "states more than one email address, all of them kept in this "
+        "column — confirm which one the mail should go to"
     ),
     NAME3_NOT_DEMOTED: (
         "the parent department was written to Name 2 but every slot below it "
@@ -281,6 +305,10 @@ _REASONS: dict[str, str] = {
         "the registry record matched to this organisation is registered at a "
         "different address — confirm the address, or that the organisation "
         "has moved"
+    ),
+    NAME_STATES_ANOTHER_SITE: (
+        "a name field named a site the address block contradicts — confirm "
+        "which location this record is for"
     ),
 }
 
@@ -322,6 +350,33 @@ _DETAILED_REASONS: dict[str, str] = {
         "different address ({detail}) — confirm the address, or that the "
         "organisation has moved"
     ),
+    # Both places, and which column each came from. A reviewer told only that
+    # the record contradicts itself has to go and find the second place — and
+    # it is no longer in the name field to find, because preprocessing took it
+    # out. Naming it is the whole value of the flag.
+    NAME_STATES_ANOTHER_SITE: (
+        "a name field named a site the address block contradicts ({detail}) "
+        "— confirm which location this record is for"
+    ),
+    # The department was DERIVED rather than stated — from a lab's page, or
+    # from the affiliation of the person in the Contact column. The record
+    # never named a unit, so what ships is an inference about someone or
+    # something else that the record happens to mention, and a steward should
+    # confirm it is the unit this customer's mail belongs to.
+    DEPT_VIA_LAB: (
+        "the department was inferred from {detail}, not read from a stated "
+        "department — confirm it is the right unit for this record"
+    ),
+    # §1f. The pipeline WROTE a canonical form it could not fully reconcile
+    # with the record's own text — an `undecidable` verdict: nothing
+    # contradicted the answer, but the record stated codes the canonical name
+    # does not repeat. Naming the previous value is what makes the flag
+    # actionable: the reviewer either accepts the rewrite or restores the
+    # named string, without leaving the queue to find out what it was.
+    UNVERIFIED_INFERENCE: (
+        "was rewritten from evidence that does not fully account for the "
+        "value supplied ({detail}) — confirm the rewrite or restore it"
+    ),
 }
 
 # The `flagged_fields` vocabulary, and how each renders in the reason prose.
@@ -343,10 +398,25 @@ _EVIDENCE_KEYS: tuple[str, ...] = (
     "_ev_overflow",
     "_ev_person_unresolved",
     "_ev_dept_via_lab",
+    "_ev_dept_via_person",
     "_ev_name3_not_demoted",
     "_ev_demoted_to",
     "_ev_low_conf_unchanged",
     "_ev_tier3_wrote",
+    # §1 — the name-acceptance markers. Transient like every key here: read
+    # by the rules below and dropped before pydantic ever sees the record.
+    "_ev_pure_repair",
+    "_ev_name_was",
+    "_ev_name_verdict",
+    "_ev_name_suggestion",
+    "_ev_llm_returned_null",
+    "_ev_input_confirmed",
+    "_ev_registry_name_refused",
+    "_settings",
+    "_name_counts",
+    "_lane_inputs",
+    "_lane_ran",
+    "_dept_lane_ran",
     "_ev_email_conflict",
     "_has_dept_signal",
     "_multi_contact",
@@ -358,6 +428,9 @@ _EVIDENCE_KEYS: tuple[str, ...] = (
     "_ev_source_conflict",
     "_ev_source_conflict_fields",
     "_ev_registry_location_mismatch",
+    # Left by preprocessing: a site qualifier it took off a name field whose
+    # place the record's own address contradicts.
+    "_ev_name_site_conflict",
     # Fix 3 — the OPPOSITE finding: two registries named one organisation.
     # Popped here with the rest so it cannot reach the response model; it
     # raises no flag (an agreement is not a triage signal), and the finding
@@ -555,8 +628,22 @@ def low_confidence_core_fields(result: Any) -> list[str]:
             return result.get(field)
         return getattr(result, field, None)
 
+    # §1f. The phrase this list renders — "left exactly as supplied … the
+    # canonical form could not be established" — is a statement about what
+    # HAPPENED, and it must never sit on a record whose value the pipeline
+    # rewrote. It no longer needs a gate of its own to say so: after §1a/§1d a
+    # name the model resolved carries `llm:provisional` (or a registry's
+    # provenance) rather than `input:low`, so it cannot appear in this list,
+    # and a record that reaches finalisation still on `input:low` is one no
+    # source answered. The one case the derivation cannot see on its own —
+    # the model answered and the GATE refused — is reported separately, by
+    # `unverified-inference` with the candidate named in its detail.
     low: list[str] = []
     for field in CORE_PROVENANCE_FIELDS:
+        if _value(f"{field}_changed"):
+            # Defensive, and cheap: a changed value can never be "left exactly
+            # as supplied", whatever the provenance says.
+            continue
         # An empty field has no value to doubt. Rule 3 of this module:
         # absence of data is not a defect.
         if not _value(field):
@@ -851,9 +938,21 @@ def compute_flags(result: dict[str, Any]) -> None:
     # UC 10. Preprocessing clears an opaque code out of Name 2..N, but never
     # out of Name 1 — a Name 1 that is only a code leaves the pipeline with
     # no name at all, and a reviewer has to supply one.
-    name1 = result.get("name1_enriched")
-    if name1 and _is_opaque_code(str(name1)):
-        raise_flag(OPAQUE_CODE, "name1")
+    # Every name slot, not only Name 1. A code in Name 2 is the same defect
+    # seen one column over, and it had no code of its own: preprocessing is
+    # supposed to clear it, and where it does not the field fell through to
+    # the generic derived doubt — "the canonical form could not be
+    # established with enough confidence to rewrite it", about a customer
+    # reference number, which has no canonical form to establish. The value
+    # is KEPT (a reference number may be something the business needs); what
+    # changes is that the flag now names the actual problem and asks for the
+    # one thing that would fix it.
+    opaque_fields: set[str] = set()
+    for slot in NAME_SLOTS:
+        value = result.get(f"{slot}_enriched")
+        if value and _is_opaque_code(str(value)):
+            opaque_fields.add(slot)
+            raise_flag(OPAQUE_CODE, slot)
 
     if evidence.get("_ev_person_unresolved"):
         raise_flag(PERSON_UNRESOLVED, "name1")
@@ -888,6 +987,15 @@ def compute_flags(result: dict[str, Any]) -> None:
     if location_mismatch:
         raise_flag(REGISTRY_LOCATION_MISMATCH, "address")
         details[REGISTRY_LOCATION_MISMATCH] = str(location_mismatch)
+
+    # The record's own two statements about where it is. Scoped to the address
+    # and not to the name slot the site came out of: the name is settled (the
+    # qualifier was never part of it), and the address is the column a
+    # reviewer has to decide about.
+    site_conflict = evidence.get("_ev_name_site_conflict")
+    if site_conflict:
+        raise_flag(NAME_STATES_ANOTHER_SITE, "address")
+        details[NAME_STATES_ANOTHER_SITE] = str(site_conflict)
 
     # ── Field-level uncertainty ───────────────────────────────────────────
     # A value Tier 3 wrote rests on the LLM's training data and nothing else.
@@ -954,7 +1062,24 @@ def compute_flags(result: dict[str, Any]) -> None:
         # unchanged instead.
         if not result.get(f"{field}_changed"):
             continue
+        # §1f. Expanding the record's own abbreviations, completing a value the
+        # SAP field cut off mid-word, or correcting a misspelling is a repair
+        # of the text, not a claim about which entity this is — the model was
+        # asked to do exactly that. Flagging it teaches reviewers to clear the
+        # code unread, which is what costs the substantive ones their meaning.
+        if field in (evidence.get("_ev_pure_repair") or ()):
+            continue
         inferred.add(field)
+        # The value the record arrived with, but only where the rewrite was
+        # `undecidable` — the case §1f introduces, in which the pipeline wrote
+        # a name it could not fully reconcile with the record's own text. An
+        # ordinary evidence-free inference keeps the prose it already had.
+        was = (evidence.get("_ev_name_was") or {}).get(field)
+        verdicts = evidence.get("_ev_name_verdict") or {}
+        if was and verdicts.get(field) == "undecidable" and (
+            UNVERIFIED_INFERENCE not in details
+        ):
+            details[UNVERIFIED_INFERENCE] = f"was '{was}'"
         raise_flag(UNVERIFIED_INFERENCE, field)
 
     # `low-confidence-unchanged` was raised here as a CODE. Retired: the state
@@ -996,6 +1121,15 @@ def compute_flags(result: dict[str, Any]) -> None:
     demoted_to = evidence.get("_ev_demoted_to") or "name3"
     if evidence.get("_ev_dept_via_lab"):
         raise_flag(DEPT_VIA_LAB, "name2", demoted_to)
+    if evidence.get("_ev_dept_via_person"):
+        # Same code, same reviewer question — "is this the right unit for this
+        # record?" — reached from the other direction. The detail names the
+        # source so the sentence is true of the record it sits on; the lab
+        # case supplies no detail and keeps its existing prose exactly.
+        details.setdefault(
+            DEPT_VIA_LAB, "the contact's own affiliation",
+        )
+        raise_flag(DEPT_VIA_LAB, "name2")
     if evidence.get("_ev_name3_not_demoted"):
         raise_flag(NAME3_NOT_DEMOTED, *DEPT_SLOTS)
 
@@ -1042,8 +1176,46 @@ def compute_flags(result: dict[str, Any]) -> None:
     # measured, not hypothesised. The two statements are not interchangeable:
     # the pipeline established that the record's own value stands, and
     # `no-match` denies that anything was established at all.
+    # §1f — "left exactly as supplied" can never sit on a value the pipeline
+    # rewrote. The derived half already refuses that (see
+    # `low_confidence_core_fields`); `marker_low` is the OTHER half, raised by
+    # a tier leaving `_ev_low_conf_unchanged` behind, and it never knew what
+    # finalisation went on to do with the field. Measured on the reference
+    # batch, 15 of 21 Name 2 flags sat on a value that had changed — one of
+    # them on a slot that arrived EMPTY and shipped "Lot 20 Princeton
+    # Neuroscience", reported as left exactly as supplied. The filter is
+    # applied to the union so both halves answer to the same fact.
+    pure_repair = evidence.get("_ev_pure_repair") or ()
+    confirmed = evidence.get("_ev_input_confirmed") or ()
+
+    def _still_as_supplied(field: str) -> bool:
+        """True when the sentence is a true description of this field.
+
+        Two ways it stops being true. The field was REWRITTEN — a lane put
+        something else there, so the record does not ship what was supplied
+        (one slot in the reference batch arrived empty and shipped "Lot 20
+        Princeton Neuroscience" under this sentence). Or the value was
+        CONFIRMED — a model, shown web evidence and never told what the record
+        said, produced the record's own value back, which establishes the
+        canonical form rather than failing to.
+
+        An abbreviation the pipeline expanded is neither. "Oncology Lab" ->
+        "Oncology Laboratory" is a deterministic spelling rule, not an
+        institution's canonical wording, so the doubt it carries is unchanged
+        and the flag stands.
+        """
+        if field in confirmed:
+            return False
+        changed = result.get(f"{field}_changed") if hasattr(result, "get") else None
+        if not changed:
+            return True
+        return field in pure_repair
+
     low_confidence = _sorted_fields(
-        set(low_confidence_core_fields(result)) | marker_low,
+        {
+            f for f in (set(low_confidence_core_fields(result)) | marker_low)
+            if _still_as_supplied(f) and f not in opaque_fields
+        },
     )
     if not codes and not low_confidence and _nothing_was_enriched(result):
         raise_flag(NO_MATCH, "name1")

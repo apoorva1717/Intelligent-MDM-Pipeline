@@ -316,6 +316,66 @@ _KEEP_UPPER_ACRONYMS = {
 _KEEP_UPPER_ACRONYMS |= set(PARENT_ORG_ACRONYMS)
 _VOWELS = set("AEIOU")
 
+# Short English words that occur in organisation names. The casing rule below
+# needs to tell "GAS" (a word) from "RECG" (a code), and length alone cannot:
+# both are short, both are all-caps in an ALL-CAPS field. Before this list the
+# rule guessed from shape — length, vowels, pronounceability — and guessed
+# wrongly in both directions, title-casing "IDEXX" into "Idexx" and leaving
+# "SOUTHWEST GAS" as "Southwest GAS".
+#
+# Deliberately a wordlist and not a dictionary: the question is not "is this
+# an English word" but "does this word appear in organisation names", and a
+# full dictionary answers the first at the cost of the second — "ipso", "avid"
+# and "iota" are dictionary words and are also company names.
+_SHORT_ORG_WORDS = {
+    # Materials, utilities, industry
+    "gas", "oil", "coal", "steel", "iron", "gold", "zinc", "lead", "wood",
+    "pulp", "paper", "glass", "brick", "sand", "salt", "lime", "clay",
+    "water", "power", "solar", "wind", "grid", "fuel", "auto", "tire",
+    "tyre", "rail", "road", "port", "dock", "farm", "food", "meat", "milk",
+    "corn", "rice", "seed", "crop", "fish", "wine", "beer", "malt",
+    # Science, health, education
+    "gene", "cell", "bone", "skin", "eye", "ear", "lung", "brain", "heart",
+    "blood", "drug", "care", "aid", "med", "labs", "data", "tech", "web",
+    "arts", "art", "law", "math", "phys", "chem", "bio", "eco", "soil",
+    "star", "space", "earth", "ocean", "river", "lake", "hill", "rock",
+    # Business, structure, place
+    "bank", "fund", "trust", "trade", "shop", "store", "mall", "works",
+    "plant", "mill", "yard", "shed", "hall", "home", "house", "park",
+    "field", "green", "grove", "ridge", "creek", "brook", "bend", "cove",
+    "point", "cape", "isle", "bay", "gulf", "peak", "vale", "glen",
+    "north", "south", "east", "west", "main", "high", "low", "old", "new",
+    "first", "great", "grand", "royal", "prime", "core", "edge", "apex",
+    "unit", "team", "crew", "line", "link", "path", "way", "gate", "key",
+    "sun", "moon", "sky", "fire", "ice", "snow", "rain", "wind", "wave",
+    "life", "mind", "body", "hope", "peace", "youth", "child", "kids",
+    "women", "men", "boys", "girls", "baby", "home", "one", "two", "six",
+    "ten", "five", "four", "nine", "best", "true", "safe", "pure", "fine",
+    # Organisational structure words that are themselves short. "GROUP" is a
+    # word wherever it appears; leaving it upper because it is five characters
+    # would ship "RECG GROUP" for a record whose only acronym is the first
+    # token.
+    "group", "corp", "dept", "labs", "lab", "works", "plant", "mills",
+    "foods", "parts", "tools", "metal", "media", "press", "hotel", "club",
+    "svcs", "mfg", "intl", "natl", "assoc", "inst", "univ", "ctr", "hosp",
+    "org", "co", "and", "of", "the", "for", "at", "in", "on",
+    # Four-letter words that really are words, so the acronym rule above does
+    # not shout them.
+    "sons", "labs", "arts", "eyes", "care", "home", "park", "bank", "food",
+    "gold", "iron", "mill", "hall", "east", "west", "main", "high", "line",
+    "team", "unit", "wine", "beer", "fish", "farm", "seed", "auto", "rail",
+    "port", "dock", "road", "fuel", "tire", "wood", "pulp", "clay", "lime",
+    "sand", "salt", "zinc", "lead", "coal", "star", "moon", "wave", "life",
+    "mind", "body", "hope", "kids", "baby", "true", "safe", "pure", "fine",
+    "best", "peak", "isle", "cove", "bend", "glen", "vale", "gate", "path",
+    "link", "edge", "core", "apex", "crew", "yard", "shed", "shop", "mall",
+    "fund", "gene", "cell", "bone", "lung", "drug", "data", "tech", "math",
+    "soil", "corn", "rice", "crop", "malt", "meat", "milk", "gulf", "cape",
+}
+# The forced-title short tokens are words by the same test, so one list can
+# answer for both rather than two that may disagree.
+_SHORT_ORG_WORDS |= {w.lower() for w in _FORCE_TITLE_SHORT}
+
 # Consonant clusters that can BEGIN an English syllable. Used by the
 # pronounceability test below; "Y" counts as a vowel throughout, which makes
 # the test conservative ("XYLOS", "MYRRH" read as words, not acronyms).
@@ -407,10 +467,30 @@ def _case_segment(seg: str) -> str:
         return _mc_name(seg.capitalize())
     if upper in _KEEP_UPPER_ACRONYMS:
         return seg
+    # §3 — a KNOWN word is cased as a word, whatever its length. This is the
+    # half of the rule that shape cannot supply: "GAS" is three characters, so
+    # every length heuristic reads it as an acronym and "SOUTHWEST GAS" ships
+    # with one word title-cased and one shouting. Consulted before the length
+    # rules below precisely so that length no longer decides it.
+    if letters.lower() in _SHORT_ORG_WORDS:
+        return _mc_name(seg.capitalize())
+    # Unknown and short: keep the case the record supplied. Guessing a shape
+    # for a token this function does not know is what turns "UTSW" into
+    # "Utsw"; an acronym that survives unchanged costs a reviewer nothing,
+    # and a mangled one costs the record its identity.
     if len(letters) <= 3:
         return seg  # short → assume acronym: IBM, MRI, LLC, USA, HCA
+    if len(letters) == 4 and not (set(upper[-2:]) & _VOWELS):
+        # §3 — a four-letter token the wordlist does not know, ending in two
+        # consonants, is an acronym rather than a word: "UTSW", "VAMC",
+        # "RECG", "VISN". A four-letter WORD carries a vowel in its final
+        # pair — "Ames", "Sven", "Labs" — which is what separates the two
+        # without asking length to decide something length cannot see.
+        # Mangling an acronym costs the record its identity; leaving an
+        # unknown four-letter token as supplied costs a reviewer nothing.
+        return seg
     if len(letters) <= 5 and not (set(upper) & _VOWELS):
-        return seg  # no-vowel 4-5 char acronym: MGMT, PLLC
+        return seg  # no-vowel 5-char acronym: PLLC
     if _unpronounceable(upper):
         # Vowel-bearing but unsayable: "MLRA", "NRLF". Before this rule an
         # ALL-CAPS field lower-cased every acronym that was not in the
@@ -465,7 +545,7 @@ def smart_title_case(value: str | None) -> str | None:
 _BRACKETED_SPAN_RE = re.compile(r"\s*[(\[{][^(){}\[\]]*[)\]}]\s*")
 
 # An opening bracket with no closing partner, to end of string. SAP name
-# columns are 35 characters, so "Bayer (Leverkusen Werk" — a truncated
+# columns are 40 characters (SAP `ADRC-NAME1`), so "Bayer (Leverkusen Werk" — a truncated
 # disambiguator — is as common as the closed form.
 _UNCLOSED_BRACKET_RE = re.compile(r"\s*[(\[{][^(){}\[\]]*$")
 
@@ -1003,6 +1083,34 @@ def ordered_unit_word(text: str | None) -> str | None:
     return None
 
 
+#: Unit words whose trailing form is INTERCHANGEABLE with "<Unit> of <Subject>".
+#: "Chemistry Department" and "Department of Chemistry" are one unit written
+#: two ways, so normalising to one of them loses nothing.
+#:
+#: The unit words deliberately absent — Institute, Laboratory, Center, Centre,
+#: College, School — are the ones that NAME an organisation when they trail:
+#: the Salk Institute is not the "Institute of Salk", and the Texas Heart
+#: Institute is not the "Institute of Texas Heart". A record stating one of
+#: those is stating a name, and the canonical form is the one it supplied.
+#:
+#: School joined them last, and for the same reason read off the corpus: a
+#: trailing "School" is far more often the last word of a name than a unit
+#: word after its subject. "Harvard Medical School" shipped as "School of
+#: Harvard Medical" — which nobody calls it, which no registry lists, and
+#: which the record still carried the `input:low` provenance of, because the
+#: inversion runs in finalise as a `transform`. "Wharton School", "Stanford
+#: Law School" and "London Business School" invert into the same nonsense.
+#: What is given up is "Nursing School" → "School of Nursing", where the two
+#: forms genuinely are interchangeable; there is no test that separates that
+#: case from "Wharton School" on the text alone, and between fabricating a
+#: name and leaving the record's own wording, the module's rule everywhere
+#: else is to leave it. An already-canonical "School of X" is still normalised
+#: by the prefix pass, which is a casing fix and not an invention.
+_INVERTIBLE_UNITS: frozenset[str] = frozenset(
+    {"Department", "Division", "Faculty"},
+)
+
+
 #: Rank of each ordered unit word — lower sits in the higher (earlier) slot.
 UNIT_SLOT_RANK: dict[str, int] = {
     word: index for index, word in enumerate(_ORDERED_UNIT_WORDS)
@@ -1029,7 +1137,7 @@ def canonicalise_unit_name(text: str | None) -> str | None:
         "Dept of Chemistry"              → "Department of Chemistry"
         "Radiology Dept"                 → "Department of Radiology"
         "Biology Division"               → "Division of Biology"
-        "Medicine School"                → "School of Medicine"
+        "School of Medicine"             → "School of Medicine"
         "Cancer Research Center"         → "Center for Cancer Research"
 
     Rules:
@@ -1058,6 +1166,15 @@ def canonicalise_unit_name(text: str | None) -> str | None:
             return prefix_re.sub(f"{unit} {connector} ", cleaned, count=1)
 
     for unit, connector in _UNIT_CANONICAL_FORMS:
+        if unit not in _INVERTIBLE_UNITS:
+            # "Salk Institute", "Greenberg Laboratory", "Texas Heart
+            # Institute", "Baylor College" — here the trailing word is part of
+            # the organisation's NAME, and inverting it fabricates something
+            # nobody calls it ("Institute of Texas Heart"). Only the unit
+            # words below genuinely carry the "<Unit> of <Subject>" convention.
+            # The prefix pass above still normalises an already-canonical
+            # "Institute of X", which is a casing fix, not an invention.
+            continue
         # Suffix form: "X Department", "X Division", ...
         suffix_re = re.compile(
             rf"^(.+?)\s+{unit}\b\.?$",

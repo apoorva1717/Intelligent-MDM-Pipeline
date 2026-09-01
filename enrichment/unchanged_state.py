@@ -92,8 +92,49 @@ INPUT_PRODUCER = "input"
 #: ``unguarded`` is excluded because the guard was switched off, so nothing was
 #: checked at all.
 NAME_TYING_OWNERSHIP_CONDITIONS: frozenset[str] = frozenset(
+    # `name` — the domain's own label matches Name 1 above the ownership
+    # threshold. `registry` — a registry published this website for this
+    # entity. Both tie the DOMAIN to the NAME, which is what this state
+    # asserts.
+    #
+    # `serp` — a search result for this organisation was found ON that host.
+    # Usually a real tie (`aixelo.com` for "Aixelo Inc"), but it is also true
+    # of every regulator, court record, directory and news site that MENTIONS
+    # a company, because those pages carry the company's name in their title
+    # too. An NLRB case page naming ExxonMobil made `nlrb.gov` the domain for
+    # an ExxonMobil record and then verified its Name 1, removing the review
+    # flag from a record whose domain the pipeline itself rated
+    # `web:nlrb.gov:provisional`. It is kept, and qualified below by
+    # `_serp_label_relates`.
     {"name", "serp", "registry"},
 )
+
+#: How closely a `serp`-accepted domain's LABEL must resemble Name 1 before
+#: that acceptance counts as tying the domain to the name.
+#:
+#: Far below the ownership threshold (82) on purpose — this is not a second
+#: ownership test, it is the one signal that separates an organisation's OWN
+#: site from a page ABOUT it. Both carry the name in a title; only the former
+#: also carries it in the host. "aixelo" against "Aixelo Inc" scores ~100 and
+#: still verifies; "nlrb" against "Exxonmobil Research & Engineering Co"
+#: scores 15.8 and no longer does.
+SERP_LABEL_RELATION_MIN = 60.0
+
+
+def _serp_label_relates(result: Any) -> bool:
+    """True when a `serp`-accepted domain's label resembles Name 1 at all."""
+    from rapidfuzz import fuzz
+
+    from utils.domain_resolver import domain_label
+
+    label = domain_label(result.get("domain"))
+    name1 = (result.get("name1_enriched") or "").strip()
+    if not label or not name1:
+        return False
+    return (
+        fuzz.token_set_ratio(name1.lower(), label.lower())
+        >= SERP_LABEL_RELATION_MIN
+    )
 
 
 @dataclass(frozen=True)
@@ -172,6 +213,8 @@ def resolve(result: Any) -> UnchangedOutcome | None:
         )
 
     verified_by = result.get("domain_verified_by")
+    if verified_by == "serp" and not _serp_label_relates(result):
+        verified_by = None
     if result.get("domain") and verified_by in NAME_TYING_OWNERSHIP_CONDITIONS:
         return UnchangedOutcome(
             UNCHANGED_VERIFIED, f"domain:{verified_by}", result["domain"],

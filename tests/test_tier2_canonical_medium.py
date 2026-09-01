@@ -100,6 +100,18 @@ class TestMediumConfidenceGate:
 
     @pytest.mark.asyncio
     async def test_unverified_medium_is_still_rejected(self):
+        """The subject swap is still refused — at the gate, not in the tier.
+
+        Changed deliberately (§1a/§2). The tier no longer decides: it returns
+        what the model said, and `enrichment.name_gate` asks the one identity
+        question, once, at the write point. The protection this test exists for
+        is unchanged and is asserted where it now lives — "Office of
+        Purchasing" is not "Procurement Services", and the proposal reaches the
+        reviewer in the flag detail instead of vanishing.
+        """
+        from enrichment.name_gate import evaluate, REASON_DIFFERENT_ENTITY
+        from utils.name_identity import DIFFERENT
+
         llm = _FakeLLM({
             "official_name": "Procurement Services",
             "confidence": "medium",
@@ -109,13 +121,28 @@ class TestMediumConfidenceGate:
             record_id="x", institution="Ohio State University",
             name2="Office of Purchasing", llm_client=llm,
         )
-        assert r.success is False
-        assert r.name2_enriched is None
+        assert r.success is True
+        decision = evaluate(
+            {"record_id": "x"}, "name2", r.name2_enriched,
+            incumbent="Office of Purchasing",
+        )
+        assert decision.allow is False
+        assert decision.verdict == DIFFERENT
+        assert decision.reason == REASON_DIFFERENT_ENTITY
+        assert decision.suggestion == "Procurement Services"
 
     @pytest.mark.asyncio
     async def test_low_confidence_is_never_kept(self):
-        """The relaxation is medium-only: a low answer that would pass the
-        re-wording check is still rejected."""
+        """A low-confidence answer is now KEPT — changed deliberately (§1a).
+
+        The old contract made confidence a write gate, so this answer was
+        discarded and the record shipped "Marine Biology, OCSB" under a flag
+        saying the canonical form could not be established. The model was in
+        fact right; it was only unsure of Texas A&M's exact unit wording, which
+        is a statement about wording, not about which unit. Confidence now
+        travels as `self_reported` provenance and decides how selectively the
+        record is flagged. Identity decides the write, at the gate.
+        """
         llm = _FakeLLM({
             "official_name": "Department of Marine Biology",
             "confidence": "low",
@@ -124,6 +151,23 @@ class TestMediumConfidenceGate:
         r = await run_tier2_canonical(
             record_id="x", institution="Texas A&M University at Galveston",
             name2="Marine Biology, OCSB", llm_client=llm,
+        )
+        assert r.success is True
+        assert r.name2_enriched == "Department of Marine Biology"
+        assert r.confidence == "low"   # …and the doubt is still recorded
+
+    @pytest.mark.asyncio
+    async def test_low_confidence_is_rejected_under_the_legacy_flag(self):
+        """LLM_FALLBACK_AUTHORITATIVE off restores the discard — the A/B arm."""
+        llm = _FakeLLM({
+            "official_name": "Department of Marine Biology",
+            "confidence": "low",
+            "reasoning": "",
+        })
+        r = await run_tier2_canonical(
+            record_id="x", institution="Texas A&M University at Galveston",
+            name2="Marine Biology, OCSB", llm_client=llm,
+            authoritative=False,
         )
         assert r.success is False
 

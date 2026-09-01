@@ -113,13 +113,31 @@ class TestFinaliseCanonicalisesWhatCameFromAStreet:
         assert r["name2_enriched"] == "Center for Def Scnce Studies"
 
     def test_a_suffix_form_is_reordered(self):
-        # The canonicaliser's full job, not just the connector's casing.
+        """The canonicaliser's full job — for the units that really invert.
+
+        Changed deliberately. "Center", like "Institute", "Laboratory" and
+        "College", NAMES an organisation when it trails, so reordering it
+        fabricates a unit nobody uses: "Texas Heart Institute" shipped as
+        "Institute of Texas Heart". Reordering is now scoped to Department /
+        Division / School / Faculty, where the two forms are interchangeable.
+        A street-sourced value is still canonicalised — this asserts the same
+        rule on a unit word that genuinely carries it.
+        """
+        r = _finalised(
+            {"name1": "Stanford University", "name2": None},
+            {"name1": "Stanford University", "name2": "CHEMISTRY DEPARTMENT"},
+            from_street={"name2": "CHEMISTRY DEPARTMENT"},
+        )
+        assert r["name2_enriched"] == "Department of Chemistry"
+
+    def test_an_entity_naming_unit_word_is_not_reordered(self):
+        """The other half of the same rule: a trailing "Center" is a name."""
         r = _finalised(
             {"name1": "Stanford University", "name2": None},
             {"name1": "Stanford University", "name2": "CANCER RESEARCH CENTER"},
             from_street={"name2": "CANCER RESEARCH CENTER"},
         )
-        assert r["name2_enriched"] == "Center for Cancer Research"
+        assert r["name2_enriched"] == "Cancer Research Center"
 
     def test_a_granular_unit_supplied_in_the_name_block_is_still_verbatim(self):
         # UC 5, unchanged: nobody may reword a unit someone typed.

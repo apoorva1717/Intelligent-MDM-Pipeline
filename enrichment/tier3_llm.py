@@ -85,12 +85,14 @@ async def run_tier3(
     llm_client: OpenAIClient,
     name4: str | None = None,
     name5: str | None = None,
+    authoritative: bool = True,
 ) -> Tier3Result:
     """Execute Tier 3 LLM inference.
 
     Decision points:
-    - High/medium confidence: write suggestions, status=unresolved
-    - Low confidence: do NOT overwrite originals, status=unresolved
+    - Every confidence band produces suggestions, status=unresolved; what the
+      model returned is recorded and the write is decided on identity.
+    - ``authoritative=False`` restores the legacy high/medium-only behaviour.
 
     Tier 3 raises no review flag of its own. It reports what it inferred and
     how confident it was; ``enrichment.flags`` decides what that means once
@@ -125,7 +127,13 @@ async def run_tier3(
     llm_confidence = extraction.get("confidence", "low")
     result.confidence = llm_confidence
 
-    if llm_confidence in ("high", "medium"):
+    # Confidence is not a write gate (§1a). A `low` answer is still the
+    # model's best reading of the record, and discarding it here is what put
+    # "left exactly as supplied" on records the model had in fact resolved.
+    # It is recorded as `self_reported` provenance and decides how selectively
+    # the record is flagged; identity — not confidence — decides the write,
+    # in `enrichment.name_gate`.
+    if authoritative or llm_confidence in ("high", "medium"):
         result.success = True
         # FIX(Bug 5): never assign empty string to suggestion fields
         n1 = extraction.get("name1_suggestion")
@@ -167,7 +175,8 @@ async def run_tier3(
             llm_confidence,
         )
     else:
-        # Low confidence — do NOT overwrite originals
+        # Legacy acceptance policy (LLM_FALLBACK_AUTHORITATIVE off) — the A/B
+        # baseline, in which a low-confidence answer never reached the field.
         result.success = False
         result.enrichment_status = "unresolved"
         logger.info("[%s] Tier 3: low confidence, not overwriting", record_id)

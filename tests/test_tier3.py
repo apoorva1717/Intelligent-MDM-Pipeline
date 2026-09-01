@@ -39,7 +39,14 @@ class TestTier3:
 
     @pytest.mark.asyncio
     async def test_tier3_minimal_info(self):
-        """Very little info → LLM returns low confidence."""
+        """Very little info: the model returns low confidence and NO names.
+
+        Changed deliberately (§1a). `success` used to mean "the confidence band
+        was high or medium"; it now means "the stage ran and produced an
+        answer", because confidence stopped being a write gate. The substantive
+        assertion is the one below it and is unchanged: with nothing to go on
+        the model suggests nothing, so nothing is written.
+        """
         result = await run_tier3(
             record_id="TEST_031",
             name1=None,
@@ -54,8 +61,11 @@ class TestTier3:
             llm_client=MockOpenAIClient(),
         )
         assert result.enrichment_status == "unresolved"
-        # With no info, mock returns low confidence
-        assert result.success is False
+        assert result.confidence == "low"     # the doubt is still recorded
+        # Nothing to go on, so nothing is proposed for any slot — which is
+        # what keeps the record's own values in place.
+        assert result.name1_suggestion is None
+        assert result.name2_suggestion is None
 
     @pytest.mark.asyncio
     async def test_tier3_raises_no_flag_of_its_own(self):

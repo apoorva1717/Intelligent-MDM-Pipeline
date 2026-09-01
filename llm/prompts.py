@@ -215,13 +215,21 @@ TIER2_CANONICAL_USER_PROMPT_TEMPLATE = (
     '  "reasoning": "str"\n'
     "}}\n"
     "Rules:\n"
-    "1. Only return a name if you are confident it is the institution's "
-    "actual canonical wording. When in doubt, return null.\n"
+    "1. Return the complete, correctly spelled canonical form of the "
+    "unit the text names. Expand the abbreviations it uses ('Dept', "
+    "'Lab', 'Med Ctr', 'Visn'), complete a value the field cut off "
+    "mid-word, and correct misspellings. Abbreviated or incomplete "
+    "input is not a reason to return null; it is the reason you were "
+    "asked.\n"
     "2. Do not invent units the institution does not have.\n"
     "3. Match the subject the user supplied — if they said 'Biochemistry', "
-    "do not return 'Chemistry'.\n"
-    "4. confidence=high means you are certain of the exact wording. "
-    "Use medium or low if you are guessing the form."
+    "do not return 'Chemistry'. Never change WHICH unit is named.\n"
+    "4. Return null ONLY when the text names no organisational unit at "
+    "all. Doubt about the exact institutional wording belongs in the "
+    "confidence field, not in a null answer.\n"
+    "5. confidence=high means you are certain of the exact wording. "
+    "Use medium or low if you are sure which unit it is but are "
+    "guessing the institution's exact form."
 )
 
 
@@ -248,8 +256,8 @@ COMPANY_CANONICAL_USER_PROMPT_TEMPLATE = (
     '  "reasoning": "str"\n'
     "}}\n"
     "Rules:\n"
-    "1. Return a confident canonical form only when you are certain "
-    "it matches the intended company. Use the geographic context to "
+    "1. Return the complete, correctly spelled canonical form of the "
+    "company the record names. Use the geographic context to "
     "disambiguate.\n"
     "2. The full street address may identify a well-known corporate "
     "headquarters and help you recognise a misspelled or abbreviated "
@@ -259,10 +267,18 @@ COMPANY_CANONICAL_USER_PROMPT_TEMPLATE = (
     "address. NEVER replace the given name with a different company "
     "just because they share a building — many firms share an "
     "address, so the name must still match.\n"
-    "3. Return null if you are not sure.\n"
-    "4. Do not invent companies. Do not resolve acronyms you do not "
-    "recognise.\n"
-    "5. confidence=high means you are certain of the exact wording."
+    "3. Repair what the record supplies. Expand the abbreviations it "
+    "uses, complete a value the field cut off mid-word, and correct "
+    "misspellings — never changing WHICH company is named. "
+    "Incomplete input is not a reason to return null; it is the "
+    "reason you were asked.\n"
+    "4. Do not invent companies, and never return a company other "
+    "than the one named. Returning null is correct ONLY when the "
+    "text names no company at all.\n"
+    "5. Put your doubt in the confidence field, not in the name. "
+    "confidence=high means you are certain of the exact wording; use "
+    "medium or low when you are sure which company it is but not of "
+    "its exact registered form."
 )
 
 
@@ -563,12 +579,20 @@ GROUNDED_RESOLVER_USER_PROMPT_TEMPLATE = (
     "Rules:\n"
     "1. Use ONLY the numbered evidence. If the evidence does not support a "
     "canonical name for a field, return null for that field. Never fall back "
-    "on what you remember about the organisation.\n"
+    "on what you remember about the organisation. This is a rule about "
+    "your SOURCE, not a reason to withhold: where the evidence does "
+    "support a fuller form, rule 3 requires you to return it.\n"
     "2. `evidence_index` gives the number of the evidence item that supports "
     "each canonical name, or null when the field is null OR when you could "
     "not point at a specific item. Do not guess an index to fill the slot.\n"
-    "3. name1_canonical must name the SAME organisation the record does — a "
-    "fuller, correctly spelled or expanded form of it. Never a different "
+    "3. name1_canonical must name the SAME organisation the record does, "
+    "in its complete, correctly spelled form. Where the evidence shows "
+    "it, this is a REPAIR you are expected to make: expand the "
+    "abbreviations and acronyms the record uses ('UTSW', 'Hosp', "
+    "'Visn', 'Med Ctr'), complete a value the source field cut off "
+    "mid-word, and correct misspellings. Returning the record's own "
+    "string back when the evidence states a fuller form is not an "
+    "answer — it is the question left unanswered. Never a different "
     "company or institution, a parent, or a subsidiary.\n"
     "4. name2_kind classifies what Name 2 is:\n"
     "   - 'department': an internal unit of Name 1 (a department, division, "
@@ -640,7 +664,9 @@ LAB_PARENT_PROMPT_VERSION = prompt_version(
     LAB_PARENT_SYSTEM_PROMPT, LAB_PARENT_USER_PROMPT_TEMPLATE,
 )
 COMPANY_CANONICAL_PROMPT_VERSION = prompt_version(
-    "company_canonical", "v1",
+    # v2 — the repair duty (§1e): expand, complete and correct what the
+    # record supplies; null only when no company is named.
+    "company_canonical", "v2",
     COMPANY_CANONICAL_SYSTEM_PROMPT, COMPANY_CANONICAL_USER_PROMPT_TEMPLATE,
 )
 PERSON_AFFILIATION_PROMPT_VERSION = prompt_version(
@@ -648,7 +674,8 @@ PERSON_AFFILIATION_PROMPT_VERSION = prompt_version(
     PERSON_AFFILIATION_SYSTEM_PROMPT, PERSON_AFFILIATION_USER_PROMPT_TEMPLATE,
 )
 TIER2_CANONICAL_PROMPT_VERSION = prompt_version(
-    "tier2_canonical", "v1",
+    # v2 — the repair duty (§1e), replacing "when in doubt, return null".
+    "tier2_canonical", "v2",
     TIER2_CANONICAL_SYSTEM_PROMPT, TIER2_CANONICAL_USER_PROMPT_TEMPLATE,
 )
 PAGE_READ_PROMPT_VERSION = prompt_version(
@@ -657,6 +684,8 @@ PAGE_READ_PROMPT_VERSION = prompt_version(
     PAGE_READ_SYSTEM_PROMPT, PAGE_READ_USER_PROMPT_TEMPLATE,
 )
 GROUNDED_RESOLVER_PROMPT_VERSION = prompt_version(
-    "grounded_resolver", "v1",
+    # v2 — the repair duty (§1e). The evidence-only rule and
+    # `evidence_index` are unchanged.
+    "grounded_resolver", "v2",
     GROUNDED_RESOLVER_SYSTEM_PROMPT, GROUNDED_RESOLVER_USER_PROMPT_TEMPLATE,
 )
