@@ -431,6 +431,12 @@ class TestOneAcronymRule:
         ("NORTH MILL WORKS", "North Mill Works"),
         # A four-letter word with a vowel in its final pair was never at risk.
         ("AMES RESEARCH CENTER", "Ames Research Center"),
+        # A <=3-letter word. Its escape hatch is `_FORCE_TITLE_SHORT`, not
+        # `_SHORT_ORG_WORDS` — `_case_core` does not consult the latter for a
+        # token this short, which is why "SOUTHWEST GAS" shipped with one word
+        # title-cased and one shouting.
+        ("SOUTHWEST GAS", "Southwest Gas"),
+        ("GAS TECHNOLOGY INSTITUTE", "Gas Technology Institute"),
     ])
     def test_a_known_word_is_still_a_word(self, value, expected):
         assert normalise_case(value, mode="name") == expected

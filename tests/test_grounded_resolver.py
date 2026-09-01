@@ -88,42 +88,15 @@ async def _run(orchestrator: Orchestrator, record: EnrichmentRecord):
 
 
 class TestQueryConstruction:
-    """The SERP query, from the record's own identifying material.
+    """The one SERP query, from the record's own identifying material."""
 
-    Name 1 is no longer quoted. A quoted phrase demands the index hold that
-    exact string, and a SAP name field routinely holds a lookup key rather
-    than a name: `"VAMC REDDING VISN 21" REDDING CA` returned zero results for
-    a VA clinic that is one ordinary search away, so the lane reported
-    `serp_empty` and degraded — on a record it could have resolved.
-    """
-
-    def test_name1_is_unquoted_and_name2_reduced_to_its_subject(self):
+    def test_quotes_name1_and_reduces_name2_to_its_subject(self):
         assert build_query(
             "Stanford University", "Department of Chemistry", "Stanford", "CA",
-        ) == "Stanford University Chemistry Stanford CA"
+        ) == '"Stanford University" Chemistry Stanford CA'
 
     def test_omits_what_the_record_does_not_state(self):
-        assert build_query("Acme GmbH", None, None, None) == "Acme GmbH"
-
-    def test_a_visn_number_is_dropped(self):
-        # The VA's internal network id. It names a region of the health
-        # system, never the site the record is about, and no page repeats it.
-        assert build_query("VAMC REDDING VISN 21", None, "REDDING", "CA") == (
-            "VAMC REDDING REDDING CA"
-        )
-        assert build_query("VAMC Redding Visn 21", None, "Redding", "CA") == (
-            "VAMC Redding Redding CA"
-        )
-
-    def test_abbreviations_are_expanded(self):
-        assert build_query("Univ of Texas", None, None, None) == (
-            "University of Texas"
-        )
-
-    def test_a_name_that_is_only_a_visn_number_keeps_its_raw_value(self):
-        # The fallback: a query built on nothing is worse than one built on
-        # shorthand.
-        assert build_query("VISN 21", None, None, None) == "VISN 21"
+        assert build_query("Acme GmbH", None, None, None) == '"Acme GmbH"'
 
 
 class TestGroundedResolver:
@@ -1014,117 +987,3 @@ class TestAProposalMustAppearInTheEvidence:
 
 
 
-class TestTheHintIsASecondQuery:
-    """A name an earlier lane could not confirm is asked about, not adopted.
-
-    Company canonicalisation recalls a name; it reads nothing. When the gate
-    calls that `undecidable`, the record stays eligible for the §1d
-    fall-through and the proposal travels here as a hint — issued as its own
-    search alongside the record's own words, so the containment guard can
-    decide between them on evidence.
-    """
-
-    @pytest.mark.asyncio
-    async def test_both_queries_are_issued_and_the_evidence_pooled(
-        self, test_settings, mock_clients,
-    ):
-        from utils.cache import BatchCache
-
-        queries: list[str] = []
-
-        class _Recording(_EvidenceStating):
-            async def search(self, query, num_results=5, *, country=None):
-                queries.append(query)
-                return await super().search(query, num_results, country=country)
-
-        stub = _Recording("Redding VA Clinic")
-        llm = StubLLM({
-            "name1_canonical": "Redding VA Clinic",
-            "name2_kind": "none",
-            "per_field_confidence": {"name1": "high"},
-            "evidence_index": {"name1": 0},
-            "reasoning": "",
-        })
-        grounded = await run_grounded_resolver(
-            "13336733",
-            name1="VAMC Redding Visn 21", name2=None,
-            street=None, city="Redding", state="CA",
-            country="US", country_code="US",
-            routing_type="government", domain=None,
-            hint="Veterans Affairs Medical Center Redding",
-            search_client=stub, page_fetcher=stub,
-            llm_client=llm, ror_client=mock_clients["ror"],
-            lei_client=mock_clients["lei"],
-            cache=BatchCache(), settings=test_settings,
-        )
-        assert len(queries) == 2
-        # The record's own words first, so `evidence_index` still points at
-        # the record's own material by default.
-        assert queries[0] == "VAMC Redding Redding CA"
-        assert queries[1] == "Veterans Affairs Medical Center Redding Redding CA"
-        assert grounded.name1 is not None
-        assert grounded.name1.value == "Redding VA Clinic"
-
-    @pytest.mark.asyncio
-    async def test_no_hint_means_one_query(self, test_settings, mock_clients):
-        from utils.cache import BatchCache
-
-        queries: list[str] = []
-
-        class _Recording(_EvidenceStating):
-            async def search(self, query, num_results=5, *, country=None):
-                queries.append(query)
-                return await super().search(query, num_results, country=country)
-
-        stub = _Recording("Redding VA Clinic")
-        llm = StubLLM({
-            "name1_canonical": "Redding VA Clinic",
-            "name2_kind": "none",
-            "per_field_confidence": {"name1": "high"},
-            "evidence_index": {"name1": 0},
-            "reasoning": "",
-        })
-        await run_grounded_resolver(
-            "no-hint",
-            name1="VAMC Redding Visn 21", name2=None,
-            street=None, city="Redding", state="CA",
-            country="US", country_code="US",
-            routing_type="government", domain=None,
-            search_client=stub, page_fetcher=stub,
-            llm_client=llm, ror_client=mock_clients["ror"],
-            lei_client=mock_clients["lei"],
-            cache=BatchCache(), settings=test_settings,
-        )
-        assert len(queries) == 1
-
-    @pytest.mark.asyncio
-    async def test_a_hint_the_evidence_does_not_support_still_cannot_survive(
-        self, test_settings, mock_clients,
-    ):
-        # The guard the second query does not weaken: pooling more evidence
-        # gives the model more to read, never permission to answer from the
-        # hint itself.
-        from utils.cache import BatchCache
-
-        llm = StubLLM({
-            "name1_canonical": "Veterans Affairs Medical Center Redding",
-            "name2_kind": "none",
-            "per_field_confidence": {"name1": "high"},
-            "evidence_index": {"name1": 0},
-            "reasoning": "",
-        })
-        stub = _EvidenceStating("Redding VA Clinic")
-        grounded = await run_grounded_resolver(
-            "13336733",
-            name1="VAMC Redding Visn 21", name2=None,
-            street=None, city="Redding", state="CA",
-            country="US", country_code="US",
-            routing_type="government", domain=None,
-            hint="Veterans Affairs Medical Center Redding",
-            search_client=stub, page_fetcher=stub,
-            llm_client=llm, ror_client=mock_clients["ror"],
-            lei_client=mock_clients["lei"],
-            cache=BatchCache(), settings=test_settings,
-        )
-        assert grounded.dropped.get("name1") == "not_in_evidence"
-        assert grounded.name1 is None

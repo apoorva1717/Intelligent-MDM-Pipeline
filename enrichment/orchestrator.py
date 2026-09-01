@@ -114,7 +114,7 @@ from enrichment.consistency import (
     registry_location_unconfirmed_count,
     reset_consistency_counters,
 )
-from enrichment import name_gate
+from enrichment import dept_block, name_gate
 from enrichment.tier2_canonical import subject_preserved
 from utils.name_identity import (
     SAME as VERDICT_SAME,
@@ -1188,6 +1188,48 @@ def _write_registry_name(
     return accepted
 
 
+#: Which producer means which origin, for `_slot_origin`. Read off the
+#: evidence the write already carries, so the origin cannot disagree with the
+#: provenance log — the two are derived from one fact.
+_ORIGIN_BY_PRODUCER: dict[str, str] = {
+    "ror": dept_block.ORIGIN_REGISTRY,
+    "gleif": dept_block.ORIGIN_REGISTRY,
+    "wikidata": dept_block.ORIGIN_REGISTRY,
+    "grounded": dept_block.ORIGIN_GROUNDED,
+    "input": dept_block.ORIGIN_INPUT,
+    "batch_consensus": dept_block.ORIGIN_INPUT,
+}
+
+
+def _origin_for(evidence: Evidence) -> str | None:
+    """The `dept_block` origin this write establishes, or None to leave it.
+
+    None for a TRANSFORM: casing, abbreviation expansion and the packing rules
+    reshape or relocate a value, they do not produce one, and the origin
+    follows the VALUE. A transform that moves a value between slots moves its
+    origin with it explicitly (see the dedup/pack and unit-ordering passes);
+    one that restyles a value in place leaves the origin alone.
+    """
+    if evidence.kind == "transform":
+        return None
+    chain = tuple(evidence.producer_chain or ())
+    for producer in reversed(chain):
+        if producer in _ORIGIN_BY_PRODUCER:
+            return _ORIGIN_BY_PRODUCER[producer]
+        if producer.startswith("llm"):
+            return dept_block.ORIGIN_LLM
+    rule = str(evidence.rule_id or "")
+    if rule.startswith("grounded:"):
+        return dept_block.ORIGIN_GROUNDED
+    if rule.startswith("preprocess:"):
+        # The three preprocess origins are distinguished by the slot markers
+        # preprocess itself records; `_slot_origin_from_preprocess` resolves
+        # them. A bare `preprocess:` write that reaches here without one is a
+        # value the record supplied and preprocessing rewrote in place.
+        return dept_block.ORIGIN_INPUT
+    return dept_block.ORIGIN_INPUT
+
+
 def _write(result: Any, field: str, value: Any, evidence: Evidence) -> None:
     """Write one field, attributing it when the field is in Phase 1 scope.
 
@@ -1196,8 +1238,21 @@ def _write(result: Any, field: str, value: Any, evidence: Evidence) -> None:
     without evidence; the name slots below Name 2 are out of Phase 1 scope and
     are written directly, which is the one line that changes when the scope is
     extended.
+
+    It is also where `_slot_origin` is kept. The department block has 27 write
+    sites — 26 `_write`/`transform` calls and one direct assignment — and a
+    hand-maintained list of them is a list that goes stale. Recording the
+    origin HERE makes completeness structural: a new lane that writes a
+    department slot records its origin by construction, and one that bypasses
+    the funnel is the single exception, called out where it happens.
     """
     result.write(field, value, evidence)
+    if field in DEPT_ENRICHED_FIELDS:
+        origin = _origin_for(evidence)
+        if origin is not None:
+            result.setdefault("_slot_origin", {})[
+                field[: -len("_enriched")]
+            ] = origin
 
 
 def _ship_unverified_domain(result: Any) -> None:
@@ -2091,127 +2146,6 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
                 _f, None, rule_id="dept-slot-continuation:absorbed",
             )
 
-    kept_vals: list[Any] = []
-    kept_norms: list[str] = []
-    for f in DEPT_ENRICHED_FIELDS:
-        val = result.get(f)
-        n = _name_norm(val)
-        if not n:
-            continue
-        if any(n == kn or fuzz.ratio(n, kn) >= 92 for kn in kept_norms):
-            continue
-        # A TRUNCATED duplicate, which the ratio cannot see. "Department of
-        # Biologica" is the same unit as "Department of Biological Sciences"
-        # with the tail cut off by the field width, and the missing letters
-        # score it at 82 — under the 92 threshold — so both slots survived and
-        # the fragment shipped in Name 4. Word coverage answers what the ratio
-        # cannot: every word of the fragment is accounted for by the fuller
-        # value, and it adds none of its own.
-        covered = next(
-            (
-                i for i, kv in enumerate(kept_vals)
-                if introduces_nothing_new(str(kv), str(val))
-            ),
-            None,
-        )
-        if covered is not None:
-            continue
-        # The same relation the other way round: the value already kept is the
-        # fragment and this one completes it. Keep the fuller form rather than
-        # the cut one — the slot order decides which arrives first, and that
-        # is not a statement about which is right.
-        fuller = next(
-            (
-                i for i, kv in enumerate(kept_vals)
-                if introduces_nothing_new(str(val), str(kv))
-            ),
-            None,
-        )
-        if fuller is not None:
-            kept_vals[fuller] = val
-            kept_norms[fuller] = n
-            continue
-        kept_vals.append(val)
-        kept_norms.append(n)
-    for i, f in enumerate(DEPT_ENRICHED_FIELDS):
-        _packed = kept_vals[i] if i < len(kept_vals) else None
-        if _packed == result.get(f):
-            continue
-        # A transform, not a write: packing decides WHICH SLOT a value sits
-        # in, never what the value is. Attribution stays with whatever
-        # produced it, which is what keeps a Tier 3 department flagged after
-        # the slots are repacked around it.
-        _write(
-            result, f, _packed,
-            deterministic_evidence(
-                "dept-slot-dedup-and-pack",
-                producer="finalise",
-                evidence_ref={"replaced": result.get(f)},
-                kind="transform",
-            ),
-        )
-
-    # Unit ordering across the department slots: a division is written above a
-    # department ("Division of Animal Health" in Name 2, "Department of
-    # Agriculture" in Name 3), whichever order the tiers happened to fill the
-    # slots in. See `utils.text_utils.UNIT_SLOT_RANK` for the convention.
-    #
-    # Only the slots holding one of those two constructions take part, and they
-    # are reordered among THEMSELVES — a slot holding anything else (a branch, a
-    # lab, an overflow fragment) keeps the position the packing above gave it,
-    # so the rule can never reshuffle a block it has no opinion about. Equal
-    # ranks keep their relative order (a stable sort), so two divisions stay in
-    # the order the tiers produced.
-    #
-    # Runs AFTER the dedup/pack — reordering the survivors of a packed block,
-    # never around the holes a duplicate left — and BEFORE the changed flags,
-    # the registry-name bookkeeping and `compute_flags`, all of which describe
-    # a slot and would otherwise describe the value that used to be in it.
-    ordered_slots = [
-        slot for slot in DEPT_SLOTS
-        if ordered_unit_word(result.get(f"{slot}_enriched"))
-    ]
-    if len(ordered_slots) > 1:
-        current = [result.get(f"{slot}_enriched") for slot in ordered_slots]
-        # The permutation, not the sorted values: it is what says where each
-        # value CAME FROM, which is what the registry bookkeeping below needs.
-        # The index is the tiebreak, so the sort is stable.
-        order = sorted(
-            range(len(current)),
-            key=lambda i: (UNIT_SLOT_RANK[ordered_unit_word(current[i])], i),
-        )
-        if order != sorted(order):
-            for dest, source in enumerate(order):
-                field = f"{ordered_slots[dest]}_enriched"
-                if current[source] == result.get(field):
-                    continue
-                # A transform, not a write, for the same reason the packing
-                # above is one: the rule decides which slot a value sits in,
-                # never what the value is. Attribution stays with whatever
-                # produced the value.
-                _write(
-                    result, field, current[source],
-                    deterministic_evidence(
-                        "dept-slot-unit-order",
-                        producer="finalise",
-                        evidence_ref={"replaced": result.get(field)},
-                        kind="transform",
-                    ),
-                )
-            # Registry ownership follows the value, exactly as it does through
-            # the UC 0 repack: a ROR-spelled unit is still ROR-spelled in its
-            # new slot, and the casing pass must keep skipping it there.
-            registry_named = set(result.get("_registry_name_fields") or ())
-            if registry_named & set(ordered_slots):
-                result["_registry_name_fields"] = (
-                    registry_named.difference(ordered_slots)
-                    | {
-                        ordered_slots[dest]
-                        for dest, source in enumerate(order)
-                        if ordered_slots[source] in registry_named
-                    }
-                )
-
     # Compute all changed flags.
     #
     # Rule 5 + Fix 5 option (b): a difference that is ONLY letter case is not a
@@ -2287,6 +2221,64 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
             f"{_slot}_enriched", None,
             rule_id="name-post-check:slot-names-nothing",
         )
+
+    # ── Phase 3 — the department block's single authority ────────────────
+    #
+    # `dept_block.normalise` runs after the LAST pass that moves name content
+    # — which is the pass directly above, not the unit ordering further up.
+    # Placed after the ordering it was inert: `dept-slot-echoes-name1:dropped`
+    # and `name-post-check:slot-names-nothing` clear a slot BELOW that point,
+    # so the authority saw a well-formed block, returned it unchanged, and the
+    # hole was punched afterwards. It never logged once on 299 records.
+    #
+    # Here it sees what the record will actually ship. On a block the earlier
+    # passes already settled it still finds nothing to do — that is what the
+    # parity harness asserts — and where one of the two clearing passes has
+    # opened a hole, it closes it. A hole is not "this record has no primary
+    # unit": Name 2 empty above a populated Name 3 is a dropped slot nothing
+    # re-packed, and a consumer cannot tell those apart.
+    #
+    # A transform, not a write: the authority decides which slot a value sits
+    # in and whether the block still holds two copies of one unit. It never
+    # decides what a value SAYS, so attribution stays with whatever produced
+    # it, and the origin travels with the value.
+    _origins_by_slot = result.get("_slot_origin") or {}
+    _block = [result.get(f) for f in DEPT_ENRICHED_FIELDS]
+    _block_origins = [
+        _origins_by_slot.get(f[: -len("_enriched")], dept_block.ORIGIN_INPUT)
+        for f in DEPT_ENRICHED_FIELDS
+    ]
+    _settled, _settled_origins, _block_log = dept_block.normalise(
+        _block, _block_origins, result,
+    )
+    if _block_log:
+        logger.info({
+            "record_id": result.get("record_id"),
+            "step": "dept_block_normalised",
+            "before": _block,
+            "after": _settled,
+            "log": _block_log,
+        })
+    for _i, _field in enumerate(DEPT_ENRICHED_FIELDS):
+        if _settled[_i] == _block[_i]:
+            continue
+        _write(
+            result, _field, _settled[_i],
+            deterministic_evidence(
+                "dept-block:normalise",
+                producer="finalise",
+                evidence_ref={"replaced": _block[_i]},
+                kind="transform",
+            ),
+        )
+    if _slot_origin_map := result.get("_slot_origin"):
+        # The origins the authority moved with the values it moved.
+        for _i, _field in enumerate(DEPT_ENRICHED_FIELDS):
+            _slot = _field[: -len("_enriched")]
+            if _settled[_i] is not None:
+                _slot_origin_map[_slot] = _settled_origins[_i]
+            else:
+                _slot_origin_map.pop(_slot, None)
 
     for f in (*NAME_SLOTS, "care_of", "contact",
               "email", "street1", "street2", "street3", "street4", "street5"):
@@ -2519,6 +2511,7 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     result.pop("_preprocess_cleared", None)
     result.pop("_preprocess_populated", None)
     result.pop("_names_from_street", None)
+    result.pop("_slot_origin", None)
     result.pop("_dba_values", None)
     result.pop("_pp_name1", None)
     result.pop("_uc0_merged", None)
@@ -2956,6 +2949,9 @@ def _apply_tier2a(
         and str(result["name3_original"]).strip()
     ):
         result["name3_enriched"] = tier2a.name3_enriched.strip()
+        # The one dept-slot write that does not go through `_write`, so the
+        # one origin the funnel cannot record for itself.
+        result.setdefault("_slot_origin", {})["name3"] = dept_block.ORIGIN_LLM
 
 
 def _apply_tier3(
@@ -5480,22 +5476,7 @@ class Orchestrator:
         # reason: ROR missed at 0.70 because of the missing letter, Name 3
         # resolved, and no model was ever asked about Name 1. Whether NAME 1
         # is resolved is asked below, of Name 1.
-        # An `undecidable` write from an evidence-free lane is the one verdict
-        # that does NOT settle the field. The gate said it could not reconcile
-        # a name the model recalled with the name the record supplied, and
-        # nothing has since read anything — which is precisely the question
-        # this lane exists to answer. Two VA rows sharing an address, supplied
-        # the same name in different case, shipped one real clinic and one
-        # invented institution without the grounded lane ever being offered
-        # either, because company-canonical had "answered".
-        evidence_free_undecidable = bool(
-            result.get("_ev_name1_evidence_free")
-            and (result.get("_ev_name_verdict") or {}).get("name1")
-            == VERDICT_UNDECIDABLE
-        )
-        if (
-            result.get("_ev_name_verdict") or result.get("_ev_name_suggestion")
-        ) and not evidence_free_undecidable:
+        if result.get("_ev_name_verdict") or result.get("_ev_name_suggestion"):
             # A candidate has already been through the gate for this record.
             return False
         # `_canonical_proposal` is deliberately NOT a resolution. It records
@@ -5506,10 +5487,6 @@ class Orchestrator:
         name1 = (result.get("_lane_inputs") or {}).get("name1")
         if not name1:
             return False
-        if evidence_free_undecidable:
-            # The field holds the unconfirmed name, so the test below would
-            # read it as rewritten and settled. It is neither.
-            return True
         enriched = result.get("name1_enriched")
         # Still holding what it arrived with — nothing rewrote it.
         return not enriched or _same_name_text(enriched, name1)
@@ -5805,9 +5782,6 @@ class Orchestrator:
                 ),
                 routing_type=result.get("routing_type") or "unknown",
                 domain=result.get("domain"),
-                # The unconfirmed name, asked as its own search alongside the
-                # record's own words.
-                hint=result.get("name1_enriched"),
                 name1_registry_ids=[
                     i for i in (result.get("ror_id"), result.get("lei_id")) if i
                 ],
@@ -6581,6 +6555,15 @@ class Orchestrator:
                     )
             result["_preprocess_cleared"] = preprocess_cleared
             result["_preprocess_populated"] = preprocess_populated
+            # Phase 2 — the origin dict, seeded from what preprocessing says it
+            # did. Seeded rather than final: the writes above went through the
+            # funnel and recorded `input`, which is right for a value the
+            # record stated in this slot and wrong for one a router put here.
+            # Preprocessing is the only thing that knows which, so it is asked,
+            # and any later authority overrides through the funnel as usual.
+            for _slot, _origin in (pre.slot_origins or {}).items():
+                if _slot in DEPT_SLOTS:
+                    result.setdefault("_slot_origin", {})[_slot] = _origin
             # Name slots preprocessing filled from a STREET field, mapped to
             # the value it put there. Not name data anyone supplied — the
             # routers lifted it out of an address line — so finalise() holds
@@ -7198,33 +7181,6 @@ class Orchestrator:
                                 result, start, record, cache,
                             )
                     elif company_res and company_res.success and company_res.name1_enriched:
-                        # The gate's verdict on a proposal this lane recalled
-                        # rather than read. The name is still written — Section
-                        # 3 tried withholding it and starved every lane that
-                        # consumes it, costing two records their domain and one
-                        # a GLEIF-verified Name 2. What changes is that an
-                        # `undecidable` write no longer counts as an answer:
-                        # the record stays eligible for the §1d fall-through,
-                        # and the grounded lane is asked to confirm the name by
-                        # reading, carrying it as a hint.
-                        canonical_decision = name_gate.evaluate(
-                            result, "name1", company_res.name1_enriched,
-                            incumbent=name1_cleaned,
-                            street=result.get("street1_original"),
-                            country=(
-                                result.get("country_region_key")
-                                or record.country
-                            ),
-                            settings=self._settings,
-                        )
-                        result.setdefault("_ev_name_verdict", {})["name1"] = (
-                            canonical_decision.verdict
-                        )
-                        if canonical_decision.verdict == VERDICT_UNDECIDABLE:
-                            # Evidence-free: the model recalled this name, it
-                            # did not read it anywhere. That is what makes the
-                            # verdict an open question rather than a finding.
-                            result["_ev_name1_evidence_free"] = True
                         _write(
                             result, "name1_enriched",
                             company_res.name1_enriched,
@@ -7457,8 +7413,20 @@ class Orchestrator:
                 if not (pp_val and pp_val.strip()):
                     continue
                 # Already resolved by child match above?
+                #
+                # Phase 5: with `DEPT_SPLIT_CANONICALISES` on, a non-empty slot
+                # is not by itself an answer. Only a value an AUTHORITY
+                # produced settles it — `_slot_origin` is what tells the two
+                # apart — so a department preprocessing split off Name 1,
+                # lifted out of a street or moved between slots is still
+                # eligible. `has_no_canonical_form` below still guards the
+                # admin desks either way.
                 if result.get(f"{field_key}_enriched"):
-                    continue
+                    if not self._settings.dept_split_canonicalises:
+                        continue
+                    _origin = (result.get("_slot_origin") or {}).get(field_key)
+                    if _origin in dept_block.RESOLVED_ORIGINS:
+                        continue
                 if not can_canonical:
                     continue
 

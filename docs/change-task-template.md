@@ -37,12 +37,38 @@ the baseline was previously degrading on.
 Changes that do **not** alter queries or prompts (a casing rule, a flag rule, a write gate
 downstream of the model) gate frozen, which is cheaper and stricter.
 
-**Every gate report states which it was.** One line, at the top of the result:
+"Alters queries" is wider than it looks. Anything that changes a NAME before the tiers run
+changes the ROR/GLEIF/SERP queries built from it, so it is a warm-gate change even though it
+touches no prompt and no query builder — preprocessing's dept-block normalisation (Phase 4)
+was mis-classified as frozen on exactly this reasoning and its miss counts went 1/0/6 -> 4/3/18.
+The miss counts are the check: if they move, the change reached a query, whatever it looked
+like in the diff.
 
-    Gate: frozen (misses 1 / 0 / 9 — identical both sides)
-    Gate: warm  (cache populated <date/run>; 0 network calls both sides)
+**Every gate report states which it was, and against which cache.** One line, at the top of
+the result, with all four fields:
 
-A report that does not say is not a gate result.
+    Gate: frozen | misses 1 / 0 / 9 (identical both sides)
+          cache <path> — entries 5215, keys-sha256[:12] 3bde5eb38090
+    Gate: warm   | 0 network calls both sides
+          cache <path> — entries 6104, keys-sha256[:12] a91c77d02e41
+
+Required fields, all four:
+
+1. **frozen or warm**;
+2. **frozen-miss counts per workbook**, which must be identical on both sides — a difference
+   means one side saw evidence the other did not, and the diff is measuring that;
+3. **cache entry count**;
+4. **hash of the sorted key list** (`sha256` of the newline-joined relative paths, first 12
+   hex chars).
+
+The count and hash are what let a later reader tell whether two gate lines are comparable at
+all. A gate taken against a different cache is a different experiment, whatever the code did.
+The hash covers KEYS only, never contents: a re-recorded answer for an existing key does not
+change what the run could replay. Both are read with `cache_state.py` against the evidence
+cache directory actually in use (`EVIDENCE_CACHE_DIR`), which is not necessarily
+`logs/cache`.
+
+A report that does not carry all four is not a gate result.
 
 ### Baseline hygiene
 
@@ -83,3 +109,45 @@ Per section, in this order:
 * `/enrich` returns SAP column names (`Name 1`, `Flag Codes`), not model field names, and
   does not expose `source`, `confidence` or `tier_used`. Assert on the provenance event
   instead.
+
+---
+
+## Post-thesis list
+
+Findings recorded during gated changes that were deliberately not fixed, because the fix is
+larger than the task that surfaced it.
+
+* **Monotone provenance at the `_write` funnel** — a write may not lower a field's provenance
+  class (registry > web-corroborated > llm > input) except via an evidenced `different`
+  verdict. Would have converted all three item-3 hard-rule failures into no-ops. Prerequisite
+  for re-landing the grounded refusal fall-through, VISN drop, hint, and the unquote fallback
+  (`snap3`).
+
+  The three gate reports, by cache hash:
+
+  | gate | cache | result |
+  |---|---|---|
+  | item 3, full (VISN drop unquoted + hint + eligibility) | `313b2dad9c94`, entries 5294 | warm, misses 3/0/6 — **not identical to baseline 1/0/6**, so the comparison was invalid on its own terms. 61 rows changed, 56 touching value columns. `13343269` and `13336642` lost `ROR ID` outright; `13336744`/`13336752` changed ROR entity. |
+  | item 3a, split (VISN drop inside the quoted subject) | `313b2dad9c94`, entries 5294 | warm, misses 1/0/6 identical. 6 rows. `13336744`/`13336752` lost `ROR ID` and every `ror:verified` provenance. Isolated to the VISN drop ALONE: making the query return results routed the record away from Tier 3, whose answer the registry retry had been matching. |
+  | item 3a re-land + `grounded_refused` fall-through | `896ad3925a8e`, entries 5335 | warm, misses 1/0/6 identical. 5 rows, 2 violations. `13336752` byte-identical — the fall-through worked. `13336744` lost `ROR ID`: the lane wrote a ROR-verified value for the wrong entity and `name_gate` refused it in `_apply_grounded`, AFTER the fall-through rule had already decided the lane had answered. |
+  | `grounded_refused` rule alone | `896ad3925a8e`, entries 5335 | frozen, misses 1/0/6 identical. 8 rows, 1 violation: `13083855` `input:verified+web` -> `llm:provisional`. Not safe even without the query changes. |
+
+  Every one of these is the same shape: a lane that previously produced nothing, or was never
+  reached, starts producing something, and what it produces displaces a better-attributed
+  value. A monotonicity rule at the funnel makes that impossible to express.
+
+* **Two allowlists for one question (casing).** `_case_segment` asks `_SHORT_ORG_WORDS`
+  whether a short ALL-CAPS token is a word; `_case_core` asks `_FORCE_TITLE_SHORT` for a
+  <=3-letter token and `_SHORT_ORG_WORDS` for everything longer. The shape half of the
+  question is now shared (`_shape_says_acronym`), the wordlist half is not — so a word added
+  to one set may still shout from the other path. "GAS" had to be added to
+  `_FORCE_TITLE_SHORT` specifically, having been in `_SHORT_ORG_WORDS` all along.
+* **Input as event zero in the provenance log.** `original_value("name1_enriched")` is
+  truthful only where the input reached the log as a passthrough event; where a tier wrote
+  into an empty slot it reports that nothing was supplied. Worked around by carrying
+  `name1_supplied` on the result. The fix is to record the input as the first event on every
+  scoped field, which moves provenance on every record and needs its own A/B.
+* **The dept block ships holes.** `dept-slot-echoes-name1:dropped` and
+  `name-post-check:slot-names-nothing` clear a slot AFTER the only packing pass, so a record
+  they fire on ships Name 2 empty with Name 3 populated. Closed by `dept_block.normalise`;
+  the ordering that causes it is untouched.

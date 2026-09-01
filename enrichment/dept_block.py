@@ -19,6 +19,40 @@ questions the block actually raises:
 This module answers both, as pure functions over a list. It writes nothing,
 calls no model and does no I/O: `result` is read only for
 `has_no_canonical_form`'s address-token comparison, and may be None.
+
+What it subsumes. Phase 6 removed each of these one at a time, byte-identical
+after every removal; the three marked KEPT changed output and went back in,
+with the reason the authority does not yet cover them:
+
+* REMOVED — finalise's dedup-and-pack. `normalise` performs it, and
+  `same_unit` is a superset of its test (the truncation arm the ratio cannot
+  see);
+* KEPT — finalise's continuation-absorb. It asks whether a slot's SUPPLIED
+  text was absorbed by the slot above it, which is a question about the input
+  block; `normalise` compares the values a slot HOLDS. Removing it put
+  "THE University of Texas M" back into Name 3 and "Infant Botulism
+  Laboratory" back into Name 4 on three records;
+* REMOVED — finalise's unit ordering. `normalise` step 4 is the same stable
+  rank sort over the same `UNIT_SLOT_RANK`;
+* KEPT — UC 12's `_equiv` dedup loop in preprocess. It compares every name
+  slot against every slot ABOVE IT, Name 1 included; `normalise` owns
+  Name 2..5 and cannot see a Name 2 that merely repeats Name 1. Removing it
+  moved the institution back into Name 2 on eight records. The UC 12
+  parenthetical strip is a different rule that shares the number and stays
+  either way;
+* KEPT — `dept-slot-echoes-name1:dropped`, for the same reason: it is a
+  comparison against Name 1, which is outside this module's block. Removing it
+  shipped "Salk Institute for Biological Studies" in Name 2 under a Name 1
+  that already said it;
+* REMOVED — `name-post-check:slot-names-nothing`... except it is KEPT too:
+  :func:`classify` answers `admin` / `identifies_nothing` / `empty`, but the
+  noise rule also reads the record's CITY and REGION, and a slot holding
+  "Ashtabula, OH" is noise only against the address. One record kept it.
+
+The pattern in what stayed: every kept pass compares the block against
+something OUTSIDE it — Name 1, the supplied input block, or the address. This
+module is the authority on the department block's INTERNAL consistency, and
+that boundary is where the phases stopped.
 """
 
 from __future__ import annotations
@@ -29,7 +63,6 @@ from typing import Any
 from rapidfuzz import fuzz
 
 from enrichment.search_terms import has_no_canonical_form, identifies_nothing
-from utils.name_identity import introduces_nothing_new
 from utils.text_utils import (
     UNIT_SLOT_RANK,
     canonicalise_unit_name,
@@ -93,6 +126,45 @@ def _norm(value: Any) -> str:
     return re.sub(r"\s+", " ", canon.strip()).lower()
 
 
+def _raw_tokens(text: str | None) -> list[str]:
+    """*text* as bare casefolded word tokens. Punctuation out, nothing else.
+
+    Deliberately NOT `utils.name_identity._full_tokens`: that one drops
+    articles and stopwords, which is right for "does this rewrite invent
+    anything" and wrong here. It reduces "Dept A" to ["department"] — the
+    designator vanishes because "A" is also an English article — so "Dept A"
+    reads as a fragment of "Dept B" and two different units merge.
+    """
+    return [t for t in re.split(r"[^0-9a-z]+", str(text or "").casefold()) if t]
+
+
+def is_truncation_of(short: str | None, long: str | None) -> bool:
+    """True when *short* is *long* with the tail cut off.
+
+    The SAP name columns are fixed width, so a unit that does not fit arrives
+    chopped mid-word: "Wayne State University Dept of Biologica" is
+    "…Biological Sciences" minus the characters that did not fit. That is the
+    case the block has to recognise, and it is a strictly positional one —
+    every token of the short form is the start of the token in the same
+    position, and the long form carries more.
+
+    A DESIGNATOR is not a truncation, which is the whole point of the
+    positional test: "Dept A" and "Dept B" differ at a position where neither
+    is a prefix of the other, so they stay two units — as do "Building 1" /
+    "Building 2" and "Ward North" / "Ward South".
+    """
+    s_tokens, l_tokens = _raw_tokens(short), _raw_tokens(long)
+    if not s_tokens or not l_tokens or len(s_tokens) > len(l_tokens):
+        return False
+    for s_tok, l_tok in zip(s_tokens, l_tokens):
+        if not l_tok.startswith(s_tok):
+            return False
+    # Strictly longer: more tokens, or the same tokens with one of them cut.
+    return len(l_tokens) > len(s_tokens) or any(
+        len(l_tok) > len(s_tok) for s_tok, l_tok in zip(s_tokens, l_tokens)
+    )
+
+
 def same_unit(a: str | None, b: str | None) -> bool:
     """True when *a* and *b* name the same unit.
 
@@ -100,7 +172,7 @@ def same_unit(a: str | None, b: str | None) -> bool:
 
     * the canonical forms are equal — the surface-variant case UC 12 handled;
     * they score >= 92 — the typo case ("Main Receiving" / "Main Receivingt");
-    * one accounts for every word of the other — the TRUNCATION case the ratio
+    * one is the other with the tail cut off — the TRUNCATION case the ratio
       cannot see. "Department of Biologica" and "Department of Biological
       Sciences" score 82, under the threshold, which is how the fragment
       shipped in Name 4.
@@ -110,18 +182,16 @@ def same_unit(a: str | None, b: str | None) -> bool:
         return False
     if na == nb or fuzz.ratio(na, nb) >= RATIO_THRESHOLD:
         return True
-    return (
-        introduces_nothing_new(str(a), str(b))
-        or introduces_nothing_new(str(b), str(a))
-    )
+    return is_truncation_of(a, b) or is_truncation_of(b, a)
 
 
 def _is_fuller(value: str | None, kept: str | None) -> bool:
     """True when *value* is the completed form of the fragment *kept*.
 
-    One-directional on purpose: *kept* must add nothing to *value*, and *value*
-    must add something to *kept*. Two values that account for each other are
-    the same text, and neither is the fuller one.
+    One notion of "fuller", shared with :func:`same_unit`'s truncation arm:
+    *kept* is *value* with the tail cut off. Two values that are neither a
+    truncation of the other — a typo pair the ratio matched — have no fuller
+    form, and the one already kept stands.
     """
     if not (value and kept):
         return False
@@ -131,10 +201,7 @@ def _is_fuller(value: str | None, kept: str | None) -> bool:
     # desk is called "Accounts Payable", and the suffix is what UC 6 removes.
     if is_admin_unit(str(kept)):
         return False
-    return (
-        introduces_nothing_new(str(value), str(kept))
-        and not introduces_nothing_new(str(kept), str(value))
-    )
+    return is_truncation_of(kept, value)
 
 
 def classify(value: str, result: dict | None = None) -> str:

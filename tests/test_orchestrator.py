@@ -545,3 +545,4 @@ class TestTier2AVerificationMergeLayer:
         assert result.name2_enriched == "Department of Chemistry"
         assert result.name2_match_result == "no_match"
         assert result.source == "contact_lookup_corrected"
+

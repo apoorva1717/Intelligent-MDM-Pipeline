@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 
 from rapidfuzz import fuzz
 
+from enrichment import dept_block
 from enrichment.locality import (
     CONTRADICTED,
     compare_locality,
@@ -111,6 +112,15 @@ class PreprocessResult:
     # not slot names, because the packing moves a value between slots — a slot
     # recorded at routing time would name the wrong value by the end.
     street_sourced_values: list[str] = field(default_factory=list)
+    #: Values UC 16 split out of Name 1, recorded as the split fires. Values
+    #: and not slot names, for the same reason `street_sourced_values` is:
+    #: UC 14's pack moves a value between slots after the split, and a slot
+    #: recorded at split time would name the wrong value by the end.
+    split_values: list[str] = field(default_factory=list)
+    #: Resolved at the very end, alongside `names_from_street`: slot ->
+    #: `dept_block` origin, for the slots whose value did not simply stay
+    #: where the record put it. Empty for a record that arrived intact.
+    slot_origins: dict[str, str] = field(default_factory=dict)
     # A site qualifier taken off a name slot whose place CONTRADICTS the
     # record's own city/state — "Veracyte, Inc. - South San Francisco, CA" on
     # a record addressed in Pine Brook, NJ. The qualifier comes off the name
@@ -1777,6 +1787,10 @@ def preprocess_record(
         street4=street4, street5=street5,
     )
     llm_person_verdicts = llm_person_verdicts or {}
+    # The name block as SUPPLIED, before any router touches it. Read at the
+    # end to answer "did this value change slot?", which is what separates a
+    # value preprocessing MOVED from one that simply stayed where it was.
+    supplied_block = (name1, name2, name3, name4, name5)
 
     # ---------------------------------------------------------------
     # Leading opaque-code strip. A stray account/customer code prefixed
@@ -2420,6 +2434,7 @@ def preprocess_record(
                 if target:
                     setattr(res, target, dept)
                     res.name1 = prefix
+                    res.split_values.append(dept)
                     res.note(16, f"split department {dept!r} from name1 to {target}")
                 else:
                     res.flags.append("name1-embedded-department")
@@ -2574,6 +2589,92 @@ def preprocess_record(
             val = getattr(res, slot)
             if val and re.sub(r"\s+", " ", val.strip()).lower() in sourced:
                 res.names_from_street.add(slot)
+
+    # ---------------------------------------------------------------
+    # Slot origins, resolved the same way and for the same reason: what a slot
+    # holds is only settled once every router, the UC 14 pack and the UC 12
+    # dedupe have run. Three answers, in the order that makes them
+    # distinguishable — a value can be both split off Name 1 and then moved by
+    # the pack, and the SPLIT is the more specific fact about where it came
+    # from.
+    # ---------------------------------------------------------------
+    def _flat(value: str | None) -> str:
+        return re.sub(r"\s+", " ", (value or "").strip()).lower()
+
+    supplied_at = {
+        _flat(v): slot
+        for slot, v in zip(NAME_SLOTS, supplied_block)
+        if _flat(v)
+    }
+    split = {_flat(v) for v in res.split_values}
+    for slot in NAME_SLOTS:
+        flat = _flat(getattr(res, slot, None))
+        if not flat:
+            continue
+        if slot in res.names_from_street:
+            res.slot_origins[slot] = "preprocess:street"
+        elif flat in split:
+            res.slot_origins[slot] = "preprocess:split"
+        elif supplied_at.get(flat) not in (None, slot):
+            # The record stated this value, in a DIFFERENT slot. The UC 14
+            # pack, the person/organisation promotion or the dedupe moved it.
+            res.slot_origins[slot] = "preprocess:moved"
+
+    # ---------------------------------------------------------------
+    # Phase 4 — the department block's authority, at preprocessing's exit.
+    #
+    # UC 16 keeps placing a split department into the first empty slot; what
+    # changes is that the placement is no longer the last word on it. The
+    # Wayne State row states "Wayne State University Dept of Biologica" /
+    # "Dept of Biological Sciences" / "Greenberg Lab": UC 16 splits the
+    # truncated "Dept of Biologica" out of Name 1 into the first free slot,
+    # and the block then holds one unit twice — once complete, once cut off by
+    # the field width. Neither UC 12's dedupe nor finalise's saw it, because
+    # the two spellings score 82 against each other.
+    #
+    # Runs after UC 12, the last block-mutating step, so the authority sees
+    # the block the record will carry into the tiers rather than an
+    # intermediate one.
+    # ---------------------------------------------------------------
+    _dept_slots = NAME_SLOTS[1:]
+    _block = [getattr(res, slot, None) for slot in _dept_slots]
+    _origins = [
+        res.slot_origins.get(slot, dept_block.ORIGIN_INPUT)
+        for slot in _dept_slots
+    ]
+    _settled, _settled_origins, _log = dept_block.normalise(_block, _origins)
+    if _settled != _block:
+        # Only the slots that actually moved. Writing every slot back — even
+        # unchanged — makes preprocessing report a rewrite it did not perform,
+        # and the orchestrator turns that into a `preprocess:value-rewritten`
+        # event: four records gained a Name 2 provenance and two a flag,
+        # without a single department slot changing.
+        for _slot, _before, _after in zip(_dept_slots, _block, _settled):
+            if _before != _after:
+                setattr(res, _slot, _after)
+        for _slot, _origin, _value in zip(
+            _dept_slots, _settled_origins, _settled,
+        ):
+            if _value is None:
+                res.slot_origins.pop(_slot, None)
+            elif _slot in res.slot_origins or _origin != dept_block.ORIGIN_INPUT:
+                res.slot_origins[_slot] = _origin
+        # The street mark names a SLOT, and the authority may have moved a
+        # value out of a marked one. Re-resolved from the values, exactly as
+        # it was resolved above, so a mark never names the wrong value.
+        if res.street_sourced_values:
+            _sourced = {v.lower() for v in res.street_sourced_values}
+            res.names_from_street = {
+                slot for slot in NAME_SLOTS
+                if (val := getattr(res, slot, None))
+                and re.sub(r"\s+", " ", val.strip()).lower() in _sourced
+            }
+        for _entry in _log:
+            res.note(
+                12,
+                f"dept block {_entry['step']}: {_entry['value']!r} "
+                f"({_entry['reason']})",
+            )
 
     return res
 

@@ -246,6 +246,12 @@ _TITLE_CASE_CONNECTORS = {"of", "and", "for", "the", "in", "at", "&"}
 _FORCE_TITLE_SHORT = {
     "INC", "LTD", "CO", "BAY", "NEW", "OLD", "SUN", "OAK", "BIG", "RED",
     "SKY", "SEA", "AIR", "SON", "TWO", "ONE", "KEY", "TOP", "BOX",
+    # "SOUTHWEST GAS" shipped one word title-cased and one shouting. This is
+    # the <=3-token escape hatch — a different set from `_SHORT_ORG_WORDS`,
+    # which already holds "gas" and which `_case_core` does not consult for a
+    # token this short. That the two paths keep two allowlists for one
+    # question is the remaining divergence; it is on the post-thesis list.
+    "GAS",
 }
 # ---------------------------------------------------------------------------
 # Parent-organisation acronyms

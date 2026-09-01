@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from enrichment.dept_block import (
     ORIGIN_INPUT,
+    is_truncation_of,
     ORIGIN_LLM,
     ORIGIN_REGISTRY,
     RESOLVED_ORIGINS,
@@ -59,6 +60,37 @@ class TestSameUnit:
         ("Greenberg Lab", "Department of Biological Sciences"),
     ])
     def test_two_units(self, a, b):
+        assert same_unit(a, b) is False
+        assert same_unit(b, a) is False
+
+    @pytest.mark.parametrize("a,b", [
+        # The SAP columns are fixed width, so a unit that does not fit arrives
+        # chopped mid-word. That is the case the ratio cannot see.
+        ("Dept of Biologica", "Dept of Biological Sciences"),
+        ("Ward", "Ward North"),
+        ("Accounts Payable", "Accounts Payable Dept"),
+    ])
+    def test_a_truncation_is_the_same_unit(self, a, b):
+        assert same_unit(a, b) is True
+        assert same_unit(b, a) is True
+
+    @pytest.mark.parametrize("a,b", [
+        # A DESIGNATOR is not a truncation. These differ at a position where
+        # neither token is a prefix of the other, and they are two units.
+        # `introduces_nothing_new` merged the first five: it drops "A" as an
+        # English article, so "Dept A" reduced to ["department"] and read as a
+        # fragment of "Dept B".
+        ("Dept A", "Dept B"),
+        ("Building A", "Building B"),
+        ("Ward A", "Ward B"),
+        ("Lab A", "Lab B"),
+        ("Line A", "Line B"),
+        ("Building 1", "Building 2"),
+        ("Ward North", "Ward South"),
+        ("Physics", "Physiology"),
+        ("Department of Materials Science and", "Engineering"),
+    ])
+    def test_a_designator_is_not_a_truncation(self, a, b):
         assert same_unit(a, b) is False
         assert same_unit(b, a) is False
 
@@ -281,26 +313,157 @@ def _dept_blocks(path):
         yield row[0], [row[c] for c in cols]
 
 
+#: The two records `normalise` deliberately changes, accepted as a fix rather
+#: than reported as a divergence.
+#:
+#: Both ship a HOLE — Name 2 empty, Name 3 populated — because
+#: `dept-slot-echoes-name1:dropped` clears a slot AFTER the only packing pass
+#: in finalise, and nothing re-packs behind it. `normalise` closes the hole.
+#: That is the intended behaviour of the authority and the reason it exists;
+#: the pass ordering that opens the hole is recorded on the post-thesis list.
+PACKS_A_HOLE_CLOSED = {
+    # S1 — Wayne State University School of Medicine.
+    "13364433": (
+        [None, "C.S. Mott Center for Human Growth and Development", None, None],
+        ["C.S. Mott Center for Human Growth and Development", None, None, None],
+    ),
+    # S4 — Cleveland Clinic Lerner Research Institute.
+    "13364415": (
+        [None, "Department of Cardiovascular and Metabolic Sciences", None, None],
+        ["Department of Cardiovascular and Metabolic Sciences", None, None, None],
+    ),
+}
+
+
+def no_hole_above_a_value(block: list) -> bool:
+    """THE BLOCK INVARIANT: no empty slot sits above a populated one.
+
+    A department block is read top-down. An empty Name 2 above a populated
+    Name 3 does not say "this record has no primary unit" — it says the
+    pipeline dropped one and nothing moved the rest up, and a consumer cannot
+    tell those apart. Every block the authority returns satisfies this, and
+    every block it is given is checked so a regression is attributed to the
+    pass that opened the hole rather than to the authority that failed to
+    close it.
+    """
+    seen_gap = False
+    for value in block:
+        if value is None or not str(value).strip():
+            seen_gap = True
+        elif seen_gap:
+            return False
+    return True
+
+
 @pytest.mark.skipif(not _baseline_workbooks(), reason="no baseline/ workbooks")
 @pytest.mark.parametrize(
     "workbook", _baseline_workbooks() or [None],
     ids=lambda p: getattr(p, "name", "none"),
 )
-def test_normalise_is_a_superset_of_the_passes_it_replaces(workbook):
-    """On real output, the authority must find nothing left to do.
+def test_normalise_agrees_with_the_passes_it_replaces(workbook):
+    """On real output, the authority changes only what it is meant to change.
 
-    finalise already dedups, packs and orders the block. If `normalise`
-    changes a shipped block, it does not yet agree with the passes it is meant
-    to replace — and the difference is the finding, not the fixture.
+    finalise already dedups, packs and orders the block, so `normalise` should
+    find nothing to do — EXCEPT on a record that ships a hole, which it closes.
+    Any other difference is a finding, not a fixture to fix.
     """
-    differences = []
+    unexpected = []
     for record_id, block in _dept_blocks(workbook):
         after, _origins, log = normalise(
             list(block), [ORIGIN_INPUT] * len(block), None,
         )
-        if after != list(block):
-            differences.append((record_id, block, after, log))
-    assert not differences, "\n".join(
+        if after == list(block):
+            continue
+        expected = PACKS_A_HOLE_CLOSED.get(str(record_id))
+        if expected and list(block) == expected[0] and after == expected[1]:
+            continue
+        unexpected.append((record_id, block, after, log))
+    assert not unexpected, "\n".join(
         f"{rid}: {before} -> {after}\n    {log}"
-        for rid, before, after, log in differences
+        for rid, before, after, log in unexpected
     )
+
+
+@pytest.mark.skipif(not _baseline_workbooks(), reason="no baseline/ workbooks")
+@pytest.mark.parametrize(
+    "workbook", _baseline_workbooks() or [None],
+    ids=lambda p: getattr(p, "name", "none"),
+)
+def test_the_block_invariant_holds_on_everything_the_authority_returns(workbook):
+    """`no_hole_above_a_value` on every block in the corpus, after normalise."""
+    broken = []
+    for record_id, block in _dept_blocks(workbook):
+        after, _origins, _log = normalise(
+            list(block), [ORIGIN_INPUT] * len(block), None,
+        )
+        if not no_hole_above_a_value(after):
+            broken.append((record_id, block, after))
+    assert not broken, "\n".join(
+        f"{rid}: {before} -> {after}" for rid, before, after in broken
+    )
+
+
+class TestTheBlockInvariant:
+    """`no_hole_above_a_value`, stated on its own before it is used in bulk."""
+
+    @pytest.mark.parametrize("block,holds", [
+        (["Department of Chemistry", "Greenberg Lab", None, None], True),
+        ([None, None, None, None], True),
+        (["Department of Chemistry", None, None, None], True),
+        # The shape the two allow-listed records ship.
+        ([None, "Department of Chemistry", None, None], False),
+        (["Department of Chemistry", None, "Greenberg Lab", None], False),
+        (["   ", "Department of Chemistry", None, None], False),
+    ])
+    def test_what_the_invariant_says(self, block, holds):
+        assert no_hole_above_a_value(block) is holds
+
+    @pytest.mark.parametrize("block", [
+        [None, "Department of Chemistry", None, None],
+        ["Department of Chemistry", None, "Greenberg Lab", None],
+        ["   ", "Department of Chemistry", None, None],
+        ["Dept of Biological Sciences", None, "Dept of Biologica", None],
+    ])
+    def test_normalise_always_returns_a_block_that_holds_it(self, block):
+        after, _origins, _log = _run(block)
+        assert no_hole_above_a_value(after)
+
+
+class TestIsTruncationOf:
+    """The positional test, on its own.
+
+    Every token of the short form is the START of the token in the same
+    position, and the long form carries more. Raw tokens — no article or
+    stopword removal, which is what let a trailing "A" disappear.
+    """
+
+    @pytest.mark.parametrize("short,long", [
+        ("Dept of Biologica", "Dept of Biological Sciences"),
+        ("Ward", "Ward North"),
+        ("Accounts Payable", "Accounts Payable Dept"),
+        ("Cent", "Center"),
+        ("Department of Materials Science and",
+         "Department of Materials Science and Engineering"),
+    ])
+    def test_the_tail_was_cut_off(self, short, long):
+        assert is_truncation_of(short, long) is True
+
+    @pytest.mark.parametrize("short,long", [
+        ("Dept B", "Dept A"),          # neither token is a prefix
+        ("Building 2", "Building 1"),
+        ("Ward South", "Ward North"),
+        ("Physiology", "Physics"),
+        ("Ward North", "Ward"),        # the long side is not longer
+        ("Ward", "Ward"),              # identical is not a truncation
+    ])
+    def test_not_a_truncation(self, short, long):
+        assert is_truncation_of(short, long) is False
+
+    def test_it_is_directional(self):
+        assert is_truncation_of("Ward", "Ward North") is True
+        assert is_truncation_of("Ward North", "Ward") is False
+
+    def test_empty_is_never_a_truncation(self):
+        assert is_truncation_of("", "Ward North") is False
+        assert is_truncation_of("Ward", "") is False
+        assert is_truncation_of(None, "Ward") is False

@@ -254,6 +254,26 @@ class Settings:
         )
     )
 
+    # Phase 5 — origin-based Tier 2 eligibility. OFF by default.
+    #
+    # `_slot_origin` says where a department slot's value came from. With this
+    # on, "has this slot got a value" stops meaning "this slot is settled":
+    # only a value an AUTHORITY produced (registry / llm / grounded) is
+    # settled, and one preprocessing merely SPLIT off Name 1, lifted out of a
+    # street or moved between slots is still the record's own words and is
+    # eligible for canonicalisation. That is the `Dept of Biologica` case —
+    # the fragment reached Name 4 with no tier ever asked about it, because
+    # the slot was non-empty.
+    #
+    # Off by default because turning it on costs one Tier 2 call per split
+    # department (3 rows in the baseline set, all in the academic stratum),
+    # and that spend is not this task's decision.
+    dept_split_canonicalises: bool = field(
+        default_factory=lambda: _bool(
+            os.getenv("DEPT_SPLIT_CANONICALISES"), default=False,
+        )
+    )
+
     # GLEIF / LEI (Tier 1 company registry — the company counterpart to ROR)
     # Feature flag so the lookup can be A/B tested or disabled cheaply; when
     # off the company branch behaves exactly as before (straight to the LLM).

@@ -321,35 +321,6 @@ def _index(value: Any, ceiling: int) -> int | None:
     return idx if 0 <= idx < ceiling else None
 
 
-#: A VISN number is the VA's internal network id ("VISN 21"). It identifies a
-#: region of the health system, never the site the record names, and as a
-#: search term it is noise the index cannot match.
-_VISN_RE = re.compile(r"\bVISN\s*\d+\b", re.IGNORECASE)
-
-
-def _searchable_subject(name1: str | None) -> str:
-    """*name1* as something a search index can actually match.
-
-    Three things, in order, each undoing a way the SAP field defeats a search:
-
-    * **abbreviations expanded** — "VAMC" is not a word the web repeats;
-      "Veterans Affairs Medical Center" is;
-    * **VISN <n> dropped** — an internal network id, never part of the name;
-    * **unquoted** — a quoted phrase demands the index hold that exact string,
-      and the record's shorthand is a key in an ERP, not a name anyone writes.
-
-    Falls back to the raw value when the preparation empties it: a query built
-    on nothing is worse than a query built on shorthand.
-    """
-    raw = (name1 or "").strip()
-    if not raw:
-        return ""
-    prepared = expand_abbreviations(raw) or raw
-    prepared = _VISN_RE.sub(" ", prepared)
-    prepared = re.sub(r"\s+", " ", prepared).strip(" ,;-")
-    return prepared or raw
-
-
 def build_query(
     name1: str | None,
     name2: str | None,
@@ -365,17 +336,14 @@ def build_query(
     city/state as disambiguating context, which is what separates the
     University of Melbourne in Australia from the one in Florida.
 
-    Name 1 is prepared by :func:`_searchable_subject` rather than quoted. The
-    quoted form asks the index for a phrase that appears nowhere:
-    ``"VAMC REDDING VISN 21" REDDING CA`` returned zero results for a VA
-    clinic that is one ordinary search away, and a lane that gets no evidence
-    reports `serp_empty` and degrades. The record's own SAP shorthand is a
-    lookup key in someone's ERP, not a string the web repeats.
+    Name 1 quoted (it is the subject), the department's *core* subject added
+    unquoted via ``clean_name2_phrase``, and the city/state as disambiguating
+    context.
     """
     parts: list[str] = []
-    subject = _searchable_subject(name1)
+    subject = (name1 or "").strip()
     if subject:
-        parts.append(subject)
+        parts.append(f'"{subject}"')
     unit = clean_name2_phrase(name2)
     if unit:
         parts.append(unit)
@@ -392,32 +360,14 @@ async def _gather_evidence(
     page_fetcher: PageFetcher,
     cache: BatchCache,
     country_code: str | None,
-    hint_query: str | None = None,
 ) -> tuple[list[EvidenceItem], str | None]:
     """``(evidence, degraded_reason)``. One or two SERP calls, up to three fetches.
 
-    *hint_query* is a second search, issued when an earlier lane proposed a
-    name it could not confirm. The record's own words and the proposed name
-    are two different ways of asking about one organisation, and they fail
-    differently: the record's shorthand may match nothing, while the proposal
-    may match an entity that does not exist. Running both and pooling what
-    comes back lets the containment guard downstream decide between them on
-    evidence rather than on which query happened to be issued.
-
-    The record's own query goes first and keeps the low indices, so
-    ``evidence_index`` still points at the record's own material by default.
     """
     results: list[SearchResult] = await cached_serp(
         cache, search_client, query,
         num_results=NUM_RESULTS, country=country_code,
     )
-    if hint_query and hint_query.strip() and hint_query.strip() != query.strip():
-        extra = await cached_serp(
-            cache, search_client, hint_query,
-            num_results=NUM_RESULTS, country=country_code,
-        )
-        seen = {r.url for r in results}
-        results = list(results) + [r for r in extra if r.url not in seen]
     if not results:
         return [], "serp_empty"
 
@@ -581,7 +531,6 @@ async def run_grounded_resolver(
     routing_type: str,
     domain: str | None,
     name1_registry_ids: Sequence[str] = (),
-    hint: str | None = None,
     search_client: SearchClient,
     page_fetcher: PageFetcher,
     llm_client: OpenAIClient,
@@ -610,10 +559,10 @@ async def run_grounded_resolver(
     # The proposal an earlier lane could not confirm, asked as its own search.
     # It is a lead, not an answer — the containment guard still requires the
     # model's reply to appear in whatever comes back.
-    hint_query = build_query(hint, name2, city, state) if hint else None
+    hint_query = None
     evidence, reason = await _gather_evidence(
         record_id, result.query, search_client, page_fetcher, cache,
-        country_code, hint_query=hint_query,
+        country_code,
     )
     result.evidence = evidence
     if reason:
