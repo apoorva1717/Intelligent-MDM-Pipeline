@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from enrichment.locality import split_site_suffix
+from enrichment.preprocess import dba_payload
 from enrichment.tier2_canonical import subject_preserved
 from enrichment.tier3_llm import _is_address_like_name
 from utils.name_identity import (
@@ -113,6 +114,12 @@ def _registry_country_conflict(
         if info.get("verdict") == CONTRADICTED and info.get("scope") == "country":
             return True, info.get("detail") or f"{name} states another country"
     return False, None
+
+
+def _same_text(a: str | None, b: str | None) -> bool:
+    """Case/whitespace-folded equality — is this the value the marker is on?"""
+    norm = lambda v: " ".join(str(v or "").split()).casefold()
+    return bool(a) and norm(a) == norm(b)
 
 
 def _verdict_for(
@@ -243,6 +250,20 @@ def evaluate(
             result.get("city"), result.get("region"), result.get("state"),
         ) if v
     )
+    # A DBA-marked slot is compared on its PAYLOAD. "DBA Olin E Teague Vet
+    # CTR" carries a marker that states the KIND of name and an SAP
+    # abbreviation, and no canonical form accounts for either — so the
+    # comparison read a correct answer as a different entity. Neither token
+    # says anything about which organisation the record names.
+    #
+    # The comparison input only. The shipped value keeps its marker: UC 11
+    # restores it in finalise precisely because it is user intent, and nothing
+    # here touches that.
+    marked = ((result or {}).get("_dba_values") or {}).get(field)
+    payload = dba_payload(marked) if marked else None
+    if payload and _same_text(incumbent, marked):
+        incumbent = payload
+
     verdict = _verdict_for(
         field, incumbent, value, context,
         city=result.get("city"),

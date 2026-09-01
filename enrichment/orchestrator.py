@@ -57,6 +57,7 @@ from enrichment.search_terms import (
 )
 from enrichment.preprocess import (
     _extract_addresses,
+    dba_payload,
     _is_ap_reference,
     _location_fragment,
     _split_ap_suffix,
@@ -2069,6 +2070,33 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # tier3) wrote — those LLMs treat DBA as noise and strip it, but the
     # marker is user intent (legal name vs. trading name).
     dba_values = result.get("_dba_values") or {}
+    # The payload is the record's own statement of its trading name, so it is
+    # an operating name — the field that exists to hold exactly that. It fills
+    # only the empty case: the Wikidata label and the page corroborator's
+    # `stated` name are WITNESSES, and a witness outranks a self-declaration.
+    #
+    # `input:verified+dba` rather than `input:low`: a DBA line is not an
+    # unresolved guess the pipeline left alone, it is a first-party assertion
+    # the record makes on purpose, and the marker is the warrant. Scheme B has
+    # no witness-less `verified` outside the registries (hard rule 2), which is
+    # correct — so the marker is named as the witness it is.
+    if not (result.get("operating_name") or "").strip():
+        for _slot, _marked in dba_values.items():
+            _payload = dba_payload(_marked)
+            if not _payload:
+                continue
+            result["operating_name"] = smart_title_case(_payload) or _payload
+            result["operating_name_provenance"] = "input:verified+dba"
+            result["_src_name_input_dba"] = result["operating_name"]
+            logger.info({
+                "record_id": result.get("record_id"),
+                "step": "operating_name_from_dba",
+                "slot": _slot,
+                "marked_value": _marked,
+                "operating_name": result["operating_name"],
+            })
+            break
+
     for base, preprocessed in dba_values.items():
         if preprocessed and result.get(f"{base}_enriched") != preprocessed:
             _write(
@@ -3068,7 +3096,17 @@ def _apply_tier3(
                 # does here. `subject_preserved` asks the narrower question
                 # Tier 2 already asks of its own medium-confidence answers.
                 original = _slot_input_value(result, slot)
-                if original and not subject_preserved(original, suggestion):
+                # A DBA-marked slot is compared on its payload, for the reason
+                # `name_gate.evaluate` gives: the marker and the SAP
+                # abbreviation are tokens no canonical name accounts for, and
+                # neither says which unit the record names. The shipped value
+                # is untouched — UC 11 restores the marker in finalise.
+                _dba_here = (result.get("_dba_values") or {}).get(slot)
+                _payload = dba_payload(_dba_here) if _dba_here else None
+                _compare_against = (
+                    _payload if _payload and _dba_here == original else original
+                )
+                if original and not subject_preserved(_compare_against, suggestion):
                     # No write, so the slot stays None and finalise's
                     # department passthrough restores the input value with
                     # `input`, not `llm`, provenance — the same end state as

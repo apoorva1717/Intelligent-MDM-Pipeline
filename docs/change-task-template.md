@@ -152,6 +152,10 @@ larger than the task that surfaced it.
   record-by-record.
 * **`G1-ADDR-001` rises on S4 under enrichment** (65 -> 66) and does not fall on S1 (17 -> 17)
   — the only G1 code enrichment does not reduce.
+* **Two token-cover implementations for one question** — `subject_preserved` keeps the 4-char
+  floor (`vet` ↛ `veterans`) that `name_identity._covers` replaced; unify on `_covers`. Own
+  gate; shipped values will move. Worked example: 13336736, tier 3's correct
+  `"Olin E. Teague Veterans' Medical Center"` refused on the floor.
 * **Two allowlists for one question (casing).** `_case_segment` asks `_SHORT_ORG_WORDS`
   whether a short ALL-CAPS token is a word; `_case_core` asks `_FORCE_TITLE_SHORT` for a
   <=3-letter token and `_SHORT_ORG_WORDS` for everything longer. The shape half of the

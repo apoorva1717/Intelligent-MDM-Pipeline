@@ -467,3 +467,56 @@ class TestIsTruncationOf:
         assert is_truncation_of("", "Ward North") is False
         assert is_truncation_of("Ward", "") is False
         assert is_truncation_of(None, "Ward") is False
+
+
+# ── DBA: compare the payload, ship the payload ─────────────────────────────
+
+class TestDbaPayload:
+    """A "doing business as" line carries two tokens that are not part of any
+    name: the marker, which states the KIND of name, and whatever SAP
+    abbreviation the field width forced. Record 13336736 states
+    `DBA Olin E Teague Vet CTR` and every comparison read the marker as
+    content the candidate had failed to account for.
+    """
+
+    @pytest.mark.parametrize("marked,payload", [
+        ("DBA Olin E Teague Vet CTR", "Olin E Teague Vet Center"),
+        ("d/b/a Coastal Marine", "Coastal Marine"),
+        ("Doing Business As Acme Labs", "Acme Labs"),
+        # "CO" is a legal form, not an abbreviation `expand_abbreviations`
+        # rewrites — the legal-suffix rules own it.
+        ("D.B.A. Gulf Shipping CO", "Gulf Shipping CO"),
+    ])
+    def test_the_marker_comes_off_and_abbreviations_expand(self, marked, payload):
+        from enrichment.preprocess import dba_payload
+        assert dba_payload(marked) == payload
+
+    @pytest.mark.parametrize("value", [
+        "Olin E Teague Vet CTR",     # no marker
+        "Coastal Holdings Inc",
+        "DBA",                        # marker with no payload
+        "",
+        None,
+    ])
+    def test_no_marker_means_no_payload(self, value):
+        from enrichment.preprocess import dba_payload
+        assert dba_payload(value) is None
+
+    def test_the_comparison_reads_the_payload_not_the_marker(self):
+        # `classify_name_change` is the Name 1 arm of the gate. The marker made
+        # a name the record itself states read as an unresolved question.
+        from enrichment.preprocess import dba_payload
+        from utils.name_identity import classify_name_change
+
+        marked = "DBA Coastal Marine"
+        assert classify_name_change(marked, "Coastal Marine LLC") == "undecidable"
+        assert classify_name_change(
+            dba_payload(marked), "Coastal Marine LLC",
+        ) == "same"
+
+    def test_a_subject_swap_is_still_refused(self):
+        from enrichment.preprocess import dba_payload
+        from enrichment.tier2_canonical import subject_preserved
+
+        payload = dba_payload("DBA Olin E Teague Vet CTR")
+        assert subject_preserved(payload, "Department of Radiology") is False

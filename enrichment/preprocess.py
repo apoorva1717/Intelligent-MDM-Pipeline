@@ -47,6 +47,7 @@ from utils.name_slots import (
 from utils.text_utils import (
     PARENT_ORG_ACRONYMS,
     canonicalise_unit_name,
+    expand_abbreviations,
     is_granular_unit,
     is_logistics_location,
     is_unit_construction,
@@ -644,6 +645,34 @@ def _normalise_dba(text: str) -> tuple[str, bool]:
     if changed:
         result = re.sub(r"\s+", " ", result).strip(" ,;/|-")
     return result, changed
+
+
+#: The canonical marker `_normalise_dba` leaves behind, at the head of a value
+#: or after a separator. Stripped only to build a COMPARISON key — never from
+#: the shipped value, which UC 11 restores intact because the marker is user
+#: intent (legal name vs. trading name).
+_DBA_MARKER_RE = re.compile(r"^\s*DBA\b[\s:,\-/]*", re.IGNORECASE)
+
+
+def dba_payload(text: str | None) -> str | None:
+    """The trading name a DBA-marked value carries, or None.
+
+    "DBA Olin E Teague Vet CTR" -> "Olin E Teague Vet Center". The marker
+    comes off and abbreviations are expanded, because every consumer of this
+    is comparing against a canonical form: `subject_preserved` and
+    `classify_name_change` both read "DBA" as a token the candidate failed to
+    account for, and "CTR" as a word the candidate replaced. Neither is a
+    statement about which entity the record names.
+
+    Returns None when the value carries no marker or no payload behind it.
+    """
+    if not text or not str(text).strip():
+        return None
+    normalised, _changed = _normalise_dba(str(text))
+    stripped = _DBA_MARKER_RE.sub("", normalised).strip(" ,;:/|-")
+    if not stripped or stripped == normalised.strip():
+        return None
+    return (expand_abbreviations(stripped) or stripped).strip() or None
 
 
 # ---------------------------------------------------------------------------

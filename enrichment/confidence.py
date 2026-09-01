@@ -30,7 +30,7 @@ this value, and who else says so* — in two tokens and an optional third::
     provenance := source ":" confidence ( "+" witness )?
     source     := "input" | "ror" | "gleif" | "wikidata" | "web:" domain | "llm"
     confidence := "verified" | "provisional" | "low"
-    witness    := "web" | "wikidata" | "llm" | "registry" | "domain"
+    witness    := "web" | "wikidata" | "llm" | "registry" | "domain" | "dba"
 
 Everything the old scheme carried and this one does not — the tier, the match
 mode, the fuzzy score, the model's self-report, the extraction date — is still
@@ -83,10 +83,18 @@ WITNESS_REGISTRY = "registry"
 #: because what corroborates is the domain part; the local part is personal
 #: data and never reaches provenance.
 WITNESS_DOMAIN = "domain"
+#: The record's own "doing business as" line. First-party, and the one witness
+#: that is not external: a DBA marker is the customer stating, in the master
+#: data itself, which of its names is the trading name. That is a deliberate
+#: assertion rather than a value the pipeline inferred, which is what
+#: separates `input:verified+dba` from `input:low` — the marker is the
+#: warrant. It corroborates only the name it marks, never a name elsewhere on
+#: the record.
+WITNESS_DBA = "dba"
 
 WITNESSES: tuple[str, ...] = (
     WITNESS_WEB, WITNESS_WIKIDATA, WITNESS_LLM,
-    WITNESS_REGISTRY, WITNESS_DOMAIN,
+    WITNESS_REGISTRY, WITNESS_DOMAIN, WITNESS_DBA,
 )
 
 #: A witness that can never carry a value to ``verified`` (hard rule 1). Kept
@@ -105,7 +113,7 @@ _DOMAIN = r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)
 PROVENANCE_PATTERN = (
     rf"^(?P<source>input|ror|gleif|wikidata|llm|web:{_DOMAIN})"
     rf":(?P<confidence>verified|provisional|low)"
-    rf"(?:\+(?P<witness>web|wikidata|llm|registry|domain))?$"
+    rf"(?:\+(?P<witness>web|wikidata|llm|registry|domain|dba))?$"
 )
 
 PROVENANCE_RE = re.compile(PROVENANCE_PATTERN)
