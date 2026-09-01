@@ -1051,6 +1051,36 @@ def compute_flags(result: dict[str, Any]) -> None:
     if name2_needs_no_verification(result):
         corroborated.add("name2")
 
+    # An `undecidable` write always raises, whatever else the record has.
+    #
+    # `undecidable` is the gate saying it could not reconcile the name it
+    # allowed with the name the record supplied. That is a statement about the
+    # IDENTITY COMPARISON, and neither a registry id nor a page witness
+    # answers it — they say the entity exists and is spelled this way, not
+    # that it is the entity this row named. Two S3 rows differing only in case
+    # ("VAMC REDDING VISN 21" / "VAMC Redding Visn 21") shipped one correct
+    # name and one the model composed, both `undecidable`, and neither was
+    # flagged: the verdict was read only INSIDE the loop below, as a detail on
+    # a flag raised for another reason, so a corroborated or registry-named
+    # field skipped it entirely.
+    #
+    # Placed before that loop and deliberately not sharing its guards. The
+    # loop's own `registry_named` / `corroborated` skips still stand for the
+    # doubts they describe; this rule adds one they were never asked about.
+    verdicts = evidence.get("_ev_name_verdict") or {}
+    name_was = evidence.get("_ev_name_was") or {}
+    for field in sorted(verdicts):
+        if verdicts.get(field) != "undecidable":
+            continue
+        # The same `*_changed` test the loop below applies: a rewrite that only
+        # recased or expanded the record's own text makes no claim to doubt.
+        if not result.get(f"{field}_changed"):
+            continue
+        was = name_was.get(field)
+        if was and UNVERIFIED_INFERENCE not in details:
+            details[UNVERIFIED_INFERENCE] = f"was '{was}'"
+        raise_flag(UNVERIFIED_INFERENCE, field)
+
     inferred: set[str] = set()
     for field in sorted(_evidence_free_fields(result, evidence)):
         if field in registry_named or field in corroborated:

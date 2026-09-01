@@ -347,6 +347,13 @@ _SHORT_ORG_WORDS = {
     "north", "south", "east", "west", "main", "high", "low", "old", "new",
     "first", "great", "grand", "royal", "prime", "core", "edge", "apex",
     "unit", "team", "crew", "line", "link", "path", "way", "gate", "key",
+    # Four-letter words whose final pair carries no vowel. The shape rule in
+    # `_shape_says_acronym` reads those as acronyms — which is right for
+    # "VAMC" and "UTSW" and wrong for these, and the wordlist is where that
+    # is settled. Surfaced by "ICB&DD MASS SPECTROMETRY" and "Building C
+    # WING"; `smart_title_case` was already mangling both before the two
+    # casing paths shared one rule.
+    "mass", "wing", "comm",
     "sun", "moon", "sky", "fire", "ice", "snow", "rain", "wind", "wave",
     "life", "mind", "body", "hope", "peace", "youth", "child", "kids",
     "women", "men", "boys", "girls", "baby", "home", "one", "two", "six",
@@ -455,6 +462,35 @@ def _mc_name(word: str) -> str:
     return f"{m.group(1)}{m.group(2).upper()}{m.group(3)}" if m else word
 
 
+def _shape_says_acronym(letters: str) -> bool:
+    """The SHAPE half of "is this ALL-CAPS token an acronym or a word?".
+
+    One rule, consulted by both casing paths. `smart_title_case` reaches a name
+    through `_case_segment` and `normalise_output_fields` reaches the same name
+    through `_case_core`, and the second runs LAST — so a token the first got
+    right was being re-cased wrong on the way out. "VAMC REDDING VISN 21" left
+    `smart_title_case` as "VAMC Redding VISN 21" and shipped as "Vamc Redding
+    Visn 21", because only `_case_segment` carried the four-letter rule.
+
+    Shape only: the caller asks the wordlist first. A KNOWN word is a word
+    whatever its shape — "LABS" and "BANK" both end in two consonants.
+    """
+    if not letters:
+        return False
+    upper = letters.upper()
+    # A four-letter token ending in two consonants: "UTSW", "VAMC", "VISN",
+    # "RECG". A four-letter WORD carries a vowel in its final pair — "Ames",
+    # "Sven", "Labs" — which is what separates the two without asking length
+    # to decide something length cannot see.
+    if len(letters) == 4 and not (set(upper[-2:]) & _VOWELS):
+        return True
+    # Vowel-less and short: IBM, MRI, PLLC.
+    if len(letters) <= 5 and not (set(upper) & _VOWELS):
+        return True
+    # Vowel-bearing but unsayable: "MLRA", "NRLF".
+    return _unpronounceable(upper)
+
+
 def _case_segment(seg: str) -> str:
     """Case one hyphen-free segment, preserving acronyms/connectors."""
     letters = re.sub(r"[^A-Za-z]", "", seg)
@@ -480,22 +516,7 @@ def _case_segment(seg: str) -> str:
     # and a mangled one costs the record its identity.
     if len(letters) <= 3:
         return seg  # short → assume acronym: IBM, MRI, LLC, USA, HCA
-    if len(letters) == 4 and not (set(upper[-2:]) & _VOWELS):
-        # §3 — a four-letter token the wordlist does not know, ending in two
-        # consonants, is an acronym rather than a word: "UTSW", "VAMC",
-        # "RECG", "VISN". A four-letter WORD carries a vowel in its final
-        # pair — "Ames", "Sven", "Labs" — which is what separates the two
-        # without asking length to decide something length cannot see.
-        # Mangling an acronym costs the record its identity; leaving an
-        # unknown four-letter token as supplied costs a reviewer nothing.
-        return seg
-    if len(letters) <= 5 and not (set(upper) & _VOWELS):
-        return seg  # no-vowel 5-char acronym: PLLC
-    if _unpronounceable(upper):
-        # Vowel-bearing but unsayable: "MLRA", "NRLF". Before this rule an
-        # ALL-CAPS field lower-cased every acronym that was not in the
-        # allowlist by name, so "USDA - KERRVILLE MLRA OFFICE" shipped
-        # "Kerrville Mlra Office".
+    if _shape_says_acronym(letters):
         return seg
     return _mc_name(seg.capitalize())
 
@@ -747,13 +768,29 @@ def _case_core(core: str, *, mode: str, first: bool) -> str:
         # Vowel-less short token: an acronym, not a word (IBM, MRI, PLLC).
         if letter_count <= 5 and not (set(upper) & _VOWELS):
             return core
-        # Vowel-bearing but unsayable: "MLRA", "NRLF". Applied in both modes —
-        # a token no English word could open is not a word in a street line
-        # either. `smart_title_case` carries the same rule; the two casing
-        # paths must agree, or a value lands cased differently depending on
-        # which one reached it. That is exactly how "USDA - KERRVILLE MLRA
-        # OFFICE" kept "MLRA" in Name 1 and shipped "Mlra" from Name 2.
+        # Vowel-bearing but unsayable: "MLRA", "NRLF". Both modes — a token no
+        # English word could open is not a word in a street line either.
         if _unpronounceable(upper):
+            return core
+        # The four-letter rule, shared with `_case_segment` through
+        # `_shape_says_acronym` rather than copied a third time. This pass runs
+        # LAST, so where the two casing paths disagreed this one won:
+        # "VAMC REDDING VISN 21" left `smart_title_case` correct and shipped as
+        # "Vamc Redding Visn 21".
+        #
+        # Name mode only, for the same reason the <=3 rule below is name-mode
+        # only: in a street or a city a four-letter token ending in two
+        # consonants is overwhelmingly a word — applying it there produces
+        # "LONG Vista Dr", "FORT Loramie", "CAMP Wisdom Rd", "MARK Ave". An
+        # organisation name is where the acronyms live.
+        #
+        # The wordlist is asked first, exactly as `_case_segment` asks it: a
+        # known word is a word whatever its shape ("BANK", "LABS", "MASS").
+        if (
+            mode == "name"
+            and "".join(letters).lower() not in _SHORT_ORG_WORDS
+            and _shape_says_acronym("".join(letters))
+        ):
             return core
         # Name fields keep the existing short-token default — a <=3-letter
         # token in an organisation name is an acronym (HCA, UCI, IBM) unless

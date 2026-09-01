@@ -1129,3 +1129,84 @@ class TestAnAdminDeskIsNotSentForCanonicalisation:
         assert flags.name2_needs_no_verification(
             {"name2_enriched": name2},
         ) is True
+
+
+# ---------------------------------------------------------------------------
+# An `undecidable` write always raises
+# ---------------------------------------------------------------------------
+
+class TestUndecidableAlwaysRaises:
+    """The verdict is about the identity comparison, and nothing else answers it.
+
+    S3 rows 13336690 and 13336733 share an address and differ only in the case
+    of their input. One shipped `Redding VA Clinic`, the correct name; the
+    other shipped `Veterans Affairs Medical Center Redding`, an institution the
+    model composed. Both were written `undecidable`. Neither was flagged for
+    the name — `_ev_name_verdict` was read only inside the evidence-free loop,
+    as a detail on a flag raised for another reason, so a field that was
+    registry-named or corroborated never reached it.
+    """
+
+    @staticmethod
+    def _ship(supplied, written, **overrides):
+        return _finalised(
+            {"name1": supplied},
+            name1_enriched=written,
+            _ev_name_verdict={"name1": "undecidable"},
+            **overrides,
+        )
+
+    @pytest.mark.parametrize("supplied,written,lane", [
+        # The registry pairs: a matched id, an official spelling, and a record
+        # whose own codes appear nowhere in it.
+        ("VAMC MIAMI VISN 8", "Miami VA Healthcare System", "registry"),
+        ("VA MC West LA Visn 22",
+         "VA Greater Los Angeles Healthcare System", "registry"),
+        # The grounded pairs: same address, inputs differing only in case.
+        ("VAMC REDDING VISN 21", "Redding VA Clinic", "grounded"),
+        ("VAMC Redding Visn 21",
+         "Veterans Affairs Medical Center Redding", "grounded"),
+    ])
+    def test_the_name_is_flagged_whichever_lane_wrote_it(
+        self, supplied, written, lane,
+    ):
+        extra = (
+            {"_registry_name_fields": {"name1"}, "ror_id": "https://ror.org/xxx"}
+            if lane == "registry" else {}
+        )
+        result = self._ship(supplied, written, **extra)
+        assert result["name1_enriched"] == written
+        assert flags.UNVERIFIED_INFERENCE in (result.get("flag_codes") or [])
+        assert "name1" in (result.get("flagged_fields") or [])
+        assert f"was '{supplied}'" in (result.get("flag_reason") or "")
+
+    def test_a_same_verdict_raises_nothing(self):
+        # The gate reconciled the two names. There is no doubt to report.
+        result = _finalised(
+            {"name1": "VAMC Miami Visn 8"},
+            name1_enriched="Miami VA Medical Center",
+            _ev_name_verdict={"name1": "same"},
+            _registry_name_fields={"name1"},
+            ror_id="https://ror.org/xxx",
+        )
+        assert flags.UNVERIFIED_INFERENCE not in (result.get("flag_codes") or [])
+
+    def test_a_registry_write_with_a_same_verdict_raises_nothing(self):
+        result = _finalised(
+            {"name1": "Mayo Clinic"},
+            name1_enriched="Mayo Clinic",
+            _ev_name_verdict={"name1": "same"},
+            _registry_name_fields={"name1"},
+            ror_id="https://ror.org/02qp3tb03",
+        )
+        assert flags.UNVERIFIED_INFERENCE not in (result.get("flag_codes") or [])
+
+    def test_an_unchanged_value_raises_nothing(self):
+        # The same `*_changed` test the evidence-free loop applies: a rewrite
+        # that only recased the record's own text makes no claim to doubt.
+        result = _finalised(
+            {"name1": "Redding VA Clinic"},
+            name1_enriched="Redding VA Clinic",
+            _ev_name_verdict={"name1": "undecidable"},
+        )
+        assert flags.UNVERIFIED_INFERENCE not in (result.get("flag_codes") or [])

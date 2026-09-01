@@ -1166,12 +1166,24 @@ def _write_registry_name(
         # and provenance: the re-verification ran as an UPGRADE, which is what
         # §1f requires of it — never as a veto.
         counts["registry_upgraded"] += 1
+    # The gate's verdict on THIS write, recorded the way the LLM paths record
+    # theirs. It was read here (two lines up) and never written, so a registry
+    # name the gate could only call `undecidable` — "VAMC MIAMI VISN 8" ->
+    # "Miami VA Healthcare System", where the record's own codes appear
+    # nowhere in the registry's spelling — reached the column carrying no
+    # verdict at all, and `compute_flags` had nothing to raise on. Set after
+    # the counter above, which asks whether a verdict was ALREADY there: it
+    # distinguishes a registry upgrade of a model's write from a first write,
+    # and setting this first would make every registry write look like an
+    # upgrade.
+    result.setdefault("_ev_name_verdict", {})[field] = decision.verdict
     logger.info({
         "record_id": result.get("record_id"),
         "step": "registry_name_write",
         "field": field,
         "registry": registry,
         "value": value.strip(),
+        "verdict": decision.verdict,
     })
     return accepted
 
@@ -5468,7 +5480,22 @@ class Orchestrator:
         # reason: ROR missed at 0.70 because of the missing letter, Name 3
         # resolved, and no model was ever asked about Name 1. Whether NAME 1
         # is resolved is asked below, of Name 1.
-        if result.get("_ev_name_verdict") or result.get("_ev_name_suggestion"):
+        # An `undecidable` write from an evidence-free lane is the one verdict
+        # that does NOT settle the field. The gate said it could not reconcile
+        # a name the model recalled with the name the record supplied, and
+        # nothing has since read anything — which is precisely the question
+        # this lane exists to answer. Two VA rows sharing an address, supplied
+        # the same name in different case, shipped one real clinic and one
+        # invented institution without the grounded lane ever being offered
+        # either, because company-canonical had "answered".
+        evidence_free_undecidable = bool(
+            result.get("_ev_name1_evidence_free")
+            and (result.get("_ev_name_verdict") or {}).get("name1")
+            == VERDICT_UNDECIDABLE
+        )
+        if (
+            result.get("_ev_name_verdict") or result.get("_ev_name_suggestion")
+        ) and not evidence_free_undecidable:
             # A candidate has already been through the gate for this record.
             return False
         # `_canonical_proposal` is deliberately NOT a resolution. It records
@@ -5479,6 +5506,10 @@ class Orchestrator:
         name1 = (result.get("_lane_inputs") or {}).get("name1")
         if not name1:
             return False
+        if evidence_free_undecidable:
+            # The field holds the unconfirmed name, so the test below would
+            # read it as rewritten and settled. It is neither.
+            return True
         enriched = result.get("name1_enriched")
         # Still holding what it arrived with — nothing rewrote it.
         return not enriched or _same_name_text(enriched, name1)
@@ -5774,6 +5805,9 @@ class Orchestrator:
                 ),
                 routing_type=result.get("routing_type") or "unknown",
                 domain=result.get("domain"),
+                # The unconfirmed name, asked as its own search alongside the
+                # record's own words.
+                hint=result.get("name1_enriched"),
                 name1_registry_ids=[
                     i for i in (result.get("ror_id"), result.get("lei_id")) if i
                 ],
@@ -6376,6 +6410,12 @@ class Orchestrator:
         # Transient, popped with the other markers before the record ships.
         result["_settings"] = self._settings
         result["_name_counts"] = self._name_counts
+        # The supplied Name 1, carried to the batch pass. Taken here, at the
+        # top, because this is the last point at which no lane has written the
+        # column — after this it is a question of which lane happened to write
+        # first, and on a record whose Name 1 arrives in an empty slot the
+        # answer is "a tier, with no input event behind it".
+        result["name1_supplied"] = record.name1
         start = time.monotonic()
         # Fix B — so a frozen-cache miss five frames down can name the record
         # it left short of evidence. asyncio gives each concurrently-enriched
@@ -7158,6 +7198,33 @@ class Orchestrator:
                                 result, start, record, cache,
                             )
                     elif company_res and company_res.success and company_res.name1_enriched:
+                        # The gate's verdict on a proposal this lane recalled
+                        # rather than read. The name is still written — Section
+                        # 3 tried withholding it and starved every lane that
+                        # consumes it, costing two records their domain and one
+                        # a GLEIF-verified Name 2. What changes is that an
+                        # `undecidable` write no longer counts as an answer:
+                        # the record stays eligible for the §1d fall-through,
+                        # and the grounded lane is asked to confirm the name by
+                        # reading, carrying it as a hint.
+                        canonical_decision = name_gate.evaluate(
+                            result, "name1", company_res.name1_enriched,
+                            incumbent=name1_cleaned,
+                            street=result.get("street1_original"),
+                            country=(
+                                result.get("country_region_key")
+                                or record.country
+                            ),
+                            settings=self._settings,
+                        )
+                        result.setdefault("_ev_name_verdict", {})["name1"] = (
+                            canonical_decision.verdict
+                        )
+                        if canonical_decision.verdict == VERDICT_UNDECIDABLE:
+                            # Evidence-free: the model recalled this name, it
+                            # did not read it anywhere. That is what makes the
+                            # verdict an open question rather than a finding.
+                            result["_ev_name1_evidence_free"] = True
                         _write(
                             result, "name1_enriched",
                             company_res.name1_enriched,

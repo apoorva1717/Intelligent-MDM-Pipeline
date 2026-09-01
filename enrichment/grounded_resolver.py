@@ -46,6 +46,7 @@ field's proposal, and the record's own original value, are untouched.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field as dc_field
 from typing import Any, Sequence
 
@@ -70,6 +71,7 @@ from search.page_fetcher import PageContent, PageFetcher
 from utils.cache import BatchCache, cached_serp
 from utils.name_identity import DIFFERENT, classify_name_change
 from utils.text_utils import (
+    expand_abbreviations,
     looks_like_research_institution,
 )
 
@@ -256,6 +258,39 @@ class GroundedResult:
         return self.wrote_anything or bool(self.confirmed)
 
 
+def _flatten_for_containment(text: Any) -> str:
+    """*text* reduced to the form the containment test compares on.
+
+    Casefolded, punctuation dropped or turned into a gap (see below), and
+    whitespace collapsed. Those are the only three differences a verbatim
+    answer is allowed: the model may recase, repunctuate or rewrap what it
+    copied. It may not add a word.
+    """
+    if text is None:
+        return ""
+    # Periods and apostrophes sit INSIDE a word — "V.A." is the same token as
+    # "VA", "St. Mary's" the same as "St Marys" — so they are removed rather
+    # than turned into a gap. Every other mark separates, and becomes one.
+    flat = re.sub(r"[.\u2019\']", "", str(text).casefold())
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", flat)).strip()
+
+
+def _appears_in(value: str, haystack: str) -> bool:
+    """True when *value* appears verbatim in the rendered evidence.
+
+    Substring, not fuzzy, and deliberately so. The prompt tells the model to
+    copy the name from the evidence; a proposal that is merely CLOSE to
+    something in the evidence is a proposal the model composed, and the whole
+    point of the grounded lane is that it does not do that. Loosening this to
+    a ratio would re-admit exactly the value it exists to catch:
+    "Veterans Affairs Medical Center Redding" scores well against evidence
+    holding "Veterans Affairs" and "Redding VA Clinic" while naming an
+    institution that appears in neither.
+    """
+    flat = _flatten_for_containment(value)
+    return bool(flat) and flat in haystack
+
+
 def _clean(value: Any) -> str | None:
     """A model's string field, or None. ``"null"`` is None: JSON mode returns
     the string often enough that treating it as a name would be a bug waiting
@@ -286,6 +321,35 @@ def _index(value: Any, ceiling: int) -> int | None:
     return idx if 0 <= idx < ceiling else None
 
 
+#: A VISN number is the VA's internal network id ("VISN 21"). It identifies a
+#: region of the health system, never the site the record names, and as a
+#: search term it is noise the index cannot match.
+_VISN_RE = re.compile(r"\bVISN\s*\d+\b", re.IGNORECASE)
+
+
+def _searchable_subject(name1: str | None) -> str:
+    """*name1* as something a search index can actually match.
+
+    Three things, in order, each undoing a way the SAP field defeats a search:
+
+    * **abbreviations expanded** — "VAMC" is not a word the web repeats;
+      "Veterans Affairs Medical Center" is;
+    * **VISN <n> dropped** — an internal network id, never part of the name;
+    * **unquoted** — a quoted phrase demands the index hold that exact string,
+      and the record's shorthand is a key in an ERP, not a name anyone writes.
+
+    Falls back to the raw value when the preparation empties it: a query built
+    on nothing is worse than a query built on shorthand.
+    """
+    raw = (name1 or "").strip()
+    if not raw:
+        return ""
+    prepared = expand_abbreviations(raw) or raw
+    prepared = _VISN_RE.sub(" ", prepared)
+    prepared = re.sub(r"\s+", " ", prepared).strip(" ,;-")
+    return prepared or raw
+
+
 def build_query(
     name1: str | None,
     name2: str | None,
@@ -294,17 +358,24 @@ def build_query(
 ) -> str:
     """The one SERP query, built from the record's own identifying material.
 
-    Name 1 quoted (it is the subject), the department's *core* subject added
-    unquoted via ``clean_name2_phrase`` — the same reduction the search-term
-    derivation uses, so "Department of Chemistry" contributes "Chemistry"
-    rather than three structural words the index will match everywhere — and
-    the city/state as disambiguating context, which is what separates the
+    Name 1 as the subject, the department's *core* subject added via
+    ``clean_name2_phrase`` — the same reduction the search-term derivation
+    uses, so "Department of Chemistry" contributes "Chemistry" rather than
+    three structural words the index will match everywhere — and the
+    city/state as disambiguating context, which is what separates the
     University of Melbourne in Australia from the one in Florida.
+
+    Name 1 is prepared by :func:`_searchable_subject` rather than quoted. The
+    quoted form asks the index for a phrase that appears nowhere:
+    ``"VAMC REDDING VISN 21" REDDING CA`` returned zero results for a VA
+    clinic that is one ordinary search away, and a lane that gets no evidence
+    reports `serp_empty` and degrades. The record's own SAP shorthand is a
+    lookup key in someone's ERP, not a string the web repeats.
     """
     parts: list[str] = []
-    subject = (name1 or "").strip()
+    subject = _searchable_subject(name1)
     if subject:
-        parts.append(f'"{subject}"')
+        parts.append(subject)
     unit = clean_name2_phrase(name2)
     if unit:
         parts.append(unit)
@@ -321,12 +392,32 @@ async def _gather_evidence(
     page_fetcher: PageFetcher,
     cache: BatchCache,
     country_code: str | None,
+    hint_query: str | None = None,
 ) -> tuple[list[EvidenceItem], str | None]:
-    """``(evidence, degraded_reason)``. One SERP call, up to three fetches."""
+    """``(evidence, degraded_reason)``. One or two SERP calls, up to three fetches.
+
+    *hint_query* is a second search, issued when an earlier lane proposed a
+    name it could not confirm. The record's own words and the proposed name
+    are two different ways of asking about one organisation, and they fail
+    differently: the record's shorthand may match nothing, while the proposal
+    may match an entity that does not exist. Running both and pooling what
+    comes back lets the containment guard downstream decide between them on
+    evidence rather than on which query happened to be issued.
+
+    The record's own query goes first and keeps the low indices, so
+    ``evidence_index`` still points at the record's own material by default.
+    """
     results: list[SearchResult] = await cached_serp(
         cache, search_client, query,
         num_results=NUM_RESULTS, country=country_code,
     )
+    if hint_query and hint_query.strip() and hint_query.strip() != query.strip():
+        extra = await cached_serp(
+            cache, search_client, hint_query,
+            num_results=NUM_RESULTS, country=country_code,
+        )
+        seen = {r.url for r in results}
+        results = list(results) + [r for r in extra if r.url not in seen]
     if not results:
         return [], "serp_empty"
 
@@ -490,6 +581,7 @@ async def run_grounded_resolver(
     routing_type: str,
     domain: str | None,
     name1_registry_ids: Sequence[str] = (),
+    hint: str | None = None,
     search_client: SearchClient,
     page_fetcher: PageFetcher,
     llm_client: OpenAIClient,
@@ -515,9 +607,13 @@ async def run_grounded_resolver(
         return result
 
     result.query = build_query(name1, name2, city, state)
+    # The proposal an earlier lane could not confirm, asked as its own search.
+    # It is a lead, not an answer — the containment guard still requires the
+    # model's reply to appear in whatever comes back.
+    hint_query = build_query(hint, name2, city, state) if hint else None
     evidence, reason = await _gather_evidence(
         record_id, result.query, search_client, page_fetcher, cache,
-        country_code,
+        country_code, hint_query=hint_query,
     )
     result.evidence = evidence
     if reason:
@@ -531,13 +627,16 @@ async def run_grounded_resolver(
         result.degraded_reason = reason
         return result
 
+    # Rendered once: the string the model is shown IS the string its answer
+    # must appear in, and building it twice would let the two drift.
+    rendered_evidence = "\n".join(item.render() for item in evidence)
     user_prompt = GROUNDED_RESOLVER_USER_PROMPT_TEMPLATE.format(
         name1=name1 or "not recorded",
         name2=name2 or "not recorded",
         city=city or "not recorded",
         state=state or "not recorded",
         country=country or "not recorded",
-        evidence="\n".join(item.render() for item in evidence),
+        evidence=rendered_evidence,
     )
     try:
         extraction = await llm_client.extract_json(
@@ -591,11 +690,26 @@ async def run_grounded_resolver(
     # "Liberty Health Sciences" is how a wrong entity acquires a real
     # identifier, which is the one outcome worse than not resolving.
     originals = {"name1": name1, "name2": name2}
+    evidence_haystack = _flatten_for_containment(rendered_evidence)
     verdicts: dict[str, str] = {}
     for field in list(proposals):
         value = proposals[field]
         if _is_address_like_name(value, street):
             result.dropped[field] = "address_like"
+            result.suggestions[field] = value
+            del proposals[field]
+            continue
+        # The lane's contract, enforced rather than trusted. The model is
+        # handed the evidence and told to copy the name out of it; nothing
+        # checked that it had. Two S3 rows sharing an address and differing
+        # only in the case of their input got "Redding VA Clinic" — which the
+        # evidence states — and "Veterans Affairs Medical Center Redding",
+        # which it does not: the model assembled it from "Veterans Affairs"
+        # and the place name, and it named an institution that does not exist.
+        # A composed name is not a grounded answer, whatever it scores against
+        # the record.
+        if not _appears_in(value, evidence_haystack):
+            result.dropped[field] = "not_in_evidence"
             result.suggestions[field] = value
             del proposals[field]
             continue

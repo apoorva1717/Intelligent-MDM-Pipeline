@@ -88,15 +88,42 @@ async def _run(orchestrator: Orchestrator, record: EnrichmentRecord):
 
 
 class TestQueryConstruction:
-    """The one SERP query, from the record's own identifying material."""
+    """The SERP query, from the record's own identifying material.
 
-    def test_quotes_name1_and_reduces_name2_to_its_subject(self):
+    Name 1 is no longer quoted. A quoted phrase demands the index hold that
+    exact string, and a SAP name field routinely holds a lookup key rather
+    than a name: `"VAMC REDDING VISN 21" REDDING CA` returned zero results for
+    a VA clinic that is one ordinary search away, so the lane reported
+    `serp_empty` and degraded — on a record it could have resolved.
+    """
+
+    def test_name1_is_unquoted_and_name2_reduced_to_its_subject(self):
         assert build_query(
             "Stanford University", "Department of Chemistry", "Stanford", "CA",
-        ) == '"Stanford University" Chemistry Stanford CA'
+        ) == "Stanford University Chemistry Stanford CA"
 
     def test_omits_what_the_record_does_not_state(self):
-        assert build_query("Acme GmbH", None, None, None) == '"Acme GmbH"'
+        assert build_query("Acme GmbH", None, None, None) == "Acme GmbH"
+
+    def test_a_visn_number_is_dropped(self):
+        # The VA's internal network id. It names a region of the health
+        # system, never the site the record is about, and no page repeats it.
+        assert build_query("VAMC REDDING VISN 21", None, "REDDING", "CA") == (
+            "VAMC REDDING REDDING CA"
+        )
+        assert build_query("VAMC Redding Visn 21", None, "Redding", "CA") == (
+            "VAMC Redding Redding CA"
+        )
+
+    def test_abbreviations_are_expanded(self):
+        assert build_query("Univ of Texas", None, None, None) == (
+            "University of Texas"
+        )
+
+    def test_a_name_that_is_only_a_visn_number_keeps_its_raw_value(self):
+        # The fallback: a query built on nothing is worse than one built on
+        # shorthand.
+        assert build_query("VISN 21", None, None, None) == "VISN 21"
 
 
 class TestGroundedResolver:
@@ -252,6 +279,9 @@ class TestGroundedResolver:
             "evidence_index": {"name1": 0, "name2": 0},
             "reasoning": "",
         })
+        stub = _EvidenceStating(
+            "Wheatstone Metrology Group", "Calibration Services Department",
+        )
         grounded = await run_grounded_resolver(
             "GR4",
             name1="Kelvin Bridge Instruments",
@@ -259,8 +289,8 @@ class TestGroundedResolver:
             street=None, city="Glasgow", state=None,
             country="GB", country_code="GB",
             routing_type="company", domain=None,
-            search_client=MockSearchClient(),
-            page_fetcher=MockPageFetcher(),
+            search_client=stub,
+            page_fetcher=stub,
             llm_client=llm,
             ror_client=mock_clients["ror"],
             lei_client=mock_clients["lei"],
@@ -522,7 +552,8 @@ class TestConfirmationRatherThanRewrite:
             street=None, city="Moffett Field", state="CA",
             country="US", country_code="US",
             routing_type="research_institution", domain=None,
-            search_client=MockSearchClient(), page_fetcher=MockPageFetcher(),
+            search_client=_EvidenceStating("Ames Research Center"),
+            page_fetcher=_EvidenceStating("Ames Research Center"),
             llm_client=llm, ror_client=mock_clients["ror"],
             lei_client=mock_clients["lei"],
             cache=BatchCache(), settings=test_settings,
@@ -655,7 +686,8 @@ class TestGuardsAtTheLane:
             street="1200 Industrial Park Road", city="Glasgow", state=None,
             country="GB", country_code="GB",
             routing_type="company", domain=None,
-            search_client=clients["search"], page_fetcher=clients["page"],
+            search_client=_EvidenceStating("Calibration Services Department"),
+            page_fetcher=_EvidenceStating("Calibration Services Department"),
             llm_client=llm, ror_client=clients["ror"],
             lei_client=clients["lei"],
             cache=BatchCache(), settings=test_settings,
@@ -733,7 +765,8 @@ class TestGuardsAtTheLane:
             street=None, city="Moffett Field", state=None,
             country="Germany", country_code=None,
             routing_type="research_institution", domain=None,
-            search_client=clients["search"], page_fetcher=clients["page"],
+            search_client=_EvidenceStating("Ames Research Center"),
+            page_fetcher=_EvidenceStating("Ames Research Center"),
             llm_client=llm, ror_client=clients["ror"],
             lei_client=clients["lei"],
             cache=BatchCache(), settings=test_settings,
@@ -781,3 +814,317 @@ class TestGuardsAtTheLane:
         assert grounded.name1.origin == ORIGIN_LLM
         assert grounded.name1.evidence_index is None
         assert grounded.name1.source_url is None
+
+
+# ── The proposal must appear in the evidence ────────────────────────────────
+
+
+class _EvidenceStating:
+    """Search + page stubs whose evidence states exactly *phrases*.
+
+    The shared SERP mock answers an unmatched query with a generic default
+    ("Faculty Profile Page", "Example University"), which was harmless while
+    nothing compared a proposal against the evidence it was supposedly read
+    from. It is not harmless now: a test that curates a model answer and takes
+    the default evidence is a test whose proposal appears nowhere in its own
+    evidence, and the containment guard drops it before the guard the test is
+    actually about ever runs. These stubs put the proposal in the evidence so
+    each test still exercises its own subject.
+    """
+
+    def __init__(self, *phrases: str) -> None:
+        self._phrases = list(phrases)
+
+    async def search(self, query, num_results=5, *, country=None):
+        from search.base import SearchResult
+        return [SearchResult(
+            title=" | ".join(self._phrases),
+            url="https://www.example.org/about/",
+            snippet=". ".join(self._phrases) + ".",
+        )]
+
+    async def fetch_page_content(self, url, **kwargs):
+        from search.page_fetcher import PageContent
+        return PageContent(
+            url=url, url_path="/about/",
+            page_title=" | ".join(self._phrases),
+            h1=self._phrases[0] if self._phrases else "",
+            breadcrumb="", body_text=". ".join(self._phrases) + ".",
+        )
+
+    async def aclose(self):
+        pass
+
+
+class _ReddingSearch:
+    """Evidence that states `Redding VA Clinic` and `Veterans Affairs`, and
+    does not state `Veterans Affairs Medical Center Redding`."""
+
+    async def search(self, query, num_results=5, *, country=None):
+        from search.base import SearchResult
+        return [
+            SearchResult(
+                title="Redding VA Clinic | VA Northern California Health Care",
+                url="https://www.va.gov/northern-california-health-care/locations/redding-va-clinic/",
+                snippet=(
+                    "The Redding VA Clinic offers primary care to Veterans in "
+                    "Shasta County. Part of the Department of Veterans Affairs."
+                ),
+            ),
+        ]
+
+
+class _ReddingPages:
+    """A page whose readable slices say the same thing the snippet does.
+
+    A fetchable page is required — the lane declines to answer on snippets
+    alone (`all_fetches_failed`) — so the evidence is a real page that names
+    the clinic and the department, and no institution called "Veterans Affairs
+    Medical Center Redding".
+    """
+
+    async def fetch_page_content(self, url, **kwargs):
+        from search.page_fetcher import PageContent
+        return PageContent(
+            url=url,
+            url_path="/northern-california-health-care/locations/redding-va-clinic/",
+            page_title="Redding VA Clinic | VA Northern California Health Care",
+            h1="Redding VA Clinic",
+            breadcrumb="Home > Locations > Redding VA Clinic",
+            body_text="Part of the Department of Veterans Affairs.",
+        )
+
+    async def aclose(self):
+        pass
+
+
+class TestAProposalMustAppearInTheEvidence:
+    """The lane's contract, enforced rather than trusted.
+
+    S3 rows 13336690 and 13336733 share an address and differ only in the case
+    of their input. One got `Redding VA Clinic`, which the evidence states;
+    the other got `Veterans Affairs Medical Center Redding`, which it does not
+    — the model assembled it from "Veterans Affairs" and the place name. Both
+    were written. The evidence is handed to the model precisely so it can copy
+    a name out of it, and nothing checked that it had.
+    """
+
+    HAYSTACK = (
+        "[0] https://www.va.gov/northern-california-health-care/locations/"
+        "redding-va-clinic/\n"
+        "    search result title: Redding VA Clinic | VA Northern California\n"
+        "    search result snippet: The Redding VA Clinic offers primary care "
+        "to Veterans. Part of the Department of Veterans Affairs."
+    )
+
+    @staticmethod
+    def _in(value, haystack):
+        from enrichment.grounded_resolver import (
+            _appears_in, _flatten_for_containment,
+        )
+        return _appears_in(value, _flatten_for_containment(haystack))
+
+    def test_a_composed_name_is_not_in_the_evidence(self):
+        assert self._in(
+            "Veterans Affairs Medical Center Redding", self.HAYSTACK,
+        ) is False
+
+    def test_the_name_the_evidence_states_is_kept(self):
+        assert self._in("Redding VA Clinic", self.HAYSTACK) is True
+
+    @pytest.mark.parametrize("value", [
+        "REDDING VA CLINIC",            # case
+        "redding va clinic",            # case
+        "Redding V.A. Clinic",          # punctuation
+        "Redding  VA   Clinic",         # whitespace
+    ])
+    def test_case_and_punctuation_differences_are_still_verbatim(self, value):
+        # The model may recase, repunctuate or rewrap what it copied. It may
+        # not add a word.
+        assert self._in(value, self.HAYSTACK) is True
+
+    @pytest.mark.asyncio
+    async def test_the_lane_drops_it_and_keeps_it_as_a_suggestion(
+        self, test_settings, mock_clients,
+    ):
+        from utils.cache import BatchCache
+
+        llm = StubLLM({
+            "name1_canonical": "Veterans Affairs Medical Center Redding",
+            "name2_kind": "none",
+            "per_field_confidence": {"name1": "high"},
+            "evidence_index": {"name1": 0},
+            "reasoning": "",
+        })
+        grounded = await run_grounded_resolver(
+            "13336733",
+            name1="VAMC Redding Visn 21",
+            name2=None,
+            street=None, city="Redding", state="CA",
+            country="US", country_code="US",
+            routing_type="government", domain=None,
+            search_client=_ReddingSearch(),
+            page_fetcher=_ReddingPages(),
+            llm_client=llm,
+            ror_client=mock_clients["ror"],
+            lei_client=mock_clients["lei"],
+            cache=BatchCache(),
+            settings=test_settings,
+        )
+        assert grounded.ran is True
+        assert grounded.dropped.get("name1") == "not_in_evidence"
+        assert grounded.name1 is None
+        # Kept, so the flag can carry what was refused.
+        assert grounded.suggestions["name1"] == (
+            "Veterans Affairs Medical Center Redding"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_evidence_backed_name_survives(
+        self, test_settings, mock_clients,
+    ):
+        from utils.cache import BatchCache
+
+        llm = StubLLM({
+            "name1_canonical": "Redding VA Clinic",
+            "name2_kind": "none",
+            "per_field_confidence": {"name1": "high"},
+            "evidence_index": {"name1": 0},
+            "reasoning": "",
+        })
+        grounded = await run_grounded_resolver(
+            "13336690",
+            name1="VAMC REDDING VISN 21",
+            name2=None,
+            street=None, city="Redding", state="CA",
+            country="US", country_code="US",
+            routing_type="government", domain=None,
+            search_client=_ReddingSearch(),
+            page_fetcher=_ReddingPages(),
+            llm_client=llm,
+            ror_client=mock_clients["ror"],
+            lei_client=mock_clients["lei"],
+            cache=BatchCache(),
+            settings=test_settings,
+        )
+        assert grounded.ran is True
+        assert "name1" not in grounded.dropped
+        assert grounded.name1 is not None
+        assert grounded.name1.value == "Redding VA Clinic"
+
+
+
+class TestTheHintIsASecondQuery:
+    """A name an earlier lane could not confirm is asked about, not adopted.
+
+    Company canonicalisation recalls a name; it reads nothing. When the gate
+    calls that `undecidable`, the record stays eligible for the §1d
+    fall-through and the proposal travels here as a hint — issued as its own
+    search alongside the record's own words, so the containment guard can
+    decide between them on evidence.
+    """
+
+    @pytest.mark.asyncio
+    async def test_both_queries_are_issued_and_the_evidence_pooled(
+        self, test_settings, mock_clients,
+    ):
+        from utils.cache import BatchCache
+
+        queries: list[str] = []
+
+        class _Recording(_EvidenceStating):
+            async def search(self, query, num_results=5, *, country=None):
+                queries.append(query)
+                return await super().search(query, num_results, country=country)
+
+        stub = _Recording("Redding VA Clinic")
+        llm = StubLLM({
+            "name1_canonical": "Redding VA Clinic",
+            "name2_kind": "none",
+            "per_field_confidence": {"name1": "high"},
+            "evidence_index": {"name1": 0},
+            "reasoning": "",
+        })
+        grounded = await run_grounded_resolver(
+            "13336733",
+            name1="VAMC Redding Visn 21", name2=None,
+            street=None, city="Redding", state="CA",
+            country="US", country_code="US",
+            routing_type="government", domain=None,
+            hint="Veterans Affairs Medical Center Redding",
+            search_client=stub, page_fetcher=stub,
+            llm_client=llm, ror_client=mock_clients["ror"],
+            lei_client=mock_clients["lei"],
+            cache=BatchCache(), settings=test_settings,
+        )
+        assert len(queries) == 2
+        # The record's own words first, so `evidence_index` still points at
+        # the record's own material by default.
+        assert queries[0] == "VAMC Redding Redding CA"
+        assert queries[1] == "Veterans Affairs Medical Center Redding Redding CA"
+        assert grounded.name1 is not None
+        assert grounded.name1.value == "Redding VA Clinic"
+
+    @pytest.mark.asyncio
+    async def test_no_hint_means_one_query(self, test_settings, mock_clients):
+        from utils.cache import BatchCache
+
+        queries: list[str] = []
+
+        class _Recording(_EvidenceStating):
+            async def search(self, query, num_results=5, *, country=None):
+                queries.append(query)
+                return await super().search(query, num_results, country=country)
+
+        stub = _Recording("Redding VA Clinic")
+        llm = StubLLM({
+            "name1_canonical": "Redding VA Clinic",
+            "name2_kind": "none",
+            "per_field_confidence": {"name1": "high"},
+            "evidence_index": {"name1": 0},
+            "reasoning": "",
+        })
+        await run_grounded_resolver(
+            "no-hint",
+            name1="VAMC Redding Visn 21", name2=None,
+            street=None, city="Redding", state="CA",
+            country="US", country_code="US",
+            routing_type="government", domain=None,
+            search_client=stub, page_fetcher=stub,
+            llm_client=llm, ror_client=mock_clients["ror"],
+            lei_client=mock_clients["lei"],
+            cache=BatchCache(), settings=test_settings,
+        )
+        assert len(queries) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_hint_the_evidence_does_not_support_still_cannot_survive(
+        self, test_settings, mock_clients,
+    ):
+        # The guard the second query does not weaken: pooling more evidence
+        # gives the model more to read, never permission to answer from the
+        # hint itself.
+        from utils.cache import BatchCache
+
+        llm = StubLLM({
+            "name1_canonical": "Veterans Affairs Medical Center Redding",
+            "name2_kind": "none",
+            "per_field_confidence": {"name1": "high"},
+            "evidence_index": {"name1": 0},
+            "reasoning": "",
+        })
+        stub = _EvidenceStating("Redding VA Clinic")
+        grounded = await run_grounded_resolver(
+            "13336733",
+            name1="VAMC Redding Visn 21", name2=None,
+            street=None, city="Redding", state="CA",
+            country="US", country_code="US",
+            routing_type="government", domain=None,
+            hint="Veterans Affairs Medical Center Redding",
+            search_client=stub, page_fetcher=stub,
+            llm_client=llm, ror_client=mock_clients["ror"],
+            lei_client=mock_clients["lei"],
+            cache=BatchCache(), settings=test_settings,
+        )
+        assert grounded.dropped.get("name1") == "not_in_evidence"
+        assert grounded.name1 is None

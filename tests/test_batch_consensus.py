@@ -32,6 +32,7 @@ from enrichment.batch_consensus import (
     PROPAGATED_FIELDS,
     _address_block_id,
     _input_affinity,
+    _supplied_name,
     _name_parts,
     _supplied_names,
     apply_batch_consensus,
@@ -987,3 +988,135 @@ class TestNameFormTieBreak:
 
     def test_a_record_with_no_log_contributes_no_supplied_name(self):
         assert _supplied_names([_result("a", "Coastal Diagnostics")]) == []
+
+
+class TestGroupingOnTheSuppliedName:
+    """The batch groups on what the records SAID, not only on what they became.
+
+    S3 rows 13336690 and 13336733 share an address and were supplied the same
+    name in different case. One shipped `Redding VA Clinic`; the other shipped
+    `Veterans Affairs Medical Center Redding`, which the model composed. Keyed
+    on the enriched name alone the two do not group — the pass asks the batch
+    to agree only after the disagreement has already happened — so neither row
+    could correct the other.
+    """
+
+    def test_the_redding_pair_groups_and_the_input_form_wins(self):
+        rows = [
+            _supplied("13336690", "VAMC REDDING VISN 21", "Redding VA Clinic"),
+            _supplied("13336733", "VAMC Redding Visn 21",
+                      "Veterans Affairs Medical Center Redding"),
+        ]
+        telemetry = apply_batch_consensus(rows)
+
+        assert telemetry.groups == 1
+        assert {r.name1_enriched for r in rows} == {"Redding VA Clinic"}
+        assert rows[1].source == "batch_consensus"
+
+    def test_the_election_is_decided_by_input_affinity_not_by_order(self):
+        # The number, not just the winner: `Redding VA Clinic` stands for what
+        # the batch actually said about this address, and the composed name
+        # does not. Asserting the margin is what would catch the election
+        # flipping for an unrelated reason.
+        supplied = ["VAMC REDDING VISN 21", "VAMC Redding Visn 21"]
+        assert _input_affinity("Redding VA Clinic", supplied) == 119
+        assert _input_affinity(
+            "Veterans Affairs Medical Center Redding", supplied,
+        ) == 81
+
+    def test_the_pair_groups_whichever_order_they_arrive_in(self):
+        rows = [
+            _supplied("13336733", "VAMC Redding Visn 21",
+                      "Veterans Affairs Medical Center Redding"),
+            _supplied("13336690", "VAMC REDDING VISN 21", "Redding VA Clinic"),
+        ]
+        apply_batch_consensus(rows)
+        assert {r.name1_enriched for r in rows} == {"Redding VA Clinic"}
+
+    def test_two_organisations_at_one_address_still_do_not_group(self):
+        # The guard on the whole idea: a shared address is not a shared
+        # identity. Different supplied names AND different enriched names
+        # means neither key joins, and each row is left to answer for itself.
+        rows = [
+            _supplied("a", "Tampa General Hospital", "Tampa General Hospital"),
+            _supplied("b", "Coastal Diagnostics Inc", "Coastal Diagnostics, Inc."),
+        ]
+        telemetry = apply_batch_consensus(rows)
+
+        assert telemetry.groups == 0
+        assert rows[0].name1_enriched == "Tampa General Hospital"
+        assert rows[1].name1_enriched == "Coastal Diagnostics, Inc."
+        assert rows[0].source != "batch_consensus"
+        assert rows[1].source != "batch_consensus"
+
+    def test_a_record_with_no_supplied_name_still_groups_on_its_enriched_one(self):
+        # `_result` has no provenance log, so it contributes no supplied key.
+        # The enriched key must still do the work it always did.
+        rows = [
+            _result("r1", "Coastal Diagnostics, Inc."),
+            _result("r2", "Coastal Diagnostics"),
+            _result("r3", "Coastal Diagnostics, Inc."),
+        ]
+        apply_batch_consensus(rows)
+        assert {r.name1_enriched for r in rows} == {"Coastal Diagnostics, Inc."}
+
+
+class TestTheSuppliedNameIsCarriedNotReDerived:
+    """`name1_supplied`, not the provenance log.
+
+    The log answers "what did this record arrive with" only where the input
+    reached it as a passthrough event. On a record whose Name 1 was written
+    into an EMPTY slot by a tier, the first event is that tier's own write with
+    `old_value=None`, and the log reports that nothing was supplied — which is
+    how two VA rows at one address, supplied the same name in different case,
+    stayed invisible to each other.
+    """
+
+    @staticmethod
+    def _tier_written(record_id, supplied, enriched, **kw):
+        """A record a tier wrote into an empty Name 1 — no input event."""
+        row = _result(record_id, None, name1_supplied=supplied, **kw)
+        row.write("name1_enriched", enriched,
+                  llm_evidence(("llm_company_canonical",), tier=2,
+                               prompt_version="t", deployment="t"))
+        return row
+
+    def test_the_log_alone_does_not_see_the_supplied_name(self):
+        from enrichment.provenance import log_from_dicts
+
+        row = self._tier_written("13336733", "VAMC Redding Visn 21",
+                                 "Redding VA Clinic")
+        log = log_from_dicts(row.provenance, row.provenance_rejected,
+                             row.provenance_rejected_omitted)
+        assert log.original_value("name1_enriched") is None
+        # …and the carried value does.
+        assert _supplied_name(row) == "VAMC Redding Visn 21"
+
+    def test_the_redding_pair_groups_without_an_input_event(self):
+        rows = [
+            self._tier_written("13336690", "VAMC REDDING VISN 21",
+                               "Redding VA Clinic"),
+            self._tier_written("13336733", "VAMC Redding Visn 21",
+                               "Veterans Affairs Medical Center Redding"),
+        ]
+        telemetry = apply_batch_consensus(rows)
+
+        assert telemetry.groups == 1
+        assert {r.name1_enriched for r in rows} == {"Redding VA Clinic"}
+
+    def test_the_log_is_still_the_fallback(self):
+        # A record carrying no `name1_supplied` — one built before the field
+        # existed, or restored from a stored payload — still groups on what
+        # its log remembers.
+        rows = [
+            _supplied("a", "Coastal Diagnostics Inc", "Coastal Diagnostics, Inc."),
+            _supplied("b", "Coastal Diagnostics Inc", "Coastal Diagnostics"),
+        ]
+        for row in rows:
+            assert row.name1_supplied is None
+        telemetry = apply_batch_consensus(rows)
+        assert telemetry.groups == 1
+
+    def test_it_never_reaches_the_response_body(self):
+        row = self._tier_written("x", "VAMC Redding Visn 21", "Redding VA Clinic")
+        assert "name1_supplied" not in row.model_dump(by_alias=True)

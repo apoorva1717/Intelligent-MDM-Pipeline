@@ -397,3 +397,55 @@ class TestExitPaths:
             assert val != val.upper() or not any(c.isalpha() for c in val), (
                 f"{field} is still fully upper-case: {val!r}"
             )
+
+
+class TestOneAcronymRule:
+    """`_case_core` and `_case_segment` answer the acronym question once.
+
+    Two casing implementations reached the same name: `smart_title_case` via
+    `_case_segment`, and `normalise_output_fields` via `_case_core`. Only the
+    first carried the four-letter rule, and the second runs LAST — so
+    "VAMC REDDING VISN 21" left `smart_title_case` correct as
+    "VAMC Redding VISN 21" and shipped as "Vamc Redding Visn 21". The rule is
+    now defined once and consulted by both.
+    """
+
+    @pytest.mark.parametrize("value,expected", [
+        # The VA rows that surfaced it. Four letters, final pair carrying no
+        # vowel — an acronym, not a word.
+        ("VAMC REDDING VISN 21", "VAMC Redding VISN 21"),
+        ("VAMC MIAMI VISN 8", "VAMC Miami VISN 8"),
+        # The token that got the unpronounceable rule copied here originally.
+        ("USDA - KERRVILLE MLRA OFFICE", "USDA - Kerrville MLRA Office"),
+        ("UTSW MEDICAL CENTER", "UTSW Medical Center"),
+    ])
+    def test_a_four_letter_acronym_survives_the_final_pass(self, value, expected):
+        assert normalise_case(value, mode="name") == expected
+
+    @pytest.mark.parametrize("value,expected", [
+        # The other half of the rule, and the reason the wordlist is asked
+        # first: these all end in two consonants and are all words.
+        ("FIRST NATIONAL BANK", "First National Bank"),
+        ("WEST PARK LABS", "West Park Labs"),
+        ("ACME TECH", "Acme Tech"),
+        ("NORTH MILL WORKS", "North Mill Works"),
+        # A four-letter word with a vowel in its final pair was never at risk.
+        ("AMES RESEARCH CENTER", "Ames Research Center"),
+    ])
+    def test_a_known_word_is_still_a_word(self, value, expected):
+        assert normalise_case(value, mode="name") == expected
+
+    @pytest.mark.parametrize("token,keeps_supplied_case", [
+        ("VAMC", True), ("VISN", True), ("UTSW", True), ("MLRA", True),
+        ("BANK", False), ("LABS", False), ("MASS", False), ("WING", False),
+        ("AMES", False),
+    ])
+    def test_the_two_paths_agree_token_by_token(self, token, keeps_supplied_case):
+        # The invariant the shared rule exists to hold. Asserted on tokens
+        # rather than whole strings: `smart_title_case` and `normalise_case`
+        # differ on other things (an "&"-joined token, a <=3-letter token in
+        # name mode), and those divergences are deliberate and separate.
+        from utils.text_utils import _case_segment
+
+        assert _case_segment(token) == normalise_case(token, mode="name")
+        assert (_case_segment(token) == token) is keeps_supplied_case

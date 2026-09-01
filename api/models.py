@@ -496,6 +496,22 @@ class EnrichmentResult(BaseModel):
     # trace is where that belongs.
     name2_registry_id: Optional[str] = Field(default=None, exclude=True)
 
+    # The Name 1 the record ARRIVED with, carried past finalisation.
+    #
+    # `batch_consensus` groups on it, and used to read it back out of the
+    # provenance log (`original_value("name1_enriched")`). That read is only
+    # truthful when the input reached the log as a passthrough event, and on a
+    # record whose Name 1 was written into an EMPTY slot by a tier it never
+    # does: the first event is the tier's own write with `old_value=None`, so
+    # the log says the record supplied nothing. Two VA rows at one address,
+    # supplied the same name in different case, were invisible to each other
+    # for exactly that reason. Carried on the result instead, where it does
+    # not depend on which lane happened to write the column.
+    #
+    # Excluded from the response body: it is the input, and the input is
+    # already the caller's.
+    name1_supplied: Optional[str] = Field(default=None, exclude=True)
+
     # ── Per-field provenance (Fix 10) ────────────────────────────────
     # Six derived scalars, one per Phase 1 scoped field, in Provenance
     # Scheme B — `source:confidence[+witness]`, e.g. `ror:verified`,

@@ -237,25 +237,74 @@ def _legal_forms_compatible(a: str, b: str) -> bool:
 
 
 def _build_groups(results: list["EnrichmentResult"]) -> list[_Group]:
-    """Group by address block first, then by canonical name + legal form.
+    """Group by address block first, then by name + legal form.
 
     Within one address block two rows group together when their names are equal
     after legal-form canonicalisation AND their legal forms are compatible.
+    "Their names" means either the name a row SHIPS or the name it was
+    SUPPLIED — see the two-key note below.
     Compatibility is not transitive — an absent form is compatible with every
     form — so when a block holds two or more DIFFERENT legal forms under one
     base name, each form gets its own group and every absent-form row is left
     on its own. Assigning it to one of the competing forms would be a guess,
     and guessing which legal entity a row belongs to is Phase 2's call.
     """
-    buckets: "OrderedDict[tuple[str, str], list[tuple[int, str]]]" = OrderedDict()
+    # Two keys per record, not one: the name it SHIPS and the name it was
+    # SUPPLIED. Keying on the enriched name alone asks the batch to agree
+    # after the disagreement has already happened — two S3 rows at one address
+    # whose inputs differ only in case ("VAMC REDDING VISN 21" /
+    # "VAMC Redding Visn 21") shipped "Redding VA Clinic" and "Veterans
+    # Affairs Medical Center Redding", and those two enriched names do not
+    # group, so neither row could correct the other. The supplied names are
+    # the same string; on that key they are obviously one organisation.
+    #
+    # Both keys go through `_name_parts`, so the supplied side is normalised
+    # exactly as the enriched side is and no third notion of "same name"
+    # enters the pass.
+    by_block: "OrderedDict[str, list[tuple[int, frozenset, str, str]]]" = (
+        OrderedDict()
+    )
     for index, result in enumerate(results):
         block_id = _address_block_id(result)
         if not block_id:
             continue
         base, legal_form = _name_parts(result.name1_enriched)
-        if not base:
+        supplied_base, _supplied_form = _name_parts(_supplied_name(result))
+        keys = frozenset(k for k in (base, supplied_base) if k)
+        if not keys:
             continue
-        buckets.setdefault((block_id, base), []).append((index, legal_form))
+        by_block.setdefault(block_id, []).append(
+            (index, keys, legal_form, base or supplied_base),
+        )
+
+    # A record joins a bucket when EITHER of its keys matches EITHER key of a
+    # member already there, so one record can bridge two buckets that no
+    # single key would have joined. The bridged buckets are unioned rather
+    # than the record being assigned to one of them — picking a side would be
+    # the guess this pass exists to avoid.
+    buckets: "OrderedDict[tuple[str, str], list[tuple[int, str]]]" = OrderedDict()
+    for block_id, entries in by_block.items():
+        merged: list[dict] = []
+        for index, keys, legal_form, base in entries:
+            touching = [b for b in merged if b["keys"] & keys]
+            if not touching:
+                merged.append({
+                    "keys": set(keys), "base": base,
+                    "members": [(index, legal_form)],
+                })
+                continue
+            head = touching[0]
+            for other in touching[1:]:
+                head["keys"] |= other["keys"]
+                head["members"].extend(other["members"])
+                merged.remove(other)
+            head["keys"] |= keys
+            head["members"].append((index, legal_form))
+        for bucket in merged:
+            # Batch order inside a bucket, which a union may have disturbed.
+            # The donor ranking below tie-breaks on it, so it decides which
+            # record answers for the group and must not depend on merge order.
+            buckets[(block_id, bucket["base"])] = sorted(bucket["members"])
 
     groups: list[_Group] = []
     for (block_id, base), items in buckets.items():
@@ -296,6 +345,29 @@ def _donor_rank(index: int, result: "EnrichmentResult") -> tuple[int, int, int]:
     return (-id_count, int(result.tier_used or 3), index)
 
 
+def _supplied_name(member: "EnrichmentResult") -> str:
+    """The Name 1 *member* arrived with, or "".
+
+    `name1_supplied` is carried on the result from the top of `_enrich_single`,
+    before any lane has written the column. The provenance log is the fallback
+    and not the source: `original_value` is truthful only where the input
+    reached the log as a passthrough event, and on a record whose Name 1 was
+    written into an EMPTY slot by a tier it never does — the first event is
+    that tier's own write, with `old_value=None`, so the log reports that the
+    record supplied nothing. Two VA rows at one address, supplied the same name
+    in different case, could not see each other for exactly that reason.
+    """
+    carried = getattr(member, "name1_supplied", None)
+    if carried and str(carried).strip():
+        return str(carried)
+    log = log_from_dicts(
+        member.provenance, member.provenance_rejected,
+        member.provenance_rejected_omitted,
+    )
+    original = log.original_value("name1_enriched")
+    return str(original) if original and str(original).strip() else ""
+
+
 def _supplied_names(members: list["EnrichmentResult"]) -> list[str]:
     """Every Name 1 the group's records actually arrived with.
 
@@ -305,16 +377,7 @@ def _supplied_names(members: list["EnrichmentResult"]) -> list[str]:
     nothing; a group where none does yields an empty list, and the election
     falls through to the tie-breaks below it.
     """
-    supplied: list[str] = []
-    for member in members:
-        log = log_from_dicts(
-            member.provenance, member.provenance_rejected,
-            member.provenance_rejected_omitted,
-        )
-        original = log.original_value("name1_enriched")
-        if original and str(original).strip():
-            supplied.append(str(original))
-    return supplied
+    return [name for name in (_supplied_name(m) for m in members) if name]
 
 
 def _input_affinity(form: str, supplied: list[str]) -> int:
