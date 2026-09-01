@@ -136,6 +136,22 @@ larger than the task that surfaced it.
   reached, starts producing something, and what it produces displaces a better-attributed
   value. A monotonicity rule at the funnel makes that impossible to express.
 
+* **The annotations never use `G2-VAL-003`, `G2-VAL-006` or `G2-VAL-007`**, though all three
+  fire on all 100 rows of both strata. Under Catalogue v2 scoring they sit outside the
+  annotation vocabulary and are not counted as false positives; the gap between the
+  annotation and the detector is still real and unclosed. `G2-VAL-003` and `G2-VAL-006` are
+  G6 (persist by design); `G2-VAL-007` is G2 and is cleared 100 -> 0. Row ids: all 100 in
+  each stratum.
+* **`G1-ADDR-009` (27 expected, 0 raised on S1) and `G1-ADDR-011` (12 missed on S4)** are the
+  largest pure recall gaps; `G3-ADDR-013`, `G3-ADDR-014`, `G4-ADDR-025`, `G4-NAME-015` are
+  expected but never raised on either stratum. Recall is unaffected by the v2 corrections —
+  0.566 on S1 and 0.744 on S4 both before and after — so these are the whole of the gap.
+* **`G2-NAME-012` increases under enrichment** (S1 14 -> 20, S4 3 -> 9). Recorded as improved
+  detectability rather than regression: the code needs `record_type = research`, and
+  enrichment resolves `record_type` on records that arrived unclassified. Not verified
+  record-by-record.
+* **`G1-ADDR-001` rises on S4 under enrichment** (65 -> 66) and does not fall on S1 (17 -> 17)
+  — the only G1 code enrichment does not reduce.
 * **Two allowlists for one question (casing).** `_case_segment` asks `_SHORT_ORG_WORDS`
   whether a short ALL-CAPS token is a word; `_case_core` asks `_FORCE_TITLE_SHORT` for a
   <=3-letter token and `_SHORT_ORG_WORDS` for everything longer. The shape half of the
