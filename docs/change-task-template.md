@@ -280,3 +280,98 @@ larger than the task that surfaced it.
   `fix2:unchanged-verified` domain rung — it may not take that rung when the page
   corroborator recorded `name_mismatch` for that same domain. That removes 13333920's false
   `input:verified+web` without touching the domain column or needing any escape logic.
+* **`DEPT_SPLIT_CANONICALISES` — flipped to `True`, gated, REVERTED.** The lane's
+  protections all held: 51 admin-desk slots across the four workbooks were untouched
+  (`has_no_canonical_form` guards it), and no slot was rewritten to a different unit — the
+  stop trigger the task named never fired. It was reverted on the allow-list instead, which
+  three of the eleven changed rows fell outside:
+
+  | row | before | after | why it is outside |
+  |---|---|---|---|
+  | 13335676 (S4, t100) | Name 2 `Davie Medical Center` | **empty**, ST2 `DAVIE MEDICAL` -> empty | a deletion, not a canonicalisation — the refused answer cleared the slot instead of falling back |
+  | 13333471 (S5) | `Suggested Name` "JFK Medical Center" / `Suggestion Source` "llm, refused: different_entity" | **empty** | the column that exists to make identity refusals steward-visible, silently cleared |
+  | 13034224 (t100) | Name 2 `GD` | `Division of Geologic` | right unit (USGS's Geologic Division), form nobody writes |
+
+  The two clean wins, for whoever re-lands it: 13348118 `Moores Cancer Center` ->
+  `UCSD Moores Cancer Center`, and 13336873 `W.A. Foote Memorial Hospital` ->
+  `W. A. Foote Memorial Hospital` with `unverified-inference` clearing.
+
+  **The blocker is the refusal path, not the canonicaliser.** When the identity guard
+  refuses the canonical form for a slot made eligible by this flag, the slot must fall back
+  to the value it had; today it ships empty, and the record loses both the name and its
+  search term. Fix that first, then re-gate.
+
+  Also measured: the verification record 13336633 ("SAC FISH & WILDLIFE SERV" relocated
+  from Street 2) is NOT canonicalised with the flag on — it ships unchanged at `input:low`
+  with `relocated-unverified`. So the flag does not reach the street-relocated government
+  case the task expected it to.
+* **`DEPT_SPLIT_CANONICALISES` — re-land attempt, gated, REVERTED again.** The §1 fixes
+  landed and are KEPT in the tree (they are correct independently of the flag); only the
+  default went back to `False`.
+
+  What the re-land fixed, measured on the second gate (20 rows, **0 allow-list violations,
+  0 slots cleared, 0 admin-desk slots changed** of 51):
+
+  | row | first gate | re-land |
+  |---|---|---|
+  | 13335676 Davie | Name 2 emptied, ST2 lost | **retained** — Tier 2 proposed the PARENT ("HCA Florida University Hospital"); refused at the lane, value kept |
+  | 13336501 | Name 2 empty | **'Columbia Mainland Medical Center' retained** — same destruction, also fixed |
+  | 13034224 USGS | `GD` -> `Division of Geologic` | **`Geologic Division`** — Tier 2 had proposed the correct form all along; UC 5's reorder was rewriting a tier's answer |
+  | 13208652 | `Division of Cincinnati Procurement Operations` | **`Cincinnati Procurement Operations Division`** — same reorder bug, second worked example |
+
+  Plus the wins that were always there: `Moores Cancer Center` -> `UCSD Moores Cancer
+  Center`, `W.A. Foote` -> `W. A. Foote`, `Institute of Memory Impairments` -> `Institute
+  FOR Memory Impairments` (x2), `Institute of Regenerative Medicine` -> `Institute FOR
+  Regenerative Medicine` (x2), `Emerson Climate Technologies, Inc` -> `... Inc.`.
+
+  **Why it was reverted: one suggestion lost.** 13333471 shipped `Suggested Name`
+  "JFK Medical Center" / `Suggestion Source` "llm, refused: different_entity" in the
+  baseline and nothing in the candidate. The suggestion was not cleared by the lane — the
+  ROW STOPPED BEING FLAGGED (`relocated-unverified` dropped, `Flag for Review` True ->
+  False), and the suggestion renderer runs only `if result.get("flag_for_review")`, so the
+  column was never populated.
+
+  The cause is BATCH-LEVEL, not the lane acting on this record: re-run in isolation under
+  both flag states the record is byte-identical (origin `preprocess:street`,
+  `relocated-unverified` raised, Name 2 `JFK Medical Center`). Something about the group —
+  13336501 in the same corpus gains a Name 2 under the flag, which changes what batch
+  consensus sees — retracts the relocated doubt. That is worth understanding before a third
+  attempt: a doubt being dropped without being ANSWERED is the same failure class as the
+  cleared slot, one level up.
+
+  **Next attempt should start there**, not at the canonicalisation lane, which is now
+  behaving.
+* **Phase 5 shipped on the third gate — and the rule that made it safe.** The two failed
+  attempts above were both the same defect wearing different clothes: a lane that CHANGED
+  NOTHING nevertheless re-attributed what it touched. Gate 1 destroyed values (the refused
+  canonical cleared the slot); gate 2 destroyed the record of where a value came from (the
+  passthrough declared `producer="input"`, so `_slot_origin` went from `preprocess:street`
+  to `input` and `relocated-unverified` stopped firing on seven records, five of them
+  dropping out of review entirely — with their Name 2 byte-identical on both sides).
+
+  The fix is one invariant at the write funnel: **an origin may change only when the value
+  changes.** `_origin_for` answers "who performed this write", and for a write that changes
+  nothing that is a different question from "where did this value come from". A transform
+  already expressed this ("the origin follows the VALUE"); `_write` now guarantees it for
+  any writer, so a lane cannot silently re-attribute a value however it declares itself.
+  The fold is whitespace and case only — deliberately not `normalize_key`, which folds
+  legal forms.
+
+  Third gate: 18 rows, 0 allow-list violations, 0 slots cleared, 0 admin-desk slots
+  changed (of 51), **0 doubts dropped without a value change**, 10 canonicalisations
+  landing. Spend +17 Tier 2 calls (t100 +5, S1 +2, S4 +8, S5 +2).
+
+* **The canonical short-circuit costs one suggestion — accepted, and reversible.**
+  13333471 shipped `Suggested Name` "JFK Medical Center" with the flag OFF and nothing with
+  it ON. Nothing is destroyed: the record keeps its value, origin, `relocated-unverified`
+  and review state. The flag makes the canonicalisation lane run, and
+  `canonical_short_circuit` then finishes the record ("If canonical ran on any field, the
+  record is finished HERE") — so Tier 3, the lane that proposed "JFK Medical Center" and
+  had it refused, never runs. Verified directly: flag off -> `tier3_ran=True`; flag on ->
+  `tier2_canonical_ran=True, tier3_ran=False`.
+
+  The trade is one refused-proposal suggestion for the canonicalisation of that record's
+  block, it is visible per-record, and `DEPT_SPLIT_CANONICALISES=false` reverses it.
+  Narrowing the short-circuit so a PASSED-THROUGH slot does not skip Tier 3 would recover
+  both, but the short-circuit is load-bearing for spend and that is its own gate. Row id:
+  13333471.

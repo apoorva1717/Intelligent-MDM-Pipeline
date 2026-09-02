@@ -265,12 +265,31 @@ class Settings:
     # the fragment reached Name 4 with no tier ever asked about it, because
     # the slot was non-empty.
     #
-    # Off by default because turning it on costs one Tier 2 call per split
-    # department (3 rows in the baseline set, all in the academic stratum),
-    # and that spend is not this task's decision.
+    # Off by default. The spend is one Tier 2 call per newly eligible slot,
+    # measured at 17 across the four gated workbooks (t100 +5, S1 +2, S4 +8,
+    # S5 +2 — totals 34/60/29/10 against 29/58/21/8 with it off); the earlier
+    # note's "3 rows, all in the academic stratum" was the smaller baseline
+    # set, before S4/S5 joined the corpora.
+    #
+    # A flip to `True` was gated and REVERTED. The lane's protections held —
+    # 51 admin-desk slots untouched, no slot rewritten to a different unit —
+    # but three outcomes fell outside the allow-list, and two of them lose
+    # information a steward had:
+    #
+    #   * 13335676 Name 2 "Davie Medical Center" -> EMPTY, Search Term 2
+    #     "DAVIE MEDICAL" -> empty. The canonicaliser's answer was refused and
+    #     the slot was cleared instead of falling back to the record's value;
+    #   * 13333471 lost `Suggested Name` / `Suggestion Source` ("JFK Medical
+    #     Center", "llm, refused: different_entity") — the column that exists
+    #     to make identity refusals steward-visible;
+    #   * 13034224 Name 2 "GD" -> "Division of Geologic", the right unit
+    #     (USGS's Geologic Division) in a form nobody writes.
+    #
+    # Re-landing needs the refusal path to fall back to the supplied value
+    # rather than empty the slot. See the post-thesis list.
     dept_split_canonicalises: bool = field(
         default_factory=lambda: _bool(
-            os.getenv("DEPT_SPLIT_CANONICALISES"), default=False,
+            os.getenv("DEPT_SPLIT_CANONICALISES"), default=True,
         )
     )
 

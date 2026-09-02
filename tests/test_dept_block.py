@@ -803,3 +803,90 @@ class TestADBAInAStreetSlotReachesTheDBAMachinery:
         )
         assert r.street2 == "DBA WACO FAMILY MEDICINE"
         assert not r.dba_fields
+
+
+class TestAnOriginMayChangeOnlyWhenTheValueChanges:
+    """The funnel invariant.
+
+    `_origin_for` answers "who performed this write". For a write that changes
+    nothing that is a different question from "where did this value come
+    from", and Phase 5 made the difference matter: its passthrough declared
+    `producer="input"`, so a value the routers had lifted out of a street was
+    re-attributed to the name block and `relocated-unverified` stopped firing.
+
+    Seven records lost a doubt that way — five of them dropping out of review
+    entirely — with their Name 2 byte-identical on both sides: 13333471,
+    13335858, 13140896, 13333600, 13335245, 13335676, 13340639. The doubt was
+    never answered; the fact it rested on was destroyed.
+    """
+
+    @staticmethod
+    def _slot(value="JFK Medical Center", origin="preprocess:street"):
+        from api.models import EnrichmentRecord
+        from enrichment.orchestrator import _init_result
+        from tests.conftest import seed
+
+        result = _init_result(EnrichmentRecord(
+            record_id="O1", country="US", name1="HCA Integrated Regional Labs",
+        ))
+        seed(result, name2_enriched=value)
+        seed(result, _slot_origin={"name2": origin})
+        return result
+
+    def test_an_unchanged_write_does_not_re_attribute_the_slot(self):
+        from enrichment.orchestrator import _write
+        from enrichment.provenance import deterministic_evidence
+
+        result = self._slot()
+        _write(
+            result, "name2_enriched", "JFK Medical Center",
+            deterministic_evidence(
+                "tier2-canonical:below-threshold-passthrough",
+                producer="input", tier=2,
+            ),
+        )
+        assert result["_slot_origin"]["name2"] == "preprocess:street"
+
+    def test_case_and_whitespace_alone_are_not_a_change(self):
+        from enrichment.orchestrator import _write
+        from enrichment.provenance import deterministic_evidence
+
+        result = self._slot()
+        _write(
+            result, "name2_enriched", "  JFK   MEDICAL center ",
+            deterministic_evidence("x", producer="input", tier=2),
+        )
+        assert result["_slot_origin"]["name2"] == "preprocess:street"
+
+    def test_a_genuinely_new_value_still_re_attributes(self):
+        """The other half — this is not a freeze. A lane that ESTABLISHES
+        something owns what it wrote."""
+        from enrichment.orchestrator import _write
+        from enrichment.provenance import llm_evidence
+
+        result = self._slot()
+        _write(
+            result, "name2_enriched", "JFK Medical Center North Campus",
+            llm_evidence(
+                ("llm_canonical",), tier=2, prompt_version="v1",
+                deployment="test", rule_id="uc5:tier2-canonical",
+            ),
+        )
+        assert result["_slot_origin"]["name2"] == "llm"
+
+    @pytest.mark.parametrize("a,b,same", [
+        ("JFK Medical Center", "JFK Medical Center", True),
+        ("JFK Medical Center", "jfk  medical   center", True),
+        # A punctuation edit IS a change — "Emerson Climate Technologies, Inc"
+        # -> "... Inc." is a real one, and the lane that made it owns it.
+        ("Emerson Climate Technologies, Inc", "Emerson Climate Technologies, Inc.", False),
+        # Deliberately NOT `normalize_key`: folding legal forms would read two
+        # different companies at one address as one value.
+        ("Delta Analytical Inc", "Delta Analytical LLC", False),
+        (None, "x", False),
+        (None, None, True),
+    ])
+    def test_the_fold_is_whitespace_and_case_only(self, a, b, same):
+        from enrichment.orchestrator import _same_value_folded
+
+        assert _same_value_folded(a, b) is same

@@ -1412,13 +1412,48 @@ def _write(result: Any, field: str, value: Any, evidence: Evidence) -> None:
     department slot records its origin by construction, and one that bypasses
     the funnel is the single exception, called out where it happens.
     """
+    incumbent = result.get(field) if field in DEPT_ENRICHED_FIELDS else None
     result.write(field, value, evidence)
     if field in DEPT_ENRICHED_FIELDS:
         origin = _origin_for(evidence)
-        if origin is not None:
+        # THE ORIGIN INVARIANT: an origin may change only when the VALUE
+        # changes.
+        #
+        # `_origin_for` answers "who performed this write". For a write that
+        # changes nothing those are different questions — the writer is Tier 2,
+        # the value still came from wherever it came from — and a passthrough
+        # that declares `producer="input"` was overwriting the record of where
+        # the value came from with a claim about who last touched it.
+        #
+        # Measured: seven records lost `relocated-unverified` this way, five of
+        # them dropping out of review entirely, with their Name 2 byte-
+        # identical on both sides (13333471, 13335858, 13140896, 13333600,
+        # 13335245, 13335676, 13340639). The doubt was not answered — the fact
+        # it was derived from was destroyed.
+        #
+        # A transform already expresses this ("the origin follows the VALUE",
+        # `_origin_for`); this makes the same guarantee hold for any writer,
+        # so a lane that passes a value through cannot silently re-attribute
+        # it however it declares itself.
+        if origin is not None and not _same_value_folded(value, incumbent):
             result.setdefault("_slot_origin", {})[
                 field[: -len("_enriched")]
             ] = origin
+
+
+def _same_value_folded(a: Any, b: Any) -> bool:
+    """True when two slot values are the same value written twice.
+
+    Whitespace runs and case only — deliberately NOT `normalize_key`, which
+    folds legal forms and would read "Delta Analytical Inc" and "Delta
+    Analytical LLC" as one value (`batch_consensus._name_parts` records why
+    that equivalence must not decide identity). Two values that differ by a
+    period or a comma ARE different values here, and rightly re-attribute:
+    "Emerson Climate Technologies, Inc" -> "... Inc." is a real edit.
+    """
+    if a is None or b is None:
+        return a is None and b is None
+    return " ".join(str(a).split()).casefold() == " ".join(str(b).split()).casefold()
 
 
 #: The LEI lane's name-match threshold, reused. `finalise` is a module-level
@@ -2259,9 +2294,29 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # predicate the other three callers ask: §0 of search_terms, Tier 2 and
     # flags all decline to look for a canonical form here, and this, the fourth
     # caller, is the one that WRITES.
+    # A value an AUTHORITY wrote is not a draft to be reworded. UC 5's
+    # reorder exists to canonicalise the RECORD's own text — that is the rule
+    # `test_name_from_street_canonical` states: a value the routers lifted out
+    # of a street is the pipeline's own and is canonicalised, "and a value
+    # that was supplied in the name block, or that a tier has since answered
+    # for, is left alone". The street half was implemented; this half was not,
+    # because before Phase 5 a tier rarely answered for a dept slot.
+    #
+    # 13034224: Tier 2 answered "GD" with "Geologic Division" — the correct
+    # USGS unit — and the reorder turned it into "Division of Geologic",
+    # which is not a name anyone writes. The reorder cannot tell a subject
+    # noun ("Chemistry Department") from an adjective ("Geologic Division"),
+    # and it does not have to: it should not be reading a tier's answer at
+    # all.
+    #
+    # `RESOLVED_ORIGINS` is the same set Phase 5's eligibility test uses to
+    # tell an answered slot from a moved one — one definition, both directions.
+    _origins = result.get("_slot_origin") or {}
     for field in DEPT_ENRICHED_FIELDS:
         val = result.get(field)
         slot = field[: -len("_enriched")]
+        if _origins.get(slot) in dept_block.RESOLVED_ORIGINS:
+            continue
         if val and not has_no_canonical_form(val, result) and (
             slot in _names_from_street or not is_granular_unit(val)
         ):
@@ -8218,8 +8273,53 @@ class Orchestrator:
                 any_canonical_ran = True
 
                 if canonical.success and canonical.name2_enriched:
+                    # The proposal names the INSTITUTION, not this unit.
+                    #
+                    # Asked to canonicalise "Davie Medical Ctr" under "HCA
+                    # Florida University Hospital", Tier 2 returned the
+                    # hospital — the parent, a different unit from the site the
+                    # slot was about. `dept-slot-echoes-name1:dropped`
+                    # afterwards caught the echo and dropped it, which is
+                    # correct for a slot that ARRIVED echoing Name 1 and
+                    # destructive here: the record's own "Davie Medical Ctr"
+                    # was gone by then, so 13335676 shipped an empty Name 2 and
+                    # no Search Term 2 in exchange for an answer nobody kept.
+                    #
+                    # Refusing it HERE keeps the fallback where the other
+                    # refusal already puts it — the slot retains exactly what
+                    # it held — and hands the proposal to the suggestion
+                    # machinery as the identity refusal it is.
+                    if _echoes_name1(
+                        canonical.name2_enriched, result["name1_enriched"],
+                    ):
+                        logger.info({
+                            "record_id": record.record_id,
+                            "step": f"tier2_canonical_rejected_echo_{field_key}",
+                            "rejected": canonical.name2_enriched,
+                        })
+                        result.reject(
+                            field_key, canonical.name2_enriched,
+                            "uc5:tier2-canonical",
+                            reason=name_gate.REASON_DIFFERENT_ENTITY,
+                        )
+                        _note_suggestion(
+                            result, field=field_key,
+                            value=canonical.name2_enriched,
+                            lane="llm",
+                            reason=name_gate.REASON_DIFFERENT_ENTITY,
+                        )
+                        _write(
+                            result, f"{field_key}_enriched", pp_val,
+                            deterministic_evidence(
+                                "uc5:echoes-name1-rejected-passthrough",
+                                producer="input", tier=2,
+                                evidence_ref={
+                                    "rejected": canonical.name2_enriched,
+                                },
+                            ),
+                        )
                     # UC 5 scope filter: reject granular units.
-                    if is_granular_unit(canonical.name2_enriched):
+                    elif is_granular_unit(canonical.name2_enriched):
                         logger.info({
                             "record_id": record.record_id,
                             "step": f"tier2_canonical_rejected_scope_{field_key}",
@@ -8234,6 +8334,18 @@ class Orchestrator:
                                     "rejected": canonical.name2_enriched,
                                 },
                             ),
+                        )
+                    elif _same_value_folded(
+                        canonical.name2_enriched, result.get(f"{field_key}_enriched"),
+                    ):
+                        # The model returned the value the slot already held.
+                        # Nothing was established, so nothing is re-attributed
+                        # — 13335245 keeps `preprocess:street` and its
+                        # relocated doubt while shipping the same
+                        # "Citrus Memorial Health System" it always did.
+                        result.transform(
+                            f"{field_key}_enriched", canonical.name2_enriched,
+                            rule_id="uc5:tier2-canonical-agreed",
                         )
                     else:
                         _write(
@@ -8252,13 +8364,19 @@ class Orchestrator:
                         if 5 not in result["use_cases_triggered"]:
                             result["use_cases_triggered"].append(5)
                 else:
-                    # LLM not confident — passthrough original
-                    _write(
-                        result, f"{field_key}_enriched", pp_val,
-                        deterministic_evidence(
-                            "tier2-canonical:below-threshold-passthrough",
-                            producer="input", tier=2,
-                        ),
+                    # LLM not confident — passthrough original.
+                    #
+                    # A TRANSFORM, not an input write. The value does not
+                    # change here, so the origin must follow it: declaring
+                    # `producer="input"` told `_origin_for` that a value the
+                    # routers had lifted out of a street had come from the
+                    # name block, and the `relocated-unverified` doubt
+                    # disappeared with the fact it rested on. The funnel now
+                    # enforces this for any writer; saying it correctly at
+                    # the call site is the other half.
+                    result.transform(
+                        f"{field_key}_enriched", pp_val,
+                        rule_id="tier2-canonical:below-threshold-passthrough",
                     )
 
             # If canonical ran on any field, the record is finished HERE
