@@ -323,3 +323,84 @@ class TestProvenance:
         assert event["evidence_ref"]["proposal"] == "AIXELO, INC"
         # The value stays the record's own string, not the model's punctuation.
         assert event["new_value"] == "Aixelo Inc"
+
+
+class TestTheDomainRungRespectsThePagesOwnVerdict:
+    """Record 13333920 shipped `Heart of TX CHC` at `input:verified+web`.
+
+    The whole of "verified" was `corroborated_by: domain:serp`,
+    `heartoftexasdpc.com` — and the page corroborator had already read that
+    very domain and recorded `name_mismatch`, stating "Heart of Texas Direct
+    Primary Care". Both facts sat on the same record: the pipeline verified a
+    name against a witness it had itself written down as disagreeing.
+
+    Witness consistency, and nothing more. No thresholds, no escape logic —
+    the rule reads the outcome the corroborator recorded, for THIS domain, and
+    skips the rung. The ladder continues, so another rung may still verify the
+    name; and the `domain` column is untouched, because whether the domain is
+    wrong is a separate question from whether it can vouch for the name.
+    """
+
+    @staticmethod
+    def _with_page(name1, domain, outcome, stated):
+        record = _kept(name1)
+        record.write(
+            "domain", domain,
+            deterministic_evidence("test", producer="website_resolver"),
+        )
+        record["domain_verified_by"] = "serp"
+        record["_page_corroboration"] = {
+            "domain": domain, "outcome": outcome,
+            "stated_org_name": stated,
+            "corroborated": outcome == "corroborated",
+        }
+        return record
+
+    def test_a_mismatching_page_stops_the_domain_rung(self):
+        record = self._with_page(
+            "Heart of TX CHC", "heartoftexasdpc.com", "name_mismatch",
+            "Heart of Texas Direct Primary Care",
+        )
+        assert resolve(record).state != UNCHANGED_VERIFIED
+        out = _run(record)
+        assert out["name1_provenance"] == "input:low"
+        # The domain column is the parked question — untouched here.
+        assert out["domain"] == "heartoftexasdpc.com"
+
+    def test_the_derived_low_clause_is_raised(self):
+        record = self._with_page(
+            "Heart of TX CHC", "heartoftexasdpc.com", "name_mismatch",
+            "Heart of Texas Direct Primary Care",
+        )
+        out = _run(record)
+        assert "name1" in (out.get("flagged_fields") or [])
+        assert out["flag_for_review"] is True
+
+    def test_a_corroborating_page_still_verifies(self):
+        """The 13343105-class row: the page said yes. It is the TOP rung, so
+        the ladder returns there and never reaches this rule at all."""
+        record = self._with_page(
+            "Aixelo Inc", "aixelo.com", "corroborated", "Aixelo Inc",
+        )
+        assert resolve(record).state == UNCHANGED_VERIFIED
+        assert _run(record)["name1_provenance"] == "input:verified+web"
+
+    def test_a_record_with_no_page_read_is_unaffected(self):
+        """The rule reads a recorded outcome. Absent one, nothing changes —
+        "we did not look" is not a verdict."""
+        record = _kept("Aixelo Inc")
+        record.write(
+            "domain", "aixelo.com",
+            deterministic_evidence("test", producer="website_resolver"),
+        )
+        record["domain_verified_by"] = "serp"
+        assert resolve(record).state == UNCHANGED_VERIFIED
+
+    def test_a_mismatch_on_a_DIFFERENT_domain_does_not_stop_the_rung(self):
+        """Scoped to the domain the rung is about. A page read of some other
+        candidate says nothing about this one."""
+        record = self._with_page(
+            "Aixelo Inc", "aixelo.com", "name_mismatch", "Something Else",
+        )
+        record["_page_corroboration"]["domain"] = "someothersite.com"
+        assert resolve(record).state == UNCHANGED_VERIFIED

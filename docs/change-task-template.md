@@ -248,3 +248,35 @@ larger than the task that surfaced it.
   itself is untouched and still wrong: a generic word dropped for scoring is not thereby a
   foreign word in a host, and the two uses of `_significant_tokens` want different sets.
   Fixing the ranker is its own gate. Row id: 13333947.
+* **Accepted-domain withdrawal (§A, parked behind
+  `ACCEPTED_DOMAIN_CITY_WITHDRAWAL_ENABLED`, default off).** The escape set cannot
+  currently distinguish `heartoftexasdpc` (wrong org, shares "heart") from
+  `fisher` / `ucsd` / `darylflood` (right org, partial cover); every candidate narrowing
+  breaks a protected case. Needs a distinctiveness-aware cover test designed with the full
+  worked-example table: **13333920, thinksrs, darylflood, ucsd, fisher, steinen**.
+
+  The rule is BUILT and tested, only the trigger is disabled: `_name_disagreement_stands`
+  (shared by the refused-candidate and accepted-domain paths), the city-pair condition, and
+  `_revoke_domain_witness` (+ `DOMAIN_WITNESS_REVOKED_RULE`), which re-derives Name 1 to
+  `input:low` while leaving the original `fix2:unchanged-verified` event in the log — a
+  witness withdrawal, not a class decrease.
+
+  This pass's report, for whoever picks it up:
+
+  | record | page states | score | why the disagreement does not stand |
+  |---|---|---|---|
+  | 13333920 `Heart of TX CHC` | "Heart of Texas Direct Primary Care" (Waco; record McGregor) | 57.1 | token cover on `heart` AND host contains `heart` — **wrong org, escapes anyway** |
+  | 13237446 `Stanford Research Systems Inc` | "SRS" | 21.4 | acronym escape — right org |
+  | 13345215 `Daryl Flood` | "The Suddath Companies" (acquirer) | 35.6 | host contains `daryl`/`flood` — right org |
+  | 13333689 `CALM/UCSD` | "Regents of the University of California" (legal owner) | 25.0 | host contains `ucsd` — right org |
+  | Fisher-class | "Fisher Scientific" | 82.9 | token cover on `fisher`/`scientific` — right org |
+  | 13338029 `William Steiner Mfg` | "STEINEN" | 33.3 | **no escape fires** — near-miss `steiner`/`steinen`, domain probably right, currently refused by §1 |
+
+  The two ends of the table are the problem: `heart` escapes and should not; `steinen`
+  does not escape and should. Both are token-similarity questions the current cover test
+  (substring containment, any single token) cannot answer.
+
+  Landed separately and NOT parked: the witness-consistency rule on the
+  `fix2:unchanged-verified` domain rung — it may not take that rung when the page
+  corroborator recorded `name_mismatch` for that same domain. That removes 13333920's false
+  `input:verified+web` without touching the domain column or needing any escape logic.

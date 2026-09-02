@@ -763,6 +763,19 @@ _CROSSWALK_RULE_PREFIX = "wikidata:crosswalk"
 #: rejected, and the guard's own refusal is still in the rejections log.
 UNVERIFIED_DOMAIN_RULE = "domain-ownership:unverified"
 
+#: A Name 1 upgrade whose witness was withdrawn. `unchanged_state`'s domain
+#: rung reads an accepted domain as corroboration and writes
+#: `input:verified+web`; when the page read then withdraws that domain, the
+#: corroboration is gone and this event takes the upgrade back. It carries no
+#: scale of its own, so `situation_for` falls through to the table's last row
+#: — the record's own value with nothing corroborating it, `input:low` — which
+#: is exactly the state the record was in before the witness appeared.
+#:
+#: The earlier event stays in the log. Nothing is lost: the trail says the
+#: upgrade happened and was revoked, which is the honest shape and the reason
+#: this is not a class decrease under the monotone rule.
+DOMAIN_WITNESS_REVOKED_RULE = "fix2:unchanged-verified-revoked"
+
 #: `unchanged-verified` records WHAT corroborated the retained name as a
 #: `kind:detail` string. This maps the kind to the witness token.
 _CORROBORATION_WITNESSES: dict[str, str] = {

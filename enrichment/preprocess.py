@@ -2099,6 +2099,51 @@ def preprocess_record(
             res.note(16, f"department in {slot} moved to {target} ({dept_name!r})")
 
     # ---------------------------------------------------------------
+    # DBA in a street slot → name block. The sibling of the department
+    # router above, and for the same reason: a value in a street field that
+    # is not an address belongs in the name block, and which slot the export
+    # put it in says nothing about what it IS.
+    #
+    # Record 13333920 arrived with "MCGREGOR LAB" in Street 1, "DBA WACO
+    # FAMILY MEDICINE" in Street 2 and the actual address in Street 3. The
+    # department router lifted the lab; the DBA line had no router at all and
+    # shipped as a street, so Operating Name was empty on a record that states
+    # its trading name in so many words.
+    #
+    # No new judgement: the test is `_normalise_dba`, which UC 11 below
+    # already applies to every name slot. Moving the line into a slot is the
+    # whole change — UC 11 then normalises the marker and records the slot in
+    # `dba_fields`, and the existing Operating Name writer
+    # (`orchestrator`, "UC 11 safety net") fills the field at
+    # `input:verified+dba`. Every UC 11 protection applies because the value
+    # is now in the block UC 11 owns.
+    #
+    # Runs AFTER the department arm so a record carrying both keeps the
+    # department's claim on the first empty slot, exactly as it would have if
+    # both had been supplied in the name block.
+    # ---------------------------------------------------------------
+    for slot in STREET_SLOTS:
+        val = getattr(res, slot)
+        if not val or not val.strip():
+            continue
+        _normalised, _is_dba = _normalise_dba(val.strip())
+        if not _is_dba:
+            continue
+        target = _first_empty_name_slot(res)
+        if target is None:
+            continue  # nowhere to put it — leave it in the street
+        # The slot keeps the MARKED string: the marker is what tells UC 11
+        # this is a trading name, and `dba_payload` strips it when it writes
+        # the operating name. Cased with the name rules rather than the street
+        # rules — that is the difference between "DBA" and "Dba".
+        _dba_name = _smart_title_case(_normalised)
+        setattr(res, target, _dba_name)
+        setattr(res, slot, None)
+        _mark_from_street(res, _dba_name)
+        res.note(16, f"DBA in {slot} moved to {target} ({_dba_name!r})")
+        break
+
+    # ---------------------------------------------------------------
     # UC 7 Pattern A (Attn prefix) — runs BEFORE UC 6 so that a field
     # like "Accounts Payable - ATTN: Christina Boske" yields both
     # contact="Christina Boske" AND name2="Accounts Payable". If UC 6

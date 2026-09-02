@@ -719,3 +719,87 @@ class TestComparisonIncumbentForRelocatedSlots:
         assert classify_name_change(held, "Henry Ford Health System") == (
             "different"
         )
+
+
+class TestADBAInAStreetSlotReachesTheDBAMachinery:
+    """Record 13333920 arrived with its trading name in a street field:
+
+        Name 1    HEART OF TX CHC
+        Street 1  MCGREGOR LAB
+        Street 2  DBA WACO FAMILY MEDICINE
+        Street 3  500 JOHNSON DR
+
+    The department router lifted the lab into the name block and the street
+    election promoted the real address to Street 1, but the DBA line had no
+    router at all — it shipped as a street, and Operating Name was empty on a
+    record that states its trading name in so many words.
+
+    The fix routes it, and nothing else: the test is `_normalise_dba`, which
+    UC 11 already applies to every name slot. Once the value is IN a name slot
+    UC 11 normalises the marker and records the slot in `dba_fields`, and the
+    existing Operating Name writer fills the field at `input:verified+dba`.
+    """
+
+    @staticmethod
+    def _pp(**over):
+        from enrichment.preprocess import preprocess_record
+
+        base = dict(
+            name1="HEART OF TX CHC", name2=None, name3=None, name4=None,
+            name5=None, contact=None, email=None,
+            street1="MCGREGOR LAB", street2="DBA WACO FAMILY MEDICINE",
+            street3="500 JOHNSON DR",
+        )
+        base.update(over)
+        return preprocess_record(**base)
+
+    def test_the_dba_line_reaches_a_name_slot(self):
+        r = self._pp()
+        assert "DBA Waco Family Medicine" in (r.name2, r.name3, r.name4)
+        # …and the street slot it came from is emptied.
+        assert r.street2 is None
+
+    def test_uc11_marks_the_slot_so_the_existing_writer_applies(self):
+        r = self._pp()
+        assert r.dba_fields
+        slot = next(iter(r.dba_fields))
+        assert getattr(r, slot).startswith("DBA ")
+
+    def test_the_marker_keeps_its_case(self):
+        """"DBA" is uppercase by definition — it is a marker, not a word. The
+        address casing path treats a <=3-letter token as a word ("WAY",
+        "OAK"), which shipped "Dba Waco Family Medicine"."""
+        from utils.text_utils import smart_title_case
+
+        r = self._pp()
+        slot = next(iter(r.dba_fields))
+        assert getattr(r, slot).startswith("DBA ")
+        assert smart_title_case("DBA WACO FAMILY MEDICINE").startswith("DBA ")
+
+    def test_the_department_sibling_still_gets_the_first_slot(self):
+        """Both lines route; the department keeps its claim on Name 2,
+        exactly as it would have if both had been supplied in the block."""
+        r = self._pp()
+        assert r.name2 == "McGregor Lab"
+
+    def test_a_dba_supplied_in_a_name_slot_is_untouched(self):
+        """The street arm fires on STREET slots only. A DBA that arrived in
+        the name block already worked and must keep working the same way —
+        the machinery is the same, only the route into it is new."""
+        r = self._pp(
+            name2="DBA Waco Family Medicine",
+            street2=None,
+        )
+        assert r.name2 == "DBA Waco Family Medicine"
+        assert "name2" in r.dba_fields
+
+    def test_a_line_that_is_not_a_dba_is_left_in_the_street(self):
+        r = self._pp(street2="500 JOHNSON DR", street3=None)
+        assert r.street1 or r.street2
+
+    def test_a_full_name_block_leaves_the_line_where_it_is(self):
+        r = self._pp(
+            name2="Alpha", name3="Beta", name4="Gamma", name5="Delta",
+        )
+        assert r.street2 == "DBA WACO FAMILY MEDICINE"
+        assert not r.dba_fields

@@ -401,6 +401,18 @@ class Settings:
     # It is a SEPARATE knob rather than a reference so that retuning the
     # registry guard does not silently retune what counts as a corroborating
     # page, and vice versa; the default is deliberately identical.
+    #: PARKED — §A of the Heart of TX package. Withdraw an ACCEPTED domain on
+    #: a name mismatch paired with a CITY-level location contradiction. Off by
+    #: default because the escape set cannot currently tell
+    #: `heartoftexasdpc.com` (wrong organisation, shares the token "heart")
+    #: from `fishersci` / `ucsd` / `darylflood` (right organisation, partial
+    #: cover). The rule and its cascade are built and tested; only the trigger
+    #: is disabled. See the post-thesis list.
+    accepted_domain_city_withdrawal_enabled: bool = field(
+        default_factory=lambda: os.getenv(
+            "ACCEPTED_DOMAIN_CITY_WITHDRAWAL_ENABLED", "false",
+        ).strip().lower() == "true"
+    )
     page_name_match_threshold: float = field(
         default_factory=lambda: float(os.getenv("PAGE_NAME_MATCH_THRESHOLD", "88"))
     )

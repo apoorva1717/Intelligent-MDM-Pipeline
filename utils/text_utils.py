@@ -311,6 +311,12 @@ PARENT_ORG_ACRONYMS: dict[str, str] = {
 # Longer tokens (≥4 letters, vowel-bearing) that should stay uppercase.
 _KEEP_UPPER_ACRONYMS = {
     "NASA", "NOAA", "NIH", "FDA", "USDA", "EMSL", "IEEE",
+    # "DBA" is uppercase by definition — it is a marker, not a word, and it is
+    # the marker UC 11 keys on. Needed in this set rather than the length
+    # heuristics because the ADDRESS casing path treats a <=3-letter token as
+    # a word ("WAY", "OAK"), which shipped "Dba Waco Family Medicine" on
+    # 13333920 while the NAME path had it right all along.
+    "DBA",
     # Vowel-bearing institution acronyms that the length/vowel heuristics would
     # otherwise title-case ("TUHH" → "Tuhh"). Extend as they come up.
     "NIST", "NJIT", "TUHH", "NREL", "SLAC", "CERN", "CNRS", "CSIRO", "CCSF",

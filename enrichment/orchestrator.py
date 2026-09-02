@@ -96,6 +96,7 @@ from enrichment.provenance import (
     ProvenanceLog,
     UNATTRIBUTED_CODE,
     UNATTRIBUTED_REASON,
+    DOMAIN_WITNESS_REVOKED_RULE,
     UNVERIFIED_DOMAIN_RULE,
     deterministic_evidence,
     derived_scalar,
@@ -1428,8 +1429,58 @@ def _write(result: Any, field: str, value: Any, evidence: Evidence) -> None:
 _LEI_NAME_THRESHOLD = float(os.getenv("LEI_NAME_MATCH_THRESHOLD", "88"))
 
 
+def _name_disagreement_stands(
+    name1: str, stated: str, domain: str,
+) -> bool:
+    """True when a page's stated identity really does name a DIFFERENT
+    organisation from *name1* — the one predicate, used by both rules that
+    act on a page disagreeing about identity.
+
+    Below the LEI threshold AND none of the three escapes applies:
+
+    * the stated name COVERS a distinctive token of the record's. A page
+      carrying a contraction scores low and is still the right site —
+      "Thermo Fisher Scientific" against a page stating "Fisher Scientific"
+      scores 82.9, under the threshold, with `fisher` and `scientific` both
+      covered;
+    * the page states the record's ACRONYM — `thinksrs.com` states "SRS" for
+      "Stanford Research Systems Inc". Tested on the distinctive tokens so the
+      legal suffix does not break the initials, through the same
+      `acronym_matches_name` the ROR lane uses;
+    * the HOST carries the record's name even though the page's stated owner
+      does not — `darylflood.com` states "The Suddath Companies" (the
+      acquirer), `ucsd.edu` states "Regents of the University of California"
+      (the legal owner). A parent's or owner's name on the page is not
+      evidence the SITE is someone else's; the host is evidence it is the
+      record's.
+
+    `labcorp.com` for "Orchard Laboratory Corp." passes none of the three —
+    its initials are `ol` and its host carries neither `orchard` nor
+    `laboratory` — and neither does `heartoftexasdpc.com`, which states "Heart
+    of Texas Direct Primary Care" for "Heart of TX CHC".
+    """
+    name1, stated = (name1 or "").strip(), (stated or "").strip()
+    if not name1 or not stated:
+        return False
+    if _name_match_score(name1, stated) >= _LEI_NAME_THRESHOLD:
+        return False
+    record_tokens = distinctive_tokens(name1)
+    stated_tokens = distinctive_tokens(stated)
+    if any(
+        any(token in other or other in token for other in stated_tokens)
+        for token in record_tokens
+    ):
+        return False
+    if acronym_matches_name(stated, " ".join(record_tokens)):
+        return False
+    host_label = re.split(r"[./]", str(domain or "").lower())[0].replace("-", "")
+    if any(len(t) >= 4 and t in host_label for t in record_tokens):
+        return False
+    return True
+
+
 def _page_refutes_candidate(result: Any) -> bool:
-    """True when the candidate site's own page states a DIFFERENT identity.
+    """True when the REFUSED candidate's own page states a different identity.
 
     `_domain_refuted` covers only the candidate the ownership guard ACCEPTED
     and the page then took back (`_withdraw_domain`). A candidate the guard
@@ -1439,69 +1490,17 @@ def _page_refutes_candidate(result: Any) -> bool:
     Laboratory Corp." with the flag prose already quoting the refutation it
     had in hand: "its page states 'Labcorp'".
 
-    The docstring above says the guard's failure is usually an absence of
-    corroboration rather than evidence of a wrong answer. That is the case
-    this function removes from the set: here there IS evidence against.
-
-    TWO conditions, both required, because either alone is wrong:
-
-    * the name score is below the LEI threshold — the same
-      :func:`~enrichment.tier1_lei._name_match_score` and the same
-      `lei_name_match_threshold` the registry lane accepts on, reused rather
-      than re-invented;
-    * AND no distinctive token of the record's name is covered by the stated
-      one. A page carrying a CONTRACTION of the record's name scores below the
-      threshold and is still the right site — "Thermo Fisher Scientific"
-      against a page stating "Fisher Scientific" scores 82.9, under the
-      threshold, with `fisher` and `scientific` both covered. Refuting on the
-      score alone would drop it.
-
-    "Orchard Laboratory Corp." against "Labcorp" scores 40 and covers neither
-    `orchard` nor `laboratory` — nothing of the record's identity is on that
-    page.
+    The guard's failure is usually an absence of corroboration rather than
+    evidence of a wrong answer. This is the case that removes from that set:
+    here there IS evidence against.
     """
     candidate_domain = str(result.get("_domain_unverified") or "").strip().lower()
     page = result.get("_page_corroboration") or {}
     if not isinstance(page, dict):
         return False
     stated = str(page.get("stated_org_name") or "").strip()
-    if not stated:
-        return False
     name1 = str(result.get("name1_enriched") or "").strip()
-    if not name1:
-        return False
-    if _name_match_score(name1, stated) >= _LEI_NAME_THRESHOLD:
-        return False
-    record_tokens = distinctive_tokens(name1)
-    stated_tokens = distinctive_tokens(stated)
-    covered = any(
-        any(token in other or other in token for other in stated_tokens)
-        for token in record_tokens
-    )
-    if covered:
-        return False
-    # Two more ways a page can state a name that shares no token with the
-    # record and still be the record's own site. Both were measured on the
-    # gate, each removing a CORRECT domain:
-    #
-    #  * the page states the record's ACRONYM — `thinksrs.com` states "SRS"
-    #    for "Stanford Research Systems Inc". Tested on the distinctive
-    #    tokens, so the legal suffix does not break the initials, and through
-    #    the same `acronym_matches_name` the ROR lane uses;
-    #  * the HOST carries the record's name even though the page's stated
-    #    owner does not — `darylflood.com` states "The Suddath Companies"
-    #    (the acquirer) and `ucsd.edu` states "Regents of the University of
-    #    California" (the legal owner). A parent's or owner's name on the page
-    #    is not evidence the SITE is someone else's; the host is evidence it
-    #    is the record's.
-    #
-    # `labcorp.com` for "Orchard Laboratory Corp." passes neither — its
-    # initials are `ol`, and its host carries neither `orchard` nor
-    # `laboratory` — so the case this rule exists for is still refuted.
-    if acronym_matches_name(stated, " ".join(record_tokens)):
-        return False
-    host_label = re.split(r"[./]", str(candidate_domain).lower())[0].replace("-", "")
-    if any(len(t) >= 4 and t in host_label for t in record_tokens):
+    if not _name_disagreement_stands(name1, stated, candidate_domain):
         return False
     logger.info({
         "record_id": result.get("record_id"),
@@ -1510,6 +1509,67 @@ def _page_refutes_candidate(result: Any) -> bool:
         "stated_org_name": stated,
     })
     return True
+
+
+def _revoke_domain_witness(
+    result: Any, domain: str, stated: str | None, corroboration: Any,
+) -> None:
+    """Take back a Name 1 upgrade whose witness was the domain just withdrawn.
+
+    The withdrawal cascade. `unchanged_state`'s domain rung upgrades a
+    RETAINED Name 1 from input-class to `input:verified+web` on the strength
+    of an accepted domain — on 13333920 the whole of "verified" was
+    `corroborated_by: domain:serp`, `heartoftexasdpc.com`. Withdrawing that
+    domain without touching Name 1 leaves the column asserting a verification
+    whose only evidence the pipeline has just rejected, which is worse than
+    either state on its own: the doubt is recorded in one field and denied in
+    the other.
+
+    Not a class decrease under the monotone rule, and this is the distinction
+    that matters: the rule forbids LOSING evidence, and nothing here is lost —
+    the witness was found to be false. The `fix2:unchanged-verified` event
+    stays in the log, with this one after it, so the trail says the upgrade
+    happened and was revoked rather than pretending it never did.
+
+    Scoped hard: only a `fix2:unchanged-verified` event, only when the
+    evidence it names IS this domain. A Name 1 a registry or a tier wrote is
+    untouched — its evidence was never this domain.
+    """
+    log = getattr(result, "provenance", None)
+    if log is None:
+        return
+    if isinstance(log, list):
+        log = log_from_dicts(log)
+    event = log.attributing_event("name1_enriched")
+    if event is None or event.rule_id != "fix2:unchanged-verified":
+        return
+    ref = event.evidence_ref or {}
+    witness = str(ref.get("evidence_ref") or "").strip().lower()
+    if witness != (domain or "").strip().lower():
+        return
+    value = result.get("name1_enriched")
+    _write(
+        result, "name1_enriched", value,
+        Evidence(
+            producer_chain=("page_read",),
+            tier=None,
+            confidence_scale=NO_SCALE,
+            evidence_ref={
+                "revoked_witness": domain,
+                "stated_org_name": stated,
+                "source_url": getattr(corroboration, "source_url", None),
+                "value": value,
+            },
+            rule_id=DOMAIN_WITNESS_REVOKED_RULE,
+        ),
+    )
+    logger.info({
+        "record_id": result.get("record_id"),
+        "step": "domain_witness_revoked",
+        "domain": domain,
+        "stated_org_name": stated,
+        "name1": value,
+    })
 
 
 def _ship_unverified_domain(result: Any) -> None:
@@ -6617,10 +6677,46 @@ class Orchestrator:
             # a head office in one state (Houston / Baytown, TX) are one
             # company.
             elsewhere = location_decides(corroboration)
-            if accepted and elsewhere:
+            # A CITY contradiction completes the pair when the name
+            # disagreement is real.
+            #
+            # The region/country floor exists because a name score under the
+            # threshold is a weak signal on its own — a page carrying the
+            # fuller legal name scores low and is the right site — so a city
+            # difference could not be allowed to withdraw on top of it. That
+            # reasoning holds only while "under the threshold" is all the name
+            # test says. It now says more: `_name_disagreement_stands` clears
+            # the contraction, the acronym and the parent/owner cases first,
+            # so what is left is a page that names a DIFFERENT organisation,
+            # and a different organisation in a different town is two
+            # independent disagreements, not one and a half.
+            #
+            # 13333920: `heartoftexasdpc.com` states "Heart of Texas Direct
+            # Primary Care" (score 57.1) in Waco for a record in McGregor.
+            # Both are in TX, so the region floor kept it — and the domain
+            # then became the WITNESS that upgraded Name 1 to
+            # `input:verified+web`. The floor stays for every withdrawal not
+            # paired with a name mismatch.
+            different_org = _name_disagreement_stands(
+                name1, stated or "", accepted or "",
+            )
+            city_contradicted = (
+                corroboration.location == "contradicted" and not elsewhere
+            )
+            city_pair = (
+                different_org
+                and city_contradicted
+                and self._settings.accepted_domain_city_withdrawal_enabled
+            )
+            if accepted and (elsewhere or city_pair):
                 self._withdraw_domain(result, accepted, corroboration, name1)
                 self._page_counts["withdrawn"] += 1
-                note += "; the page places it in a different state or country"
+                note += (
+                    "; the page places it in a different state or country"
+                    if elsewhere
+                    else f"; {corroboration.location_detail}"
+                )
+                _revoke_domain_witness(result, accepted, stated, corroboration)
             elif accepted:
                 # Reported, not acted on. The reviewer gets the page's own
                 # words and decides; the pipeline does not destroy a domain on

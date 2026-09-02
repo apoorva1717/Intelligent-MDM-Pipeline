@@ -57,6 +57,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from dedup.signatures import normalize_key
+from enrichment.page_corroborator import NAME_MISMATCH
 from enrichment.provenance import (
     INPUT_CORROBORATED,
     INPUT_SELF_CONSISTENT,
@@ -170,6 +171,38 @@ def name1_was_kept(result: Any) -> bool:
     return bool(event) and event.producer_chain[-1] == INPUT_PRODUCER
 
 
+def _page_contradicts_the_name(result: Any, domain: str | None) -> bool:
+    """True when the page read of *domain* recorded a name mismatch.
+
+    Witness consistency for the rung below. The domain rung reads an accepted
+    domain as corroboration of a retained Name 1 — but the page corroborator
+    may already have read that same site and recorded that it names a
+    different organisation, and both facts then live on the same record. On
+    13333920 the domain rung upgraded "Heart of TX CHC" to
+    `input:verified+web` on `heartoftexasdpc.com` while the page read of that
+    very domain said `name_mismatch`, stating "Heart of Texas Direct Primary
+    Care". The pipeline verified a name against a witness it had already
+    written down as disagreeing.
+
+    No thresholds and no escape logic: this reads the outcome the corroborator
+    recorded, for THIS domain, and only skips the rung. The ladder continues
+    to its lower rungs, so a record with other corroboration still reaches
+    `unchanged-verified` by that route — and the `domain` column itself is not
+    touched, because whether the domain is wrong is a different question from
+    whether it can vouch for the name.
+
+    A page that CORROBORATED is unaffected: it is the top rung, and the
+    ladder returned there long before this one.
+    """
+    page = result.get("_page_corroboration")
+    if not isinstance(page, dict):
+        return False
+    if page.get("outcome") != NAME_MISMATCH:
+        return False
+    read = str(page.get("domain") or "").strip().lower()
+    return bool(read) and read == str(domain or "").strip().lower()
+
+
 def resolve(result: Any) -> UnchangedOutcome | None:
     """Which of the three states this record's unchanged Name 1 is in.
 
@@ -231,7 +264,11 @@ def resolve(result: Any) -> UnchangedOutcome | None:
     verified_by = result.get("domain_verified_by")
     if verified_by == "serp" and not _serp_label_relates(result):
         verified_by = None
-    if result.get("domain") and verified_by in NAME_TYING_OWNERSHIP_CONDITIONS:
+    if (
+        result.get("domain")
+        and verified_by in NAME_TYING_OWNERSHIP_CONDITIONS
+        and not _page_contradicts_the_name(result, result["domain"])
+    ):
         return UnchangedOutcome(
             UNCHANGED_VERIFIED, f"domain:{verified_by}", result["domain"],
         )
