@@ -1310,3 +1310,99 @@ class TestThePageRefutationHasThreeEscapes:
         assert self._refutes(
             "Orchard Laboratory Corp.", "Labcorp", "labcorp.com",
         )
+
+
+class TestARegistryMatchNeedsOneAnchor:
+    """Record 13338646 supplied "Adam Technologies" in Union NJ and shipped
+    "Ada Technologies Inc." with LEI 549300FIRKSM1MOM7Y22 at `gleif:verified`,
+    with `name1` not even in `flagged_fields`.
+
+    GLEIF's exact tier found nothing; the fuzzy tier scored 97.0, and the
+    identity gate returned `same` because `utils.name_identity._covers` treats
+    a prefix relation at ANY length as one word — `'adam'.startswith('ada')`.
+    `registry-location-mismatch` (OH vs NJ) did fire, but it is one of the two
+    codes in `ADVISORY_CODES`, so the row was never queued. A different
+    company, verified, silent — while the record's own correct domain
+    (`adam-tech.com`) carried the only name-shaped doubt on the row.
+
+    ONE disagreement is not evidence: a registry holds the incorporation
+    address and the record holds a plant, so a region difference on a match
+    identified BY ITS NAME is geography, and a near-miss name whose region
+    agrees is a spelling variant. TWO disagreements are a different claim.
+    """
+
+    @staticmethod
+    def _fold(a, b):
+        from enrichment.registry_match import separator_fold_exact
+
+        return separator_fold_exact(a, b)
+
+    def test_the_fold_is_word_level_and_never_folds_legal_forms(self):
+        assert self._fold("LAC+USC", "LAC USC")
+        assert self._fold("Harbor-UCLA", "Harbor UCLA")
+        assert self._fold("Bio-Rad Laboratories", "Bio Rad Laboratories")
+        # The case the rule acts on.
+        assert not self._fold("Adam Technologies", "Ada Technologies Inc.")
+        # A WORD of difference is still a difference.
+        assert not self._fold("University of Texas", "University of North Texas")
+        # Legal forms are never folded — `batch_consensus._name_parts` records
+        # why a dedup-GROUPING equivalence must not decide identity ACCEPTANCE.
+        assert not self._fold("Delta Analytical Inc", "Delta Analytical LLC")
+
+    def test_the_prefix_rule_is_what_accepted_the_wrong_company(self):
+        """Pinned so the diagnosis cannot be lost: this is the accepted
+        counterpart to steinen's refusal — one letter, opposite failures."""
+        from utils.name_identity import _covers, classify_name_change
+
+        assert _covers("adam", "ada") is True
+        assert classify_name_change(
+            "Adam Technologies", "Ada Technologies Inc.",
+        ) == "same"
+
+    def test_a_region_contradiction_alone_does_not_refuse(self):
+        """One disagreement. An exact-fold name whose region contradicts is a
+        company that moved states — the advisory's legitimate case, and the
+        reason the advisory exists."""
+        from enrichment.orchestrator import _refuse_region_contradicted_registry_match
+
+        result = {
+            "name1_supplied": "Bio-Rad Laboratories",
+            "name1_enriched": "Bio Rad Laboratories",
+            "lei_id": "LEI123",
+        }
+        _refuse_region_contradicted_registry_match(result, {
+            "step": "registry_location_mismatch", "registry": "GLEIF",
+            "scope": "region", "detail": "states region CA; record says NY",
+        })
+        assert result["name1_enriched"] == "Bio Rad Laboratories"
+        assert result["lei_id"] == "LEI123"
+
+    def test_a_city_contradiction_is_not_a_region_contradiction(self):
+        """A plant against a head office inside one state — Houston/Baytown,
+        the advisory's own worked example."""
+        from enrichment.orchestrator import _refuse_region_contradicted_registry_match
+
+        result = {
+            "name1_supplied": "Adam Technologies",
+            "name1_enriched": "Ada Technologies Inc.",
+            "lei_id": "LEI123",
+        }
+        _refuse_region_contradicted_registry_match(result, {
+            "step": "registry_location_mismatch", "registry": "GLEIF",
+            "scope": "city", "detail": "states city Newark; record says Milford",
+        })
+        assert result["name1_enriched"] == "Ada Technologies Inc."
+        assert result["lei_id"] == "LEI123"
+
+    def test_a_name_near_miss_alone_does_not_refuse(self):
+        """The other single disagreement: no location line at all."""
+        from enrichment.orchestrator import _refuse_region_contradicted_registry_match
+
+        result = {
+            "name1_supplied": "Adam Technologies",
+            "name1_enriched": "Ada Technologies Inc.",
+            "lei_id": "LEI123",
+        }
+        _refuse_region_contradicted_registry_match(result, None)
+        assert result["name1_enriched"] == "Ada Technologies Inc."
+        assert result["lei_id"] == "LEI123"

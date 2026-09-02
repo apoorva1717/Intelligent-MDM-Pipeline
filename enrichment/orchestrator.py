@@ -135,7 +135,11 @@ from enrichment.grounded_resolver import (
     GroundedResult,
     run_grounded_resolver,
 )
-from enrichment.registry_match import distinctive_tokens, names_match_verbatim
+from enrichment.registry_match import (
+    distinctive_tokens,
+    names_match_verbatim,
+    separator_fold_exact,
+)
 from enrichment.tier1_lei import (
     LEIClient,
     _name_match_score,
@@ -144,6 +148,7 @@ from enrichment.tier1_lei import (
 )
 from enrichment.tier1_ror import RORClient, clear_ror_cache, ror_normalised_hits
 from enrichment.page_corroborator import (
+    ACTIONABLE_LOCATION_SCOPES,
     CONTRADICTED,
     CORROBORATED,
     FETCH_UNAVAILABLE,
@@ -1267,6 +1272,9 @@ _IDENTITY_REFUSALS: frozenset[str] = frozenset({
     name_gate.REASON_DIFFERENT_ENTITY,
     # The grounded lane's own comparison, before the gate sees it.
     "identity_not_preserved",
+    # A registry match that disagreed with the record on BOTH its name and its
+    # region — see `_refuse_region_contradicted_registry_match`.
+    "registry_region_mismatch",
 })
 
 #: Lane precedence. Refusal strength is COMPARISON strength, not source
@@ -1280,6 +1288,143 @@ _SUGGESTION_RANK: dict[str, int] = {
     "llm": 1,
     "ror": 2, "gleif": 2, "wikidata": 2,
 }
+
+
+#: A registry match refused because it disagreed with the record TWICE.
+REASON_REGISTRY_REGION_MISMATCH = "registry_region_mismatch"
+
+
+def _refuse_region_contradicted_registry_match(
+    result: Any, line: dict[str, Any] | None,
+) -> None:
+    """Withdraw a registry match that is neither the record's name nor in the
+    record's region.
+
+    ONE disagreement is not evidence. A registry holds the incorporation
+    address and the record holds a plant, so a region difference on a match
+    identified BY ITS NAME is a fact about geography — that is the advisory's
+    legitimate case and it is untouched here. A near-miss name on a match
+    whose region agrees is a spelling variant, also untouched.
+
+    TWO disagreements are a different claim. 13338646 supplied "Adam
+    Technologies" in Union NJ; GLEIF fuzzy-matched "Ada Technologies Inc."
+    at 97.0 and the identity gate returned `same`, because `_covers` treats a
+    prefix relation at ANY length as one word and `'adam'.startswith('ada')`
+    is true. The record then shipped a different company's name AND its LEI at
+    `gleif:verified`, with `name1` not even in `flagged_fields` — the wrong
+    fact was silent while the correct domain (`adam-tech.com`) carried the
+    only name-shaped doubt on the row.
+
+    So a match that is neither the name the record states nor registered where
+    the record is does not write. The input stands, the match becomes a
+    steward-visible suggestion, and the derived low flags the name — the
+    record is left exactly as unresolved as it truly is.
+
+    Not a class decrease under the monotone rule: this is the
+    witness-withdrawal exception. Nothing is lost that was ever evidence about
+    THIS organisation — the identification itself was wrong, and both the
+    match and its refusal stay in the log.
+    """
+    if not line or line.get("step") != "registry_location_mismatch":
+        return
+    # REGION, not city. A city difference inside an agreeing region is a plant
+    # against a head office — the advisory's own worked example (Houston /
+    # Baytown, TX) — and is not a second disagreement about which
+    # organisation this is. The scope set is the registry comparator's own
+    # (`ACTIONABLE_LOCATION_SCOPES`); a country contradiction is strictly
+    # stronger than a region one and counts for the same reason.
+    if line.get("scope") not in ACTIONABLE_LOCATION_SCOPES:
+        return
+    supplied = str(result.get("name1_supplied") or "").strip()
+    matched = str(result.get("name1_enriched") or "").strip()
+    if not supplied or not matched:
+        return
+    # The exactness arm. An exact-fold match keeps today's behaviour in full,
+    # advisory included: a company that moved states and matched by name is
+    # what that advisory is for.
+    if separator_fold_exact(supplied, matched):
+        return
+    registry = str(line.get("registry") or "").strip().lower() or "registry"
+
+    # Only a REGISTRY-written name is un-written.
+    #
+    # The rule refuses an ACCEPTANCE; where the registry's name was already
+    # refused by another gate and only its identifier stuck, there is no name
+    # to take back. Measured: three rows carried an LLM-written name over a
+    # wrong registry id — "North Austin Medical Center" (ROR held North Canyon,
+    # Idaho), "W.S. Tyler" (ROR held Tyler Junior College, Texas), "AWS" — and
+    # reverting them threw away a good expansion to punish a bad identifier.
+    # The identifier still goes: it is the same wrong match either way.
+    _log = getattr(result, "provenance", None)
+    if isinstance(_log, list):
+        _log = log_from_dicts(_log)
+    _scalar = derived_scalar(_log, "name1_enriched", result) if _log else None
+    _registry_wrote_the_name = bool(
+        _scalar and _scalar.split(":", 1)[0] in ("ror", "gleif")
+    )
+
+    if _registry_wrote_the_name:
+        _write(
+            result, "name1_enriched", supplied,
+            Evidence(
+                producer_chain=("registry_guard",),
+                tier=None,
+                confidence_scale=NO_SCALE,
+                evidence_ref={
+                    "refused": matched,
+                    "registry": registry,
+                    "detail": line.get("detail"),
+                    "name_match_tier": line.get("name_match_tier"),
+                    "fold_exact": False,
+                },
+                rule_id=f"{registry}:region-contradicted-match-refused",
+            ),
+        )
+        # `*_changed` is computed EARLIER in `finalise` than this check runs,
+        # so it still reports the registry's rewrite. The record now ships the
+        # value it was supplied with, and `_still_as_supplied` — the filter
+        # that decides whether the derived low may speak — reads exactly this
+        # flag. Left stale, the name is restored and silently UNFLAGGED, which
+        # is the half of the defect that made the wrong name invisible.
+        result["name1_changed"] = bool(
+            str(supplied).casefold()
+            != str(result.get("name1_original") or "").casefold()
+        )
+        result.reject(
+            "name1", matched, f"{registry}:region-contradicted-match",
+            reason=REASON_REGISTRY_REGION_MISMATCH,
+        )
+        _note_suggestion(
+            result, field="name1", value=matched, lane=registry,
+            reason=REASON_REGISTRY_REGION_MISMATCH,
+        )
+
+    for _id in ("lei_id", "ror_id"):
+        if not result.get(_id):
+            continue
+        _write(
+            result, _id, None,
+            Evidence(
+                producer_chain=("registry_guard",),
+                tier=None,
+                confidence_scale=NO_SCALE,
+                evidence_ref={"withdrawn_with": matched, "registry": registry},
+                rule_id=f"{registry}:region-contradicted-match-refused",
+            ),
+        )
+    # The advisory described a match this record no longer carries. Leaving it
+    # would ask a reviewer to confirm the address of an identification that
+    # has been withdrawn.
+    result.pop("_ev_registry_location_mismatch", None)
+    logger.info({
+        "record_id": result.get("record_id"),
+        "step": "registry_match_refused_region",
+        "registry": registry,
+        "supplied": supplied,
+        "refused": matched,
+        "detail": line.get("detail"),
+        "name_match_tier": line.get("name_match_tier"),
+    })
 
 
 def _note_suggestion(
@@ -2763,7 +2908,9 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     apply_cross_source_gate(
         result, float(os.getenv("LEI_NAME_MATCH_THRESHOLD", "88")),
     )
-    apply_registry_location_check(result)
+    _refuse_region_contradicted_registry_match(
+        result, apply_registry_location_check(result),
+    )
 
     # A "department domain" that reduces to the organisation's own domain is
     # not a department domain. `canonicalise_host` below strips the path, so a

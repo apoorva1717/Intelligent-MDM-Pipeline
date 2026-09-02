@@ -1864,8 +1864,21 @@ class TestTheRegistryLocationTriggerIsAConjunction:
             _orch(ror=_StubROR(res), lei=_StubLEI(None)),
             name1="Aurora University", city="Aurora", state="CO",
         )
-        assert REGISTRY_LOCATION_MISMATCH in result.flag_codes
-        assert "Illinois" in (result.flag_reason or "")
+        # POLICY CHANGE (Adam/Ada). Both halves of the conjunction hold, and
+        # two disagreements are no longer an advisory kept alongside the
+        # match — they refuse it. The name is not the one the record states
+        # and the region is not where the record is, so the identification had
+        # neither anchor; keeping it made 13338646 ship a different company's
+        # name and LEI at `gleif:verified` with nothing flagged on the name.
+        #
+        # The input stands, the refused match is handed to the steward, and
+        # the advisory goes with the match it described.
+        assert result.name1_enriched == "Aurora University"
+        assert not result.ror_id
+        assert result.suggested_name == "Aurora University Foundation"
+        assert "refused: registry_region_mismatch" in (result.suggestion_source or "")
+        assert REGISTRY_LOCATION_MISMATCH not in result.flag_codes
+        assert "name1" in (result.flagged_fields or [])
 
     @pytest.mark.asyncio
     async def test_the_same_contradiction_under_the_exact_name_is_not_flagged(
@@ -1912,4 +1925,14 @@ class TestTheRegistryLocationTriggerIsAConjunction:
             ))),
             name1="Bicorporate Products Inc", city="Milford", state="CT",
         )
-        assert REGISTRY_LOCATION_MISMATCH in result.flag_codes
+        # Silence about the strength of a match is not a claim that the match
+        # was strong — and under the Adam/Ada rule it now falls to the
+        # REFUSING side, not merely the flagging one: "Bicorporate Products
+        # Inc" is not "BIC CORPORATION" under the separator fold, and the
+        # region contradicts.
+        assert result.name1_enriched == "Bicorporate Products Inc"
+        assert not result.lei_id
+        # Cased by the output normaliser on its way to the column, like every
+        # other name the record ships.
+        assert result.suggested_name == "BIC Corporation"
+        assert REGISTRY_LOCATION_MISMATCH not in result.flag_codes

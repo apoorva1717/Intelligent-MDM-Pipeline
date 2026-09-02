@@ -375,3 +375,46 @@ larger than the task that surfaced it.
   Narrowing the short-circuit so a PASSED-THROUGH slot does not skip Tier 3 would recover
   both, but the short-circuit is load-bearing for spend and that is its own gate. Row id:
   13333471.
+* **adam/ada — the accepted counterpart to steinen, and the table now brackets the rule
+  from both sides.** Same edit distance, opposite failures, both from a one-letter
+  difference crossing a company boundary:
+
+  | | record | other name | test | outcome |
+  |---|---|---|---|---|
+  | **steinen** | `William Steiner Manufacturing` | page states `STEINEN` | `_is_exact` / verbatim cover | one letter **REFUSED a right domain** |
+  | **adam/ada** | `Adam Technologies` (Union NJ) | GLEIF `Ada Technologies Inc.` (Lyndhurst OH) | `_covers`, prefix-at-any-length | one letter **ACCEPTED a wrong LEI** |
+
+  `utils/name_identity.py:206` treats a prefix relation at ANY length as one word, so
+  `'adam'.startswith('ada')` made `classify_name_change` return `same`; GLEIF's fuzzy tier
+  scored 97.0; `registry-location-mismatch` (OH vs NJ) fired but is one of the two codes in
+  `ADVISORY_CODES`, so the row was never queued. A different company, `gleif:verified`,
+  with `name1` not even in `flagged_fields` — while the record's own correct domain
+  (`adam-tech.com`) carried the only name-shaped doubt on the row.
+
+  A distinctiveness-aware cover test has to explain BOTH: `steinen`/`steiner` should meet
+  and `ada`/`adam` should not, and neither string similarity nor prefix length separates
+  them on its own. The other rows of the table are 13333920 (`heart`), thinksrs,
+  darylflood, ucsd, fisher.
+
+* **Registry two-disagreement refusal — landed and gated.** A GLEIF/ROR match that is
+  neither separator-fold exact against the record's supplied name NOR registered in the
+  record's region no longer writes the name or the identifier: the input stands, the match
+  becomes a `Suggested Name`, and the derived low flags `name1`. ONE disagreement is
+  untouched — an exact-name match whose region differs is a company that moved states (the
+  advisory's legitimate case), and a near-miss name whose region agrees is a spelling
+  variant. A CITY difference is not a region difference (Houston/Baytown).
+
+  Gate: 8 rows, 0 allow-list violations, **every removal verified against live ROR/GLEIF
+  and every one a different organisation in a different state** — Rutgers NJ vs SUNY
+  Albany NY; Largo FL vs Hilo HI; ValleyCare CA vs Valley Medical Center Renton WA; North
+  Austin TX vs North Canyon Gooding ID; CMC Steel TX vs Cincinnati Museum Center OH; WS
+  Tyler MI vs Tyler Junior College TX; AWS-CQC CA vs American Welding Society Miami FL;
+  Adam NJ vs Ada Lyndhurst OH. Zero same-company relocations, so the exactness arm does
+  not need loosening.
+
+  The gate also caught a defect in the rule's first cut: it reverted the NAME on three rows
+  where the registry had never written it (`llm:provisional` — "North Austin Medical
+  Center", "W.S. Tyler", "AWS"), throwing away a good expansion to punish a bad
+  identifier. The rule refuses an ACCEPTANCE, so the name revert is now scoped to
+  registry-written names; the identifier still goes either way, because it is the same
+  wrong match.

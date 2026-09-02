@@ -346,6 +346,33 @@ def _noise_tokens() -> frozenset[str]:
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
 
+#: Separators that fold to a space when asking whether two names are the SAME
+#: STRING: "LAC+USC" and "LAC USC", "Harbor-UCLA" and "Harbor UCLA". Periods
+#: and apostrophes stay significant, and legal forms are never folded —
+#: `batch_consensus._name_parts` records why a dedup-GROUPING equivalence must
+#: not decide identity ACCEPTANCE ("Delta Analytical Inc" vs "LLC" at one
+#: address). Folding a hyphen is a spelling difference; folding "Inc" is not.
+_FOLD_SEPARATORS = str.maketrans({c: " " for c in "+/\u2013\u2014-"})
+
+
+def separator_fold_exact(a: str | None, b: str | None) -> bool:
+    """True when two names are the same string once separators fold.
+
+    Word-level exactness. "University of Texas" against "University of North
+    Texas" still fails — that differs by a WORD, which is the difference this
+    test exists to catch — and "Adam Technologies" against "Ada Technologies
+    Inc." fails, which is the difference the registry refusal rule acts on.
+
+    `tier1_ror` carries a nested equivalent for the no-chosen override; the two
+    are the same rule and should be one function (post-thesis list).
+    """
+    def fold(value: str | None) -> str:
+        return " ".join(str(value or "").translate(_FOLD_SEPARATORS).split()).lower()
+
+    folded = fold(a)
+    return bool(folded) and folded == fold(b)
+
+
 def distinctive_tokens(name: str | None) -> list[str]:
     """*name* as an ordered, de-duplicated list of identity-bearing tokens.
 
