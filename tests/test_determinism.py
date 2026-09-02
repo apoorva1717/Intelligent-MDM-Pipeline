@@ -1230,6 +1230,16 @@ class TestTheFlagVocabularyIsClosed:
             "multiple-contacts", "unverified-inference", "entity-superseded",
             # The two Fix D authorised.
             "source-conflict", "registry-location-mismatch",
+            # Preprocessing MOVED content into a name slot — out of a street
+            # line, out of Name 1, or out of another slot — and nothing has
+            # vouched for the placement. Authorised because neither doubt
+            # beside it can say this: the derived low requires the slot to be
+            # UNCHANGED, and these changed; `unverified-inference` requires a
+            # model to have written, and the routers are deterministic. The
+            # question it puts to a reviewer is about the SLOT ("does this
+            # belong here"), not the spelling, which is why it carries its own
+            # prose rather than joining either of theirs.
+            "relocated-unverified",
             # The record contradicts ITSELF: a site qualifier on a name field
             # ("Veracyte, Inc. - South San Francisco, CA") named a place the
             # address block denies. Distinct from

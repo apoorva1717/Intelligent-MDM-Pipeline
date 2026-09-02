@@ -114,6 +114,12 @@ DOMAIN_UNVERIFIED = "domain-unverified"
 EMAIL_CONFLICT = "email-conflict"
 NAME3_NOT_DEMOTED = "name3-not-demoted"
 MULTIPLE_CONTACTS = "multiple-contacts"
+#: A slot preprocessing MOVED content into, that nothing has vouched for.
+#: Neither of the two doubts beside it fits: the derived low requires the slot
+#: to be UNCHANGED, and these changed; `unverified-inference` requires a model
+#: to have written, and the routers are deterministic.
+RELOCATED_UNVERIFIED = "relocated-unverified"
+
 UNVERIFIED_INFERENCE = "unverified-inference"
 #: The organisation the record names has been dissolved (Wikidata ``P576``) or
 #: replaced by another entity (``P1366``). The pipeline deliberately does NOT
@@ -169,6 +175,7 @@ ALL_CODES: tuple[str, ...] = (
     NAME3_NOT_DEMOTED,
     MULTIPLE_CONTACTS,
     UNVERIFIED_INFERENCE,
+    RELOCATED_UNVERIFIED,
     ENTITY_SUPERSEDED,
     SOURCE_CONFLICT,
     REGISTRY_LOCATION_MISMATCH,
@@ -229,6 +236,9 @@ _CODE_ORDER: tuple[str, ...] = (
     SOURCE_CONFLICT,
     NO_MATCH,
     UNVERIFIED_INFERENCE,
+    # Between the two doubts it sits between: after "we wrote something we
+    # could not reconcile", before "we left it exactly as supplied".
+    RELOCATED_UNVERIFIED,
     LOW_CONFIDENCE_UNCHANGED,
     NAME_STATES_ANOTHER_SITE,
     REGISTRY_LOCATION_MISMATCH,
@@ -250,6 +260,10 @@ _REASONS: dict[str, str] = {
         "left exactly as supplied — the canonical form could not be "
         "established with enough confidence to rewrite it; confirm the value "
         "is correct"
+    ),
+    RELOCATED_UNVERIFIED: (
+        "moved here from the address block — confirm it names this record's "
+        "unit or site"
     ),
     DEPT_VIA_LAB: (
         "parent department was inferred from the lab's own page, not read "
@@ -363,6 +377,15 @@ _DETAILED_REASONS: dict[str, str] = {
     # never named a unit, so what ships is an inference about someone or
     # something else that the record happens to mention, and a steward should
     # confirm it is the unit this customer's mail belongs to.
+    # Preprocessing MOVED this content into the slot — out of a street
+    # line, out of Name 1, or out of another name slot. The record wrote
+    # the value somewhere, but not here, and nothing has since vouched
+    # for the placement: no registry, no page, no model. The doubt is
+    # about the SLOT, not the spelling.
+    RELOCATED_UNVERIFIED: (
+        "was moved here from {detail} — confirm it names this record's "
+        "unit or site rather than a neighbouring one"
+    ),
     DEPT_VIA_LAB: (
         "the department was inferred from {detail}, not read from a stated "
         "department — confirm it is the right unit for this record"
@@ -661,6 +684,73 @@ def low_confidence_core_fields(result: Any) -> list[str]:
         if parse_provenance(scalar)[1] == LOW:
             low.append(PROV_FIELD_LABELS[field])
     return low
+
+
+#: The origins that mean preprocessing MOVED content into a slot.
+_RELOCATED_SLOT_ORIGINS: frozenset[str] = frozenset({
+    "preprocess:street", "preprocess:split", "preprocess:moved",
+})
+
+
+def relocated_unverified_fields(result: Any) -> list[str]:
+    """Slot labels holding a value the pipeline MOVED in that nothing vouched for.
+
+    The gap between the two doubts this module already reports. The derived
+    low says "left exactly as supplied" and requires the slot to be UNCHANGED
+    — these changed, because preprocessing put content in them.
+    `unverified-inference` requires a model to have written, and none did: the
+    routers are deterministic. So a value the record wrote in a street line,
+    or in another name slot, arrives in Name 2 with nobody accountable for it
+    and nobody vouching for it, and ships unflagged.
+
+    The doubt is not "is this the canonical form" — it is "does this belong in
+    this slot at all", which is why it renders under its own clause.
+
+    Excluded, in order: a slot an authority answered for (its provenance is no
+    longer input-class), one carrying a witness on the input, one a registry
+    or department domain corroborated, one the grounded lane confirmed, and an
+    admin desk — the same exclusion the derived low makes, for the same reason.
+    """
+    origins = (
+        result.get("_slot_origin") if hasattr(result, "get")
+        else getattr(result, "_slot_origin", None)
+    ) or {}
+    if not origins:
+        return []
+    log = getattr(result, "provenance", None)
+    if log is None:
+        return []
+    if isinstance(log, list):
+        log = log_from_dicts(log)
+
+    def _value(field):
+        if hasattr(result, "get"):
+            return result.get(field)
+        return getattr(result, field, None)
+
+    if _value("department_domain") or _value("ror_id") or _value("lei_id"):
+        return []
+    confirmed = _value("_ev_input_confirmed") or ()
+
+    out = []
+    for slot, origin in sorted(origins.items()):
+        if origin not in _RELOCATED_SLOT_ORIGINS or slot == "name1":
+            continue
+        field = f"{slot}_enriched"
+        value = _value(field)
+        if not value or not str(value).strip():
+            continue
+        if slot in confirmed:
+            continue
+        if field == "name2_enriched" and name2_needs_no_verification(result):
+            continue
+        scalar = derived_scalar(log, field, result)
+        if not scalar or not str(scalar).startswith("input:"):
+            continue
+        if "+" in str(scalar):
+            continue
+        out.append(PROV_FIELD_LABELS.get(field, slot))
+    return out
 
 
 def render(
@@ -1067,6 +1157,12 @@ def compute_flags(result: dict[str, Any]) -> None:
     # Placed before that loop and deliberately not sharing its guards. The
     # loop's own `registry_named` / `corroborated` skips still stand for the
     # doubts they describe; this rule adds one they were never asked about.
+    # A slot preprocessing moved content into that nothing vouched for. Its
+    # own code and its own clause: the doubt is about the SLOT, not the
+    # spelling, and neither of the two rules beside it can express that.
+    for _label in relocated_unverified_fields(result):
+        raise_flag(RELOCATED_UNVERIFIED, _label)
+
     verdicts = evidence.get("_ev_name_verdict") or {}
     name_was = evidence.get("_ev_name_was") or {}
     for field in sorted(verdicts):

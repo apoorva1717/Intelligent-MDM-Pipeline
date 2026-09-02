@@ -652,3 +652,70 @@ class TestSiteQualifierHead:
         assert _site_qualifier_head("University of Texas at Austin") == (
             "University of Texas"
         )
+
+
+class TestComparisonIncumbentForRelocatedSlots:
+    """A relocated slot is judged against what it HOLDS, not what was deleted.
+
+    Record 13336873 supplied "ALLEGIANCE HEALTH" in both Name 1 and Name 2.
+    UC 12 deleted the Name 2 duplicate, the street router refilled the slot
+    from Street 2 with "W A FOOTE MEM HOSPITAL", and the gate then judged the
+    grounded lane's "W.A. Foote Memorial Hospital" against the deleted
+    duplicate. `different_entity` was right about the two strings and wrong
+    about the question.
+    """
+
+    @staticmethod
+    def _result(*, name1=None, name2=None, held=None, origin=None):
+        from api.models import EnrichmentRecord
+        from enrichment.orchestrator import _init_result
+        from tests.conftest import seed
+        r = _init_result(EnrichmentRecord(
+            record_id="t", country="US", name1=name1, name2=name2,
+        ))
+        if held is not None:
+            seed(r, name2_enriched=held)
+        if origin is not None:
+            seed(r, _slot_origin={"name2": origin})
+        return r
+
+    def test_a_relocated_slot_is_compared_against_what_it_holds(self):
+        from enrichment.orchestrator import _comparison_incumbent
+        r = self._result(
+            name1="ALLEGIANCE HEALTH", name2="ALLEGIANCE HEALTH",
+            held="W A FOOTE MEM HOSPITAL", origin="preprocess:street",
+        )
+        assert _comparison_incumbent(r, "name2") == "W A FOOTE MEM HOSPITAL"
+
+    def test_an_ordinary_slot_keeps_the_supplied_text(self):
+        # The record put this value here itself; a candidate is a rewrite of
+        # what the record said, and that is what it must reconcile with.
+        from enrichment.orchestrator import _comparison_incumbent
+        r = self._result(
+            name1="Acme Corp", name2="Chemistry Dept",
+            held="Department of Chemistry", origin="input",
+        )
+        assert _comparison_incumbent(r, "name2") == "Chemistry Dept"
+
+    def test_no_origin_recorded_keeps_the_supplied_text(self):
+        from enrichment.orchestrator import _comparison_incumbent
+        r = self._result(
+            name1="Acme Corp", name2="Chemistry Dept",
+            held="Department of Chemistry",
+        )
+        assert _comparison_incumbent(r, "name2") == "Chemistry Dept"
+
+    def test_a_relocated_slot_still_refuses_a_different_entity(self):
+        """The rule changes WHAT is compared, never how strictly.
+
+        A relocated slot holding "W A FOOTE MEM HOSPITAL" against a candidate
+        naming an unrelated organisation is refused exactly as before — the
+        comparison is the same one, asked of the right value.
+        """
+        from enrichment.tier2_canonical import subject_preserved
+        from utils.name_identity import classify_name_change
+        held = "W A FOOTE MEM HOSPITAL"
+        assert subject_preserved(held, "Henry Ford Health System") is False
+        assert classify_name_change(held, "Henry Ford Health System") == (
+            "different"
+        )

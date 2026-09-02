@@ -455,3 +455,30 @@ class TestOneAcronymRule:
 
         assert _case_segment(token) == normalise_case(token, mode="name")
         assert (_case_segment(token) == token) is keeps_supplied_case
+
+
+class TestMemExpansion:
+    """"W A FOOTE MEM HOSPITAL" — the middle position is the only safe one.
+
+    Whitespace is required on both sides. Leading or standalone, "MEM" is far
+    more likely to be an acronym or a code than the word "Memorial", and this
+    map has no way to tell them apart.
+    """
+
+    @pytest.mark.parametrize("value,expected", [
+        ("W A FOOTE MEM HOSPITAL", "W A Foote Memorial Hospital"),
+        ("Foote Mem Hospital", "Foote Memorial Hospital"),
+    ])
+    def test_the_middle_position_expands(self, value, expected):
+        from utils.text_utils import expand_abbreviations
+        assert normalise_case(expand_abbreviations(value), mode="name") == expected
+
+    @pytest.mark.parametrize("value", [
+        "MEM",              # standalone
+        "MEM Hospital",     # leading
+        "Huntsville Mem",   # trailing
+        "MEMPHIS CLINIC",   # not the token at all
+    ])
+    def test_standalone_leading_and_trailing_are_left_alone(self, value):
+        from utils.text_utils import expand_abbreviations
+        assert "Memorial" not in (expand_abbreviations(value) or "")

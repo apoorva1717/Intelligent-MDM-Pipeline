@@ -1073,7 +1073,7 @@ def _write_registry_name(
     # says so where a reviewer can see it.
     incumbent_value = (
         result.get("name1_original") if field == "name1"
-        else _slot_input_value(result, field)
+        else _comparison_incumbent(result, field)
     )
     decision = name_gate.evaluate(
         result, field, value,
@@ -1345,6 +1345,40 @@ def _site_qualifier_head(name: str | None) -> str | None:
     if tail.lower() in _LEGAL_TAILS:
         return None
     return head
+
+
+#: Origins that mean the slot's value was RELOCATED into it — the record put
+#: it somewhere else, or in another slot, and preprocessing moved it here.
+_RELOCATED_ORIGINS: frozenset[str] = frozenset({
+    dept_block.ORIGIN_STREET, dept_block.ORIGIN_SPLIT, dept_block.ORIGIN_MOVED,
+})
+
+
+def _comparison_incumbent(result: Any, slot: str) -> str | None:
+    """What an identity comparison for *slot* should be judged against.
+
+    Normally the SUPPLIED text: a candidate is a rewrite of what the record
+    said, and the record's own words are what it must be reconciled with.
+
+    Not so for a RELOCATED slot. Record 13336873 supplied
+    "ALLEGIANCE HEALTH" in both Name 1 and Name 2; UC 12 deleted the Name 2
+    duplicate, the street router refilled the slot with "W A FOOTE MEM
+    HOSPITAL" from Street 2, and the gate then judged the grounded lane's
+    "W.A. Foote Memorial Hospital" against the deleted duplicate — a value the
+    slot no longer held and that had been removed precisely because it was not
+    this slot's content. The verdict was `different_entity`, and it was right
+    about the two strings and wrong about the question.
+
+    `_slot_origin` is what tells the two cases apart, which is the reason it
+    was built. Origins `input` and anything preprocessing rewrote in place
+    keep the supplied text exactly as before.
+    """
+    origin = (result.get("_slot_origin") or {}).get(slot)
+    if origin in _RELOCATED_ORIGINS:
+        held = result.get(f"{slot}_enriched")
+        if held and str(held).strip():
+            return str(held)
+    return _slot_input_value(result, slot)
 
 
 def _write(result: Any, field: str, value: Any, evidence: Evidence) -> None:
@@ -4541,7 +4575,7 @@ class Orchestrator:
                 (result.get("_lane_inputs") or {}).get("name1")
                 or result.get("_pp_name1")
                 or result.get("name1_original")
-            ) if field == "name1" else _slot_input_value(result, field)
+            ) if field == "name1" else _comparison_incumbent(result, field)
 
             # §2 — one gate, recomputed here, for a registry name and a model
             # name alike. The lane already asked the identity question; asking

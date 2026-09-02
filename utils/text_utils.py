@@ -212,6 +212,12 @@ _ABBREV_MAP: dict[str, str] = {
     r"\bNatl\.?(?=\s|$)": "National",
     r"\bIntl\.?(?=\s|$)": "International",
     r"\bDiv\.?(?=\s|$)": "Division",
+    # "W A FOOTE MEM HOSPITAL". Deliberately narrower than the rules above:
+    # whitespace is required on BOTH sides, so a leading or standalone "MEM"
+    # is left alone. Leading, it is far more likely to be an acronym or a code
+    # than the word "Memorial" — this expansion is for the middle position,
+    # where "<name> Mem <institution word>" is the only reading.
+    r"(?<=\s)Mem\.?(?=\s)": "Memorial",
 }
 
 _COMPILED_ABBREVS: list[tuple[re.Pattern[str], str]] = [
