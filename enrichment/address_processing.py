@@ -41,6 +41,7 @@ from llm.prompts import (
 # person references (the email/contact VALUES are captured upstream in
 # preprocessing; here we only clean the street string).
 from enrichment.preprocess import (
+    _CO_ATTN_MARKER,
     _EMAIL_RE,
     _PHONE_RE,
     _URL_RE,
@@ -364,8 +365,12 @@ def _extract_sublocations(text: str) -> tuple[str, dict[str, str], bool]:
 
 
 # ``att?n+`` also catches the common misspelling "Atnn:" (and "attnn").
+# The marker is `preprocess._CO_ATTN_MARKER` — bounded on both sides, one
+# definition for both stages. This matcher is the reason the boundaries exist:
+# it is applied with `.search()`, so an unbounded `att?n+` matched the "ATN"
+# inside "BOATNER" and cut 13337073's street in half.
 _CARE_OF_RE = re.compile(
-    r"(?:c\s*/\s*o|att?n+(?:ention|tion)?|ATT)\s*[:\-\.]?\s*(.+)",
+    _CO_ATTN_MARKER + r"\s*[:\-\.]?\s*(.+)",
     re.IGNORECASE,
 )
 

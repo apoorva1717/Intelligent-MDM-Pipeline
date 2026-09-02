@@ -1272,3 +1272,54 @@ class TestARegistryIdOnName1DoesNotVouchForARelocatedSlot:
         seed(result, _slot_origin={"name2": "input"})
         out = finalise(result, time.monotonic())
         assert flags.RELOCATED_UNVERIFIED not in (out.get("flag_codes") or [])
+
+
+class TestAReviewRequestAlwaysCarriesAReason:
+    """The invariant a steward depends on: a queued row says what to do.
+
+    `flag_for_review` is deliberately NOT "there is a code" — a core field at
+    `low` raises it with `flag_codes == []`, which is the authorised taxonomy
+    change and what record 13337073 ships. That is fine precisely BECAUSE the
+    derived clause is still rendered: codes may be empty, the reason may not.
+
+    Asserted over every code rather than over a corpus, so a code no batch
+    happens to raise is covered too.
+    """
+
+    @pytest.mark.parametrize("code", [c for c in flags.ALL_CODES])
+    def test_every_code_that_requests_review_renders_prose(self, code):
+        out = flags.render({code: ["name1"]})
+        if out["flag_for_review"]:
+            assert out["flag_reason"], f"{code} queues a row with no reason"
+
+    @pytest.mark.parametrize("code", [c for c in flags.ALL_CODES])
+    def test_every_code_renders_prose_even_when_advisory(self, code):
+        """An advisory code does not queue the row, but it still explains
+        itself — the column is what a reviewer reads either way."""
+        assert flags.render({code: ["name1"]})["flag_reason"]
+
+    def test_the_derived_low_alone_queues_with_a_clause_and_no_code(self):
+        out = flags.render({}, low_confidence=["name1"])
+        assert out["flag_for_review"] is True
+        assert out["flag_codes"] == []
+        assert out["flag_reason"]
+        assert "name1" in out["flagged_fields"]
+
+    def test_nothing_at_all_queues_nothing(self):
+        out = flags.render({})
+        assert out["flag_for_review"] is False
+        assert out["flag_reason"] is None
+
+    def test_an_advisory_code_alone_does_not_queue_but_still_explains(self):
+        advisory = sorted(flags.ADVISORY_CODES)
+        if not advisory:
+            pytest.skip("no advisory codes in the vocabulary")
+        out = flags.render({advisory[0]: ["name1"]})
+        assert out["flag_for_review"] is False
+        assert out["flag_reason"]
+
+    @pytest.mark.parametrize("code", [c for c in flags.ALL_CODES])
+    def test_a_code_combined_with_a_derived_low_keeps_both_clauses(self, code):
+        out = flags.render({code: ["name2"]}, low_confidence=["name1"])
+        assert out["flag_for_review"] is True
+        assert out["flag_reason"] and ";" in out["flag_reason"]

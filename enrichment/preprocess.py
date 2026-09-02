@@ -1137,10 +1137,26 @@ _INSTITUTION_PREFIX_RE = re.compile(
 # an email address. Case E also fires without a prefix when the value
 # is unambiguously a job title (ends in Manager / Director / etc.).
 
+#: The c/o | Attn marker itself, bounded on BOTH sides. One definition, used
+#: by every matcher that looks for it — the address stage imports it.
+#:
+#: The boundaries are the whole point. `att?n+` is a substring of ordinary
+#: words, and applied unbounded it matched the "ATN" inside "BOATNER": record
+#: 13337073's "307 BOATNER RD, STE 1" was cut at the sixth character and
+#: shipped `Street 1 = "307 Bo"` with `Care Of = "Er Rd, Ste 1"`, the suite
+#: swallowed into a c/o payload that no marker ever introduced. "9 PATTON DR"
+#: and "40 CATTNER Blvd" fail the same way.
+#:
+#: `_ATTN_RE` (UC 7, below) already carried `\b` on both sides and is the model
+#: this follows. Both boundaries are needed: a leading one alone still admits
+#: "ATTNER Blvd", where the marker opens the word but does not end it.
+#:
+#: ``att?n+`` also catches the common misspelling "Atnn:" (and "attnn").
+_CO_ATTN_MARKER = r"\b(?:c\s*/\s*o|att?n+(?:ention|tion)?|att)\b"
+
 # Anchored to the start so "c/o" inside a phrase doesn't accidentally match.
-# ``att?n+`` also catches the common misspelling "Atnn:" (and "attnn").
 _CO_ATTN_PREFIX_RE = re.compile(
-    r"^\s*(?:c\s*/\s*o|att?n+(?:ention|tion)?|att)\s*[:\-]?\s*",
+    r"^\s*" + _CO_ATTN_MARKER + r"\s*[:\-]?\s*",
     re.IGNORECASE,
 )
 

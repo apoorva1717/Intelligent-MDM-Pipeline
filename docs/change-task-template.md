@@ -229,3 +229,9 @@ larger than the task that surfaced it.
   are SAP 40-character truncations, and the comma is the record's own text marking where the
   legal form was cut off (13332323's Name 2 is the surviving `"Inc."`). Left alone
   deliberately — trimming it would erase the only signal that the value is truncated.
+* **`House Number` is an SAP input column, not a derived one.** The pipeline never splits a
+  house number out of a street line — 64/100 S1 rows carry one because the export supplied
+  it. A record submitted without the column ships `House Number = None` however cleanly its
+  street parses, which reads as a parsing failure and is not one. Deriving it would be a new
+  behaviour with its own gate. Worked example: 13337073, shipping `Street 1 = "307 Boatner
+  Rd"` and `House Number = None`.

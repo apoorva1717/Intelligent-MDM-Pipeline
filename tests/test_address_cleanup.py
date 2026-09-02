@@ -225,3 +225,73 @@ class TestSplitResidueIsTrimmed:
         from enrichment.address_processing import _trim_fragment
 
         assert _trim_fragment(fragment) == expected
+
+
+class TestTheCareOfMarkerMatchesOnlyAsAWholeWord:
+    """Record 13337073 shipped `Street 1 = "307 Bo"` and `Care Of = "Er Rd,
+    Ste 1"`.
+
+    `_CARE_OF_RE` is applied with `.search()` and its marker carried no word
+    boundaries, so `att?n+` matched the "ATN" inside "BO**ATN**ER": the street
+    was cut at the sixth character, everything after the false marker became a
+    c/o payload, and `STE 1` went with it — so the suite was never extracted
+    either. The marker is a substring of ordinary words, which is what makes
+    the boundaries load-bearing rather than tidy.
+
+    Both boundaries are needed. A leading one alone still admits "ATTNER",
+    where the marker opens the word but does not end it. `_ATTN_RE` (UC 7)
+    already had both and is the model these follow.
+    """
+
+    @pytest.mark.parametrize("street,house,suite", [
+        ("307 BOATNER RD, STE 1", "307", "1"),
+        ("9 PATTON DR", "9", None),
+        ("40 CATTNER Blvd", "40", None),
+        ("12 ATNAM ST", "12", None),
+        ("1500 PATTERSON AVE", "1500", None),
+    ])
+    @pytest.mark.asyncio
+    async def test_a_street_holding_the_letters_parses_whole(
+        self, street, house, suite,
+    ):
+        res = await process_address(
+            record_id="x", name1="Acme Corp", name2=None, name3=None,
+            street=street, street_2=None, street_3=None,
+            city="Eglin AFB", state="FL", zip_code="32542", country="US",
+            po_box=None, care_of_enriched=None, llm_client=None,
+        )
+        assert res.care_of_enriched is None
+        assert res.suite == suite
+        # The street survives intact — house number still attached, nothing
+        # lopped off the front.
+        assert res.street_cleaned is not None
+        assert res.street_cleaned.startswith(house)
+
+    @pytest.mark.parametrize("value,payload", [
+        ("ATTN: HEMATOLOGY", "HEMATOLOGY"),
+        ("Attn Receiving", "Receiving"),
+        ("1201 NW 16TH ST ATTN HEMATOLOGY", "HEMATOLOGY"),
+        ("c/o Jane Roe", "Jane Roe"),
+        ("Atnn: Bob", "Bob"),          # the misspelling the marker still covers
+        ("ATT: Payables", "Payables"),
+    ])
+    def test_a_real_marker_still_matches(self, value, payload):
+        from enrichment.address_processing import _CARE_OF_RE
+
+        m = _CARE_OF_RE.search(value)
+        assert m is not None and m.group(1) == payload
+
+    def test_a_word_that_merely_opens_with_the_marker_does_not(self):
+        """The case a leading boundary alone would let through."""
+        from enrichment.address_processing import _CARE_OF_RE
+        from enrichment.preprocess import _CO_ATTN_PREFIX_RE
+
+        assert _CARE_OF_RE.search("ATTNER Blvd") is None
+        assert _CO_ATTN_PREFIX_RE.match("ATTNER Blvd") is None
+
+    def test_the_two_stages_share_one_marker(self):
+        """Not two copies that can drift — the address stage imports it."""
+        from enrichment.address_processing import _CO_ATTN_MARKER as addr
+        from enrichment.preprocess import _CO_ATTN_MARKER as pre
+
+        assert addr is pre
