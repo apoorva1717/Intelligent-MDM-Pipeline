@@ -134,8 +134,13 @@ from enrichment.grounded_resolver import (
     GroundedResult,
     run_grounded_resolver,
 )
-from enrichment.registry_match import names_match_verbatim
-from enrichment.tier1_lei import LEIClient, clear_lei_cache, lei_normalised_hits
+from enrichment.registry_match import distinctive_tokens, names_match_verbatim
+from enrichment.tier1_lei import (
+    LEIClient,
+    _name_match_score,
+    clear_lei_cache,
+    lei_normalised_hits,
+)
 from enrichment.tier1_ror import RORClient, clear_ror_cache, ror_normalised_hits
 from enrichment.page_corroborator import (
     CONTRADICTED,
@@ -223,6 +228,7 @@ from utils.domain_resolver import (
 )
 from utils.text_utils import (
     UNIT_SLOT_RANK,
+    acronym_matches_name,
     canonical_is_spelling_variant,
     canonical_preserves_identity,
     canonicalise_unit_name,
@@ -253,6 +259,14 @@ retry_trace_logger = logging.getLogger("enrichment.trace.retry")
 #: The page lane's trace, shared with `enrichment.page_corroborator` so a
 #: reader sees one stream per lane rather than one per module.
 page_trace_logger = logging.getLogger("enrichment.trace.page")
+website_trace_logger = logging.getLogger("enrichment.trace.website")
+
+#: How many SERP candidates the domain lane may try for one record. Three: the
+#: ranker's pick plus two runners-up. A bound rather than "keep going" because
+#: each attempt is a guard evaluation over a candidate the ranker liked LESS
+#: than the last, and the tail of a SERP is where the coincidental name
+#: matches live.
+_DOMAIN_MAX_ATTEMPTS = 3
 
 #: The mutually exclusive reasons Stage 5 did not query a registry for a
 #: record. ``not_called_on_this_path`` is the one that can only mean a wiring
@@ -1406,6 +1420,98 @@ def _write(result: Any, field: str, value: Any, evidence: Evidence) -> None:
             ] = origin
 
 
+#: The LEI lane's name-match threshold, reused. `finalise` is a module-level
+#: function with no `Settings` in hand, so the value is read the way `config`
+#: reads it — same variable, same default — rather than a second number being
+#: invented for the same question. If the LEI threshold moves, this moves with
+#: it, which is the point of reusing it.
+_LEI_NAME_THRESHOLD = float(os.getenv("LEI_NAME_MATCH_THRESHOLD", "88"))
+
+
+def _page_refutes_candidate(result: Any) -> bool:
+    """True when the candidate site's own page states a DIFFERENT identity.
+
+    `_domain_refuted` covers only the candidate the ownership guard ACCEPTED
+    and the page then took back (`_withdraw_domain`). A candidate the guard
+    DECLINED never reaches that path, so its page read — which ran, and whose
+    verdict is on `_page_corroboration` either way — was never consulted
+    before shipping. Record 13333947 shipped `labcorp.com` for "Orchard
+    Laboratory Corp." with the flag prose already quoting the refutation it
+    had in hand: "its page states 'Labcorp'".
+
+    The docstring above says the guard's failure is usually an absence of
+    corroboration rather than evidence of a wrong answer. That is the case
+    this function removes from the set: here there IS evidence against.
+
+    TWO conditions, both required, because either alone is wrong:
+
+    * the name score is below the LEI threshold — the same
+      :func:`~enrichment.tier1_lei._name_match_score` and the same
+      `lei_name_match_threshold` the registry lane accepts on, reused rather
+      than re-invented;
+    * AND no distinctive token of the record's name is covered by the stated
+      one. A page carrying a CONTRACTION of the record's name scores below the
+      threshold and is still the right site — "Thermo Fisher Scientific"
+      against a page stating "Fisher Scientific" scores 82.9, under the
+      threshold, with `fisher` and `scientific` both covered. Refuting on the
+      score alone would drop it.
+
+    "Orchard Laboratory Corp." against "Labcorp" scores 40 and covers neither
+    `orchard` nor `laboratory` — nothing of the record's identity is on that
+    page.
+    """
+    candidate_domain = str(result.get("_domain_unverified") or "").strip().lower()
+    page = result.get("_page_corroboration") or {}
+    if not isinstance(page, dict):
+        return False
+    stated = str(page.get("stated_org_name") or "").strip()
+    if not stated:
+        return False
+    name1 = str(result.get("name1_enriched") or "").strip()
+    if not name1:
+        return False
+    if _name_match_score(name1, stated) >= _LEI_NAME_THRESHOLD:
+        return False
+    record_tokens = distinctive_tokens(name1)
+    stated_tokens = distinctive_tokens(stated)
+    covered = any(
+        any(token in other or other in token for other in stated_tokens)
+        for token in record_tokens
+    )
+    if covered:
+        return False
+    # Two more ways a page can state a name that shares no token with the
+    # record and still be the record's own site. Both were measured on the
+    # gate, each removing a CORRECT domain:
+    #
+    #  * the page states the record's ACRONYM — `thinksrs.com` states "SRS"
+    #    for "Stanford Research Systems Inc". Tested on the distinctive
+    #    tokens, so the legal suffix does not break the initials, and through
+    #    the same `acronym_matches_name` the ROR lane uses;
+    #  * the HOST carries the record's name even though the page's stated
+    #    owner does not — `darylflood.com` states "The Suddath Companies"
+    #    (the acquirer) and `ucsd.edu` states "Regents of the University of
+    #    California" (the legal owner). A parent's or owner's name on the page
+    #    is not evidence the SITE is someone else's; the host is evidence it
+    #    is the record's.
+    #
+    # `labcorp.com` for "Orchard Laboratory Corp." passes neither — its
+    # initials are `ol`, and its host carries neither `orchard` nor
+    # `laboratory` — so the case this rule exists for is still refuted.
+    if acronym_matches_name(stated, " ".join(record_tokens)):
+        return False
+    host_label = re.split(r"[./]", str(candidate_domain).lower())[0].replace("-", "")
+    if any(len(t) >= 4 and t in host_label for t in record_tokens):
+        return False
+    logger.info({
+        "record_id": result.get("record_id"),
+        "step": "unverified_domain_refused_by_page",
+        "domain": candidate_domain or None,
+        "stated_org_name": stated,
+    })
+    return True
+
+
 def _ship_unverified_domain(result: Any) -> None:
     """Put the ownership guard's declined candidate in the ``domain`` column.
 
@@ -1447,6 +1553,8 @@ def _ship_unverified_domain(result: Any) -> None:
     if (result.get("domain") or "").strip():
         return
     if result.get("_domain_refuted"):
+        return
+    if _page_refutes_candidate(result):
         return
     domain = candidate.strip().lower()
     _write(
@@ -3746,19 +3854,80 @@ class Orchestrator:
             country_gate=self._settings.domain_country_gate_enabled,
         )
         if serp_res.url:
-            decision = _apply_domain(
-                result,
-                serp_res.url,
-                serp_title=serp_res.title,
-                serp_url=serp_res.url,
-                settings=self._settings,
-            )
-            # No provenance flag. "Resolved by SERP with low confidence"
-            # described where the URL came from, not whether it belongs to
-            # this organisation — which is the question `_apply_domain`'s
-            # ownership guard already answers, and answers with evidence. A
-            # candidate it cannot tie to the record is not written at all and
-            # raises `domain-unverified` instead.
+            # §3 — the lane no longer stops at the first refusal.
+            #
+            # Selection ranks candidates; it does not verify them, and the two
+            # can disagree. On 13333947 the ranker preferred `labcorp.com`
+            # over `orchard-labs.com` because `_significant_tokens` drops the
+            # generic "lab", leaving the correct site's own `labs` label
+            # looking like a foreign brand — so the guard was handed the wrong
+            # candidate, declined it (correctly), and the lane gave up with a
+            # right answer sitting at position 1 of the same SERP.
+            #
+            # Retrying costs nothing that was not already paid: every
+            # candidate here comes from the SAME ranked order, and each one
+            # goes through the SAME guard chain. Blacklisted hosts and rank-0
+            # results were never in `alternates` to begin with. This adds
+            # ATTEMPTS, never an acceptance route — a candidate the guard
+            # refuses is still refused, and a record whose every candidate
+            # fails ends exactly where it ended before.
+            attempts: list[dict[str, Any]] = []
+            for candidate_url in (serp_res.url, *serp_res.alternates)[
+                :_DOMAIN_MAX_ATTEMPTS
+            ]:
+                decision = _apply_domain(
+                    result,
+                    candidate_url,
+                    serp_title=(
+                        serp_res.title if candidate_url == serp_res.url else None
+                    ),
+                    serp_url=candidate_url,
+                    settings=self._settings,
+                )
+                attempts.append({
+                    "host": extract_domain(candidate_url) or candidate_url,
+                    "verdict": "accepted" if decision.accepted else "refused",
+                    "reason": decision.verified_by or decision.rejected_by,
+                    "candidate": decision.candidate,
+                })
+                # No provenance flag. "Resolved by SERP with low confidence"
+                # described where the URL came from, not whether it belongs to
+                # this organisation — which is the question `_apply_domain`'s
+                # ownership guard already answers, and answers with evidence.
+                # A candidate it cannot tie to the record is not written at
+                # all and raises `domain-unverified` instead.
+                if decision.accepted:
+                    break
+            else:
+                # Every candidate refused. `_apply_domain` records each
+                # refusal as `_domain_unverified`, so the marker now names the
+                # LAST — the worst-ranked — candidate tried, and that is what
+                # ships and what the page read examines. Measured: the first
+                # cut of this retry moved 23 rows onto a worse domain
+                # (`merck.com` -> `merckhelps.com`, `rowan.edu` ->
+                # `medschoolinsiders.com`), because walking the list quietly
+                # rewrote which candidate the record was about.
+                #
+                # So the marker goes back to the ranker's own first choice,
+                # which is exactly what shipped before the retry existed, and
+                # the ordered list is carried forward for the page read — the
+                # one stage that can tell these candidates apart with evidence
+                # rather than with a host-token heuristic.
+                refused = [
+                    a["candidate"] for a in attempts if a.get("candidate")
+                ]
+                if refused:
+                    result["_domain_unverified"] = refused[0]
+                    result["_domain_candidates"] = refused
+            if len(attempts) > 1:
+                # Only a multi-candidate decision needs explaining; a single
+                # attempt is already fully described by the Path B trace.
+                website_trace_logger.info(json.dumps({
+                    "record_id": record.record_id,
+                    "step": "domain_candidate_retry",
+                    "name1": pp_name1,
+                    "attempts": attempts,
+                }, default=str))
             return
 
         # Path C: LLM fallback when SERP returned nothing usable.
@@ -6322,6 +6491,24 @@ class Orchestrator:
         if not name1:
             return
 
+        # §3 — when the ownership guard refused EVERY candidate, the page read
+        # is what chooses between them. The guard asks "did anything tie this
+        # site to this record"; for these candidates the answer was no for all
+        # of them, and the ranker's preference among them is a host-token
+        # heuristic that is demonstrably wrong on exactly the records this
+        # retry exists for (`labcorp.com` outranking `orchard-labs.com`
+        # because "lab" is dropped as generic).
+        #
+        # The page is better evidence than the ranking, so it decides: the
+        # first candidate whose own page identifies the record wins, and if
+        # none does the ranker's first choice stands, unchanged from before
+        # the retry existed. This can only ever pick among candidates the
+        # guard ALREADY saw and refused — it adds no acceptance route.
+        if not accepted:
+            candidate = await self._page_chooses_candidate(
+                record, name1, result, candidate,
+            )
+
         self._page_counts["attempted"] += 1
         corroboration = await corroborate(
             record_id=record.record_id,
@@ -6496,6 +6683,49 @@ class Orchestrator:
         await self._retry_tier1_after_canonicalisation(
             record, result, candidate=extracted,
         )
+
+    async def _page_chooses_candidate(
+        self, record: EnrichmentRecord, name1: str,
+        result: dict[str, Any], default: str,
+    ) -> str:
+        """The refused candidate whose own page identifies the record.
+
+        Falls back to the FIRST — the ranker's own choice, and what shipped
+        before the retry existed — when no page identifies it, so a record
+        this cannot help is left exactly where it was.
+        """
+        candidates = [
+            c for c in (result.get("_domain_candidates") or ())
+            if isinstance(c, str) and c.strip()
+        ]
+        if len(candidates) < 2:
+            return default
+        for cand in candidates[:_DOMAIN_MAX_ATTEMPTS]:
+            corroboration = await corroborate(
+                record_id=record.record_id,
+                domain=cand,
+                name1=name1,
+                city=record.city,
+                region=record.state,
+                country=record.country,
+                postal_code=record.postal_code,
+                fetcher=self._page_fetcher,
+                cache=self._page_cache,
+                llm_client=self._llm_client,
+                threshold=self._settings.page_name_match_threshold,
+                timeout=self._settings.page_read_timeout_seconds,
+            )
+            if page_identifies_record(corroboration):
+                result["_domain_unverified"] = cand
+                page_trace_logger.info(json.dumps({
+                    "record_id": result.get("record_id"),
+                    "step": "page_chose_candidate",
+                    "chosen": cand,
+                    "over": [c for c in candidates if c != cand],
+                }, default=str))
+                return cand
+        result["_domain_unverified"] = candidates[0]
+        return candidates[0]
 
     @staticmethod
     def _withdraw_domain(

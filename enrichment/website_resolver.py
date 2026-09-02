@@ -78,6 +78,15 @@ class WebsiteResolution:
     # domain ownership guard's on-domain condition (utils/domain_resolver.py);
     # it never influences selection here.
     title: str | None = None
+    # The next candidates in the SAME ranked order, for a caller that has to
+    # refuse `url` and wants the runner-up rather than nothing. Root URLs,
+    # de-duplicated by host and excluding the chosen one; rank-0 and
+    # blacklisted results never appear, because they are not in `valid`.
+    #
+    # Selection is unchanged: this field is read only after the ownership
+    # guard has DECLINED, so nothing here can promote a candidate the guard
+    # would otherwise never have seen.
+    alternates: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -489,6 +498,11 @@ def _sort_key(
     )
 
 
+def _positions(results: list[SearchResult]) -> dict[int, int]:
+    """SERP position by identity — the tiebreak `_sort_key` closes on."""
+    return {id(sr): i for i, sr in enumerate(results)}
+
+
 def _evaluate_candidates(
     name1: str,
     results: list[SearchResult],
@@ -520,7 +534,7 @@ def _evaluate_candidates(
     if not valid:
         return [], {}, None
 
-    position = {id(sr): i for i, sr in enumerate(results)}
+    position = _positions(results)
     ranks: dict[int, int] = {}
     for sr in valid:
         if not _has_host_match(name1, sr.url, record_type):
@@ -791,11 +805,26 @@ def select_website_from_serp(
         # utsystem.edu clear it on the same SERP — so the URL is written and
         # the record is flagged, never written clean.
         high = False
+    chosen_root = _root_url(best.url)
+    seen_hosts = {extract_domain(best.url)}
+    alternates: list[str] = []
+    for sr in sorted(_valid, key=lambda c: _sort_key(
+        c, ranks[id(c)], _positions(results).get(id(c), len(results)),
+        record_type=record_type, city=city,
+    )):
+        if ranks[id(sr)] == 0:
+            continue
+        host = extract_domain(sr.url)
+        if not host or host in seen_hosts:
+            continue
+        seen_hosts.add(host)
+        alternates.append(_root_url(sr.url))
     return WebsiteResolution(
-        url=_root_url(best.url),
+        url=chosen_root,
         confidence="high" if high else "low",
         source="serp",
         title=best.title,
+        alternates=tuple(alternates),
     )
 
 

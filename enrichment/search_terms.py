@@ -47,7 +47,9 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
+from enrichment.confidence import LOW
 from enrichment.locality import US_REGION_CODES
+from enrichment.provenance import derived_scalar, log_from_dicts
 from utils.text_utils import (
     acronym_matches_name,
     is_admin_unit,
@@ -921,6 +923,37 @@ def _acronym_names_the_record(acronym: str | None, name1: str) -> bool:
     return not name1 or acronym_matches_name(acronym, name1)
 
 
+def _domain_is_confident_enough(result: Any) -> bool:
+    """True unless the domain's own derived confidence is `low`.
+
+    A `low` domain is one the ownership guard declined — nothing tied it to
+    this organisation — and it ships with `domain-unverified` precisely so a
+    reviewer will check it. Deriving the record's PRIMARY search handle from
+    it propagates that doubt into a column that carries no provenance of its
+    own and reads as settled: record 13333947 shipped Search Term 1 `LABCORP`
+    for "Orchard Laboratory Corp." A steward searching that handle finds the
+    wrong company, with nothing in the column to say the value was a guess.
+
+    Falling through costs nothing — the next link is a handle derived from
+    `name1_enriched`, which is by construction the identity that survived
+    every gate.
+
+    The band, not the source: a registry-supplied or web-corroborated domain
+    is unaffected, which is the whole of the distinction being drawn. Absent a
+    log (the plain-dict callers in the tests) the answer is yes, so behaviour
+    is unchanged wherever provenance is not being tracked.
+    """
+    log = getattr(result, "provenance", None)
+    if log is None:
+        return True
+    if isinstance(log, list):
+        log = log_from_dicts(log)
+    scalar = derived_scalar(log, "domain", result)
+    if not scalar:
+        return True
+    return scalar.split(":")[-1].split("+", 1)[0] != LOW
+
+
 def _derive_search_term_1(result: dict[str, Any]) -> str | None:
     """search_term_1 chain: ROR acronym → TLD-stripped domain → a handle
     derived from the enriched Name 1 → None — with every link in the chain
@@ -944,7 +977,7 @@ def _derive_search_term_1(result: dict[str, Any]) -> str | None:
     if ror_acronym and _acronym_names_the_record(ror_acronym, name1):
         return ror_acronym
     domain = (result.get("domain") or "").strip() or None
-    if domain:
+    if domain and _domain_is_confident_enough(result):
         # No second name check on the domain, deliberately. The domain a
         # losing registry supplied is already GONE by the time this runs —
         # `enrichment.consistency` nulls it with the identifier, which is the

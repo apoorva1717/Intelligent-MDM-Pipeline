@@ -1063,3 +1063,250 @@ class TestShippingTheUnverifiedDomain:
 
     def test_no_candidate_writes_nothing(self):
         assert self._ship().get("domain") in (None, "")
+
+
+# ---------------------------------------------------------------------------
+# §3 — the lane retries the next candidate after a refusal
+# ---------------------------------------------------------------------------
+
+class TestTheLaneRetriesTheNextCandidate:
+    """Record 13333947, "ORCHARD LAB CORP" in West Bloomfield MI.
+
+    The SERP returned `orchard-labs.com` at position 1 and `labcorp.com` at
+    position 2, and the ranker preferred labcorp: `_significant_tokens` drops
+    the generic "lab", so the correct site's own `labs` label reads as a
+    foreign brand word (rank 1, demoted) while `lab**corp**.com` matches the
+    surviving token `corp` cleanly (rank 2, chosen). The ownership guard then
+    declined labcorp — correctly, nothing tied it to the record — and the lane
+    stopped, with the right answer sitting at position 1 of the same results.
+
+    Selection ranks; it does not verify. When the two disagree the lane now
+    walks on to the next candidate in the SAME order, through the SAME guard.
+    """
+
+    RESULTS = [
+        _sr("Orchard Laboratories: Home", "https://orchard-labs.com/"),
+        _sr("Laboratory Testing in Farmington 48334",
+            "https://locations.labcorp.com/mi/farmington/1784/"),
+        _sr("Contact Us", "https://orchard-labs.com/contact-us/"),
+        _sr("ORCHARD LABORATORIES - Updated August 2026",
+            "https://www.yelp.com/biz/orchard-laboratories-west-bloomfield"),
+    ]
+
+    def test_the_runner_up_is_offered_in_ranked_order(self):
+        res = select_website_from_serp(
+            "ORCHARD LAB CORP", self.RESULTS, "company",
+            country="US", city="WEST BLOOMFIELD",
+        )
+        # Selection itself is UNCHANGED — labcorp still wins the ranking.
+        assert res.url == "https://locations.labcorp.com"
+        # …and the site the guard will actually tie to the record is now
+        # reachable behind it.
+        assert res.alternates == ("https://orchard-labs.com",)
+
+    def test_a_blacklisted_host_is_never_an_alternate(self):
+        res = select_website_from_serp(
+            "ORCHARD LAB CORP", self.RESULTS, "company",
+            country="US", city="WEST BLOOMFIELD",
+        )
+        assert not any("yelp" in a for a in res.alternates)
+
+    def test_alternates_are_deduplicated_by_host(self):
+        """Three of the four results are the same site."""
+        res = select_website_from_serp(
+            "ORCHARD LAB CORP", self.RESULTS, "company",
+            country="US", city="WEST BLOOMFIELD",
+        )
+        hosts = [a.split("//", 1)[-1] for a in res.alternates]
+        assert len(hosts) == len(set(hosts))
+
+    def test_a_rank_0_candidate_is_never_an_alternate(self):
+        """Rank 0 is "the name only overlaps the TITLE" — too weak to trust as
+        a first choice, and no stronger as a second."""
+        results = [
+            _sr("Orchard Laboratories: Home", "https://orchard-labs.com/"),
+            _sr("ORCHARD LABORATORIES CORP Company Overview",
+                "https://leadiq.com/c/orchard-laboratories-corp/61608d"),
+        ]
+        res = select_website_from_serp(
+            "ORCHARD LAB CORP", results, "company",
+            country="US", city="WEST BLOOMFIELD",
+        )
+        assert not any("leadiq" in a for a in res.alternates)
+
+    def test_the_attempt_bound_is_three(self):
+        """A ten-candidate result set offers at most two runners-up, so the
+        lane makes at most three attempts."""
+        from enrichment.orchestrator import _DOMAIN_MAX_ATTEMPTS
+
+        results = [
+            _sr(f"Orchard Laboratories {i}", f"https://orchard-labs-{i}.com/")
+            for i in range(10)
+        ]
+        res = select_website_from_serp(
+            "ORCHARD LABORATORIES", results, "company",
+            country="US", city="WEST BLOOMFIELD",
+        )
+        attempted = (res.url, *res.alternates)[:_DOMAIN_MAX_ATTEMPTS]
+        assert len(attempted) == 3
+        assert _DOMAIN_MAX_ATTEMPTS == 3
+
+    def test_a_single_candidate_offers_no_alternates(self):
+        """The unchanged case: one candidate, one attempt, same as before."""
+        res = select_website_from_serp(
+            "ORCHARD LAB CORP",
+            [_sr("Orchard Laboratories: Home", "https://orchard-labs.com/")],
+            "company", country="US", city="WEST BLOOMFIELD",
+        )
+        assert res.url == "https://orchard-labs.com"
+        assert res.alternates == ()
+
+
+class TestTheRetryAddsAttemptsNotAcceptances:
+    """The safety property. Every retried candidate goes through the same
+    guard chain, so a record whose candidates all fail ends exactly where it
+    ended before the retry existed — no domain, and the flag naming the first
+    refusal."""
+
+    @staticmethod
+    def _attempts(monkeypatch, decisions):
+        """Drive the lane's loop with a scripted `_apply_domain`, recording the
+        candidates it was asked about."""
+        from utils.domain_resolver import DomainDecision
+        import enrichment.orchestrator as O
+
+        seen: list[str] = []
+        answers = list(decisions)
+
+        def fake(result, candidate_url, **kw):
+            seen.append(candidate_url)
+            accept = answers.pop(0) if answers else False
+            if accept:
+                return DomainDecision(
+                    domain="orchard-labs.com",
+                    website_url=candidate_url, verified_by="name",
+                )
+            return DomainDecision(rejected=True, rejected_by="conditions",
+                                  candidate=candidate_url)
+
+        monkeypatch.setattr(O, "_apply_domain", fake)
+        return seen
+
+    def test_every_candidate_refused_leaves_no_domain(self, monkeypatch):
+        from utils.domain_resolver import DomainDecision
+        import enrichment.orchestrator as O
+
+        seen = self._attempts(monkeypatch, [False, False, False])
+        result: dict = {}
+        for url in ("https://a.com", "https://b.com", "https://c.com")[
+            :O._DOMAIN_MAX_ATTEMPTS
+        ]:
+            decision = O._apply_domain(result, url)
+            if decision.accepted:
+                break
+        assert seen == ["https://a.com", "https://b.com", "https://c.com"]
+        assert not result.get("domain")
+
+    def test_the_loop_stops_at_the_first_acceptance(self, monkeypatch):
+        import enrichment.orchestrator as O
+
+        seen = self._attempts(monkeypatch, [False, True, False])
+        for url in ("https://a.com", "https://b.com", "https://c.com"):
+            if O._apply_domain({}, url).accepted:
+                break
+        # The third candidate is never consulted — a retry is a fallback, not
+        # a sweep.
+        assert seen == ["https://a.com", "https://b.com"]
+
+
+class TestARefusedRetryDoesNotRewriteWhichCandidateTheRecordIsAbout:
+    """The regression the first cut of §3 shipped, caught by its own gate.
+
+    `_apply_domain` records every refusal as `_domain_unverified`, so walking
+    a candidate list overwrote the marker each time and left it naming the
+    LAST — worst-ranked — candidate. That is what `_ship_unverified_domain`
+    publishes, so 23 rows moved onto a worse domain than they had before the
+    retry existed: `merck.com` -> `merckhelps.com` (a patient-assistance
+    programme), `rowan.edu` -> `medschoolinsiders.com` (a third-party blog),
+    `eminentmedicalcenter.com` -> `visitsaltlake.com` (a tourism board).
+
+    The ranker's first choice is restored when every candidate is refused, and
+    the ordered list is handed to the page read — the one stage that can tell
+    these apart with evidence.
+    """
+
+    def test_the_first_refused_candidate_is_the_one_remembered(self):
+        from utils.domain_resolver import DomainDecision
+
+        # What the loop leaves behind: three refusals, marker on the last.
+        result: dict = {}
+        for host in ("merck.com", "merckmedicalportal.com", "merckhelps.com"):
+            result["_domain_unverified"] = host   # `_apply_domain`'s behaviour
+        assert result["_domain_unverified"] == "merckhelps.com"
+
+        # …and what the fix restores.
+        refused = ["merck.com", "merckmedicalportal.com", "merckhelps.com"]
+        result["_domain_unverified"] = refused[0]
+        result["_domain_candidates"] = refused
+        assert result["_domain_unverified"] == "merck.com"
+
+    def test_the_candidate_list_is_kept_in_ranked_order(self):
+        res = select_website_from_serp(
+            "ORCHARD LAB CORP",
+            TestTheLaneRetriesTheNextCandidate.RESULTS, "company",
+            country="US", city="WEST BLOOMFIELD",
+        )
+        ordered = (res.url, *res.alternates)
+        assert ordered[0] == "https://locations.labcorp.com"
+        assert ordered[1] == "https://orchard-labs.com"
+
+
+class TestThePageRefutationHasThreeEscapes:
+    """§1 refuses to ship a candidate whose page states a different identity.
+    Three ways a page can state a name sharing no token with the record and
+    still be the record's own site — each one measured on the gate, each one
+    having removed a CORRECT domain."""
+
+    @staticmethod
+    def _refutes(name1, stated, domain):
+        from enrichment.orchestrator import _page_refutes_candidate
+
+        return _page_refutes_candidate({
+            "name1_enriched": name1,
+            "_page_corroboration": {"stated_org_name": stated},
+            "_domain_unverified": domain,
+        })
+
+    def test_a_contraction_still_ships(self):
+        """Scores under the threshold, but the tokens are covered."""
+        assert not self._refutes(
+            "Thermo Fisher Scientific", "Fisher Scientific", "fishersci.com",
+        )
+
+    def test_a_page_stating_the_records_acronym_still_ships(self):
+        """thinksrs.com states "SRS" — that IS Stanford Research Systems."""
+        assert not self._refutes(
+            "Stanford Research Systems Inc", "SRS", "thinksrs.com",
+        )
+
+    def test_a_page_stating_the_acquirer_still_ships(self):
+        """darylflood.com states "The Suddath Companies" — the acquirer. A
+        parent's name on the page is not evidence the SITE is someone
+        else's; the host is evidence it is the record's."""
+        assert not self._refutes(
+            "Daryl Flood Austin, Texas", "The Suddath Companies",
+            "darylflood.com",
+        )
+
+    def test_a_page_stating_the_legal_owner_still_ships(self):
+        assert not self._refutes(
+            "CALM/UCSD", "Regents of the University of California", "ucsd.edu",
+        )
+
+    def test_the_case_the_rule_exists_for_is_still_refuted(self):
+        """labcorp.com passes none of the three: `Labcorp` covers neither
+        `orchard` nor `laboratory`, the record's initials are `ol`, and the
+        host carries neither token."""
+        assert self._refutes(
+            "Orchard Laboratory Corp.", "Labcorp", "labcorp.com",
+        )

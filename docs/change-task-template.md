@@ -235,3 +235,16 @@ larger than the task that surfaced it.
   street parses, which reads as a parsing failure and is not one. Deriving it would be a new
   behaviour with its own gate. Worked example: 13337073, shipping `Street 1 = "307 Boatner
   Rd"` and `House Number = None`.
+* **The correct domain demoted for containing its own industry's word.** `orchard-labs.com`
+  — the right site for 13333947, "ORCHARD LAB CORP" — was ranked BELOW `labcorp.com` by
+  `_domain_introduces_foreign_brand`. `_significant_tokens("ORCHARD LAB CORP")` drops the
+  generic "lab" and returns `{orchard, corp}`, so the host's own `labs` label matches no
+  surviving token and reads as a foreign brand word (rank 1, demoted), while `lab**corp**.com`
+  matches `corp` cleanly (rank 2, chosen). The ranker handed the ownership guard the wrong
+  candidate; the guard declined it correctly; the lane then stopped with the right answer at
+  position 1 of the same SERP.
+  §3's retry makes the mis-ranking SELF-CORRECTING — the lane walks on to the runner-up and
+  the guard ties it — so the demotion no longer costs the record its domain. The ranking
+  itself is untouched and still wrong: a generic word dropped for scoring is not thereby a
+  foreign word in a host, and the two uses of `_significant_tokens` want different sets.
+  Fixing the ranker is its own gate. Row id: 13333947.
