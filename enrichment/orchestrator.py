@@ -97,6 +97,8 @@ from enrichment.provenance import (
     UNATTRIBUTED_CODE,
     UNATTRIBUTED_REASON,
     DOMAIN_WITNESS_REVOKED_RULE,
+    FIELD_LABELS,
+    SCOPED_FIELDS,
     UNVERIFIED_DOMAIN_RULE,
     deterministic_evidence,
     derived_scalar,
@@ -1294,6 +1296,118 @@ _SUGGESTION_RANK: dict[str, int] = {
 REASON_REGISTRY_REGION_MISMATCH = "registry_region_mismatch"
 
 
+#: Inputs the record carries BECAUSE a registry matched. Cleared when the
+#: match is withdrawn so `_classify_record` — which runs later in `finalise`
+#: and is the only writer of `record_type` — re-derives from what is left, as
+#: if the match had never happened. Existing machinery, not a second opinion.
+_REGISTRY_DERIVED_INPUTS: tuple[str, ...] = (
+    "_ror_is_research", "_gleif_category",
+    "_gleif_legal_form_id", "_gleif_legal_form_other",
+)
+
+
+def _event_cites_registry(event: Any, registry: str, identifier: Any) -> bool:
+    """True when this write rests on the registry match being withdrawn.
+
+    Read from the event, never from a hand-written list of fields: a list goes
+    stale the first time a lane learns to write something new, and the whole
+    point of the log is that it already knows. Three ways a write says it came
+    from the match — the producer, the identifier quoted in the reference, and
+    the ownership guard's own `verified_by: registry`.
+    """
+    if registry in tuple(event.producer_chain or ()):
+        return True
+    ref = event.evidence_ref if isinstance(event.evidence_ref, dict) else {}
+    if identifier and ref.get("registry_id") == identifier:
+        return True
+    return ref.get("verified_by") == "registry"
+
+
+def _withdraw_registry_dependents(
+    result: Any, registry: str, identifiers: list[Any],
+) -> list[dict[str, Any]]:
+    """Take down every field whose provenance cites the withdrawn match.
+
+    A withdrawal that stops at the identifier leaves the record asserting the
+    match's consequences on the authority of a match it no longer has.
+    13104777 shipped `domain = aws.org` at **`ror:verified`** after its ROR id
+    was withdrawn — American Welding Society's site, on a Fullerton CA record,
+    with provenance naming a registry match that had been deleted — and
+    `record_type = research_institution` decided by `classifier:ror` from the
+    same match's research flag.
+
+    A field is only removed where the log holds NOTHING ELSE for it. Where an
+    independent write survives — a domain the web lane found on its own — the
+    field re-derives at that witness's confidence rather than being blanked,
+    because that evidence was never the registry's to take away.
+    """
+    log = getattr(result, "provenance", None)
+    if isinstance(log, list):
+        log = log_from_dicts(log)
+    if log is None:
+        return []
+    moved: list[dict[str, Any]] = []
+    for field in SCOPED_FIELDS:
+        if field in ("ror_id", "lei_id", "name1_enriched"):
+            continue  # the identifier itself, and the name, are handled above
+        event = log.attributing_event(field)
+        if event is None or not any(
+            _event_cites_registry(event, registry, i) for i in identifiers
+        ):
+            continue
+        _label = FIELD_LABELS.get(field, field)
+        witness = next(
+            (
+                e for e in reversed(log.events)
+                if e.field == _label and e.new_value
+                and not any(
+                    _event_cites_registry(e, registry, i) for i in identifiers
+                )
+            ),
+            None,
+        )
+        if witness is not None:
+            _write(
+                result, field, witness.new_value,
+                Evidence(
+                    producer_chain=tuple(witness.producer_chain or ()),
+                    tier=witness.tier,
+                    confidence_scale=witness.confidence_scale,
+                    confidence_value=witness.confidence_value,
+                    evidence_ref=witness.evidence_ref,
+                    rule_id=witness.rule_id,
+                ),
+            )
+        else:
+            _write(
+                result, field, None,
+                Evidence(
+                    producer_chain=("registry_guard",),
+                    tier=None,
+                    confidence_scale=NO_SCALE,
+                    evidence_ref={
+                        "withdrawn_with": identifiers,
+                        "registry": registry,
+                        "cited": event.rule_id,
+                    },
+                    rule_id=f"{registry}:region-contradicted-match-refused",
+                ),
+            )
+        moved.append({
+            "field": field,
+            "cited": event.rule_id,
+            "was": event.new_value,
+            "now": witness.new_value if witness is not None else None,
+            "witness": witness.rule_id if witness is not None else None,
+        })
+    # `record_type` is not withdrawn, it is RE-DERIVED: `_classify_record`
+    # runs later in `finalise` and is its only writer, so removing the
+    # registry's own inputs is all this has to do.
+    for _key in _REGISTRY_DERIVED_INPUTS:
+        result.pop(_key, None)
+    return moved
+
+
 def _refuse_region_contradicted_registry_match(
     result: Any, line: dict[str, Any] | None,
 ) -> None:
@@ -1362,6 +1476,19 @@ def _refuse_region_contradicted_registry_match(
     _registry_wrote_the_name = bool(
         _scalar and _scalar.split(":", 1)[0] in ("ror", "gleif")
     )
+    # The name the REGISTRY proposed, which is not always the one in the
+    # column: on 13104777 Tier 3 overwrote ROR's "American Welding Society"
+    # with "AWS", and suggesting "AWS" would hand the steward the record's own
+    # value back instead of the match that was refused.
+    _registry_name = next(
+        (
+            e.new_value for e in reversed(_log.events)
+            # `log.events` records the LABEL ("name1"), not the field key.
+            if _log is not None and e.field == FIELD_LABELS["name1_enriched"]
+            and registry in tuple(e.producer_chain or ()) and e.new_value
+        ),
+        None,
+    ) if _log is not None else None
 
     if _registry_wrote_the_name:
         _write(
@@ -1390,15 +1517,22 @@ def _refuse_region_contradicted_registry_match(
             str(supplied).casefold()
             != str(result.get("name1_original") or "").casefold()
         )
-        result.reject(
-            "name1", matched, f"{registry}:region-contradicted-match",
-            reason=REASON_REGISTRY_REGION_MISMATCH,
-        )
-        _note_suggestion(
-            result, field="name1", value=matched, lane=registry,
-            reason=REASON_REGISTRY_REGION_MISMATCH,
-        )
+    # The refusal is surfaced whoever wrote the name. The steward's question
+    # is "what did the pipeline refuse", and the answer does not depend on
+    # which lane happened to hold the name column at the time — 13104777 lost
+    # its ROR id with no trace of `American Welding Society` anywhere.
+    result.reject(
+        "name1", matched, f"{registry}:region-contradicted-match",
+        reason=REASON_REGISTRY_REGION_MISMATCH,
+    )
+    _note_suggestion(
+        result, field="name1", value=_registry_name or matched, lane=registry,
+        reason=REASON_REGISTRY_REGION_MISMATCH,
+    )
 
+    _withdrawn: list[Any] = [
+        result.get(_i) for _i in ("lei_id", "ror_id") if result.get(_i)
+    ]
     for _id in ("lei_id", "ror_id"):
         if not result.get(_id):
             continue
@@ -1412,6 +1546,7 @@ def _refuse_region_contradicted_registry_match(
                 rule_id=f"{registry}:region-contradicted-match-refused",
             ),
         )
+    _dependents = _withdraw_registry_dependents(result, registry, _withdrawn)
     # The advisory described a match this record no longer carries. Leaving it
     # would ask a reviewer to confirm the address of an identification that
     # has been withdrawn.
@@ -1421,9 +1556,11 @@ def _refuse_region_contradicted_registry_match(
         "step": "registry_match_refused_region",
         "registry": registry,
         "supplied": supplied,
-        "refused": matched,
+        "refused": _registry_name or matched,
+        "name_in_column": matched,
         "detail": line.get("detail"),
         "name_match_tier": line.get("name_match_tier"),
+        "dependents": _dependents,
     })
 
 

@@ -418,3 +418,41 @@ larger than the task that surfaced it.
   identifier. The rule refuses an ACCEPTANCE, so the name revert is now scoped to
   registry-written names; the identifier still goes either way, because it is the same
   wrong match.
+
+---
+
+## A late refusal must re-derive every downstream read of the state it reverses
+
+Three instances now, all the same shape and all found the same way — by gating and reading
+every changed row:
+
+1. **`name1_changed`** is computed at `finalise`'s line 2792; the registry refusal runs at
+   2872. Left stale it still reported the registry's rewrite, and `_still_as_supplied` —
+   the filter that decides whether the derived low may speak — read it and stayed silent.
+   The name was restored and silently UNFLAGGED.
+2. **The `fix2:unchanged-verified` domain rung** upgraded Name 1 to `input:verified+web` on
+   a domain whose page read had already recorded `name_mismatch`. The witness disagreed and
+   the upgrade stood anyway.
+3. **The registry cascade**: withdrawing an identifier left `domain` at `ror:verified` and
+   `record_type` at `classifier:ror` — the match's consequences asserted on the authority
+   of a match the record had deleted.
+
+The general rule: **a refusal that lands late must re-derive every downstream read of the
+state it reverses.** In practice that means asking, for each one: what was computed from
+this before I changed it, and does it run again after me? Where it does not, re-derive it
+explicitly; where it does, clear its INPUTS and let the existing machinery answer — never
+write the answer yourself.
+
+The cascade reads the log rather than a field list, for the same reason the origin
+invariant lives at the funnel: a hand-written list of dependents goes stale the first time
+a lane learns to write something new, and the log already knows.
+
+* **The refused registry name is not retained when the gate refuses it before the write.**
+  §2 asks that a withdrawn match always populate `Suggested Name`. It does on 6 of the 8
+  gated rows. On **13334925** (ROR: North Canyon Medical Center) and **13338211** (ROR:
+  Tyler Junior College) it cannot: the name gate refused the registry's name BEFORE any
+  write, so there is no registry `name1` event, no rejection recorded, and by `finalise`
+  the registry response is gone — the string exists nowhere on the record. Closing it means
+  carrying the matched name forward from Tier 1 as a transient (`_registry_matched_name`),
+  which is new plumbing through the registry lanes and wants its own gate. Row ids:
+  13334925, 13338211.

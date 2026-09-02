@@ -1406,3 +1406,72 @@ class TestARegistryMatchNeedsOneAnchor:
         _refuse_region_contradicted_registry_match(result, None)
         assert result["name1_enriched"] == "Ada Technologies Inc."
         assert result["lei_id"] == "LEI123"
+
+
+class TestAWithdrawnMatchTakesItsDependentsWithIt:
+    """13104777 shipped `domain = aws.org` at **`ror:verified`** after its ROR
+    identifier had been withdrawn — American Welding Society's site, on a
+    Fullerton CA record, with provenance naming a registry match the record no
+    longer had — and `record_type = research_institution` decided by
+    `classifier:ror` from the same match's research flag.
+
+    A withdrawal that stops at the identifier leaves the record asserting the
+    match's consequences on the authority of a match it has deleted. The
+    dependents are read FROM THE LOG, never from a hand-written list of
+    fields: a list goes stale the first time a lane learns to write something
+    new, and the log already knows.
+    """
+
+    @staticmethod
+    def _event(field, value, producers, ref=None, rule="r"):
+        from enrichment.provenance import ProvenanceEvent
+
+        return ProvenanceEvent(
+            seq=0, field=field, old_value=None, new_value=value,
+            producer_chain=tuple(producers), evidence_ref=ref, rule_id=rule,
+        )
+
+    def test_a_write_naming_the_registry_as_producer_cites_it(self):
+        from enrichment.orchestrator import _event_cites_registry
+
+        ev = self._event("domain", "aws.org", ("ror",))
+        assert _event_cites_registry(ev, "ror", "https://ror.org/00syxh370")
+
+    def test_a_write_quoting_the_identifier_cites_it(self):
+        from enrichment.orchestrator import _event_cites_registry
+
+        ev = self._event(
+            "domain", "aws.org", ("website_resolver",),
+            ref={"registry_id": "https://ror.org/00syxh370"},
+        )
+        assert _event_cites_registry(ev, "ror", "https://ror.org/00syxh370")
+
+    def test_the_ownership_guards_registry_condition_cites_it(self):
+        from enrichment.orchestrator import _event_cites_registry
+
+        ev = self._event(
+            "domain", "aws.org", ("website_resolver",),
+            ref={"verified_by": "registry"},
+        )
+        assert _event_cites_registry(ev, "ror", None)
+
+    def test_an_independent_write_does_not_cite_it(self):
+        """13338646's domain came from the web lane on its own evidence, so
+        nothing cascades to it when GLEIF's match is withdrawn."""
+        from enrichment.orchestrator import _event_cites_registry
+
+        ev = self._event(
+            "domain", "adam-tech.com", ("website_resolver",),
+            ref={"verified_by": "serp"},
+        )
+        assert not _event_cites_registry(ev, "gleif", "549300FIRKSM1MOM7Y22")
+
+    def test_the_registry_derived_classifier_inputs_are_cleared(self):
+        """`record_type` is not withdrawn, it is RE-DERIVED: `_classify_record`
+        runs later in `finalise` and is its only writer, so removing the
+        registry's own inputs is all the cascade has to do. Existing
+        machinery, not a second opinion."""
+        from enrichment.orchestrator import _REGISTRY_DERIVED_INPUTS
+
+        assert "_ror_is_research" in _REGISTRY_DERIVED_INPUTS
+        assert "_gleif_category" in _REGISTRY_DERIVED_INPUTS

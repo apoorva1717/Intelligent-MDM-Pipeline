@@ -1932,7 +1932,10 @@ class TestTheRegistryLocationTriggerIsAConjunction:
         # region contradicts.
         assert result.name1_enriched == "Bicorporate Products Inc"
         assert not result.lei_id
-        # Cased by the output normaliser on its way to the column, like every
-        # other name the record ships.
-        assert result.suggested_name == "BIC Corporation"
+        # The REGISTRY's own string, taken from its event in the log rather
+        # than from the name column: the column may have been re-cased, or
+        # overwritten by a later lane entirely (13104777, where Tier 3 replaced
+        # ROR's "American Welding Society" with "AWS" and suggesting the column
+        # would have handed the steward the record's own value back).
+        assert result.suggested_name == "BIC CORPORATION"
         assert REGISTRY_LOCATION_MISMATCH not in result.flag_codes
