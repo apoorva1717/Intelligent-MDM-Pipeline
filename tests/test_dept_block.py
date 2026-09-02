@@ -600,3 +600,55 @@ class TestNoChosenOverrideIsExactOnly:
     ])
     def test_a_word_difference_still_refuses(self, query, name):
         assert self._fold(query) != self._fold(name)
+
+
+class TestSiteQualifierHead:
+    """A qualifier defeats the LOOKUP, not the identity.
+
+    "UCSF Health at Mission Bay" is one organisation and one of its buildings.
+    ROR indexes the organisation; nothing indexes the building, so the full
+    string misses every registry while a sibling row resolves cleanly.
+    """
+
+    @pytest.mark.parametrize("name,head", [
+        ("UCSF Health at Mission Bay", "UCSF Health"),
+        ("Acme Corp - Baytown", "Acme Corp"),
+        ("Cleveland Clinic, Weston", "Cleveland Clinic"),
+        ("University of Texas at Austin", "University of Texas"),
+    ])
+    def test_the_head_is_what_a_registry_indexes(self, name, head):
+        from enrichment.orchestrator import _site_qualifier_head
+        assert _site_qualifier_head(name) == head
+
+    @pytest.mark.parametrize("name", [
+        # A legal form is not a site. Stripping it would re-query the same
+        # organisation under a shorter name the ladder already normalises.
+        "Belharra Therapeutics, Inc.",
+        "Delta Analytical, LLC",
+        # Nothing to strip.
+        "Stanford University",
+        "Harbor/UCLA Medical Center",
+        # A head worth nothing: one token, or only connectors.
+        "Merck, Rahway",
+        "The at Bay",
+        # No tail.
+        "MIT at",
+        None,
+        "",
+    ])
+    def test_what_is_not_a_site_qualifier(self, name):
+        from enrichment.orchestrator import _site_qualifier_head
+        assert _site_qualifier_head(name) is None
+
+    def test_ut_austin_is_split_but_must_never_be_retried(self):
+        """The splitter has no opinion about whether to retry.
+
+        "University of Texas at Austin" HAS a qualifier shape, and stripping it
+        would replace a correct match with its parent. What stops that is the
+        trigger, not the splitter: `_site_qualifier_retry` returns immediately
+        when the record already holds a registry identity.
+        """
+        from enrichment.orchestrator import _site_qualifier_head
+        assert _site_qualifier_head("University of Texas at Austin") == (
+            "University of Texas"
+        )

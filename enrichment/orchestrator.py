@@ -67,6 +67,7 @@ from enrichment.preprocess import (
     llm_classify_plain_names_async,
     preprocess_record,
 )
+from dedup.candidates import LEGAL_SUFFIXES
 from dedup.signatures import normalize_key
 from enrichment.classifier import TypeEvidence, classify
 from enrichment.flags import OVERFLOW, compute_flags, raise_after
@@ -1289,6 +1290,61 @@ def _note_suggestion(
         "rank": _SUGGESTION_RANK.get(lane, 3),
         "seq": len(result.get("_ev_suggestions") or ()),
     })
+
+
+#: A trailing site qualifier: "X at Y", "X - Y", "X, Y". The head is what a
+#: registry indexes; the tail names which of that organisation's sites the
+#: record is about, and no registry publishes it as part of the name.
+#: A head made only of these is not a name — refusing it is what stops a
+#: one-word or article-only query from colliding with everything in ROR.
+_STOPWORD_HEAD_TOKENS: frozenset[str] = frozenset({
+    "of", "and", "for", "the", "in", "at", "a", "an", "&",
+})
+
+#: Legal forms, lowercased and stripped of punctuation. A tail that is one of
+#: these is not a site — see `_site_qualifier_head`.
+_LEGAL_TAILS: frozenset[str] = frozenset(
+    t.strip().strip(".,").lower() for t in LEGAL_SUFFIXES
+)
+
+_SITE_QUALIFIER_RE = re.compile(
+    r"^(?P<head>.+?)\s*(?:\s+at\s+|\s+[-\u2013\u2014]\s+|,\s*)(?P<tail>\S.*)$",
+    re.IGNORECASE,
+)
+
+
+def _site_qualifier_head(name: str | None) -> str | None:
+    """The head of a site-qualified name, or None.
+
+    "UCSF Health at Mission Bay" -> "UCSF Health". A qualifier defeats the
+    LOOKUP, not the identity: ROR indexes the organisation, not the building,
+    so the full string misses and the head resolves.
+
+    Returns None where stripping would not leave something worth querying —
+    a single token, or a run of stopwords — because a one-word head is exactly
+    the query that collides with everything.
+    """
+    if not name or not str(name).strip():
+        return None
+    m = _SITE_QUALIFIER_RE.match(str(name).strip())
+    if not m:
+        return None
+    head = m.group("head").strip(" ,;-")
+    if not m.group("tail").strip():
+        return None
+    tokens = [t for t in re.split(r"\s+", head) if t]
+    if len(tokens) < 2:
+        return None
+    if all(t.lower() in _STOPWORD_HEAD_TOKENS for t in tokens):
+        return None
+    # "Belharra Therapeutics, Inc." is not a site-qualified name — the tail is
+    # a LEGAL FORM, and stripping it would re-query the same organisation
+    # under a shorter name the ladder already normalises for itself. Only the
+    # comma shape needs this: nobody writes "Acme at Inc".
+    tail = m.group("tail").strip().strip(".,")
+    if tail.lower() in _LEGAL_TAILS:
+        return None
+    return head
 
 
 def _write(result: Any, field: str, value: Any, evidence: Evidence) -> None:
@@ -4766,6 +4822,140 @@ class Orchestrator:
             )
         return await self._finalise_and_return(result, start, record, cache)
 
+    async def _site_qualifier_retry(
+        self, record: EnrichmentRecord, result: dict[str, Any],
+    ) -> None:
+        """Re-run the Tier 1 ladder on a site-qualified name's head. Once.
+
+        "UCSF Health at Mission Bay" is one organisation and one of its
+        buildings. ROR indexes the organisation; nothing indexes the building,
+        so the full string misses every registry and the record ships
+        unresolved beside a sibling row that resolved cleanly. A qualifier
+        defeats the LOOKUP, not the identity.
+
+        The retry adds a QUERY, never an acceptance route. Everything the
+        stripped head finds goes through the same ladder at the same rules —
+        ROR's country and distinctive-token guards, the separator-folded exact
+        requirement on a no-chosen candidate, GLEIF's name verification, the
+        Wikidata gauntlet. A head that only matches loosely is refused exactly
+        as the full name would have been.
+
+        The supplied form is not thrown away: it becomes `operating_name`,
+        which is the field for "what else this organisation is called". The
+        qualifier is never re-appended to Name 1 — the registry authored that
+        value and the site is not part of it.
+        """
+        if result.get("_site_retry_attempted"):
+            return
+        if result.get("ror_id") or result.get("lei_id"):
+            # The full name already produced a registry identity. "University
+            # of Texas at Austin" is a whole organisation whose name merely
+            # looks qualified, and stripping it would replace a correct match
+            # with its parent.
+            return
+        supplied = (
+            (result.get("_lane_inputs") or {}).get("name1")
+            or result.get("name1_original")
+            or ""
+        )
+        head = _site_qualifier_head(supplied)
+        if not head:
+            return
+        result["_site_retry_attempted"] = True
+        country_code = (
+            result.get("_tier1_country_code")
+            or country_to_iso_code(record.country)
+        )
+        logger.info({
+            "record_id": record.record_id,
+            "step": "site_qualifier_retry",
+            "supplied": supplied,
+            "stripped_query": head,
+        })
+
+        hit: str | None = None
+        try:
+            ror_res = await self._ror_client.call(
+                head,
+                country_code=country_code,
+                country=record.country,
+                city=record.city,
+                state=record.state,
+                record_domain=_record_domain_hint(result, record),
+            )
+        except Exception:  # noqa: BLE001 — a retry must never fail a record
+            logger.exception(
+                "[%s] site-qualifier retry: ROR call failed", record.record_id,
+            )
+            ror_res = {"matched": False}
+        _log_registry_rejections(result, "ror", ror_res)
+
+        if ror_res.get("matched") and _write_registry_name(
+            result, "name1", ror_res.get("official_name"), registry="ROR",
+            identifier=ror_res["ror_id"],
+            rule_id="tier1:site-qualifier-retry",
+            incumbent=head,
+            variants=ror_res.get("name_variants"),
+        ):
+            record_registry_identity(
+                result, "ROR", ror_res, name=ror_res.get("official_name"),
+            )
+            _write(
+                result, "ror_id", ror_res["ror_id"],
+                registry_evidence(
+                    "ror", ror_res["ror_id"],
+                    rule_id="tier1:site-qualifier-retry",
+                ),
+            )
+            result["_ror_is_research"] = bool(
+                ror_res.get("is_research_institution")
+            )
+            _apply_domain(
+                result, ror_res.get("website"), registry="ROR",
+                settings=self._settings,
+            )
+            hit = "ROR"
+        elif await self._run_lei_lookup(record, result, head, country_code):
+            hit = "GLEIF"
+        elif await self._wikidata_crosswalk(
+            record, result, head, country_code,
+        ):
+            hit = "wikidata"
+
+        if not hit:
+            logger.info({
+                "record_id": record.record_id,
+                "step": "site_qualifier_retry_miss",
+                "stripped_query": head,
+            })
+            return
+
+        result["tier_used"] = 1
+        result["confidence"] = "high"
+        result["enrichment_status"] = "enriched"
+        if hit == "ROR":
+            # Only the ROR leg is hand-written here. `_run_lei_lookup` and
+            # `_wikidata_crosswalk` set `source` themselves — and the
+            # crosswalk's is the REGISTRY that authored the identity, never
+            # "wikidata", which is not a source a record can carry.
+            result["source"] = "ROR"
+        # The supplied form, kept where a name that is not the legal name
+        # belongs. `input:provisional`, not `+web` or `+dba`: the record
+        # supplied it, nothing corroborated it, and there is no marker on it.
+        if not (result.get("operating_name") or "").strip():
+            result["operating_name"] = supplied.strip()
+            result["operating_name_provenance"] = "input:provisional"
+        logger.info({
+            "record_id": record.record_id,
+            "step": "site_qualifier_retry_hit",
+            "registry": hit,
+            "stripped_query": head,
+            "official_name": result.get("name1_enriched"),
+            "ror_id": result.get("ror_id"),
+            "lei_id": result.get("lei_id"),
+            "operating_name": result.get("operating_name"),
+        })
+
     async def _retry_tier1_after_canonicalisation(
         self,
         record: EnrichmentRecord,
@@ -6013,6 +6203,10 @@ class Orchestrator:
         # website paths propose a candidate and before finalise decides whether
         # to raise `domain-unverified`.
         await self._retry_tier1_after_canonicalisation(record, result)
+        # After the canonicalisation retry, so a corrected FULL name is tried
+        # before the stripped head — a match on the whole name is always the
+        # better one.
+        await self._site_qualifier_retry(record, result)
         # The Wikidata website claim for a record the registries resolved —
         # retained here, BEFORE a candidate domain exists, because that is
         # when the lane can still be asked. See `_retain_wikidata_website`.
