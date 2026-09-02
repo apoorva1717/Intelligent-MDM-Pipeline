@@ -1108,6 +1108,10 @@ def _write_registry_name(
         result.setdefault("_ev_name_suggestion", {})[field] = (
             decision.suggestion or value
         )
+        _note_suggestion(
+            result, field=field, value=decision.suggestion or value,
+            lane=registry.lower(), reason=str(decision.reason or "refused"),
+        )
         # The refusal is about the CANDIDATE, not about the column. A field
         # left empty here would be a worse outcome than the one being
         # prevented — the record would ship with no name at all — so the
@@ -1229,6 +1233,61 @@ def _origin_for(evidence: Evidence) -> str | None:
         # value the record supplied and preprocessing rewrote in place.
         return dept_block.ORIGIN_INPUT
     return dept_block.ORIGIN_INPUT
+
+
+#: A SUGGESTION is a name that survived an identity comparison and was refused
+#: on authority — never a dissimilarity, shape, or evidence-absence refusal.
+#:
+#: That definition is the whole filter. `not_exact` is dissimilarity: the
+#: registry itself could not match the name, so it is not a candidate anyone
+#: compared. `address_like` is shape: the value is not a name at all.
+#: `not_in_evidence` is evidence-absence: nothing read it anywhere. None of
+#: the three tells a steward what this record should be called; only a
+#: proposal that passed the comparison and lost to a policy does.
+_IDENTITY_REFUSALS: frozenset[str] = frozenset({
+    # The gate's verdict on two names it compared, on any lane. Also the
+    # `undecidable`-not-written case: that branch carries this same reason.
+    name_gate.REASON_DIFFERENT_ENTITY,
+    # The grounded lane's own comparison, before the gate sees it.
+    "identity_not_preserved",
+})
+
+#: Lane precedence. Refusal strength is COMPARISON strength, not source
+#: prestige: the grounded lane refused a name it had read and compared against
+#: evidence, a model refused one it had recalled and compared, and a registry
+#: refusal is dominated by fuzzy near-misses its own scorer produced. The
+#: strongest comparison goes first, which is the reverse of how authoritative
+#: the three sources are for WRITING a value.
+_SUGGESTION_RANK: dict[str, int] = {
+    "grounded": 0, "page": 0,
+    "llm": 1,
+    "ror": 2, "gleif": 2, "wikidata": 2,
+}
+
+
+def _note_suggestion(
+    result: Any, *, field: str, value: Any, lane: str, reason: str,
+) -> None:
+    """Record a name this record's pipeline proposed and did not write.
+
+    Collected at the refusal sites that already exist, and nowhere else: this
+    makes no judgement of its own, it reports one that was already made. The
+    value is NEVER written to a name column and carries no provenance — it is
+    steward-facing text, so that a reviewer confirming a flagged row is handed
+    what the pipeline refused instead of having to research it.
+    """
+    if not value or not str(value).strip():
+        return
+    if reason not in _IDENTITY_REFUSALS:
+        return
+    result.setdefault("_ev_suggestions", []).append({
+        "field": field,
+        "value": str(value).strip(),
+        "lane": lane,
+        "reason": reason,
+        "rank": _SUGGESTION_RANK.get(lane, 3),
+        "seq": len(result.get("_ev_suggestions") or ()),
+    })
 
 
 def _write(result: Any, field: str, value: Any, evidence: Evidence) -> None:
@@ -2461,6 +2520,40 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # and so not an unverified inference.
     compute_flags(result)
 
+    # ── Suggested Name — steward-facing, never a written value ────────────
+    #
+    # One suggestion per record, elected from the proposals the pipeline
+    # REFUSED. Populated only where the record is flagged, because that is the
+    # row a steward opens; an unflagged row has nothing to confirm.
+    #
+    # Precedence is evidence weight: a registry refused a name it had matched,
+    # the web lanes refused one they had read, a model refused one it recalled.
+    # Ties break on collection order, so the election is deterministic.
+    #
+    # These two columns are NOT values. They carry no provenance, are never
+    # read by dedup, batch consensus, the search terms or any downstream rule,
+    # and nothing in the pipeline consumes them — they exist so that a steward
+    # confirming a flagged row is handed what was refused instead of
+    # researching it again.
+    if result.get("flag_for_review"):
+        _shipped = " ".join(str(result.get("name1_enriched") or "").split()).casefold()
+        _elected = next(
+            (
+                s for s in sorted(
+                    (result.get("_ev_suggestions") or ()),
+                    key=lambda s: (s["rank"], s["seq"]),
+                )
+                if " ".join(str(s["value"]).split()).casefold() != _shipped
+            ),
+            None,
+        )
+        if _elected:
+            result["suggested_name"] = _elected["value"]
+            result["suggestion_source"] = (
+                f"{_elected['lane']}, refused: {_elected['reason']}"
+            )
+    result.pop("_ev_suggestions", None)
+
     # Compact search handles for downstream consumers. Runs here, near the end
     # of finalise, so the derivation sees ONLY settled post-enrichment values:
     # every name slot has been canonicalised, deduped and passed through, the
@@ -2594,6 +2687,7 @@ _GUARD_FIELDS: dict[str, str] = {
     "local_rescore": "ror_id",
     "gleif_country": "lei_id",
     "gleif_name_verification": "lei_id",
+    "not_exact": "ror_id",
 }
 
 
@@ -3058,6 +3152,11 @@ def _apply_tier3(
                 # rather than into a log line no reviewer reads.
                 result.setdefault("_ev_name_suggestion", {})["name1"] = (
                     decision.suggestion or suggestion
+                )
+                _note_suggestion(
+                    result, field="name1",
+                    value=decision.suggestion or suggestion,
+                    lane="llm", reason=str(decision.reason or "refused"),
                 )
                 counts = result.get("_name_counts")
                 if counts is not None:
@@ -4410,6 +4509,12 @@ class Orchestrator:
                 result.setdefault("_ev_name_suggestion", {})[field] = (
                     decision.suggestion or proposal.value
                 )
+                _note_suggestion(
+                    result, field=field,
+                    value=decision.suggestion or proposal.value,
+                    lane="ror" if proposal.from_registry else "grounded",
+                    reason=str(decision.reason or "refused"),
+                )
                 logger.info({
                     "record_id": result.get("record_id"),
                     "step": "name_gate_refused_grounded",
@@ -4565,6 +4670,12 @@ class Orchestrator:
                 # one, in the flag detail, with the candidate named.
                 for field, text in grounded.suggestions.items():
                     result.setdefault("_ev_name_suggestion", {})[field] = text
+                    _note_suggestion(
+                        result, field=field, value=text, lane="grounded",
+                        reason=str(
+                            (grounded.dropped or {}).get(field) or "refused",
+                        ),
+                    )
                 logger.info({
                     "record_id": result.get("record_id"),
                     "step": "grounded_proposal_refused",
@@ -5737,6 +5848,12 @@ class Orchestrator:
             if not decision.allow:
                 result.setdefault("_ev_name_suggestion", {})[slot] = (
                     decision.suggestion or proposal.value
+                )
+                _note_suggestion(
+                    result, field=slot,
+                    value=decision.suggestion or proposal.value,
+                    lane="ror" if proposal.from_registry else "grounded",
+                    reason=str(decision.reason or "refused"),
                 )
                 continue
 

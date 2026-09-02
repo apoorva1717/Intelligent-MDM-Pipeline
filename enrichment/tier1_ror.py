@@ -1188,12 +1188,36 @@ async def call_ror(
                 # it `ror:verified` with a `unt.edu` domain and no flag. A
                 # silently-wrong registry identity is the costliest failure
                 # this pipeline has; three correct matches do not pay for one.
-                eligible = [
+                scored = [
                     it for it in items
-                    if it.get("score", 0.0) >= threshold
-                    and it.get("organization")
-                    and _is_exact_by_words(it["organization"])
+                    if it.get("score", 0.0) >= threshold and it.get("organization")
+                ]
+                eligible = [
+                    it for it in scored
+                    if _is_exact_by_words(it["organization"])
                 ][:3]
+                # A candidate ROR ranked above the threshold and the exact-only
+                # rule refused. Recorded as a guard rejection like every other
+                # refusal, which is what carries it to the steward-facing
+                # `Suggested Name` column — the record's reviewer is told what
+                # the registry offered and why it was not taken, instead of
+                # researching it again.
+                if not eligible and scored:
+                    _note_rejection(
+                        "not_exact", scored[0]["organization"],
+                        scored[0].get("score", 0.0),
+                        "no name variant equals the query once separators fold",
+                    )
+                    # The DISPLAY name, for the steward-facing column. The
+                    # rejection record itself keeps `names[0]` — changing that
+                    # would rewrite every existing guard rejection — but a
+                    # reviewer needs the name ROR shows, not whichever variant
+                    # happens to sort first ("UNT" for University of North
+                    # Texas).
+                    guard_rejections[-1]["display_name"] = (
+                        _extract_org_fields(scored[0]["organization"])
+                        .get("official_name")
+                    )
                 if not eligible:
                     logger.info(
                         "ROR affiliation no confident match for '%s' "

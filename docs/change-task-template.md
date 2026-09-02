@@ -152,6 +152,14 @@ larger than the task that surfaced it.
   record-by-record.
 * **`G1-ADDR-001` rises on S4 under enrichment** (65 -> 66) and does not fall on S1 (17 -> 17)
   — the only G1 code enrichment does not reduce.
+* **Output schema grows by two columns** — `Suggested Name` and `Suggestion Source`,
+  appended after `Operating Name Provenance`. **Pending Bert's answer on whether DATAshaper
+  passes unmapped columns through.** If it does not, the two need either a DATAshaper
+  mapping or a feature flag; a flag has NOT been added, on the reasoning that adding one
+  before the answer builds a switch nobody may need. Nothing downstream reads either column
+  (grep-verified against `dedup/`, `batch_consensus.py`, `search_terms.py`,
+  `issue_detection.py`, `flags.py`), so the risk is purely whether the columns survive the
+  hand-off, not what they would do if they did.
 * **Registry currency** — ROR display for `04xzj3x20` predates the 2023 rename to Los Angeles
   General Medical Center; the pipeline correctly ships the registry's current label.
   Operational remedy: ROR curation request. Worked example for the "as current as its

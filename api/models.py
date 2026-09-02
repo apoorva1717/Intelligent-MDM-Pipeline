@@ -369,6 +369,21 @@ class EnrichmentResult(BaseModel):
     # `operating_name_extracted` trace line — a decaying token in an exported
     # field is read as part of the claim.
     operating_name_provenance: Optional[str] = None
+
+    # ── Suggested Name — steward-facing, never a value ────────────────
+    # A name that survived an IDENTITY COMPARISON and was refused on
+    # authority — never a dissimilarity, shape, or evidence-absence refusal.
+    # Surfaced so a reviewer confirming a flagged row is handed what the
+    # pipeline declined instead of researching it again. Populated only where
+    # `flag_for_review` is true.
+    #
+    # Deliberately without a provenance column: a provenance answers "who
+    # says this value is right", and nothing says these are right — the
+    # pipeline's own judgement was that they are not written. `suggestion_source`
+    # names the lane and the refusal reason instead. Nothing downstream reads
+    # either field.
+    suggested_name: Optional[str] = None
+    suggestion_source: Optional[str] = None
     # Serialised as the "Domain" column: the registrable domain ('mit.edu'),
     # written only through utils.domain_resolver.resolve_domain. Null when the
     # candidate could not be verified as belonging to this organisation (the

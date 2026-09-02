@@ -44,6 +44,8 @@ RESPONSE_COLUMNS: dict[str, str] = {
     # corroborator_report.md for the SQL/ADF artefacts that need it.
     "operating_name": "Operating Name",
     "operating_name_provenance": "Operating Name Provenance",
+    "suggested_name": "Suggested Name",
+    "suggestion_source": "Suggestion Source",
     # "Domain" and "Website URL" are merged into a single "Domain" column. It
     # carries the registrable ``domain`` (mit.edu) — never a full URL: the
     # homepage ``website_url`` is derived from it (https://mit.edu) and kept
