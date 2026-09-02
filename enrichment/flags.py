@@ -706,10 +706,12 @@ def relocated_unverified_fields(result: Any) -> list[str]:
     The doubt is not "is this the canonical form" — it is "does this belong in
     this slot at all", which is why it renders under its own clause.
 
-    Excluded, in order: a slot an authority answered for (its provenance is no
-    longer input-class), one carrying a witness on the input, one a registry
-    or department domain corroborated, one the grounded lane confirmed, and an
-    admin desk — the same exclusion the derived low makes, for the same reason.
+    Excluded, in order: a record a department domain corroborated (that is
+    evidence about the block itself), then per slot — one an authority
+    answered for (its provenance is no longer input-class, which covers a
+    registry that answered for THIS slot), one carrying a witness on the
+    input, one the grounded lane confirmed, and an admin desk — the same
+    exclusion the derived low makes, for the same reason.
     """
     origins = (
         result.get("_slot_origin") if hasattr(result, "get")
@@ -728,7 +730,14 @@ def relocated_unverified_fields(result: Any) -> list[str]:
             return result.get(field)
         return getattr(result, field, None)
 
-    if _value("department_domain") or _value("ror_id") or _value("lei_id"):
+    # A department domain corroborates the department BLOCK, so it answers the
+    # question this flag asks. A registry id does not: it vouches for the
+    # entity in Name 1, which says nothing about whether a value the routers
+    # moved belongs in a dept slot. Where a registry answered for the SLOT,
+    # the provenance test below already excludes it — the slot is no longer
+    # input-class. 13343608 (Harbor-UCLA, ROR-matched on Name 1, "Supply
+    # Chain Oper. Warehouse" lifted out of Street 2) was excluded by the id.
+    if _value("department_domain"):
         return []
     confirmed = _value("_ev_input_confirmed") or ()
 

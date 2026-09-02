@@ -52,6 +52,8 @@ from enrichment.provenance import deterministic_evidence
 from utils.name_slots import DEPT_SLOTS
 from utils.text_utils import is_logistics_location, smart_title_case
 
+from enrichment.dept_block import ORIGIN_STREET
+
 logger = logging.getLogger(__name__)
 
 
@@ -1307,6 +1309,21 @@ def merge_into_result(
                     "address:department-addendum-placed",
                     {"from": "address_stage"},
                 )
+                # Moved from the address block into a name slot — the same
+                # fact the preprocess street router records, so the same
+                # token. The origin says WHERE the value came from; the trail
+                # already says which pass moved it, and a consumer asking
+                # "did the record put this here?" needs only the first.
+                #
+                # The sibling writer above (`uc9:address-moved-out-of-name-
+                # field`) is the opposite direction — it takes an address OUT
+                # of a name slot and leaves the remainder — so it records no
+                # origin: the remainder is the record's own text, in the slot
+                # the record put it in.
+                if hasattr(result_dict, "setdefault"):
+                    result_dict.setdefault("_slot_origin", {})[target] = (
+                        ORIGIN_STREET
+                    )
                 break
 
     if addr.address_issues:

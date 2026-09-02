@@ -1210,3 +1210,65 @@ class TestUndecidableAlwaysRaises:
             _ev_name_verdict={"name1": "undecidable"},
         )
         assert flags.UNVERIFIED_INFERENCE not in (result.get("flag_codes") or [])
+
+
+class TestARegistryIdOnName1DoesNotVouchForARelocatedSlot:
+    """`relocated-unverified` asks one question: does a value the routers MOVED
+    belong in the slot they moved it to?
+
+    The rule used to drop the whole record the moment it carried a `ror_id` or
+    an `lei_id`, which answers a different question. A registry match settles
+    the ENTITY in Name 1; it says nothing about a department the pipeline
+    lifted out of a street line. Record 13343608 shipped Harbor-UCLA Medical
+    Center with "Supply Chain Oper. Warehouse" pulled from Street 2 and no
+    flag on it, because Name 1 had matched ROR.
+
+    Where a registry answered for the SLOT the exclusion is still made, one
+    line lower and for the right reason: the slot's provenance is no longer
+    input-class. A department domain keeps its record-level exclusion, because
+    that IS evidence about the department block.
+    """
+
+    @staticmethod
+    def _relocated(**overrides):
+        from enrichment.provenance import deterministic_evidence, registry_evidence
+
+        result = _init_result(EnrichmentRecord(
+            record_id="R1", country="US", name1="Harbor-UCLA Medical Center",
+            street2="Supply Chain Oper. Warehouse",
+        ))
+        seed(result, registry_evidence("ror", "https://ror.org/00x"),
+             name1_enriched="Harbor-UCLA Medical Center",
+             ror_id="https://ror.org/00x")
+        seed(result, deterministic_evidence("passthrough"),
+             name2_enriched="Supply Chain Oper. Warehouse")
+        seed(result, _slot_origin={"name2": "preprocess:street"})
+        for field, value in overrides.items():
+            seed(result, **{field: value})
+        return finalise(result, time.monotonic())
+
+    def test_the_harbor_ucla_row_is_flagged_alongside_its_registry_match(self):
+        out = self._relocated()
+        assert flags.RELOCATED_UNVERIFIED in (out.get("flag_codes") or [])
+        assert "name2" in (out.get("flagged_fields") or [])
+
+    def test_a_department_domain_still_excludes_the_record(self):
+        # Evidence about the block itself, so it answers the question asked.
+        out = self._relocated(department_domain="supplychain.humc.edu")
+        assert flags.RELOCATED_UNVERIFIED not in (out.get("flag_codes") or [])
+
+    def test_a_slot_nothing_moved_is_not_flagged(self):
+        """The other half: `input` origin means the value was supplied where it
+        sits. 13213895's "ANTHROPOLOGY DEPT." is unverified, but nobody moved
+        it, so this flag has nothing to say about it."""
+        from enrichment.provenance import deterministic_evidence
+
+        result = _init_result(EnrichmentRecord(
+            record_id="R2", country="US", name1="Texas A&M University",
+            name2="ANTHROPOLOGY DEPT.",
+        ))
+        seed(result, deterministic_evidence("passthrough"),
+             name2_enriched="ANTHROPOLOGY DEPT.")
+        seed(result, _slot_origin={"name2": "input"})
+        out = finalise(result, time.monotonic())
+        assert flags.RELOCATED_UNVERIFIED not in (out.get("flag_codes") or [])
