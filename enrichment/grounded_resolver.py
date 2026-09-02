@@ -240,6 +240,11 @@ class GroundedResult:
     #: returning that answer. The caller hands it to `_canonical_proposal`, the
     #: field that decision already reads.
     confirmed: dict[str, str] = dc_field(default_factory=dict)
+    #: The evidence item behind each confirmation — ``field -> source_url``.
+    #: A confirmation is a PAGE READ agreeing with the record, and without the
+    #: URL the caller cannot say so: it could record that the lane agreed, but
+    #: not what a reviewer should open to see why.
+    confirmed_source: dict[str, str] = dc_field(default_factory=dict)
 
     query: str = ""
     evidence: list[EvidenceItem] = dc_field(default_factory=list)
@@ -753,6 +758,8 @@ async def run_grounded_resolver(
         incumbent = originals.get(field)
         if incumbent and normalize_key(incumbent) == normalize_key(value):
             result.confirmed[field] = value
+            if item is not None and item.url:
+                result.confirmed_source[field] = item.url
             logger.info({
                 "record_id": record_id,
                 "step": "grounded_confirmed_input",

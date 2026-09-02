@@ -212,6 +212,22 @@ def resolve(result: Any) -> UnchangedOutcome | None:
             page.get("source_url") or page.get("domain"),
         )
 
+    # The grounded lane searched, fetched, read and returned the record's own
+    # name back. That is the same KIND of evidence as the rung above — a page
+    # stating the organisation's identity — reached by a different route, so
+    # it sits immediately below it and above the domain check. It is placed
+    # here rather than at `unchanged-confirmed` because a confirmation from
+    # this lane is not a second opinion: the lane was never shown the
+    # record's answer, and it read pages before agreeing.
+    grounded = result.get("_ev_grounded_confirmed_name1")
+    if grounded and normalize_key(grounded.get("value") or "") == normalize_key(name1):
+        domain = grounded.get("domain")
+        return UnchangedOutcome(
+            UNCHANGED_VERIFIED,
+            f"page:{domain}" if domain else "page:grounded",
+            grounded.get("source_url") or domain,
+        )
+
     verified_by = result.get("domain_verified_by")
     if verified_by == "serp" and not _serp_label_relates(result):
         verified_by = None

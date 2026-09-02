@@ -171,6 +171,12 @@ larger than the task that surfaced it.
   `normalize_key`, which folds legal forms — `batch_consensus._name_parts` already records
   why a dedup-GROUPING equivalence must not decide identity ACCEPTANCE ("Delta Analytical
   Inc" vs "LLC" at one address).
+* **Two confirmation markers for one question** — a grounded confirmation of Name 1 is
+  recorded as `_canonical_proposal` (+ `_ev_grounded_confirmed_name1`), and of Name 2-5 as
+  `_ev_input_confirmed`, with different consumers: the first feeds `unchanged_state`'s
+  ladder, the second feeds the flag rules directly. Unifying them is not small — the two
+  answer the same question for different fields and reach different decisions — so the split
+  is recorded rather than forced.
 * **Two token-cover implementations for one question** — `subject_preserved` keeps the 4-char
   floor (`vet` ↛ `veterans`) that `name_identity._covers` replaced; unify on `_covers`. Own
   gate; shipped values will move. Worked example: 13336736, tier 3's correct

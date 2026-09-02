@@ -218,6 +218,7 @@ from utils.domain_resolver import (
     first_email,
     resolve_domain,
     write_domain,
+    canonicalise_domain,
 )
 from utils.text_utils import (
     UNIT_SLOT_RANK,
@@ -4629,6 +4630,22 @@ class Orchestrator:
             "_canonical_proposal",
         ):
             result["_canonical_proposal"] = grounded.confirmed["name1"]
+
+        # A grounded confirmation is a PAGE READ agreeing with the record, and
+        # is recorded as one. `_canonical_proposal` alone reaches
+        # `unchanged-confirmed` — a second opinion — which is the right rung
+        # for the company-canonical lane, whose proposal is recall. This lane
+        # searched, fetched and read before it agreed, so it belongs on the
+        # evidence rung with the page corroborator: the record shipped
+        # `input:low` under "the canonical form could not be established" on a
+        # name the lane had just established, twice over.
+        if grounded.confirmed.get("name1"):
+            _url = grounded.confirmed_source.get("name1")
+            result["_ev_grounded_confirmed_name1"] = {
+                "value": grounded.confirmed["name1"],
+                "source_url": _url,
+                "domain": canonicalise_domain(_url) if _url else None,
+            }
 
         # The same statement about a DEPARTMENT slot. Name 1 has had a
         # vocabulary for this since Fix 2 — `unchanged-confirmed` — and Name 2
