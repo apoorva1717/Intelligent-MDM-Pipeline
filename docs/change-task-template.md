@@ -152,6 +152,17 @@ larger than the task that surfaced it.
   record-by-record.
 * **`G1-ADDR-001` rises on S4 under enrichment** (65 -> 66) and does not fall on S1 (17 -> 17)
   — the only G1 code enrichment does not reduce.
+* **Registry currency** — ROR display for `04xzj3x20` predates the 2023 rename to Los Angeles
+  General Medical Center; the pipeline correctly ships the registry's current label.
+  Operational remedy: ROR curation request. Worked example for the "as current as its
+  registries" bound.
+* **No-chosen override is exact-only by design** — worked example 13348274, UTMB Galveston
+  vs University of North Texas; loosening it re-admits silently-wrong `ror:verified`, the
+  costliest failure class. The exactness is word-level: separators `{+, /, –, —, -}` and
+  whitespace runs fold, periods and apostrophes stay significant. It is deliberately NOT
+  `normalize_key`, which folds legal forms — `batch_consensus._name_parts` already records
+  why a dedup-GROUPING equivalence must not decide identity ACCEPTANCE ("Delta Analytical
+  Inc" vs "LLC" at one address).
 * **Two token-cover implementations for one question** — `subject_preserved` keeps the 4-char
   floor (`vet` ↛ `veterans`) that `name_identity._covers` replaced; unify on `_covers`. Own
   gate; shipped values will move. Worked example: 13336736, tier 3's correct

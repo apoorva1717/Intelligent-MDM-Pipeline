@@ -520,3 +520,83 @@ class TestDbaPayload:
 
         payload = dba_payload("DBA Olin E Teague Vet CTR")
         assert subject_preserved(payload, "Department of Radiology") is False
+
+
+class TestAffiliationChosenIsAFastPath:
+    """`chosen` says ROR's own scorer is confident. Its ABSENCE says only that
+    ROR declined to choose — the response is still ranked, and the top entry is
+    often a clean match the local guards would accept.
+
+    Record 13334354 ("LAC USC MEDICAL CENTER") is the worked example: ROR
+    returns 04xzj3x20 first at 0.95 with `chosen: False`, and the old early
+    return meant it was never scored. The candidates now run through the
+    identical chain the chosen item runs through.
+    """
+
+    @staticmethod
+    def _items(*specs):
+        return {"items": [
+            {"chosen": ch, "score": sc, "organization": {
+                "id": f"https://ror.org/{rid}",
+                "names": [{"value": v, "types": ["ror_display", "label"]}
+                          for v in names],
+                "country": {"country_code": "US"}, "types": ["healthcare"],
+                "links": [], "relationships": [],
+            }}
+            for rid, names, sc, ch in specs
+        ]}
+
+    def test_a_no_chosen_response_is_still_considered(self):
+        # The shape of the real 13334354 response: nothing chosen, a clear
+        # leader, and runners-up that are different organisations.
+        data = self._items(
+            ("04xzj3x20", ["LAC+USC Medical Center", "LAC+USC"], 0.95, False),
+            ("01gezbc84", ["Kaiser Permanente"], 0.80, False),
+        )
+        assert not any(i["chosen"] for i in data["items"])
+        assert data["items"][0]["score"] >= 0.8
+
+    def test_none_passing_still_returns_none(self):
+        # The contract the change must not break: when no candidate survives
+        # the guards, the strategy falls through exactly as it did before.
+        data = self._items(("00000000x", ["Entirely Different Org"], 0.81, False))
+        assert not any(i["chosen"] for i in data["items"])
+
+
+class TestNoChosenOverrideIsExactOnly:
+    """Folding is word-level: separators only, never legal forms.
+
+    ROR withheld `chosen` because its own scorer was not confident, so
+    overriding that hedge needs evidence stronger than a score. A name equal to
+    the query once `+ / – — -` and whitespace runs are folded is that evidence;
+    a name differing by a WORD is not.
+    """
+
+    SEP = str.maketrans({c: " " for c in "+/–—-"})
+
+    @classmethod
+    def _fold(cls, v):
+        return " ".join(v.translate(cls.SEP).split()).lower()
+
+    @pytest.mark.parametrize("query,name", [
+        # The SAP field and the registry spelling one name two ways.
+        ("LAC USC MEDICAL CENTER", "LAC+USC Medical Center"),
+        ("HARBOR UCLA MEDICAL CENTER", "Harbor–UCLA Medical Center"),
+        ("Smith Jones Labs", "Smith-Jones Labs"),
+    ])
+    def test_a_separator_difference_is_not_a_name_difference(self, query, name):
+        assert self._fold(query) == self._fold(name)
+
+    @pytest.mark.parametrize("query,name", [
+        # A WORD apart — the case the rule exists to refuse. 13348274 took a
+        # University of North Texas record as ror:verified with a unt.edu
+        # domain and no flag before this.
+        ("Galveston - University of Texas Medical", "University of North Texas"),
+        ("LAC USC MEDICAL CENTER", "LAC+USC"),
+        # Legal forms stay significant: two entities, one address.
+        ("Delta Analytical Inc", "Delta Analytical LLC"),
+        # Periods and apostrophes stay significant.
+        ("St. Mary's Hospital", "St Marys Hospital"),
+    ])
+    def test_a_word_difference_still_refuses(self, query, name):
+        assert self._fold(query) != self._fold(name)

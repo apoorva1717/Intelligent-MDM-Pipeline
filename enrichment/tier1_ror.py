@@ -1073,6 +1073,75 @@ async def call_ror(
             # Stuttgart" → "Hochschule für Technik Stuttgart") — ROR carries
             # no "HFT" alias, so the bare acronym otherwise returns unrelated
             # same-city orgs.
+            expanded_query = expand_abbreviations(ror_name) or ror_name
+            exp_lower = expanded_query.strip().lower()
+
+            def _item_score(item: dict) -> float:
+                return max(
+                    _score_org(expanded_query, item, location_tokens),
+                    _score_org(name, item, location_tokens),
+                )
+
+            #: Separators the SAP field and the registry spell differently for
+            #: the same name: "LAC USC" against ROR's "LAC+USC", "HARBOR UCLA"
+            #: against "Harbor–UCLA" (U+2013). Folded to a space before the
+            #: exact test, along with whitespace runs.
+            #:
+            #: Periods and apostrophes are NOT in the set and stay significant
+            #: — they distinguish names ("St. Mary's" is not "St Marys" for
+            #: acceptance purposes), and the point of an exact test is that it
+            #: is exact about words.
+            _SEPARATORS = str.maketrans({c: " " for c in "+/\u2013\u2014-"})
+
+            def _fold_separators(value: str) -> str:
+                return " ".join(value.translate(_SEPARATORS).split()).lower()
+
+            def _is_exact_by_words(item: dict) -> bool:
+                """A name variant equal to the query once separators are folded.
+
+                The no-chosen override's evidence test, and deliberately NOT
+                `normalize_key`: that folds legal forms, and this codebase
+                already records why a dedup-GROUPING equivalence must not
+                decide identity ACCEPTANCE — see `batch_consensus._name_parts`
+                on "Delta Analytical Inc" against "Delta Analytical LLC", two
+                potentially distinct legal entities at one address. Folding a
+                hyphen is a spelling difference; folding "Inc" is not.
+
+                "University of Texas" against "University of North Texas"
+                still fails: that differs by a WORD, which is the difference
+                this test exists to catch.
+                """
+                want = _fold_separators(expanded_query)
+                return any(
+                    _fold_separators(ne.get("value") or "") == want
+                    for ne in item.get("names", [])
+                )
+
+            def _is_exact(item: dict) -> bool:
+                """A name variant equal to the expanded query, verbatim."""
+                return any(
+                    (ne.get("value") or "").strip().lower() == exp_lower
+                    for ne in item.get("names", [])
+                )
+
+            def _token_diff(item: dict) -> int:
+                """How far the display name's token count is from the query's.
+
+                ROR's own weak tiebreaker, and the thing that separates
+                "AstraZeneca" from "AZHC Foundation" when the scorer has
+                saturated at 1.0 for both.
+                """
+                display_name = ""
+                for ne in item.get("names", []):
+                    if "ror_display" in ne.get("types", []):
+                        display_name = ne.get("value") or ""
+                if not display_name and item.get("names"):
+                    display_name = item["names"][0].get("value", "")
+                return abs(
+                    len(display_name.split()) - len(expanded_query.split())
+                )
+
+
             async def _try_affiliation(
                 aff_str: str, rescore_names: list[str], strategy: str,
             ) -> dict[str, Any] | None:
@@ -1089,18 +1158,105 @@ async def call_ror(
                     "ror", base_url, {"affiliation": aff_str},
                     _fetch_affiliation,
                 )
+                items = data.get("items", []) or []
                 ch = next(
-                    (it for it in data.get("items", []) if it.get("chosen") is True),
-                    None,
+                    (it for it in items if it.get("chosen") is True), None,
                 )
-                if not (ch and ch.get("score", 0.0) >= threshold):
+                if ch and ch.get("score", 0.0) >= threshold:
+                    return _evaluate(ch, aff_str, rescore_names, strategy)
+
+                # `chosen` is a FAST PATH, not a prerequisite.
+                #
+                # ROR sets `chosen` only when its own scorer is confident it
+                # has identified one organisation. Where it declines to choose,
+                # the response is not empty — it is ranked, and the top entry
+                # is often a clean match the guards below would accept. Record
+                # 13334354 ("LAC USC MEDICAL CENTER") is the worked example:
+                # ROR returns 04xzj3x20 first at 0.95 with `chosen: False`, and
+                # the old early return meant nothing was ever scored.
+                #
+                # The candidates run through the IDENTICAL chain the chosen one
+                # runs through — same local rescore, same country guard, same
+                # short-name guard, same threshold. Nothing here is a new rule;
+                # the only change is which items get to be asked.
+                # Exact-only, by design. ROR withheld `chosen` because its own
+                # scorer was not confident, and overriding that hedge needs
+                # evidence stronger than a score — a name variant equal to the
+                # query, verbatim. Record 13348274 is why: "Galveston -
+                # University of Texas Medical" scored a University of North
+                # Texas record above the threshold, and a fuzzy override made
+                # it `ror:verified` with a `unt.edu` domain and no flag. A
+                # silently-wrong registry identity is the costliest failure
+                # this pipeline has; three correct matches do not pay for one.
+                eligible = [
+                    it for it in items
+                    if it.get("score", 0.0) >= threshold
+                    and it.get("organization")
+                    and _is_exact_by_words(it["organization"])
+                ][:3]
+                if not eligible:
                     logger.info(
                         "ROR affiliation no confident match for '%s' "
-                        "(chosen=%s, score=%.2f)",
-                        aff_str[:80], ch is not None,
-                        ch["score"] if ch else 0.0,
+                        "(chosen=%s, items=%d)",
+                        aff_str[:80], ch is not None, len(items),
                     )
                     return None
+
+                # Ambiguity among the candidates themselves, on the tiering the
+                # query strategy already uses: peers are candidates NOTHING but
+                # the score separates from the leader. An exact name match or a
+                # better token fit is a deterministic discriminator, and where
+                # one has spoken the registry has identified an organisation.
+                best = eligible[0]
+                best_org = best["organization"]
+                _tier = (_is_exact(best_org), _token_diff(best_org))
+                _peers = [
+                    it for it in eligible[1:]
+                    if (_is_exact(it["organization"]),
+                        _token_diff(it["organization"])) == _tier
+                ]
+                if _peers and ambiguity_verdict(
+                    [best.get("score", 0.0), _peers[0].get("score", 0.0)],
+                    scale_max=1.0,
+                ):
+                    runner_up = _extract_org_fields(_peers[0]["organization"])
+                    best_named = _extract_org_fields(best_org)
+                    logger.info(
+                        "ROR affiliation: refusing '%s' — '%s' (%s) and '%s' "
+                        "(%s) are within the ambiguity margin",
+                        aff_str[:60], best_named.get("official_name"),
+                        best_named.get("ror_id"),
+                        runner_up.get("official_name"), runner_up.get("ror_id"),
+                    )
+                    _note_rejection(
+                        "registry_ambiguity", best_org,
+                        best.get("score", 0.0),
+                        "within the ambiguity margin of "
+                        f"{runner_up.get('official_name')} "
+                        f"({runner_up.get('ror_id')})",
+                    )
+                    return None
+
+                for candidate in eligible:
+                    accepted = _evaluate(
+                        candidate, aff_str, rescore_names, strategy,
+                    )
+                    if accepted is not None:
+                        return accepted
+                return None
+
+            def _evaluate(
+                ch: dict[str, Any],
+                aff_str: str,
+                rescore_names: list[str],
+                strategy: str,
+            ) -> dict[str, Any] | None:
+                """One affiliation item through the guard chain.
+
+                Lifted verbatim out of `_try_affiliation` so the chosen item
+                and a no-chosen candidate go through the same code, not
+                through two copies of it that can drift.
+                """
                 org = ch["organization"]
                 # Re-validate locally — ROR's affiliation scorer is fuzzy
                 # enough to return e.g. "ASL Analytical" as a confident match
@@ -1265,39 +1421,6 @@ async def call_ror(
             # 'Stanford University' rather than tying with every other
             # variant that contains 'Stanford'. Prefer exact display
             # name match over mere token-subset matches.
-            expanded_query = expand_abbreviations(ror_name) or ror_name
-            exp_lower = expanded_query.strip().lower()
-
-            def _item_score(item: dict) -> float:
-                return max(
-                    _score_org(expanded_query, item, location_tokens),
-                    _score_org(name, item, location_tokens),
-                )
-
-            def _is_exact(item: dict) -> bool:
-                """A name variant equal to the expanded query, verbatim."""
-                return any(
-                    (ne.get("value") or "").strip().lower() == exp_lower
-                    for ne in item.get("names", [])
-                )
-
-            def _token_diff(item: dict) -> int:
-                """How far the display name's token count is from the query's.
-
-                ROR's own weak tiebreaker, and the thing that separates
-                "AstraZeneca" from "AZHC Foundation" when the scorer has
-                saturated at 1.0 for both.
-                """
-                display_name = ""
-                for ne in item.get("names", []):
-                    if "ror_display" in ne.get("types", []):
-                        display_name = ne.get("value") or ""
-                if not display_name and item.get("names"):
-                    display_name = item["names"][0].get("value", "")
-                return abs(
-                    len(display_name.split()) - len(expanded_query.split())
-                )
-
             def _rank_key(item: dict) -> tuple:
                 # Fix C(1) — one TOTAL order, sorted ascending:
                 #   (exact desc, score desc, token_diff asc, ROR id asc)
