@@ -503,6 +503,29 @@ def _shape_says_acronym(letters: str) -> bool:
     return _unpronounceable(upper)
 
 
+# Characters that JOIN two independently-cased segments rather than sitting
+# inside one word. "CALM/UCSD" is two acronyms, and casing the joined token as
+# a single word lower-cased the second half — "Calm/ucsd", and "UCLA/USC" ->
+# "Ucla/usc". The hyphen was already treated this way ("DANA-FARBER"); "/" is
+# the same relationship written with a different character.
+#
+# One definition, consulted by both casing paths, for the same reason
+# `_shape_says_acronym` is: `smart_title_case` reaches a name through
+# `_case_segment` and `normalise_output_fields` reaches it through
+# `_case_core`, and a separator handled in only one of them is a token the
+# second pass re-cases wrong on the way out.
+_SEGMENT_JOINERS = "-/"
+
+
+def _split_on_joiners(token: str, joiners: str) -> list[str]:
+    """Split *token* into segments AND the joiners between them, in order.
+
+    The interleaved form `re.split` with a capturing group returns, so a caller
+    can case the segments and rejoin without losing which separator sat where.
+    """
+    return re.split(f"([{re.escape(joiners)}])", token)
+
+
 def _case_segment(seg: str) -> str:
     """Case one hyphen-free segment, preserving acronyms/connectors."""
     letters = re.sub(r"[^A-Za-z]", "", seg)
@@ -554,8 +577,11 @@ def smart_title_case(value: str | None) -> str | None:
         key = w.lower()
         if key in _CASE_EXCEPTIONS:
             out.append(_CASE_EXCEPTIONS[key])
-        elif "-" in w:
-            out.append("-".join(_case_segment(s) if s else s for s in w.split("-")))
+        elif any(ch in w for ch in _SEGMENT_JOINERS):
+            out.append("".join(
+                seg if (seg in _SEGMENT_JOINERS or not seg) else _case_segment(seg)
+                for seg in _split_on_joiners(w, _SEGMENT_JOINERS)
+            ))
         else:
             out.append(_case_segment(w))
     return " ".join(out)
@@ -816,12 +842,13 @@ def _case_core(core: str, *, mode: str, first: bool) -> str:
     # an acronym on either side survives ("TECHNOLOGY-NIST" ->
     # "Technology-NIST", "ICB&DD" -> "ICB&DD" — each segment is short enough to
     # read as an acronym on its own).
-    if "-" in core or "&" in core:
-        segs = re.split(r"([-&])", core)
+    _joiners = _SEGMENT_JOINERS + "&"
+    if any(ch in core for ch in _joiners):
+        segs = _split_on_joiners(core, _joiners)
         out: list[str] = []
         seg_index = 0
         for seg in segs:
-            if seg in ("-", "&") or not seg:
+            if seg in _joiners or not seg:
                 out.append(seg)
                 continue
             out.append(_case_core(seg, mode=mode, first=first and seg_index == 0))

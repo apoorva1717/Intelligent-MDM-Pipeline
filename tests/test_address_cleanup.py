@@ -132,3 +132,96 @@ class TestFloorRoomCareOf:
         # A plain c/o with no street still routes the whole payload to care_of.
         res = await _addr("c/o Dr. Jane Smith")
         assert res.care_of_enriched == "Dr. Jane Smith"
+
+
+class TestThePrimaryStreetIsElectedByShapeNotSlot:
+    """Records 13333689 and 13337503 are the same site with the same two lines
+    in opposite street slots:
+
+        13333689  Street 1 "LABORATORY/STE 150"    Street 2 "10300 CAMPUS POINT DRIVE"
+        13337503  Street 1 "10300 CAMPUS POINT DRIVE"  Street 2 "Laboratory/Ste 150"
+
+    Which slot a line arrived in says nothing about what it IS, but Street 1 is
+    treated as the primary street throughout — it feeds the block id, it takes
+    a different `allow_bare` mail-code path, and it is what the queries are
+    built from. So the two rows diverged the whole way down from a difference
+    that is pure data entry.
+
+    The line that PARSES as an address (leading house number plus a street-type
+    word) becomes Street 1; the residue routes through the existing addendum
+    rules. Slot position stays the tiebreak among address-shaped lines only.
+    """
+
+    @staticmethod
+    async def _run(street, street_2):
+        return await process_address(
+            record_id="x",
+            name1="CALM/UCSD", name2=None, name3=None,
+            street=street, street_2=street_2, street_3=None,
+            city="SAN DIEGO", state="CA", zip_code="92121", country="US",
+            po_box=None, care_of_enriched=None, llm_client=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_pair_produces_one_primary_street(self):
+        a = await self._run("LABORATORY/STE 150", "10300 CAMPUS POINT DRIVE")
+        b = await self._run("10300 CAMPUS POINT DRIVE", "Laboratory/Ste 150")
+        assert a.street_cleaned == b.street_cleaned
+        # Abbreviation normalisation runs here; the output casing pass runs
+        # later, so the value is still in the record's own case at this point.
+        assert a.street_cleaned == "10300 CAMPUS POINT Dr"
+
+    @pytest.mark.asyncio
+    async def test_the_suite_is_extracted_from_either_slot(self):
+        a = await self._run("LABORATORY/STE 150", "10300 CAMPUS POINT DRIVE")
+        b = await self._run("10300 CAMPUS POINT DRIVE", "Laboratory/Ste 150")
+        assert a.suite == b.suite
+        assert a.suite and "150" in a.suite
+
+    @pytest.mark.asyncio
+    async def test_a_record_whose_street_1_is_already_the_address_is_untouched(self):
+        # 13343608's shape: the address is where it belongs, and the residue
+        # stays behind it. Nothing to elect, so nothing moves.
+        res = await self._run("1000 W CARSON ST", "Supply Chain Oper. Warehouse")
+        assert res.street_cleaned == "1000 W CARSON ST"
+
+    @pytest.mark.asyncio
+    async def test_a_record_with_no_address_shaped_line_keeps_its_order(self):
+        # Nothing to elect: neither line carries a house number, so the
+        # partition is a no-op and the record is left exactly as it arrived.
+        res = await self._run("Campus Point Dr", "Torrey Pines Rd")
+        assert res.street_cleaned == "Campus Point Dr"
+        assert res.street_2_cleaned == "Torrey Pines Rd"
+
+    @pytest.mark.asyncio
+    async def test_slot_position_is_the_tiebreak_among_address_shaped_lines(self):
+        # Two real addresses: the election has no opinion between them, so the
+        # slot they arrived in still decides.
+        res = await self._run("10300 Campus Point Dr", "500 Torrey Pines Rd")
+        assert res.street_cleaned == "10300 Campus Point Dr"
+        assert res.street_2_cleaned == "500 Torrey Pines Rd"
+
+
+class TestSplitResidueIsTrimmed:
+    """13337503 shipped Name 2 as "Laboratory/".
+
+    The suite came out of "Laboratory/Ste 150" and the slash it was attached to
+    stayed behind. That separator is the split's own residue — punctuation
+    whose other half the pipeline removed — not the record's text, and a
+    fragment that is nothing BUT residue is not a name at all.
+    """
+
+    @pytest.mark.parametrize("fragment,expected", [
+        ("Laboratory/", "Laboratory"),
+        ("/Laboratory", "Laboratory"),
+        ("Laboratory", "Laboratory"),
+        ("  Ste /  ", "Ste"),
+        ("A/B Lab", "A/B Lab"),      # an interior joiner is part of the text
+        ("/", None),
+        ("-, ", None),
+        (None, None),
+    ])
+    def test_dangling_separators_are_stripped_at_both_ends(self, fragment, expected):
+        from enrichment.address_processing import _trim_fragment
+
+        assert _trim_fragment(fragment) == expected

@@ -26,7 +26,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from api.models import EnrichmentOptions, EnrichmentRecord, EnrichmentResult
 from config import Settings
-from enrichment.batch_consensus import apply_batch_consensus
+from enrichment.batch_consensus import (
+    _donor_derived,
+    _donor_scale,
+    apply_batch_consensus,
+)
 from enrichment.orchestrator import (
     Orchestrator,
     _apply_domain,
@@ -705,3 +709,98 @@ class TestOriginalValue:
         rebuilt = log_from_dicts(record.provenance.as_dicts(), [], {})
         assert rebuilt.original_value("name1_enriched") == \
             "Coastal Diagnostics, Inc"
+
+
+class TestAnInheritedValueCarriesTheDonorsDoubt:
+    """The CALM/UCSD pair shipped the same string with two different verdicts.
+
+    13333689 and 13337503 are one site. Consensus elected 13333689's spelling
+    and 13337503 inherited it — and then the donor shipped `input:low` with
+    Name 1 flagged, while the inheritor shipped `input:provisional` with
+    nothing flagged. The copy read as better evidenced than the original.
+
+    Two causes, one per half of the output. `situation_for` asserted
+    `has_source=True` for every inheritance regardless of what the donor's
+    field derived; and `_donor_scale` reads the donor's attributing EVENT,
+    which on a passthrough says `deterministic` — retaining a value is a
+    deterministic act — while the field itself derives `input:low`, because
+    nothing vouched for the value retained. The scale that travelled was the
+    kind of write, not the amount of doubt.
+
+    Only the downgrade travels. A donor's `verified` still cannot make this
+    record verified: it never looked the identifier up.
+    """
+
+    @staticmethod
+    def _pair(names=("CALM/UCSD", "Calm")):
+        """The real pair's shape: one supplied string, two enriched forms.
+
+        `name1_supplied` matters — a group forms on the name a row SHIPS *or*
+        the name it was SUPPLIED, and here it is the second key that puts these
+        two together, exactly as it does on the live records.
+        """
+        return [
+            EnrichmentResult(
+                record_id=rid, name1_enriched=name, name1_supplied="CALM/UCSD",
+                postal_code="92121", city="San Diego", country_region_key="US",
+                street_cleaned="10300 Campus Point Dr", record_type="company",
+            )
+            for rid, name in zip(("DONOR", "HEIR"), names)
+        ]
+
+    def test_a_passthrough_donor_hands_down_its_low(self):
+        rows = self._pair()
+        for row in rows:
+            row.write(
+                "name1_enriched", row.name1_enriched,
+                deterministic_evidence("passthrough"),
+            )
+        donor_before = derived_scalar(
+            log_from_dicts(rows[0].provenance), "name1_enriched", rows[0],
+        )
+        assert donor_before == "input:low"
+
+        apply_batch_consensus(rows)
+
+        heir = derived_scalar(
+            log_from_dicts(rows[1].provenance), "name1_enriched", rows[1],
+        )
+        assert heir == donor_before == "input:low"
+
+    def test_the_donors_derived_scalar_is_what_travels(self):
+        """Not the event's scale — the two disagree on a passthrough, which is
+        what made the bug invisible: `_donor_scale` returned `deterministic`
+        rather than None, so no default was ever reached."""
+        rows = self._pair()
+        for row in rows:
+            row.write(
+                "name1_enriched", row.name1_enriched,
+                deterministic_evidence("passthrough"),
+            )
+        assert _donor_scale(rows[0], "name1_enriched") == "deterministic"
+        assert _donor_derived(rows[0], "name1_enriched") == "input:low"
+
+        apply_batch_consensus(rows)
+        event = log_from_dicts(rows[1].provenance).attributing_event(
+            "name1_enriched",
+        )
+        # Both facts are kept: what kind of write it was, and what it shipped.
+        assert event.evidence_ref["donor_confidence_scale"] == "deterministic"
+        assert event.evidence_ref["donor_derived"] == "input:low"
+
+    def test_a_registry_mode_inheritance_is_unchanged(self):
+        """The guard. A donor that really did resolve an identifier hands down
+        a provisional — never its own `verified`, and never a `low` either."""
+        # Registry mode groups on a shared identity, so both members carry
+        # the same name — the name-form election is not what is under test.
+        rows = self._pair(names=("CALM/UCSD", "CALM/UCSD"))
+        rows[0].write(
+            "ror_id", "https://ror.org/calm",
+            registry_evidence("ror", "https://ror.org/calm"),
+        )
+        apply_batch_consensus(rows)
+
+        heir = derived_scalar(
+            log_from_dicts(rows[1].provenance), "ror_id", rows[1],
+        )
+        assert heir == "ror:provisional"

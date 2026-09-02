@@ -62,6 +62,7 @@ from enrichment.flags import (
 )
 from enrichment.provenance import (
     SCOPED_FIELDS,
+    derived_scalar,
     inherited_evidence,
     log_from_dicts,
 )
@@ -587,6 +588,26 @@ def _donor_scale(
     return event.confidence_scale if event else None
 
 
+def _donor_derived(
+    donor: Optional["EnrichmentResult"], field: str,
+) -> Optional[str]:
+    """The donor's DERIVED ``source:confidence`` for *field*.
+
+    What the donor actually ships, which is not the same question as what kind
+    of write put it there. `_donor_scale` reads the attributing event, and on a
+    passthrough that event says `deterministic` — retaining a value is a
+    deterministic act — while the field derives `input:low`, because nothing
+    vouched for the value that was retained. Inheriting the first number let a
+    copy read as better evidenced than its original.
+
+    The same `derived_scalar` the flags read, so "the donor is flagged low"
+    and "the inheritance is low" cannot disagree.
+    """
+    if donor is None:
+        return None
+    return derived_scalar(log_from_dicts(donor.provenance), field, donor)
+
+
 def apply_batch_consensus(
     results: list["EnrichmentResult"],
 ) -> ConsensusTelemetry:
@@ -640,6 +661,7 @@ def apply_batch_consensus(
                             field_donor.record_id if field_donor else "",
                             mode=mode,
                             donor_scale=_donor_scale(field_donor, name),
+                            donor_derived=_donor_derived(field_donor, name),
                         ),
                     )
                 else:

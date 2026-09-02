@@ -46,6 +46,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from enrichment.confidence import (
     EvidenceSituation,
+    LOW,
     SOURCE_GLEIF,
     SOURCE_INPUT,
     SOURCE_LLM,
@@ -555,12 +556,24 @@ def inherited_evidence(
     *,
     mode: str,
     donor_scale: str | None = None,
+    donor_derived: str | None = None,
     donor_value: float | None = None,
     rule_id: str | None = None,
 ) -> Evidence:
     """Fix 6 batch consensus. The DONOR record id is the evidence_ref, so an
     inherited registry identifier is never indistinguishable from a first-hand
-    one."""
+    one.
+
+    Two facts about the donor are recorded, because they answer different
+    questions. ``donor_confidence_scale`` is the scale of the donor's own
+    attributing EVENT — what kind of write it was. ``donor_derived`` is the
+    donor's derived ``source:confidence`` for the field — what the record
+    actually ships, and therefore how much doubt travels with the value. On a
+    passthrough the two disagree sharply: the event is ``deterministic``
+    (retaining a value IS a deterministic act) while the field derives
+    ``input:low`` (nothing vouched for it). :func:`situation_for` reads the
+    second, so an inheritance cannot be worth more than what it inherited.
+    """
     return Evidence(
         producer_chain=("batch_consensus",),
         tier=None,
@@ -570,6 +583,7 @@ def inherited_evidence(
             "donor_record_id": donor_record_id,
             "mode": mode,
             "donor_confidence_scale": donor_scale,
+            "donor_derived": donor_derived,
         },
         rule_id=rule_id or f"batch_consensus:{mode}",
     )
@@ -915,7 +929,23 @@ def situation_for(
         source = {
             "ror_id": SOURCE_ROR, "lei_id": SOURCE_GLEIF,
         }.get(event.field, SOURCE_INPUT)
-        return source, EvidenceSituation(has_source=True)
+        # An inherited value cannot be worth more than the value it inherited.
+        # `has_source=True` was asserted unconditionally here, so a name form
+        # elected from a donor whose OWN field derives `input:low` shipped as
+        # `input:provisional` — the inheritor read as better-evidenced than
+        # the record it copied from, and the derived low that flagged the
+        # donor never fired on it. The CALM/UCSD pair shipped exactly that:
+        # one `input:low` and flagged, one `input:provisional` and not, for
+        # the same string.
+        #
+        # Only the DOWNGRADE travels. A donor's `verified` still cannot make
+        # this record verified — it never looked the identifier up — which is
+        # the rule the branch already stated and the reason a registry-mode
+        # inheritance is unchanged by this: `ror:verified` in, provisional
+        # out, exactly as before.
+        donor_derived = str(ref.get("donor_derived") or "")
+        donor_band = donor_derived.split(":", 1)[-1].split("+", 1)[0]
+        return source, EvidenceSituation(has_source=donor_band != LOW)
 
     # ── The input value stood ─────────────────────────────────────────────
     # Fix 2's three unchanged states, which are the three rows of the

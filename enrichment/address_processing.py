@@ -201,6 +201,26 @@ def _strip_residue(text: str) -> str:
     return text.strip()
 
 
+# Separators that are the SPLIT's own residue, not the record's text. A suite
+# taken out of "Laboratory/Ste 150" leaves "Laboratory/", and the trailing
+# slash means nothing to a steward — it is punctuation whose other half the
+# pipeline removed. `_strip_residue` trims most of these already; it does not
+# trim "/", which is what shipped on 13337503.
+_FRAGMENT_EDGE_CHARS = " \t/-,;|"
+
+
+def _trim_fragment(value: Any) -> str | None:
+    """Trim a fragment bound for a name slot; None when nothing is left.
+
+    Applied where an address split PLACES text in a name slot, so a fragment
+    that empties out is not placed at all rather than shipped as a separator.
+    """
+    if value is None:
+        return None
+    trimmed = _MULTI_SPACE_RE.sub(" ", str(value)).strip(_FRAGMENT_EDGE_CHARS)
+    return trimmed or None
+
+
 _PO_BOX_RE = re.compile(
     r"\b(?:P\.?\s*O\.?\s*Box|POB|Post\s+Office\s+Box)\s+(\w+)\b",
     re.IGNORECASE,
@@ -587,6 +607,22 @@ def _split_location_qualifier(value: str | None) -> tuple[str, str] | None:
     if not street or not qual or not _HOUSE_NUMBER_RE.search(street):
         return None
     return street, qual
+
+
+# A line that PARSES as an address: a leading house number (the same anchor
+# `_street_is_department` opens with — a value starting with a digit is an
+# address, not a department) plus a street-type word. Stricter than
+# `_looks_like_street`, which accepts a house number anywhere in the value and
+# so matches "Laboratory/Ste 150".
+_LEADING_HOUSE_NUMBER_RE = re.compile(r"^\s*\d")
+
+
+def _is_address_shaped(value: str | None) -> bool:
+    if not value or not value.strip():
+        return False
+    return bool(
+        _LEADING_HOUSE_NUMBER_RE.match(value) and _has_street_type(value)
+    )
 
 
 def _looks_like_street(value: str | None) -> bool:
@@ -1031,6 +1067,31 @@ async def process_address(
             res.name_overrides[_name_field] = _cleaned or None
             _dept_values[_name_field] = _cleaned or None
 
+    # Step 2 — elect the primary street.
+    #
+    # Which slot a line arrived in says nothing about what it IS. Records
+    # 13333689 and 13337503 carry the same two lines in opposite slots
+    # ("Laboratory/Ste 150" and "10300 Campus Point Drive") and diverged the
+    # whole way down: one parsed a suite fragment as its primary street, took a
+    # different `allow_bare` mail-code path, and formed a different block id.
+    #
+    # So the line that parses as an address becomes Street 1, and non-address
+    # residue falls to the secondary slots where the existing addendum rules
+    # already route it. This is a STABLE partition: slot position remains the
+    # tiebreak among address-shaped lines, the residue keeps its relative
+    # order, and a record with no address-shaped line at all is left exactly
+    # as it arrived.
+    _elect_keys = ("s1", "s2", "s3", "s4", "s5")
+    _lines = [slots[k] for k in _elect_keys if slots[k]]
+    if any(_is_address_shaped(v) for v in _lines):
+        _ordered = (
+            [v for v in _lines if _is_address_shaped(v)]
+            + [v for v in _lines if not _is_address_shaped(v)]
+        )
+        if _ordered != _lines:
+            for _i, _k in enumerate(_elect_keys):
+                slots[_k] = _ordered[_i] if _i < len(_ordered) else None
+
     # Step 2a — full address jammed into street1 → split.
     if slots["s1"]:
         split_street, city_inf, state_inf, zip_inf = _split_full_address(slots["s1"])
@@ -1281,6 +1342,7 @@ def merge_into_result(
     # slot above, leaving the cleaned remainder (or None) here. Mark a now-
     # empty slot as cleared so finalise() does not restore the original.
     for name_field, new_val in addr.name_overrides.items():
+        new_val = _trim_fragment(new_val)
         _write_name(
             result_dict, f"{name_field}_enriched", new_val,
             "uc9:address-moved-out-of-name-field",
@@ -1294,7 +1356,8 @@ def merge_into_result(
     # the block downward from name2. A slot is "empty" only when both the
     # enriched and the original value are blank. If every department slot is
     # filled, the address_issues flag is the only record of the finding.
-    if addr.department_addendum:
+    _addendum = _trim_fragment(addr.department_addendum)
+    if _addendum:
         for target in DEPT_SLOTS:
             enr = result_dict.get(f"{target}_enriched")
             orig = result_dict.get(f"{target}_original")
@@ -1305,7 +1368,7 @@ def merge_into_result(
             if slot_empty:
                 _write_name(
                     result_dict, f"{target}_enriched",
-                    addr.department_addendum,
+                    _addendum,
                     "address:department-addendum-placed",
                     {"from": "address_stage"},
                 )

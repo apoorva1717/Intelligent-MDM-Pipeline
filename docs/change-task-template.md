@@ -196,3 +196,36 @@ larger than the task that surfaced it.
   `name-post-check:slot-names-nothing` clear a slot AFTER the only packing pass, so a record
   they fire on ships Name 2 empty with Name 3 populated. Closed by `dept_block.normalise`;
   the ordering that causes it is untouched.
+* **Slash-joined acronyms are lowercased by `smart_title_case`.** `CALM/UCSD` ->
+  `Calm/ucsd`, `UCLA/USC` -> `Ucla/usc`, `LABORATORY/STE 150` -> `Laboratory/ste 150`.
+  Each half is an acronym the caser gets right ALONE (`CALM` -> `CALM`, `UCSD` -> `UCSD`);
+  joined, the shape test sees one token that is not uniformly an acronym, title-cases it,
+  and everything after the `/` goes lowercase. `/` is already in the exactness fold set
+  for registry matching (`_is_exact_by_words`) — the caser does not split on it. Row ids:
+  13333689, 13337503.
+* **Two records for one entity ship two different Name 1 values.** 13333689 (`CALM/UCSD`,
+  group DRIT) ships `Calm/ucsd` at `input:low`; 13337503 (`Calm/UCSD`, group 0002) ships
+  `Calm` at `llm:provisional` — the LLM dropped the `/UCSD` half, and consensus did not
+  unify the pair. Same street lines, same postal code, same domain (`ucsd.edu`). A steward
+  sees one site under two names, neither of them the supplied one.
+* **A relocated fragment ships its dangling separator.** 13337503's Street 2
+  `Laboratory/Ste 150` splits, `Ste 150` returns to the address, and Name 2 ships as
+  `Laboratory/`. Correctly flagged `relocated-unverified`, but the trailing separator is
+  the split's own residue, not the record's text. The sibling row 13333689 carries the
+  same content in Street 1 and ships Name 2 empty — so the street router treats the two
+  lines differently as well. Row ids: 13333689, 13337503.
+* **The derived-low clause reads "left exactly as supplied" on an INHERITOR.** Now that an
+  inheritance renders at the donor's effective scale, 13337503 raises the same Name 1 clause
+  as its donor — but its value was not left as supplied: it was `Calm/UCSD` and it ships
+  `CALM/UCSD`, elected from a sibling. The doubt is right and the prose is not; the clause
+  predates inheritance carrying a low. Needs a second rendering for the inherited case
+  ("copied from a sibling record that was left exactly as supplied"). Row id: 13337503.
+* **`_strip_residue` does not trim "/".** It trims `" ,;|-"`, so a street line that KEEPS
+  its slot can still ship a dangling slash; only fragments routed into a name slot are
+  trimmed (`_trim_fragment`). Unifying the two trim sets would move street columns
+  corpus-wide and needs its own gate.
+* **Two Name 1 values ship a trailing comma** — 13011411 `"ExxonMobil Research & Engineering
+  Co.,"` and 13332323 `"Expeditors International of Washington,"`. Not split residue: these
+  are SAP 40-character truncations, and the comma is the record's own text marking where the
+  legal form was cut off (13332323's Name 2 is the surviving `"Inc."`). Left alone
+  deliberately — trimming it would erase the only signal that the value is truncated.

@@ -482,3 +482,66 @@ class TestMemExpansion:
     def test_standalone_leading_and_trailing_are_left_alone(self, value):
         from utils.text_utils import expand_abbreviations
         assert "Memorial" not in (expand_abbreviations(value) or "")
+
+
+class TestASlashJoinsTwoIndependentlyCasedSegments:
+    """Records 13333689 and 13337503 supplied "CALM/UCSD" and shipped
+    "Calm/ucsd" — two acronyms mangled into one half-shouting word.
+
+    Each half is cased correctly on its own: `CALM` reads as an acronym by
+    shape (four letters ending in two consonants) and `UCSD` is allow-listed.
+    Joined, the casers saw a single token that is not uniformly an acronym,
+    title-cased it, and everything after the "/" went lower-case. The hyphen
+    was already treated as a joiner ("DANA-FARBER" -> "Dana-Farber"); "/" is
+    the same relationship written with a different character.
+
+    Both casing paths split on it, through one shared definition — a
+    separator handled in only one of them is a token the pass that runs last
+    re-cases wrong on the way out, which is the bug `_shape_says_acronym` was
+    factored out to end.
+    """
+
+    @pytest.mark.parametrize("value,expected", [
+        ("CALM/UCSD", "CALM/UCSD"),
+        ("UCLA/USC", "UCLA/USC"),
+        ("LABORATORY/STE 150", "Laboratory/STE 150"),
+        ("CHEMISTRY/BIOLOGY", "Chemistry/Biology"),
+        # Regressions: the joiners that already worked, and the whole-value
+        # rules that must not notice the change.
+        ("DANA-FARBER", "Dana-Farber"),
+        ("MCINTYRE", "McIntyre"),
+        ("STERLING INDUSTRY LLC", "Sterling Industry LLC"),
+        ("VAMC REDDING VISN 21", "VAMC Redding VISN 21"),
+    ])
+    def test_smart_title_case_cases_each_segment(self, value, expected):
+        from utils.text_utils import smart_title_case
+
+        assert smart_title_case(value) == expected
+
+    @pytest.mark.parametrize("value,expected", [
+        ("CALM/UCSD", "CALM/UCSD"),
+        ("LABORATORY/STE", "Laboratory/STE"),
+        ("TECHNOLOGY-NIST", "Technology-NIST"),
+        ("ICB&DD", "ICB&DD"),
+    ])
+    def test_the_output_pass_agrees_with_it(self, value, expected):
+        from utils.text_utils import _case_core
+
+        assert _case_core(value, mode="name", first=True) == expected
+
+    def test_a_mixed_case_value_is_left_alone(self):
+        """Harbor/UCLA arrives already cased — neither path may touch it."""
+        from utils.text_utils import _case_core, smart_title_case
+
+        assert smart_title_case("Harbor/UCLA") == "Harbor/UCLA"
+        assert _case_core("Harbor/UCLA", mode="name", first=True) == "Harbor/UCLA"
+
+    def test_casing_still_changes_nothing_but_letter_case(self):
+        """The module's standing rule, restated for the new separator: the
+        split must rejoin on the character it split at."""
+        from utils.text_utils import smart_title_case
+
+        for value in ("CALM/UCSD", "A/B", "LABORATORY/STE 150", "X//Y"):
+            out = smart_title_case(value)
+            assert out is not None
+            assert out.lower() == value.lower()

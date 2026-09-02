@@ -968,7 +968,8 @@ def retract(result: Any, codes: Iterable[str], field: str) -> tuple[str, ...]:
     # the marker was consumed by `compute_flags` and is gone.
     low_before = list(getattr(result, "flag_low_confidence", None) or ())
     low_now = list(low_before)
-    if field in low_now and field not in low_confidence_core_fields(result):
+    _low_fields = low_confidence_core_fields(result)
+    if field in low_now and field not in _low_fields:
         low_now.remove(field)
         # Reported under the retired code's name. It is not being emitted —
         # `flag_codes` cannot contain it and `ALL_CODES` does not list it —
@@ -976,6 +977,16 @@ def retract(result: Any, codes: Iterable[str], field: str) -> tuple[str, ...]:
         # prose is what was rendered, and a telemetry line or a log entry
         # saying anything else would be describing a different withdrawal.
         withdrawn.append(LOW_CONFIDENCE_UNCHANGED)
+    elif field not in low_now and field in _low_fields:
+        # The same re-derivation, in the direction it was missing. An
+        # inheritance now renders at the DONOR's effective scale, so a value
+        # copied from a donor whose field derives `input:low` derives
+        # `input:low` here too — and a re-derivation that could only ever
+        # withdraw left that doubt unflagged on the copy while the original
+        # carried it. Scoped to *field*, exactly like the withdrawal above:
+        # the rest of the set is not this pass's business, and re-judging it
+        # would discard the marker doubts `compute_flags` has consumed.
+        low_now.append(field)
     if not withdrawn and low_now == low_before:
         return ()
     details = dict(getattr(result, "flag_details", None) or {})
