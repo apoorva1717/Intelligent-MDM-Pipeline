@@ -1,5 +1,10 @@
 # Evaluation runs — PARTIAL
 
+> **Current runs: `f57782f`, in `eval/out/f57782f/`.** The `d3a3cfc` artefacts in this
+> directory (`S1_enriched.xlsx`, `S4_enriched.xlsx`, `S{n}_results.json`) are **SUPERSEDED**
+> and kept in place for comparison. Every §3 number below the "Runs at f57782f" heading is
+> the current one; the tables above it are the `d3a3cfc` baseline they are a delta against.
+
 **This is a two-stratum evaluation, not a five-stratum one.** S2, S3 and S5 raw inputs are
 not on this machine; only S1 and S4 were run. Nothing here is relabelled or extrapolated to
 stand for the missing strata. The remaining strata follow as files.
@@ -116,3 +121,65 @@ records that its remediation path was withdrawn:
 
 Recall is unchanged by both rules: every expected code is in the vocabulary by construction,
 and no annotation expected G7.
+
+---
+
+# Runs at f57782f — current
+
+Same cache, same scoring rules, same catalogue exclusions (G7 out of the after-totals and
+out of precision/recall; precision/recall over the annotation vocabulary only; G6 kept and
+marked *persists by design*).
+
+| | |
+|---|---|
+| commit | `f57782f` — *ROR chosen flag is a fast path; overriding the registry's hedge requires exact name evidence* |
+| working tree | clean at run time |
+| evidence cache | entries 5397, keys-sha256[:12] `8d9caf4f8625` |
+| mode | `--frozen`, 0 network calls |
+| supersedes | `d3a3cfc` (`eval/out/S{n}_enriched.xlsx`, kept in place) |
+
+| stratum | output | rows | frozen misses |
+|---|---|---|---|
+| S1 academic research | `eval/out/f57782f/S1_enriched.xlsx` | 100 | 0 |
+| S4 hospital health | `eval/out/f57782f/S4_enriched.xlsx` | 100 | **3** (was 6) |
+
+S4's frozen misses fall 6 -> 3: three records now resolve at Tier 1 and never reach the web
+lane, so they no longer ask for evidence the cache does not hold.
+
+## §1 Determinism at f57782f
+
+`logs/runs/determinism_S1_f57782f.json` — 100 rows compared, **0 differing**, 0 cell
+differences, 0 network calls on run 2. PASS. The `d3a3cfc` artefact
+(`logs/runs/determinism_S1.json`) is kept and superseded.
+
+## §3 deltas against the d3a3cfc tables
+
+**S1 is unchanged in every measure** — no S1 record was affected by the Tier 1 change.
+
+| measure | S4 d3a3cfc | S4 f57782f | delta |
+|---|---|---|---|
+| Name 1 changed | 74 | 75 | **+1** |
+| registry-verified | 45 | **48** | **+3** |
+| llm-provisional | 23 | **21** | **−2** |
+| input-retained | 32 | 31 | **−1** |
+| Flag for Review true | 44 | 45 | **+1** |
+| `domain-unverified` | 24 | 23 | −1 |
+| `entity-superseded` | 12 | 13 | +1 |
+
+The three registry gains, all verified against live ROR:
+
+    13334354  -> 04xzj3x20  LAC+USC Medical Center       llm:provisional -> ror:verified
+    13344455  -> 04xzj3x20  LAC+USC Medical Center       llm:provisional -> ror:verified
+    13343608  -> 05h4zj272  Harbor–UCLA Medical Center   input:provisional+llm -> ror:verified
+
+`13343608` accounts for the whole flag movement: the ROR match supplies `harbor-ucla.org`,
+which redirects to `lacounty.gov`, so `domain-unverified` clears and `entity-superseded`
+fires. The record is both more resolved and more flagged.
+
+Precision, recall and the before/after issue totals are **identical to d3a3cfc** on both
+strata — S1 0.728/0.566 and S4 0.805/0.744, G1-G6 496->248 and 559->301. The Tier 1 change
+moves provenance and identifiers, not issue-code detection: none of the three records was
+raising or clearing a G1-G6 code either side.
+
+Tier 1 hit rate across the two strata: **+3 of 200 rows (+1.5%)**; +3 of 299 (+1.0%) across
+all three workbooks including `testall100_CLEAN_INPUT`.
