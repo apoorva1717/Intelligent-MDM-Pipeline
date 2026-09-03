@@ -500,3 +500,42 @@ a lane learns to write something new, and the log already knows.
   workbooks and drove S1's frozen misses from 3 to 82, because refusing and re-attributing
   dept slots changes the downstream query path enough to leave the warm cache. **It is not
   gateable against this cache** and needs its own warming run. Row id: 13213468.
+
+* **The bare department was never the LLM's answer — a later lane overwrote it.** Diagnosed
+  before fixing, and the diagnosis moved the fix: Tier 2's dept-canonical lane answers
+  "Department of Mechanical Engineering" correctly, and the grounded dept fall-through then
+  adopts a bare name read off the faculty page (`grounded_adopted … origin: serp`) over the
+  top of it. `seq4 uc5:tier2-canonical` then `seq5 dept-fallthrough:name2` on every affected
+  row. No strip is involved — `extract_dept_core` and `clean_name2_phrase` never see it. The
+  rule therefore lands at the two adoption sites, `dept-fallthrough:{slot}` and
+  `grounded:{field}-canonical`, not at the Tier 2 acceptance.
+
+  **Two narrowings, both found by the gate, both from the same principle — completion may
+  restore what the record said and may not compose something new:**
+
+  | | first cut | why it was wrong |
+  |---|---|---|
+  | `Baytown Refinery Lab` + `Baytown Refinery` | `Laboratory of Baytown Refinery` | the record states the unit word as a SUFFIX; prefixing reverses its construction rather than restoring it |
+  | `College of Engr at Sugar land` + `UH Engineering at Sugar Land` | `College of UH Engineering at Sugar Land` | the proposal is already a complete name, qualified by the institution's acronym instead of by "College of"; prefixing composes a third form neither said |
+
+  So the unit word must be followed by `of`/`for` in the supplied text (that is what marks a
+  prefix construction, and the preposition is read off the record rather than chosen), and
+  the proposal must `introduces_nothing_new` against the record's whole input name block —
+  which already understands acronym expansion, so `Engr` → `Engineering` passes and an
+  introduced `UH` does not. Three `Laboratory of …` rows and the Sugar Land row fall out;
+  13341941 (`Div Rheumatology…`, no preposition) falls out with them, conservatively.
+
+* **A completed department longer than 40 characters splits, and that is the column model,
+  not a defect.** `NAME_FIELD_WIDTH = 40` (SAP `CHAR(40)`) and `chunk_name` retreats to a
+  word boundary, so `Department of Industrial and Systems Engineering` (48) cannot ship in
+  one Name 2. Four rows therefore ship as a pair — 13147730, 13146863, 13048130, 13132762,
+  plus 13189355 — and the cut falls one word earlier than a by-hand expectation predicts,
+  because completion pushes more text into the slot before the cut is taken. The
+  continuation class is unchanged and is not merged here.
+
+* **13104799 is already correct and its expectation was unreachable.** It ships
+  `Department of Mechanical Engineering` from the Tier 2A contact lookup — it already
+  carries its unit word, so completion is a no-op. An expectation of
+  `Department of Aerospace and Mechanical Engineering` names a different unit: "Aerospace"
+  appears nowhere in the record or in the evidence, and producing it would be the invention
+  this rule exists to refuse. Row id: 13104799.

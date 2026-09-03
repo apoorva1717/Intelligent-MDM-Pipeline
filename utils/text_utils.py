@@ -1813,3 +1813,81 @@ def is_admin_unit(text: str | None) -> bool:
     if _admin_canonical(text) in _ADMIN_UNIT_STEMS:
         return True
     return _admin_phrase_form(text) in _ADMIN_UNIT_PHRASE_FORMS
+
+
+#: Unit words a record may state, mapped to the form they are completed to.
+#: The KEY set is what counts as "the input carries a unit construction"; the
+#: value is what gets written. Nothing here is a synonym of anything else — a
+#: School is not a Department — so the completion can only ever restore the
+#: word the record itself used.
+_UNIT_WORD_FORMS: dict[str, str] = {
+    "dept": "Department", "dept.": "Department", "department": "Department",
+    "div": "Division", "div.": "Division", "division": "Division",
+    "school": "School", "college": "College", "faculty": "Faculty",
+    "office": "Office", "inst": "Institute", "inst.": "Institute",
+    "institute": "Institute", "ctr": "Center", "center": "Center",
+    "centre": "Centre", "lab": "Laboratory", "laboratory": "Laboratory",
+    "program": "Program", "programme": "Programme",
+}
+
+#: The prepositions a unit construction uses. Read off the RECORD rather than
+#: chosen: "Institute for Memory Impairments" and "Institute of Technology"
+#: are both right and only the record knows which one it said.
+_UNIT_PREPOSITIONS: frozenset[str] = frozenset({"of", "for"})
+
+
+def _unit_tokens(text: str) -> list[str]:
+    return [t for t in re.split(r"[\s,]+", str(text or "").strip()) if t]
+
+
+def carries_unit_word(text: str | None) -> bool:
+    """True when *text* states what KIND of unit it is."""
+    return any(
+        t.strip(".,").lower() in _UNIT_WORD_FORMS for t in _unit_tokens(text or "")
+    )
+
+
+def complete_unit_construction(
+    supplied: str | None, proposal: str | None,
+) -> str | None:
+    """Give *proposal* back the unit construction *supplied* states.
+
+    A department that arrives split across two SAP columns — "ENGINEERING Dept
+    of Mechanical" / "Engineering" — is reassembled by the lanes into
+    "Mechanical Engineering", which names the subject and drops the record's
+    own statement that this is a *Department*. The record said "Dept of"; no
+    lane is entitled to decide it did not.
+
+    Deterministic and closed: the unit word and its preposition come from
+    *supplied* and nowhere else, so this can restore only what the record
+    already stated. It cannot invent one — a bare input with a bare proposal
+    is returned unchanged — and it cannot change one, because the map holds no
+    synonyms.
+
+    Returns *proposal* unchanged where the rule does not apply.
+    """
+    prop = str(proposal or "").strip()
+    sup = str(supplied or "").strip()
+    if not prop or not sup:
+        return proposal
+    # The proposal already says what kind of thing it is.
+    if carries_unit_word(prop):
+        return proposal
+    tokens = _unit_tokens(sup)
+    for i, raw in enumerate(tokens):
+        word = _UNIT_WORD_FORMS.get(raw.strip(".,").lower())
+        if not word:
+            continue
+        nxt = tokens[i + 1].strip(".,").lower() if i + 1 < len(tokens) else ""
+        # The record must state the construction as a PREFIX — "Dept of X",
+        # "Inst for X". A trailing unit word states it the other way round
+        # ("Baytown Refinery Lab", "Dairy Diagnostics Laboratory"), and
+        # turning that into "Laboratory of Baytown Refinery" is not restoring
+        # the record's construction, it is rewriting it into a different one.
+        # The preposition is what marks the prefix form, and it is read off
+        # the record rather than supplied — "Institute for" and "Institute of"
+        # are both right and only the record knows which it said.
+        if nxt not in _UNIT_PREPOSITIONS:
+            continue
+        return f"{word} {nxt} {prop}"
+    return proposal

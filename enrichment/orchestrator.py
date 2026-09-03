@@ -48,6 +48,7 @@ from enrichment.name_repack import (
 )
 from enrichment.overflow_check import run_overflow_check_block
 from enrichment.person_affiliation import run_person_affiliation
+from utils.text_utils import complete_unit_construction  # noqa: E402
 from enrichment.search_terms import (
     clean_name2_phrase,
     derive_acronym,
@@ -3758,6 +3759,66 @@ def _refuse_dept_registry_match(
     )
 
 
+def _keep_unit_construction(result: Any, slot: str, proposal: str | None) -> Any:
+    """A dept proposal may not drop the unit word the record itself stated.
+
+    The lanes reassemble a department that overflowed two SAP columns —
+    "ENGINEERING Dept of Mechanical" / "Engineering" — and answer with the
+    subject alone, "Mechanical Engineering". Tier 2 gets this right and says
+    "Department of Mechanical Engineering"; the dept fall-through then adopts
+    a bare name read off the faculty page and overwrites it. The record's own
+    "Dept of" is discarded by a lane that was never asked to rule on it.
+
+    Completion is closed and deterministic — `complete_unit_construction`
+    takes the unit word and its preposition from the SUPPLIED value and can
+    restore only what the record already said. It cannot invent one where the
+    input had none.
+
+    Admin desks are the stated exception, on the predicate the rest of the
+    pipeline already uses: "Office of Purchasing" is not a draft of anything,
+    and `has_no_canonical_form` is what §0, Tier 2 and the flag layer all read
+    to leave those alone.
+    """
+    text = str(proposal or "").strip()
+    if not text:
+        return proposal
+    supplied = _slot_input_value(result, slot)
+    if not supplied:
+        return proposal
+    if has_no_canonical_form(supplied, result) or has_no_canonical_form(text, result):
+        return proposal
+    # The proposal must be the SUBJECT of the record's own construction and
+    # nothing more. A lane that rewrote the unit rather than reassembling it
+    # has produced a name of its own, and prefixing the record's unit word to
+    # that composes a third thing neither of them said: 13356689 supplied
+    # "College of Engr at Sugar land", the lane answered "UH Engineering at
+    # Sugar Land" — already a complete name, qualified by the institution's
+    # acronym instead of by "College of" — and completion made "College of UH
+    # Engineering at Sugar Land". `introduces_nothing_new` against the
+    # record's whole name block is the existing test for exactly this, and it
+    # already understands acronym expansion, so "Engr" -> "Engineering"
+    # passes and an introduced "UH" does not.
+    block = " ".join(
+        str(_slot_input_value(result, _s) or "").strip()
+        for _s in NAME_SLOTS
+        if str(_slot_input_value(result, _s) or "").strip()
+    )
+    if not introduces_nothing_new(block, text):
+        return proposal
+    completed = complete_unit_construction(supplied, text)
+    if completed == text:
+        return proposal
+    logger.info({
+        "record_id": result.get("record_id"),
+        "step": "dept_unit_construction_restored",
+        "field": slot,
+        "supplied": supplied,
+        "proposal": text,
+        "completed": completed,
+    })
+    return completed
+
+
 # ── Tier result application helpers ───────────────────────────────────────────
 
 def _apply_tier2a(
@@ -5344,7 +5405,9 @@ class Orchestrator:
             # confirmed it. On the non-registry paths this IS the write; on
             # the registry path it is the audit trail behind the query.
             _write(
-                result, f"{field}_enriched", proposal.proposed,
+                result, f"{field}_enriched",
+                proposal.proposed if field == "name1"
+                else _keep_unit_construction(result, field, proposal.proposed),
                 llm_evidence(
                     ("serp", "fetch", "llm_grounded")
                     if proposal.evidence_index is not None
@@ -6870,7 +6933,8 @@ class Orchestrator:
                 _dept_domain_from_registry(result, slot, proposal)
             else:
                 _write(
-                    result, f"{slot}_enriched", proposal.value,
+                    result, f"{slot}_enriched",
+                    _keep_unit_construction(result, slot, proposal.value),
                     llm_evidence(
                         ("serp", "fetch", "llm_grounded")
                         if proposal.evidence_index is not None
