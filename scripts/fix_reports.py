@@ -94,6 +94,21 @@ def _evidence(result: dict) -> str:
     return "-"
 
 
+def _low_confidence_name1(result: dict) -> bool:
+    """Whether Name 1 carries the derived low `low-confidence-unchanged` named.
+
+    This column tested `flag_codes` for that code. The provenance migration
+    retired it — it can never appear there again — so the column read "no" for
+    every row of the population it exists to describe. The state it named is
+    `input:low` on the field: `flag_low_confidence` lists it, and
+    `name1_provenance` states it, which is the one that survives a JSON export
+    (`flag_low_confidence` is `exclude=True`).
+    """
+    if "name1" in (result.get("flag_low_confidence") or ()):
+        return True
+    return str(result.get("name1_provenance") or "").startswith("input:low")
+
+
 def _flag_counts(results: list[dict]) -> collections.Counter:
     counter: collections.Counter = collections.Counter()
     for r in results:
@@ -144,10 +159,7 @@ def main() -> None:
         "|---|---|---|---|---|---|",
     ]
     for name, result, state in sorted(rows, key=lambda r: r[0] or ""):
-        flagged = (
-            "yes" if "low-confidence-unchanged" in (result.get("flag_codes") or ())
-            else "no"
-        )
+        flagged = "yes" if _low_confidence_name1(result) else "no"
         lines.append(
             f"| {name} | {result.get('name1_enriched')} | `{state}` "
             f"| `{result.get('name1_provenance')}` | {_evidence(result)} "
@@ -158,10 +170,7 @@ def main() -> None:
     print(f"unchanged population: {len(rows)}")
     for state, n in collections.Counter(s for _, _, s in rows).most_common():
         print(f"  {state:24s} {n}")
-    flagged_in_pop = sum(
-        1 for _, r, _ in rows
-        if "low-confidence-unchanged" in (r.get("flag_codes") or ())
-    )
+    flagged_in_pop = sum(1 for _, r, _ in rows if _low_confidence_name1(r))
     print(f"  of which flagged        {flagged_in_pop}")
 
     # ── Fix 3: per-row page outcomes ──────────────────────────────────────

@@ -689,6 +689,65 @@ class TestRoutes:
         assert "G7-VERIFY-001" not in unflagged
 
     @pytest.mark.asyncio
+    async def test_issues_column_carries_the_flag_derived_codes(self, client):
+        """The three codes the pipeline's own review flags map onto. Unlike
+        G7-VERIFY-001 they are NOT suppressed: each names which of three
+        different jobs a reviewer has, which is what an Issues column is for."""
+        data = self._xlsx_bytes(
+            ["Customer", "Name 1", "Flag for Review", "Flag Codes"],
+            ["R1", "Acme Corporation", "TRUE", "opaque-code; email-conflict"],
+            ["R2", "Beta Industries", "TRUE", "domain-unverified"],
+            ["R3", "Gamma Labs", "TRUE", "person-unresolved"],
+            ["R4", "Delta Works", "FALSE", ""],
+        )
+        resp = await client.post("/issues", files=self._xlsx_upload(data))
+        assert resp.status_code == 200
+        ws = load_workbook(io.BytesIO(resp.content)).active
+        cells = [([c.value for c in row][-1] or "") for row in ws.iter_rows(min_row=2)]
+
+        assert "G6-RESOLVE-001" in cells[0]
+        assert "G7-CONFIRM-001" in cells[1]
+        assert "G8-VERIFY-001" in cells[2]
+        # Two flags mapping to one code say it once, and a row the pipeline
+        # flagged nothing on carries none of them.
+        assert cells[0].count("G6-RESOLVE-001") == 1
+        for code in ("G6-RESOLVE-001", "G7-CONFIRM-001", "G8-VERIFY-001"):
+            assert code not in cells[3]
+
+    @pytest.mark.asyncio
+    async def test_issues_column_reads_the_retired_low_from_provenance(self, client):
+        """`low-confidence-unchanged` cannot appear in Flag Codes — it was
+        retired — so G8 is derived from `input:low` on the name provenance,
+        which is where that state now lives. R2 pins the other direction: a
+        settled name raises nothing."""
+        data = self._xlsx_bytes(
+            ["Customer", "Name 1", "Flag Codes", "Name 1 Provenance"],
+            ["R1", "Acme Corporation", "", "input:low"],
+            ["R2", "Beta Industries", "", "ror:verified"],
+        )
+        resp = await client.post("/issues", files=self._xlsx_upload(data))
+        assert resp.status_code == 200
+        ws = load_workbook(io.BytesIO(resp.content)).active
+        cells = [([c.value for c in row][-1] or "") for row in ws.iter_rows(min_row=2)]
+        assert "G8-VERIFY-001" in cells[0]
+        assert "G8-VERIFY-001" not in cells[1]
+
+    @pytest.mark.asyncio
+    async def test_raw_input_never_gets_a_flag_derived_code(self, client):
+        """A file with neither a Flag Codes nor a provenance column is a raw
+        audit, and the question was never asked of it."""
+        data = self._xlsx_bytes(
+            ["Customer", "Name 1", "Name 2"],
+            ["R1", "E004120188", "10901 Roosevelt Blvd N"],
+        )
+        resp = await client.post("/issues", files=self._xlsx_upload(data))
+        assert resp.status_code == 200
+        ws = load_workbook(io.BytesIO(resp.content)).active
+        issues = ([c.value for c in ws[2]][-1] or "")
+        for code in ("G6-RESOLVE-001", "G7-CONFIRM-001", "G8-VERIFY-001"):
+            assert code not in issues
+
+    @pytest.mark.asyncio
     async def test_issues_compare_segments_g6_and_g7_out_of_the_metric(self, client):
         """G6 codes that survive enrichment are expected persistence, not
         unreduced defects, and a G7 raised by the enrichment must not inflate

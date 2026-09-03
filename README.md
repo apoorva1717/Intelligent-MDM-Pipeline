@@ -1709,7 +1709,7 @@ One case is not derivable and is read from the tier's marker instead: the **depa
 | `overflow` | preprocessing ran out of name/street slots, or UC 0's rewrite had a piece with no slot left — content the SAP field split could not place. **Not** raised for a split UC 0 repaired | the overflowing pair (e.g. `name3`, `name4`); the whole name block when preprocessing ran out of slots |
 | `opaque-code` | UC 10: Name 1 holds an internal code, not a name (preprocessing clears these from Name 2-5 but never from Name 1) | `name1` |
 | `domain-unverified` | The candidate website failed every ownership condition. It is **written anyway**, at `web:{domain}:low` — see [§2b](#2b--ownership-guard-domain_ownership_guard_enabled-default-on) and [shipping the unverified domain](#shipping-the-unverified-domain). The code says the column's value is uncorroborated, not that the column is empty. **Advisory**: emits its reason but does not set `flag_for_review` | `domain` |
-| `email-conflict` | An email found in the record differs from a populated email field | `email` |
+| `email-conflict` | The record states more than one email address — a second one found in a name or street slot, or two already in the Email column as supplied. **Both ship**, joined in the column; the flag asks a steward which one the mail is for | `email` |
 | `multiple-contacts` | The contact field names more than one person and Tier 2A could not act | `contact`, `name2` |
 | `unverified-inference` | Tier 3 **wrote** a value, at any confidence — see [Tier 3](#stage-4-tier-3--llm-inference-last-resort) | the field(s) Tier 3 wrote |
 | `entity-superseded` | The organisation the record names no longer exists. Raised by the [liveness lane](#stage-5c-liveness--does-this-organisation-still-exist) from any of three sources — a ROR `status: inactive`, a GLEIF `entity.status=INACTIVE` / `registration.status=RETIRED`, or a website that redirects to a domain naming a **different** organisation — and by the [Wikidata crosswalk lane](#stage-2c-wikidata-crosswalk-lane) on an item carrying `P576` (dissolved) or `P1366` (replaced by). The name is **not** rewritten to the successor — that is a business decision — so the reason names what was found and stops. Every source that fired is named, not just the first | `name1` |
@@ -2290,13 +2290,26 @@ Same enrichment as `/enrich`, but accepts an `.xlsx`/`.xlsm` upload (SAP column 
 
 Audits an uploaded `.xlsx` against the deterministic Issue Catalogue (`enrichment/issue_detection.py`) and returns the same sheet with one appended `Issues` column. Pure audit — no enrichment, LLM, or external calls.
 
-The catalogue is aligned to **Issue Catalogue v2**: 38 declared entries, of which 35 can be emitted. Each entry carries an explicit `group` (G1–G7), `name`, `field`, `mandatory`, `origin` and `status`. Three things are worth knowing before consuming the output:
+The catalogue is aligned to **Issue Catalogue v2**: 41 declared entries, of which 38 can be emitted. Each entry carries an explicit `group` (G1–G8), `name`, `field`, `mandatory`, `origin` and `status`. Four things are worth knowing before consuming the output:
 
 - **The group is an attribute, not the code prefix.** v2's **G6 — Not Resolvable by Enrichment** is a *regrouping* of four codes that keep their original `G2-` identifiers (`G2-VAL-001`, `G2-VAL-003`, `G2-VAL-006`, `G2-NAME-012`). Read `ISSUE_CATALOGUE[code].group`; do not split the code string.
 - **`G7-VERIFY-001` is not a quality issue.** It is raised *by* successful enrichment, so a steward can be assigned the record through DATAshaper's Category dropdown, and it fires only when the uploaded sheet carries a truthy `Flag for Review` cell. A raw input file has no such column and can never receive it. The per-record trigger is in `Flag Reason`, deliberately not split into finer codes.
+- **Four codes are derived from enrichment output, not from record content.** `G7-VERIFY-001` reads the `Flag for Review` cell; the other three read `Flag Codes` and say *which* doubt the pipeline recorded, because the three ask a reviewer for different work:
+
+  | Issue code | Group | Raised by these `flag_codes` | What the reviewer is being asked |
+  |---|---|---|---|
+  | `G6-RESOLVE-001` | G6 | `opaque-code`, `email-conflict`, `multiple-contacts` | Supply a value no automated path can resolve — a name behind an internal code, which of two addresses the mail is for, one contact per record |
+  | `G7-CONFIRM-001` | G7 | `domain-unverified`, `unverified-inference`, `dept-via-lab`, `dept-via-contact` | Confirm a value the pipeline *wrote* that nothing independent backs |
+  | `G8-VERIFY-001` | G8 | `low-confidence-unchanged`, `no-match`, `person-unresolved` | Establish a value the pipeline could not — it shipped the record's own, or none |
+
+  The mapping is `enrichment.issue_detection.FLAG_CODE_ISSUES` and is many-to-one on purpose: flags that ask for the same work are one queue, not three. A flag it does not map raises nothing — `overflow` and `name3-not-demoted` are already reported as `G1-NAME-001` and `G4-NAME-015` from the record's own content, and raising them again from the flag would double-count one defect.
+
+  `low-confidence-unchanged` is the one code read from somewhere other than `Flag Codes`. It was [retired as a token](#the-derived-review-flag) because `input:low` on the field says the same thing, so the endpoint derives it from the `Name 1 Provenance` / `Name 2 Provenance` columns. Measured on a 99-row enriched export, that is 40 of the 40 rows carrying `G8-VERIFY-001`: reading only `Flag Codes` would have left the code dark for the entire population it describes.
+
+  None of the four is a raw-input rule, and none touches the reduction metric — G6 is expected to persist, G7 and G8 are reported in the comparison's own **Verification** block.
 - **`origin` records who raises a rule** — `DS` (native DATAshaper rule), `API` (this service), or `BOTH`. All 11 DS-only codes are raised here by default, which duplicates them in DATAshaper; that is deliberate, because `/issues` is also run standalone on a raw workbook. Pass `origins=("API", "BOTH")` to `detect_issues` for a feed that must not duplicate a native DS rule.
 
-The `Issues` column's **shape is unchanged** — one appended column of semicolon-separated bare codes — so the DATAshaper contract is untouched. Only the set of codes that can appear in it changed: `G2-CONTACT-008` and `G2-CONTACT-009` are withdrawn and no longer appear; `G7-VERIFY-001` newly can, on enriched files only.
+The `Issues` column's **shape is unchanged** — one appended column of semicolon-separated bare codes — so the DATAshaper contract is untouched. Only the set of codes that can appear in it changed: `G2-CONTACT-008` and `G2-CONTACT-009` are withdrawn and no longer appear; `G6-RESOLVE-001`, `G7-CONFIRM-001` and `G8-VERIFY-001` newly can, on enriched files only. `G7-VERIFY-001` is raised by the detector but withheld from this column — it says only *that* a record was flagged, which the `Flag for Review` column already carries, whereas the three new codes say *which* doubt and therefore what to do.
 
 Run `python3 scripts/issue_catalogue_census.py` for the derived counts and the full per-code table.
 

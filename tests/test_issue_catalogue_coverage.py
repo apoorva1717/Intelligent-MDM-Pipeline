@@ -31,17 +31,21 @@ _BASELINE: dict = _FIXTURE["baseline"]
 _CASES: list[dict] = _FIXTURE["cases"]
 
 
-def _build(overrides: dict) -> tuple[EnrichmentRecord, bool | None]:
-    """Baseline record + this case's overrides, and its flag_for_review value.
+def _build(overrides: dict) -> tuple[EnrichmentRecord, bool | None, list | None]:
+    """Baseline record + this case's overrides, and its enrichment-output args.
 
-    ``_flag_for_review`` is not an SAP column — it is the enriched record's
-    ``Flag for Review`` value, which reaches the detector as an argument rather
-    than as record content (that is precisely what makes G7 different).
+    ``_flag_for_review`` and ``_flag_codes`` are not SAP columns — they are the
+    enriched record's ``Flag for Review`` and ``Flag Codes`` values, which
+    reach the detector as arguments rather than as record content. That is
+    precisely what separates the four output-derived codes from every other
+    code in the catalogue, so the underscore prefix marks them as not-fields
+    and they are passed through, never validated onto the record.
     """
     fields = dict(_BASELINE)
     flag = overrides.get("_flag_for_review")
+    codes = overrides.get("_flag_codes")
     fields.update({k: v for k, v in overrides.items() if not k.startswith("_")})
-    return EnrichmentRecord.model_validate(fields), flag
+    return EnrichmentRecord.model_validate(fields), flag, codes
 
 
 def _ids(cases):
@@ -66,18 +70,22 @@ def test_no_fixture_covers_a_withdrawn_or_undetectable_code():
 
 @pytest.mark.parametrize("case", _CASES, ids=_ids(_CASES))
 def test_positive_case_raises_its_code(case):
-    record, flag = _build(case["positive"])
-    assert case["code"] in detect_issues(record, flag_for_review=flag)
+    record, flag, codes = _build(case["positive"])
+    assert case["code"] in detect_issues(
+        record, flag_for_review=flag, flag_codes=codes,
+    )
 
 
 @pytest.mark.parametrize("case", _CASES, ids=_ids(_CASES))
 def test_negative_case_does_not_raise_its_code(case):
-    record, flag = _build(case["negative"])
-    assert case["code"] not in detect_issues(record, flag_for_review=flag)
+    record, flag, codes = _build(case["negative"])
+    assert case["code"] not in detect_issues(
+        record, flag_for_review=flag, flag_codes=codes,
+    )
 
 
 def test_baseline_record_is_clean():
     """The shared baseline must raise nothing, or a case's positive result
     could come from the baseline rather than from its own overrides."""
-    record, _flag = _build({})
+    record, _flag, _codes = _build({})
     assert detect_issues(record) == []

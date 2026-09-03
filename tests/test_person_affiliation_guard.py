@@ -169,3 +169,43 @@ class TestAffiliationNotFound:
         assert r.name1_enriched is None
         assert r.flag_codes == ["person-unresolved"]
         assert r.flagged_fields == ["name1"]
+
+
+class TestPreprocessingFindingsSurviveTheShortCircuit:
+    """The person lane returns before Tier 1, and the preprocessing signals
+    were stashed on the result *after* that return — so a record whose Name 1
+    held only a person left with `person-unresolved` and none of the findings
+    preprocessing had already made about it. Those are facts about the record,
+    not about which lane resolved it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_second_email_is_still_reported(self):
+        affil = {"institution": None, "confidence": "low"}
+        rec = EnrichmentRecord(
+            record_id="D1", name1="Dr. Nobody Atall", name2=None,
+            email="ap@acme.com; ap2@acme.com",
+            city="Nowhere", country="US",
+        )
+        r = (await _orch(affil, []).enrich_batch(
+            [rec], EnrichmentOptions(max_concurrency=1))).results[0]
+
+        assert r.name1_enriched is None
+        assert "person-unresolved" in r.flag_codes
+        assert "email-conflict" in r.flag_codes
+        assert "email" in r.flagged_fields
+
+    @pytest.mark.asyncio
+    async def test_two_people_in_contact_are_still_reported(self):
+        affil = {"institution": None, "confidence": "low"}
+        rec = EnrichmentRecord(
+            record_id="D2", name1="Dr. Nobody Atall", name2=None,
+            contact="Jane Smith and John Doe",
+            city="Nowhere", country="US",
+        )
+        r = (await _orch(affil, []).enrich_batch(
+            [rec], EnrichmentOptions(max_concurrency=1))).results[0]
+
+        assert "person-unresolved" in r.flag_codes
+        assert "multiple-contacts" in r.flag_codes
+        assert "contact" in r.flagged_fields

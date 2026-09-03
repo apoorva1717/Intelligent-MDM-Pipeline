@@ -16,8 +16,13 @@ from api.models import EnrichmentRecord
 from enrichment.issue_detection import (
     EMITTED_CODES,
     ISSUE_CATALOGUE,
+    DERIVED_LOW_FLAG_CODE,
+    FLAG_CODE_ISSUES,
     QUALITY_GROUPS,
     REDUCIBLE_GROUPS,
+    VERIFICATION_GROUPS,
+    provenance_is_low,
+    split_flag_codes,
     detect_issues,
     issue_group,
     issue_name,
@@ -49,16 +54,21 @@ def _record(**fields) -> EnrichmentRecord:
 # Catalogue integrity
 # ---------------------------------------------------------------------------
 
-def test_catalogue_declares_38_entries():
-    assert len(ISSUE_CATALOGUE) == 38
+def test_catalogue_declares_41_entries():
+    assert len(ISSUE_CATALOGUE) == 41
 
 
 def test_status_counts_match_catalogue_v2():
-    """34 live, 2 withdrawn, 1 not-deterministically-detectable, 1 unlisted."""
+    """37 live, 2 withdrawn, 1 not-deterministically-detectable, 1 unlisted.
+
+    Catalogue v2 declared 34 live. The three added since are the flag-derived
+    codes — G6-RESOLVE-001, G7-CONFIRM-001, G8-VERIFY-001 — which report the
+    pipeline's own review flags rather than record content.
+    """
     from collections import Counter
 
     counts = Counter(entry.status for entry in ISSUE_CATALOGUE.values())
-    assert counts == {"live": 34, "withdrawn": 2, "ndd": 1, "unlisted": 1}
+    assert counts == {"live": 37, "withdrawn": 2, "ndd": 1, "unlisted": 1}
 
 
 def test_withdrawn_codes_are_declared_but_never_emitted():
@@ -81,7 +91,7 @@ def test_group_is_an_attribute_not_a_prefix():
 def test_every_entry_has_a_valid_group_origin_and_status():
     for code, entry in ISSUE_CATALOGUE.items():
         assert entry.code == code
-        assert entry.group in (*QUALITY_GROUPS, "G7")
+        assert entry.group in (*QUALITY_GROUPS, *VERIFICATION_GROUPS)
         assert entry.origin in ("DS", "API", "BOTH")
         assert entry.status in ("live", "withdrawn", "ndd", "unlisted")
         assert entry.name and entry.field
@@ -102,22 +112,34 @@ def test_origin_breakdown_of_live_quality_codes():
     """Catalogue v2 records 11 DS-only / 21 API-only / 2 BOTH over its 34 live
     G1-G6 codes. G1-ADDR-009 is API in v2 but ``ndd`` here, so the API figure
     is 20 against a live set of 33 — the one-code difference *is* the 9g
-    resolution and must stay visible."""
+    resolution and must stay visible.
+
+    The census is over the codes derived from record CONTENT, which is what v2
+    counted. G6-RESOLVE-001 is a live quality code too, and is excluded here
+    because including it would move this to 34/21 — numerically identical to
+    the v2 figures, which is precisely the signal this test exists to keep
+    visible.
+    """
     from collections import Counter
 
+    flag_derived = set(FLAG_CODE_ISSUES.values())
     live_quality = [
         e for e in ISSUE_CATALOGUE.values()
-        if e.status == "live" and e.group in QUALITY_GROUPS
+        if e.status == "live"
+        and e.group in QUALITY_GROUPS
+        and e.code not in flag_derived
     ]
     assert len(live_quality) == 33
     assert Counter(e.origin for e in live_quality) == {"DS": 11, "API": 20, "BOTH": 2}
     assert ISSUE_CATALOGUE["G1-ADDR-009"].status == "ndd"
 
 
-def test_reduction_groups_exclude_g6_and_g7():
+def test_reduction_groups_exclude_g6_g7_and_g8():
     assert "G6" not in REDUCIBLE_GROUPS
     assert "G7" not in REDUCIBLE_GROUPS
+    assert "G8" not in REDUCIBLE_GROUPS
     assert set(REDUCIBLE_GROUPS) == {"G1", "G2", "G3", "G4", "G5"}
+    assert set(VERIFICATION_GROUPS) == {"G7", "G8"}
 
 
 def test_docstring_counts_match_the_catalogue():
@@ -138,7 +160,10 @@ def test_docstring_counts_match_the_catalogue():
 
     source = Path(module.__file__).read_text()
 
+    # Two emission sites are tables rather than `found.add("...")` literals:
+    # the required-field rules, and the flag-code -> issue-code mapping.
     sited = {code for _field, code, _cond in _REQUIRED_FIELD_CODES}
+    sited |= set(FLAG_CODE_ISSUES.values())
     for node in ast.walk(ast.parse(source)):
         if (
             isinstance(node, ast.Call)
@@ -605,6 +630,103 @@ def test_g7_is_not_a_quality_group():
     assert issue_group("G7-VERIFY-001") == "G7"
     assert "G7" not in QUALITY_GROUPS
     assert "G7" not in REDUCIBLE_GROUPS
+
+
+# ---------------------------------------------------------------------------
+# G6-RESOLVE-001 / G7-CONFIRM-001 / G8-VERIFY-001 — the flag-derived codes
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("flag,issue", sorted(FLAG_CODE_ISSUES.items()))
+def test_every_mapped_flag_code_raises_its_issue(flag, issue):
+    """The whole point of the mapping: a flag the pipeline raised must reach
+    the Issues column. Parametrised over the table itself, so a flag added to
+    it without an emission path fails here."""
+    assert issue in detect_issues(_record(), flag_codes=[flag])
+
+
+def test_the_three_doubts_are_three_different_queues():
+    """They ask for different work — supply a value nothing can resolve,
+    confirm one the pipeline wrote, establish one it could not — so a record
+    carrying all three says all three."""
+    codes = detect_issues(
+        _record(),
+        flag_codes=["opaque-code", "domain-unverified", "person-unresolved"],
+    )
+    assert codes == ["G6-RESOLVE-001", "G7-CONFIRM-001", "G8-VERIFY-001"]
+
+
+def test_several_flags_mapping_to_one_issue_raise_it_once():
+    codes = detect_issues(
+        _record(),
+        flag_codes=["opaque-code", "email-conflict", "multiple-contacts"],
+    )
+    assert codes == ["G6-RESOLVE-001"]
+
+
+def test_flag_derived_codes_absent_from_a_raw_input_audit():
+    """The same rule G7-VERIFY-001 follows, for the same reason: these report
+    what enrichment concluded, and a raw file carries no Flag Codes column."""
+    dirty = _record(**{
+        "Name 1": "E004120188", "Name 2": "10901 Roosevelt Blvd N",
+        "Contact": "Dr. Jane Smith; Prof. Bob Lee",
+    })
+    for code in ("G6-RESOLVE-001", "G7-CONFIRM-001", "G8-VERIFY-001"):
+        assert code not in detect_issues(dirty)
+        assert code not in detect_issues(dirty, flag_codes=None)
+    # An enriched record the pipeline flagged nothing on is not the same state
+    # as a raw one, and also raises none of them.
+    assert detect_issues(_record(), flag_codes=[]) == []
+
+
+def test_an_unmapped_flag_code_raises_nothing():
+    """The pipeline's vocabulary is larger than the reviewer-facing catalogue.
+    `overflow` is already reported as G1-NAME-001 from the record's own
+    content; reporting it again from the flag would double-count it."""
+    assert detect_issues(_record(), flag_codes=["overflow", "not-a-code"]) == []
+
+
+@pytest.mark.parametrize("cell,expected", [
+    ("opaque-code", ["opaque-code"]),
+    ("opaque-code; no-match", ["opaque-code", "no-match"]),
+    ("opaque-code, no-match", ["opaque-code", "no-match"]),
+    (["opaque-code", "no-match"], ["opaque-code", "no-match"]),
+    ("  opaque-code ;; ", ["opaque-code"]),
+    ("", []), (None, []),
+])
+def test_flag_codes_cell_spellings(cell, expected):
+    assert split_flag_codes(cell) == expected
+
+
+@pytest.mark.parametrize("scalar,expected", [
+    ("input:low", True),
+    ("input:low+llm", True),
+    # Two colons: a naive split puts the domain in the confidence slot.
+    ("web:acme.com:low", True),
+    ("ror:verified", False),
+    ("llm:provisional", False),
+    ("", False), (None, False), ("not provenance at all", False),
+])
+def test_provenance_is_low_reads_the_grammar(scalar, expected):
+    assert provenance_is_low(scalar) is expected
+
+
+def test_g8_covers_the_retired_low_confidence_token():
+    """`low-confidence-unchanged` was retired as a flag code — it can never
+    appear in Flag Codes again — and the state it named lives in the
+    provenance columns. The caller supplies the token from there; the mapping
+    must still honour it or G8 goes dark for the largest population it
+    describes."""
+    assert FLAG_CODE_ISSUES[DERIVED_LOW_FLAG_CODE] == "G8-VERIFY-001"
+    assert "G8-VERIFY-001" in detect_issues(
+        _record(), flag_codes=[DERIVED_LOW_FLAG_CODE],
+    )
+
+
+def test_flag_derived_codes_are_not_in_the_reduction_metric():
+    """G6 is expected to persist; G7 and G8 are reported separately. None of
+    the three may move the before/after percentage."""
+    for code in ("G6-RESOLVE-001", "G7-CONFIRM-001", "G8-VERIFY-001"):
+        assert issue_group(code) not in REDUCIBLE_GROUPS
 
 
 # ---------------------------------------------------------------------------

@@ -7706,37 +7706,21 @@ class Orchestrator:
                 "contact": pp_contact, "street1": pp_street1,
             }
 
-            # ── Person-only Name 1: discover the contact's affiliation ───
-            # Name 1 held only a person's name (now moved to Contact), leaving
-            # no organisation for the tiers to enrich. Fetching the contact's
-            # institution + department is a core deliverable, so we run a
-            # grounded web lookup (Stage 2b) — but guard it hard against the
-            # ways it went wrong before:
-            #   * confirm the web-proposed institution against ROR IN THE
-            #     RECORD'S COUNTRY (rejects wrong-country matches), and
-            #   * take the official name / id / domain from ROR — never a
-            #     website-resolver guess, and
-            #   * ALWAYS short-circuit here (whether or not we found an org) so
-            #     Tier 3 can never fabricate an institution or overwrite the
-            #     confirmed one.
-            if (
-                is_blank(pp_name1)
-                and pp_contact and pp_contact.strip()
-                and getattr(pre, "name1_was_person", False)
-            ):
-                return await self._resolve_person_affiliation(
-                    result, record, pp_contact, pp_name2, start, cache,
-                )
-
-            # Stash for the post-Tier-1 website resolver. Read by
-            # _maybe_resolve_website_bc at every return path.
-            result["_pp_name1"] = pp_name1
-
-            # Stash the dept-lookup precondition signals BEFORE Tier 1
-            # so that finalise() — invoked by every return path
-            # including Tier 1's short-circuit — can flag a research
-            # institution with no actionable signal (no dept + no
-            # contact, or multiple contacts).
+            # Stash the dept-lookup precondition signals and the
+            # preprocessing findings BEFORE anything can return, so that
+            # finalise() — invoked by every return path including Tier
+            # 1's short-circuit — can flag a research institution with no
+            # actionable signal (no dept + no contact, or multiple
+            # contacts).
+            #
+            # ABOVE the person-affiliation short-circuit below, which is
+            # the one return between preprocessing and here. It used to
+            # sit under it, so a record whose Name 1 held only a person
+            # left with `person-unresolved` and NONE of the findings
+            # preprocessing had already made about it — a second email
+            # address, a name block the SAP split overflowed, a site the
+            # address block contradicts, two people in Contact. Those are
+            # facts about the record, not about which lane resolved it.
             # Any populated department slot counts, not only Name 2.
             # Preprocessing packs the block leftward so a department normally
             # lands in Name 2, but a slot the packing could not reach (or a
@@ -7763,6 +7747,32 @@ class Orchestrator:
             # steward can — see `flags.NAME_STATES_ANOTHER_SITE`.
             if pre.site_conflict:
                 result["_ev_name_site_conflict"] = pre.site_conflict
+
+            # ── Person-only Name 1: discover the contact's affiliation ───
+            # Name 1 held only a person's name (now moved to Contact), leaving
+            # no organisation for the tiers to enrich. Fetching the contact's
+            # institution + department is a core deliverable, so we run a
+            # grounded web lookup (Stage 2b) — but guard it hard against the
+            # ways it went wrong before:
+            #   * confirm the web-proposed institution against ROR IN THE
+            #     RECORD'S COUNTRY (rejects wrong-country matches), and
+            #   * take the official name / id / domain from ROR — never a
+            #     website-resolver guess, and
+            #   * ALWAYS short-circuit here (whether or not we found an org) so
+            #     Tier 3 can never fabricate an institution or overwrite the
+            #     confirmed one.
+            if (
+                is_blank(pp_name1)
+                and pp_contact and pp_contact.strip()
+                and getattr(pre, "name1_was_person", False)
+            ):
+                return await self._resolve_person_affiliation(
+                    result, record, pp_contact, pp_name2, start, cache,
+                )
+
+            # Stash for the post-Tier-1 website resolver. Read by
+            # _maybe_resolve_website_bc at every return path.
+            result["_pp_name1"] = pp_name1
 
             institution_domain: str | None = None
 

@@ -237,6 +237,21 @@
       "code": "G7-VERIFY-001",
       "positive": {"_flag_for_review": true},
       "negative": {"_flag_for_review": false}
+    },
+    {
+      "code": "G6-RESOLVE-001",
+      "positive": {"_flag_codes": ["opaque-code"]},
+      "negative": {"_flag_codes": ["overflow"]}
+    },
+    {
+      "code": "G7-CONFIRM-001",
+      "positive": {"_flag_codes": ["domain-unverified"]},
+      "negative": {"_flag_codes": []}
+    },
+    {
+      "code": "G8-VERIFY-001",
+      "positive": {"_flag_codes": ["person-unresolved"]},
+      "negative": {"_flag_codes": null}
     }
   ]
 }

@@ -137,6 +137,30 @@ def test_two_addresses_in_one_field_are_both_taken():
     assert "email-conflict" in res.flags
 
 
+def test_a_column_that_arrives_with_two_addresses_is_flagged():
+    """The conflict was raised only where a second address was DISCOVERED in
+    another field and appended. A record that simply arrives with both in the
+    Email column calls `add_email` for neither, so it shipped two addresses
+    and asked nobody which one the mail is for."""
+    res = preprocess_record(
+        "Acme Corp", "Dept", None, None, "ap@acme.com; ap2@acme.com",
+        None, None, None,
+    )
+    assert split_emails(res.email) == ["ap@acme.com", "ap2@acme.com"]
+    assert "email-conflict" in res.flags
+
+
+def test_the_same_address_written_twice_is_one_address():
+    """Case is not a second address. A source system writing the same
+    mailbox in two casings states one address, and there is nothing for a
+    steward to choose between."""
+    res = preprocess_record(
+        "Acme Corp", "Dept", None, None, "ap@acme.com; AP@ACME.COM",
+        None, None, None,
+    )
+    assert "email-conflict" not in res.flags
+
+
 def test_one_address_raises_no_conflict():
     res = preprocess_record(
         "Acme Corp", "Dept", "Research Lab jsmith@acme.com",

@@ -31,20 +31,30 @@ and ``reason``. Two consequences worth stating outright:
 
 Counts — all derived from the source below, never asserted
 ----------------------------------------------------------
-* **38 declared** catalogue entries.
-* **34 live** — emitted by this detector. 33 of them are quality issues
-  (G1-G6) and one is ``G7-VERIFY-001``.
+* **41 declared** catalogue entries.
+* **37 live** — emitted by this detector. 34 of them are quality issues
+  (G1-G6) and three are verification codes (G7, G8).
 * **1 unlisted** — ``G3-ADDR-012``, emitted here but absent from Catalogue v2,
   left unchanged pending a human decision.
-* **35 deterministically emitted** = the 34 live plus the unlisted one; this is
+* **38 deterministically emitted** = the 37 live plus the unlisted one; this is
   ``EMITTED_CODES``.
 * **2 withdrawn** — ``G2-CONTACT-008``, ``G2-CONTACT-009``. Struck through in
   Catalogue v2; declared here for the audit trail, never emitted.
 * **1 not deterministically detectable** — ``G1-ADDR-009``. Live in Catalogue v2
   but no deterministic rule can express it; see the entry's ``reason``.
 
-Origin breakdown of the 33 live quality codes: 11 DS-only, 20 API-only, 2 BOTH
-(Catalogue v2's 21 API figure includes ``G1-ADDR-009``, which is ``ndd`` here).
+Origin breakdown of the 33 live quality codes derived from record CONTENT:
+11 DS-only, 20 API-only, 2 BOTH (Catalogue v2's 21 API figure includes
+``G1-ADDR-009``, which is ``ndd`` here). ``G6-RESOLVE-001`` is the 34th live
+quality code and is outside that census: it post-dates v2 and is derived from
+enrichment output, not from content.
+
+Four codes are derived from enrichment OUTPUT and can never fire on a raw
+input file — ``G7-VERIFY-001`` from ``Flag for Review``, and
+``G6-RESOLVE-001`` / ``G7-CONFIRM-001`` / ``G8-VERIFY-001`` from ``Flag
+Codes`` through ``FLAG_CODE_ISSUES``. Everything else is computed from the
+record, which is what lets the same rule set run over a raw file and an
+enriched one and makes the count delta meaningful.
 ``detect_issues`` emits every origin by default — including DS-only codes — for
 the reason documented on that function; pass ``origins=("API", "BOTH")`` for a
 DATAshaper-facing feed that must not duplicate a native DS rule.
@@ -114,6 +124,11 @@ from enrichment.address_processing import (
     _is_identifier_like,
     _looks_like_department,
     _looks_like_street,
+)
+from enrichment.confidence import (
+    LOW as _CONFIDENCE_LOW,
+    ProvenanceGrammarError,
+    parse as _parse_provenance,
 )
 from utils.name_slots import ADJACENT_RECORD_NAME_PAIRS, RECORD_NAME_FIELDS
 from utils.text_utils import (
@@ -271,11 +286,29 @@ ISSUE_CATALOGUE: dict[str, IssueDefinition] = dict([
     _d("G2-VAL-003", "G6", "Tax Jurisdiction Missing", "Tax Jurisdiction", True, "DS"),
     _d("G2-VAL-006", "G6", "Language Missing", "Language", True, "DS"),
     _d("G2-NAME-012", "G6", "Research Institution Missing Department", "Name 2", False, "DS"),
+    # The one G6 code derived from enrichment OUTPUT rather than from record
+    # content: the pipeline ran, could not resolve the record, and said so in
+    # `Flag Codes`. It is in G6 because that is what those three flags mean —
+    # an internal code where a name belongs, two email addresses with nothing
+    # to choose between them, two people in one Contact field — none of which
+    # any automated path resolves. See `FLAG_CODE_ISSUES`.
+    _d("G6-RESOLVE-001", "G6", "Enrichment Could Not Resolve the Record", "Flag Codes", False, "API"),
     # -- G7 — Verification Required ----------------------------------------
     # Not a quality issue: raised *by* successful enrichment so DATAshaper can
     # route the record to a steward through the Category dropdown. Reported
     # separately and never counted in the before/after reduction metric.
     _d("G7-VERIFY-001", "G7", "Enriched Record Requires Verification", "Flag for Review", False, "API"),
+    # The value the pipeline WROTE, and what backs it. These three flags all
+    # mark a value that is present and plausible and that no independent
+    # source confirmed — a website nothing tied to the organisation, a name
+    # resting on model training data, a department read off a lab's page or a
+    # contact's affiliation. The reviewer's job is to confirm what is there.
+    _d("G7-CONFIRM-001", "G7", "Enriched Value Requires Confirmation", "Flag Codes", False, "API"),
+    # -- G8 — Enrichment Unresolved ----------------------------------------
+    # The mirror of G7-CONFIRM-001: not "confirm what we wrote" but "we could
+    # not establish it". The record ships its own value (or none at all) and a
+    # human has to supply the answer the pipeline could not find.
+    _d("G8-VERIFY-001", "G8", "Enrichment Left the Value Unestablished", "Flag Codes", False, "API"),
 ])
 
 # Codes this detector can actually raise.
@@ -283,7 +316,8 @@ EMITTED_CODES: tuple[str, ...] = tuple(
     code for code, d in ISSUE_CATALOGUE.items() if d.status in ("live", "unlisted")
 )
 
-# Quality-issue groups. G7 is deliberately absent: it is not a quality issue.
+# Quality-issue groups. G7 and G8 are deliberately absent: neither is a quality
+# issue — both are raised BY enrichment to route a record to a steward.
 QUALITY_GROUPS: tuple[str, ...] = ("G1", "G2", "G3", "G4", "G5", "G6")
 
 # The groups the before/after reduction percentage is computed over. G6 is
@@ -294,7 +328,13 @@ REDUCIBLE_GROUPS: tuple[str, ...] = ("G1", "G2", "G3", "G4", "G5")
 
 # Codes whose persistence across the comparison is correct behaviour.
 PERSISTENT_GROUP = "G6"
-VERIFICATION_GROUP = "G7"
+
+# The groups reported separately and never counted in any reduction figure.
+# G7 asks a steward to CONFIRM a value enrichment wrote; G8 says enrichment
+# could not establish one. Both are raised by the pipeline's own output and
+# neither can fire on a raw input file, so counting them would make the
+# post-pipeline total grow with how much the pipeline attempted.
+VERIFICATION_GROUPS: tuple[str, ...] = ("G7", "G8")
 
 
 def issue_name(code: str) -> str:
@@ -1015,6 +1055,125 @@ def flag_for_review_is_set(value: object) -> bool:
     return str(value).strip().lower() in _TRUTHY
 
 
+#: Enrichment flag code -> Issue-Catalogue code.
+#:
+#: The pipeline's ``flag_codes`` vocabulary (``enrichment.flags.ALL_CODES``)
+#: says what is in doubt and which column it concerns. The catalogue says what
+#: a DATAshaper reviewer is being asked to DO. This is the join between them,
+#: and it is many-to-one on purpose: three flags that all mean "no automated
+#: path exists, a human must supply the value" are one queue, not three.
+#:
+#: Every code here is derived from enrichment OUTPUT — it is read off the
+#: enriched file's ``Flag Codes`` column, never computed from record content —
+#: so none of the three can fire on a raw input audit. That is the same
+#: constraint ``G7-VERIFY-001`` carries and for the same reason.
+#:
+#: Two entries name flags the current pipeline does not emit as tokens, and
+#: both are deliberate:
+#:
+#: * ``dept-via-contact`` — the condition is real (Tier 2A ``2A_population``:
+#:   the department came from the affiliation of the person in Contact) but it
+#:   is reported under ``dept-via-lab`` with "the contact's own affiliation" in
+#:   the reason, because it asks the reviewer the same question. Both map here
+#:   so the mapping stays correct whichever way that is later resolved.
+#: * ``low-confidence-unchanged`` — RETIRED as a token by the provenance
+#:   migration. The state it named is ``input:low`` on the field, which is what
+#:   the ``Name 1 / Name 2 Provenance`` columns carry, so the caller supplies
+#:   it from there; see :func:`provenance_is_low`. Mapping the token as well
+#:   costs nothing and keeps this table readable as the whole rule.
+FLAG_CODE_ISSUES: dict[str, str] = {
+    # Nothing the pipeline can do resolves these — a name column holding an
+    # internal code, two email addresses both of which are the record's own,
+    # two people in one Contact field.
+    "opaque-code": "G6-RESOLVE-001",
+    "email-conflict": "G6-RESOLVE-001",
+    "multiple-contacts": "G6-RESOLVE-001",
+    # A value was written; nothing independent backs it.
+    "domain-unverified": "G7-CONFIRM-001",
+    "unverified-inference": "G7-CONFIRM-001",
+    "dept-via-lab": "G7-CONFIRM-001",
+    "dept-via-contact": "G7-CONFIRM-001",
+    # The pipeline could not establish the value at all.
+    "low-confidence-unchanged": "G8-VERIFY-001",
+    "no-match": "G8-VERIFY-001",
+    "person-unresolved": "G8-VERIFY-001",
+}
+
+#: The retired token the caller re-supplies from the provenance columns.
+DERIVED_LOW_FLAG_CODE = "low-confidence-unchanged"
+
+# `Flag Codes` ships as a semicolon-joined string in XLSX and as a list in
+# JSON; a comma-joined cell is what a hand-edited sheet produces. All three
+# split the same way.
+_FLAG_CODE_SPLIT_RE = re.compile(r"[;,]")
+
+
+def split_flag_codes(value: object) -> list[str]:
+    """The enrichment flag codes in a ``Flag Codes`` cell, in order.
+
+    The counterpart of :func:`flag_for_review_is_set` for the other column the
+    enriched file carries: accepts the joined string an XLSX round-trip
+    produces and the list a JSON payload does, and drops blanks. Unknown
+    tokens come back unchanged — :data:`FLAG_CODE_ISSUES` decides what maps,
+    and a vocabulary this module has not been taught about must not be
+    silently reshaped here.
+    """
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        parts: Iterable[str] = [str(v) for v in value]
+    else:
+        parts = _FLAG_CODE_SPLIT_RE.split(str(value))
+    return [part.strip() for part in parts if part and part.strip()]
+
+
+def provenance_is_low(value: object) -> bool:
+    """Whether a provenance scalar reads ``low`` confidence.
+
+    ``low-confidence-unchanged`` was retired as a flag code: "left exactly as
+    supplied — the canonical form could not be established" and ``input:low``
+    are the same statement, and the pipeline stopped recording it twice. An
+    audit of an enriched file therefore cannot find that token in ``Flag
+    Codes`` and has to read the state where it now lives, which is the
+    ``Name 1 / Name 2 Provenance`` columns.
+
+    Parsed through the provenance grammar rather than by string prefix:
+    ``web:acme.com:low`` contains two colons and a naive split puts the domain
+    in the confidence slot. A cell that is not provenance at all is not low —
+    an audit reports what it can read and never guesses.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return False
+    try:
+        return _parse_provenance(text)[1] == _CONFIDENCE_LOW
+    except ProvenanceGrammarError:
+        return False
+
+
+def _detect_enrichment_flags(
+    found: set[str], flag_codes: Iterable[str] | None,
+) -> None:
+    """G6-RESOLVE-001 / G7-CONFIRM-001 / G8-VERIFY-001 — the catalogue codes
+    derived from the pipeline's own review flags.
+
+    Like ``G7-VERIFY-001``, these cannot be computed from record content: they
+    report what enrichment concluded about a record it has already processed.
+    ``flag_codes`` is ``None`` for a raw audit (the file has no such column)
+    and none of the three can be raised there.
+
+    A flag this table does not map raises nothing. The pipeline's vocabulary
+    is larger than the reviewer-facing catalogue — ``overflow`` and
+    ``name3-not-demoted`` are already reported as ``G1-NAME-001`` and
+    ``G4-NAME-015`` from the record's own content, and reporting them twice
+    from two directions would double-count the same defect.
+    """
+    for code in flag_codes or ():
+        issue = FLAG_CODE_ISSUES.get(code.strip().lower())
+        if issue:
+            found.add(issue)
+
+
 def _detect_verification(found: set[str], flag_for_review: bool | None) -> None:
     """G7-VERIFY-001 — the one code derived from enrichment *output*.
 
@@ -1038,6 +1197,7 @@ def detect_issues(
     present_fields: set[str] | None = None,
     *,
     flag_for_review: bool | None = None,
+    flag_codes: Iterable[str] | None = None,
     origins: Iterable[str] | None = None,
 ) -> list[str]:
     """Return every Issue-Catalogue code that fires for *record*.
@@ -1057,6 +1217,15 @@ def detect_issues(
     raw input: G7 is raised *by* successful enrichment, never by record
     content, so a raw audit must never produce it.
 
+    *flag_codes* carries the enriched record's ``Flag Codes`` and drives
+    ``G6-RESOLVE-001``, ``G7-CONFIRM-001`` and ``G8-VERIFY-001`` through
+    :data:`FLAG_CODE_ISSUES`. ``None`` for the same reason and with the same
+    force as *flag_for_review*: a raw input file carries no such column and
+    none of the three can be raised from record content. The caller supplies
+    ``low-confidence-unchanged`` itself, from the provenance columns — the
+    token was retired and the state it named now lives there (see
+    :func:`provenance_is_low`).
+
     *origins* optionally restricts the result to codes with those Catalogue v2
     origins (``"DS"``, ``"API"``, ``"BOTH"``). The default emits every origin,
     including the 11 DS-only codes. That is deliberate and is the documented
@@ -1073,6 +1242,7 @@ def detect_issues(
     _detect_duplicate(record, found)
     _detect_format(record, found)
     _detect_naming(record, found)
+    _detect_enrichment_flags(found, flag_codes)
     _detect_verification(found, flag_for_review)
 
     if origins is not None:

@@ -2766,6 +2766,23 @@ def preprocess_record(
                 f"({_entry['reason']})",
             )
 
+    # ── The shipped Email column, checked once ────────────────────────────
+    # `email-conflict` says "the record states more than one email address,
+    # and both ship" — a statement about the COLUMN, not about how the second
+    # address got there. The two `add_email` sites above raise it only when a
+    # second address is DISCOVERED in a name or street slot and appended; a
+    # record that simply arrives with "ap@acme.com; ap2@acme.com" already in
+    # Email calls `add_email` for neither, so it shipped both addresses and no
+    # flag, and no steward was ever asked which one the mail is for.
+    #
+    # Read off the final value so there is one rule for the one state, and so
+    # it cannot disagree with what the column holds. Compared case-insensitively:
+    # a source system writing the same address twice in different case states
+    # one address, not two.
+    if len({address.lower() for address in split_emails(res.email)}) > 1:
+        if "email-conflict" not in res.flags:
+            res.flags.append("email-conflict")
+
     return res
 
 

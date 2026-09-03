@@ -48,9 +48,12 @@ from enrichment.issue_detection import (
     ISSUE_CATALOGUE,
     PERSISTENT_GROUP,
     REDUCIBLE_GROUPS,
-    VERIFICATION_GROUP,
+    VERIFICATION_GROUPS,
     detect_issues,
     flag_for_review_is_set,
+    provenance_is_low,
+    split_flag_codes,
+    DERIVED_LOW_FLAG_CODE,
 )
 from enrichment.orchestrator import Orchestrator
 
@@ -181,6 +184,49 @@ def _flag_for_review(row: dict[str, str], headers: list[str]) -> bool | None:
         if _norm_header(header) == _norm_header("Flag for Review"):
             return flag_for_review_is_set(row.get(header))
     return None
+
+
+#: The provenance columns that carry the doubt ``low-confidence-unchanged``
+#: used to name as a flag code. Name 1 and Name 2 only — the same two fields
+#: the pipeline derives its own review flag from (``flags.CORE_PROVENANCE_
+#: FIELDS``): the flag asks a human to check a NAME, and a record whose domain
+#: or type could not be settled is not a record with a wrong name in it.
+_CORE_PROVENANCE_HEADERS: tuple[str, ...] = ("Name 1 Provenance", "Name 2 Provenance")
+
+
+def _flag_codes(row: dict[str, str], headers: list[str]) -> list[str] | None:
+    """The row's enrichment flag codes, or ``None`` when this is a raw file.
+
+    ``None`` and ``[]`` carry the same distinction as in :func:`_flag_for_review`:
+    ``None`` means "no enrichment output here, the flag-derived codes cannot
+    apply", ``[]`` means "enrichment ran and flagged nothing". Both suppress
+    G6-RESOLVE-001 / G7-CONFIRM-001 / G8-VERIFY-001; only ``None`` says the
+    question was never asked.
+
+    ``low-confidence-unchanged`` is added from the provenance columns rather
+    than read from ``Flag Codes``, where it can no longer appear: the
+    provenance migration retired the token because ``input:low`` on the field
+    says the same thing, and this is where an audit of an enriched file finds
+    that state. Reading only ``Flag Codes`` would have left G8-VERIFY-001 dark
+    for the largest population it exists to describe — the rows the pipeline
+    left exactly as supplied.
+    """
+    codes: list[str] | None = None
+    for header in headers:
+        if _norm_header(header) == _norm_header("Flag Codes"):
+            codes = split_flag_codes(row.get(header))
+            break
+
+    for header in headers:
+        norm = _norm_header(header)
+        if any(norm == _norm_header(c) for c in _CORE_PROVENANCE_HEADERS):
+            if codes is None:
+                codes = []
+            if provenance_is_low(row.get(header)):
+                if DERIVED_LOW_FLAG_CODE not in codes:
+                    codes.append(DERIVED_LOW_FLAG_CODE)
+                break
+    return codes
 
 
 def _parse_xlsx(contents: bytes) -> tuple[list[str], list[dict[str, str]]]:
@@ -444,7 +490,9 @@ async def _audit_upload(file: UploadFile) -> dict[str, list[str]]:
         issue_map.setdefault(
             rid,
             detect_issues(
-                record, present, flag_for_review=_flag_for_review(row, headers),
+                record, present,
+                flag_for_review=_flag_for_review(row, headers),
+                flag_codes=_flag_codes(row, headers),
             ),
         )
 
@@ -497,7 +545,7 @@ def _build_comparison_xlsx(
     def segment(code: str) -> str:
         """Which of the three report blocks *code* belongs to."""
         group = ISSUE_CATALOGUE[code].group
-        if group == VERIFICATION_GROUP:
+        if group in VERIFICATION_GROUPS:
             return "Verification"
         if group == PERSISTENT_GROUP:
             return "Expected to persist"
@@ -589,11 +637,15 @@ def _build_comparison_xlsx(
     summary.append([])
 
     # --- Block 3: G7, never part of any reduction figure ---
-    summary.append([f"Verification — {VERIFICATION_GROUP} (reported separately)"])
     summary.append([
-        "Raised BY successful enrichment so DATAshaper can assign the record "
-        "to a steward. Not a quality issue and never counted in the reduction "
-        "metric; see the Flag Reason column for the per-record trigger."
+        f"Verification — {', '.join(VERIFICATION_GROUPS)} (reported separately)"
+    ])
+    summary.append([
+        "Raised BY enrichment so DATAshaper can assign the record to a "
+        "steward — G7 to confirm a value the pipeline wrote, G8 where it "
+        "could not establish one. Not quality issues and never counted in "
+        "the reduction metric; see the Flag Reason column for the "
+        "per-record trigger."
     ])
     summary.append(["Verification: records requiring verification", seg_after["Verification"]])
     summary.append([])
@@ -709,6 +761,15 @@ async def enrich_file(
 # The detector still raises all four, and ``/issues/compare`` still reports
 # them in its "Expected to persist" and "Verification" segments; only the
 # standalone audit column drops them.
+#
+# The four flag-derived codes are NOT withheld, G6-RESOLVE-001 and
+# G7-CONFIRM-001 / G8-VERIFY-001 included. G7-VERIFY-001 is dropped because it
+# says only "this record was flagged" — the boolean is already its own column
+# and repeating it in a defect list tells a reviewer nothing they can act on.
+# These three say WHICH doubt, out of three that ask for different work:
+# supply a value nothing can resolve (G6), confirm a value the pipeline wrote
+# (G7), or establish one it could not (G8). That is a triage instruction, and
+# the column is where a reviewer reads it.
 _ISSUES_SUPPRESSED_CODES: frozenset[str] = frozenset(
     {"G2-VAL-003", "G2-VAL-006", "G2-NAME-012", "G7-VERIFY-001"}
 )
@@ -720,10 +781,10 @@ def _audit_rows(
     """Validate a parsed sheet and detect the audit issue codes for each row.
 
     The one detection path behind both ``/issues`` and ``/issues/json``: same
-    column-awareness, same ``Flag for Review`` handling, same suppression set,
-    so the two representations of the audit cannot drift apart. The validated
-    records come back with the codes because the JSON response keys on
-    ``record.record_id``.
+    column-awareness, same ``Flag for Review`` and ``Flag Codes`` handling,
+    same suppression set, so the two representations of the audit cannot drift
+    apart. The validated records come back with the codes because the JSON
+    response keys on ``record.record_id``.
     """
     records = _rows_to_records(row_dicts)
     present = _present_fields(headers)
@@ -731,7 +792,9 @@ def _audit_rows(
         [
             code
             for code in detect_issues(
-                record, present, flag_for_review=_flag_for_review(row, headers),
+                record, present,
+                flag_for_review=_flag_for_review(row, headers),
+                flag_codes=_flag_codes(row, headers),
             )
             if code not in _ISSUES_SUPPRESSED_CODES
         ]

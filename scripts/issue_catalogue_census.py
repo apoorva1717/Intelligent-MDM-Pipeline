@@ -41,6 +41,7 @@ from enrichment.issue_detection import (  # noqa: E402
     EMITTED_CODES,
     ISSUE_CATALOGUE,
     QUALITY_GROUPS,
+    VERIFICATION_GROUPS,
     detect_issues,
 )
 
@@ -133,6 +134,7 @@ _GROUP_NAMES = {
     "G5": "Non-Standard Naming",
     "G6": "Not Resolvable by Enrichment",
     "G7": "Verification Required",
+    "G8": "Enrichment Unresolved",
 }
 
 
@@ -184,11 +186,11 @@ def write_oracle_sheets(path: Path | None = None) -> None:
     totals.append(["Issue Instances by Group"])
     totals.append([
         "Derived by scripts/issue_catalogue_census.py --write-oracle. G6 is "
-        "expected to persist through enrichment; G7 is not a quality issue and "
-        "is excluded from the reduction metric."
+        "expected to persist through enrichment; G7 and G8 are not quality "
+        "issues and are excluded from the reduction metric."
     ])
     totals.append(["Group", "Group Name", "Issue Instances"])
-    for group in (*QUALITY_GROUPS, "G7"):
+    for group in (*QUALITY_GROUPS, *VERIFICATION_GROUPS):
         totals.append([
             group,
             _GROUP_NAMES[group],
