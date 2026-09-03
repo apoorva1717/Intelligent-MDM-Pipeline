@@ -1,20 +1,60 @@
+# Files excluded from the deployment package (zip deploy / remote build).
+#
+# Keep this list aggressive: the whole folder is zipped, uploaded, and
+# extracted into the build container's /tmp. A bloated package is what makes
+# an Oryx remote build die before it writes a single log line.
+#
+# Everything the app needs at runtime stays: the api/, enrichment/, llm/,
+# search/, utils/, dedup/ packages (including dedup/weights.json), certs/
+# (the corp CA bundle read via AZURE_OPENAI_CA_BUNDLE), config.py,
+# function_app.py, host.json and requirements.txt.
+
+# ── Version control, editor, virtualenvs ─────────────────────────────
 .git*
 .gitignore
 .vscode
+.claude
 .venv
 venv
 env
+
+# ── Python build artefacts ───────────────────────────────────────────
 __pycache__
 *.py[cod]
 *.egg-info
 .pytest_cache
-tests
-scripts
+pytest.ini
 htmlcov
 .coverage
+
+# ── Dev-only code (not imported by the runtime packages) ─────────────
+tests
+scripts
+tools
+eval
+sql
+
+# ── Local config and secrets ─────────────────────────────────────────
 local.settings.json
 .env
 .env.example
+
+# ── Documentation ────────────────────────────────────────────────────
 *.md
 README*
+docs
+*.pdf
 requirements-dev.txt
+
+# ── Runtime output and caches: recreated on demand, never deployed ───
+# logs/ alone reached 429 MB (rotated logs plus logs/cache, logs/runs,
+# logs/determinism, logs/loc, logs/provmig), which dwarfed the ~10 MB of
+# code and dominated the upload.
+logs
+_cache_backup_*
+
+# ── Sample data and scratch files ────────────────────────────────────
+*.xlsx
+*.xlsm
+*.csv
+issues_request.json
