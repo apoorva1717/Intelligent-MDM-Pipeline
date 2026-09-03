@@ -390,6 +390,175 @@ class TestRoutes:
         issues_cell = [c.value for c in ws[2]][-1] or ""
         assert "G2-VAL-002" not in issues_cell  # Postal Code column absent
 
+    # ── /issues/json endpoint ───────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_issues_json_returns_record_id_and_issues(self, client):
+        """One {record_id, issues} entry per record, in request order."""
+        resp = await client.post(
+            "/issues/json",
+            json={
+                "records": [
+                    {
+                        "Customer": "R1",
+                        "Name 1": "Acme Corp",
+                        "Name 2": "PO BOX 115350",
+                        "Postal Code": "12345",
+                        "Country/Region Key": "US",
+                    },
+                    {
+                        "Customer": "R2",
+                        "Name 1": "Acme Corp",
+                        "Name 2": "Engineering",
+                        "Postal Code": "12345",
+                        "Country/Region Key": "US",
+                    },
+                ]
+            },
+        )
+        assert resp.status_code == 200
+        results = resp.json()["results"]
+        assert [r["record_id"] for r in results] == ["R1", "R2"]
+        # PO Box in a name field surfaces as address-content-in-name.
+        assert "G1-CROSS-001" in results[0]["issues"]
+
+    @pytest.mark.asyncio
+    async def test_issues_json_matches_the_file_endpoint(self, client):
+        """The JSON twin returns exactly what the file endpoint writes into
+        its Issues column, for the same rows."""
+        headers = ["Customer", "Name 1", "Postal Code", "Country/Region Key"]
+        rows = [
+            ["R1", "Univ of Florida", "", "USA"],
+            ["R2", "Acme Corp", "12345", "US"],
+        ]
+        data = self._xlsx_bytes(headers, *rows)
+        file_resp = await client.post("/issues", files=self._xlsx_upload(data))
+        assert file_resp.status_code == 200
+        ws = load_workbook(io.BytesIO(file_resp.content)).active
+        from_file = [
+            {c.strip() for c in ([cell.value for cell in row][-1] or "").split(";") if c.strip()}
+            for row in ws.iter_rows(min_row=2)
+        ]
+
+        json_resp = await client.post(
+            "/issues/json",
+            json={"records": [dict(zip(headers, row)) for row in rows]},
+        )
+        assert json_resp.status_code == 200
+        from_json = [set(r["issues"]) for r in json_resp.json()["results"]]
+        assert from_json == from_file
+        assert {"G2-VAL-002", "G4-ADDR-027", "G5-NAME-001"} <= from_json[0]
+
+    @pytest.mark.asyncio
+    async def test_issues_json_column_aware_skips_absent_columns(self, client):
+        """A payload that doesn't carry Postal Code is not reported as missing it."""
+        resp = await client.post(
+            "/issues/json",
+            json={"records": [{"Customer": "R1", "Name 1": "Acme Corp", "Name 2": "Sales"}]},
+        )
+        assert resp.status_code == 200
+        assert "G2-VAL-002" not in resp.json()["results"][0]["issues"]
+
+    @pytest.mark.asyncio
+    async def test_issues_json_blank_value_counts_as_present_but_empty(self, client):
+        """Sending the column with an empty value is "present but blank" —
+        the same distinction the workbook draws between a missing column and
+        an empty cell."""
+        resp = await client.post(
+            "/issues/json",
+            json={"records": [{"Customer": "R1", "Name 1": "Acme Corp", "Postal Code": ""}]},
+        )
+        assert resp.status_code == 200
+        assert "G2-VAL-002" in resp.json()["results"][0]["issues"]
+
+    @pytest.mark.asyncio
+    async def test_issues_json_suppresses_the_same_codes_as_the_column(self, client):
+        """The suppressed G6 codes and G7-VERIFY-001 are withheld here too."""
+        resp = await client.post(
+            "/issues/json",
+            json={
+                "records": [
+                    {
+                        "Customer": "R1",
+                        "Name 1": "Acme Corp",
+                        "Postal Code": "12345",
+                        "Country/Region Key": "US",
+                        "Flag for Review": "X",
+                    }
+                ]
+            },
+        )
+        assert resp.status_code == 200
+        issues = resp.json()["results"][0]["issues"]
+        assert not ({"G2-VAL-003", "G2-VAL-006", "G2-NAME-012", "G7-VERIFY-001"} & set(issues))
+
+    @pytest.mark.asyncio
+    async def test_issues_json_record_without_identifier_gets_empty_id(self, client):
+        """No field is mandatory: a record with no customer identifier is
+        audited rather than rejected."""
+        resp = await client.post(
+            "/issues/json", json={"records": [{"Name 1": "MIT"}]}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["results"][0]["record_id"] == ""
+
+    @pytest.mark.asyncio
+    async def test_issues_json_integral_float_is_not_a_malformed_postal_code(self, client):
+        """openpyxl hands back a whole-numbered cell as an int, so a postal
+        code sent as the JSON number 12345.0 must reach the detector as
+        "12345" — "12345.0" would be read as malformed (G4-ADDR-026), an issue
+        the workbook never raises for the same value."""
+        resp = await client.post(
+            "/issues/json",
+            json={
+                "records": [
+                    {
+                        "Customer": "R1",
+                        "Name 1": "Acme Corp",
+                        "Postal Code": 12345.0,
+                        "Country/Region Key": "US",
+                    }
+                ]
+            },
+        )
+        assert resp.status_code == 200
+        assert "G4-ADDR-026" not in resp.json()["results"][0]["issues"]
+
+    @pytest.mark.asyncio
+    async def test_issues_json_keeps_an_all_empty_record(self, client):
+        """The one intentional divergence from the file endpoint: a blank
+        spreadsheet row is a parsing artefact and is skipped, but an empty
+        JSON object was deliberately sent and the response is positional, so
+        it gets its own result rather than misaligning the caller's join."""
+        resp = await client.post(
+            "/issues/json",
+            json={"records": [{"Customer": "R1", "Name 1": "Acme Corp"}, {}]},
+        )
+        assert resp.status_code == 200
+        results = resp.json()["results"]
+        assert len(results) == 2
+        assert results[1]["record_id"] == ""
+
+    @pytest.mark.asyncio
+    async def test_issues_json_null_and_absent_and_blank_agree(self, client):
+        """null, "" and an omitted key are the same "blank cell" — but only
+        omitting it from *every* record removes the column."""
+        payload = [
+            {"Customer": "R1", "Name 1": "Acme Corp", "Postal Code": None},
+            {"Customer": "R2", "Name 1": "Acme Corp", "Postal Code": ""},
+            {"Customer": "R3", "Name 1": "Acme Corp"},
+        ]
+        resp = await client.post("/issues/json", json={"records": payload})
+        assert resp.status_code == 200
+        issues = [set(r["issues"]) for r in resp.json()["results"]]
+        assert issues[0] == issues[1] == issues[2]
+        assert "G2-VAL-002" in issues[0]  # the column is present across records
+
+    @pytest.mark.asyncio
+    async def test_issues_json_rejects_empty_records(self, client):
+        resp = await client.post("/issues/json", json={"records": []})
+        assert resp.status_code == 422
+
     # ── /issues/compare endpoint ────────────────────────────────────────
 
     @staticmethod

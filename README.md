@@ -2300,6 +2300,42 @@ The `Issues` column's **shape is unchanged** — one appended column of semicolo
 
 Run `python3 scripts/issue_catalogue_census.py` for the derived counts and the full per-code table.
 
+### POST /issues/json
+
+JSON twin of `POST /issues` — same detector, same suppression set, same column-awareness, no spreadsheet. Send one object per record carrying **all the columns of the file**, keyed by header; get back `record_id` and the issue codes for each, in request order.
+
+```bash
+curl -X POST http://localhost:8000/issues/json   -H "Content-Type: application/json"   -d '{
+    "records": [
+      {
+        "Customer": "R1",
+        "Name 1": "Univ of Florida",
+        "Name 2": "PO BOX 115350",
+        "Postal Code": "",
+        "Country/Region Key": "USA"
+      }
+    ]
+  }'
+```
+
+```json
+{"results": [{"record_id": "R1", "issues": ["G1-CROSS-001", "G2-VAL-002", "G4-ADDR-027", "G5-NAME-001"]}]}
+```
+
+Two things follow from detection being column-aware, and they are the difference between matching the file endpoint and not:
+
+- **A key you omit is a column the file does not have.** Detection runs over the union of keys across the request's records, exactly as it runs over a sheet's header row, so a payload that never mentions `Postal Code` is not reported as missing it. Send every column the row has.
+- **A key with an empty value is a present-but-blank cell** — that *is* reported (`G2-VAL-002`), matching an empty cell in the workbook. `null` is treated as blank in the same way.
+
+Unknown columns (the pass-through CRM/scoring ones, say) may be sent and are ignored, as they are on the file path. `record_id` is the record's `Customer` (falling back to `ECC Customer Number`), and is `""` when it carries neither — no field is mandatory. Codes in `_ISSUES_SUPPRESSED_CODES` are withheld here too, so the `issues` list is exactly what the file endpoint would write into its `Issues` column.
+
+Parity is verified by differential runs over both `testall100_CLEAN_INPUT.xlsx` (99 rows) and `PresentationTestData_enriched_checked_v1.xlsx` (500 rows, `Flag for Review` present): posting the same rows to `/issues` and to `/issues/json` yields identical codes on every row, across 26 distinct codes. Two things are worth knowing at the boundary, because JSON and a worksheet are not quite the same container:
+
+- **An all-empty record gets a result here; a blank sheet row is skipped there.** This is the one deliberate divergence. A blank row is a spreadsheet artefact, whereas an empty JSON object was deliberately sent, and the response is positional — one result per request record, in order — so dropping it would silently misalign the caller's join.
+- **A JSON object cannot carry a duplicated key, and real enriched workbooks do have duplicate headers** (`Name 1`, `Street 1`, `Comments` … appear twice once input and enriched columns coexist). Collapse duplicates the way `_parse_xlsx` does — **last non-empty value wins** — before building the record object, or the two endpoints will legitimately disagree.
+
+Numbers are accepted as well as strings, and an integral float is normalised (`12345.0` → `"12345"`) to match what openpyxl hands back for the same cell — without that, a postal code sent as a JSON float would be reported as malformed (`G4-ADDR-026`) when the workbook raises nothing.
+
 ### POST /issues/compare
 
 Takes two uploads (`original`, `enriched`), runs the issue detector over both, joins rows by record id, and returns an `.xlsx` issue-reduction report (summary + per-record + remaining-issues sheets).
@@ -2696,7 +2732,7 @@ Creates the shared FastAPI app instance with middleware attached. This single ap
 
 ### `api/routes.py` — Route Definitions
 
-Defines all endpoints: `/health`, `/tiers`, `/enrich`, `/enrich/file`, `/issues`, `/issues/compare`, the Phase 2 `/api/dedup/cluster-block` and `/api/dedup/file`, and the `/diag/llm` + `/diag/dedup-llm` diagnostics. The `/enrich` endpoint instantiates the Orchestrator and runs `enrich_batch()`; the dedup endpoint builds a `DedupLLM` (or its mock in mock mode) and runs `cluster_blocks()`, closing the client cleanly in a `finally` block.
+Defines all endpoints: `/health`, `/tiers`, `/enrich`, `/enrich/file`, `/issues`, `/issues/json`, `/issues/compare`, the Phase 2 `/api/dedup/cluster-block` and `/api/dedup/file`, and the `/diag/llm` + `/diag/dedup-llm` diagnostics. The `/enrich` endpoint instantiates the Orchestrator and runs `enrich_batch()`; the dedup endpoint builds a `DedupLLM` (or its mock in mock mode) and runs `cluster_blocks()`, closing the client cleanly in a `finally` block.
 
 ### `api/models.py` — Pydantic Schemas
 

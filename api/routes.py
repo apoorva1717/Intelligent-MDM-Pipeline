@@ -6,7 +6,7 @@ import io
 import logging
 import time
 from collections import Counter
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -19,6 +19,9 @@ from api.models import (
     EnrichmentResponse,
     EnrichmentResult,
     HealthResponse,
+    IssueDetectionRequest,
+    IssueDetectionResponse,
+    IssueDetectionResult,
     TierConfigResponse,
 )
 from api.output_columns import RESPONSE_COLUMNS
@@ -711,6 +714,78 @@ _ISSUES_SUPPRESSED_CODES: frozenset[str] = frozenset(
 )
 
 
+def _audit_rows(
+    headers: list[str], row_dicts: list[dict[str, str]]
+) -> tuple[list[EnrichmentRecord], list[list[str]]]:
+    """Validate a parsed sheet and detect the audit issue codes for each row.
+
+    The one detection path behind both ``/issues`` and ``/issues/json``: same
+    column-awareness, same ``Flag for Review`` handling, same suppression set,
+    so the two representations of the audit cannot drift apart. The validated
+    records come back with the codes because the JSON response keys on
+    ``record.record_id``.
+    """
+    records = _rows_to_records(row_dicts)
+    present = _present_fields(headers)
+    issues_per_row = [
+        [
+            code
+            for code in detect_issues(
+                record, present, flag_for_review=_flag_for_review(row, headers),
+            )
+            if code not in _ISSUES_SUPPRESSED_CODES
+        ]
+        for record, row in zip(records, row_dicts)
+    ]
+    return records, issues_per_row
+
+
+def _json_rows(
+    records: list[dict[str, Any]]
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Turn JSON record objects into the (headers, row dicts) shape the audit
+    helpers already speak.
+
+    Mirrors ``_parse_xlsx`` cell-for-cell: values are stringified and stripped,
+    and empty ones are dropped so a blank string and an absent key mean the
+    same thing they do in a workbook. The header list is the union of the keys
+    across all records, in first-seen order — the JSON equivalent of the sheet's
+    header row, which is what makes detection column-aware (a payload where no
+    record carries ``Postal Code`` is not reported as missing it).
+
+    An integral JSON float is rendered without its ``.0``: openpyxl hands back
+    a whole-numbered cell as an ``int``, so a postal code sent as ``12345.0``
+    has to reach the detector as ``"12345"`` and not as ``"12345.0"`` — which
+    would otherwise be read as a malformed postal code the workbook never saw.
+
+    Unlike ``_parse_xlsx`` this keeps an all-empty record instead of skipping
+    it. A blank spreadsheet row is a parsing artefact; an empty JSON object was
+    deliberately sent, and the response is positional — one result per request
+    record — so dropping it would silently misalign the caller's join.
+    """
+    headers: list[str] = []
+    seen: set[str] = set()
+    row_dicts: list[dict[str, str]] = []
+    for record in records:
+        row: dict[str, str] = {}
+        for key, value in record.items():
+            header = str(key).strip()
+            if not header:
+                continue
+            if header not in seen:
+                seen.add(header)
+                headers.append(header)
+            if value is None:
+                continue
+            if isinstance(value, float) and not isinstance(value, bool) and value.is_integer():
+                value = int(value)
+            text = str(value).strip()
+            if text:
+                row[header] = text
+        row_dicts.append(row)
+    return headers, row_dicts
+
+
 @router.post("/issues")
 async def detect_file_issues(
     file: UploadFile = File(..., description="XLSX file of customer master data records"),
@@ -736,18 +811,7 @@ async def detect_file_issues(
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
     headers, row_dicts = _parse_xlsx(contents)
-    records = _rows_to_records(row_dicts)
-    present = _present_fields(headers)
-    issues_per_row = [
-        [
-            code
-            for code in detect_issues(
-                record, present, flag_for_review=_flag_for_review(row, headers),
-            )
-            if code not in _ISSUES_SUPPRESSED_CODES
-        ]
-        for record, row in zip(records, row_dicts)
-    ]
+    records, issues_per_row = _audit_rows(headers, row_dicts)
 
     logger.info(
         "Issues file request received: %s, %d records, %d with issues",
@@ -766,6 +830,39 @@ async def detect_file_issues(
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ),
         headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
+    )
+
+
+@router.post("/issues/json", response_model=IssueDetectionResponse)
+async def detect_json_issues(request: IssueDetectionRequest) -> IssueDetectionResponse:
+    """JSON twin of ``POST /issues`` — audit records against the Issue Catalogue.
+
+    Takes the same content the file endpoint takes, as JSON: one object per
+    row carrying the file's columns keyed by header (``"Customer"``,
+    ``"Name 1"``, ``"Postal Code"`` …). Returns one ``{record_id, issues}``
+    entry per record, in request order, where ``issues`` holds the codes
+    detected for that record minus ``_ISSUES_SUPPRESSED_CODES`` — the same
+    list the file endpoint writes into its ``Issues`` column.
+
+    Detection is column-aware over the union of keys present across the
+    request's records, so send every column the row has (including empty
+    ones) to get the same verdict the workbook would produce. This is a pure
+    audit: no enrichment, LLM, or external call is made.
+    """
+    headers, row_dicts = _json_rows(request.records)
+    records, issues_per_row = _audit_rows(headers, row_dicts)
+
+    logger.info(
+        "Issues JSON request received: %d records, %d with issues",
+        len(records),
+        sum(1 for issues in issues_per_row if issues),
+    )
+
+    return IssueDetectionResponse(
+        results=[
+            IssueDetectionResult(record_id=record.record_id, issues=issues)
+            for record, issues in zip(records, issues_per_row)
+        ]
     )
 
 

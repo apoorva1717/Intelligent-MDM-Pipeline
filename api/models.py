@@ -859,3 +859,48 @@ class TierConfigResponse(BaseModel):
     default_max_concurrency: int
     serp_provider: str
     mock_mode: bool
+
+
+# ---------------------------------------------------------------------------
+# Issue-detection models (JSON twin of the /issues file endpoint)
+# ---------------------------------------------------------------------------
+
+class IssueDetectionRequest(BaseModel):
+    """Top-level POST /issues/json request body.
+
+    Each entry in ``records`` is one spreadsheet row expressed as an object:
+    every column of the file, keyed by its header (``"Customer"``,
+    ``"Name 1"``, ``"Postal Code"`` … and the aliases ``EnrichmentRecord``
+    accepts). Columns the model does not know — including the pass-through
+    CRM/scoring ones — may be sent and are ignored by detection, exactly as
+    the file endpoint ignores them.
+
+    Records are free-form objects rather than ``EnrichmentRecord`` because
+    detection is *column-aware*: which keys are present is itself an input
+    (a payload that never carries ``Postal Code`` must not be reported as
+    missing it), and a typed model cannot distinguish "absent" from "null".
+    """
+    records: List[Dict[str, Any]] = Field(
+        ...,
+        min_length=1,
+        description="One object per record; keys are the file's column headers.",
+    )
+
+
+class IssueDetectionResult(BaseModel):
+    """Issue codes detected for one record."""
+    record_id: str = Field(
+        description="The record's Customer / ECC Customer Number; empty when the record carries neither.",
+    )
+    issues: List[str] = Field(
+        default_factory=list,
+        description="Issue-Catalogue codes in catalogue order; empty when clean.",
+    )
+
+
+class IssueDetectionResponse(BaseModel):
+    """Top-level POST /issues/json response body.
+
+    One result per request record, in request order.
+    """
+    results: List[IssueDetectionResult]
