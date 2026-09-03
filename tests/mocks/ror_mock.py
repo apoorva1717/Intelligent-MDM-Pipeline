@@ -48,6 +48,14 @@ _MOCK_DATA: dict[str, dict[str, Any]] = {
         "country": "United States",
         "names": ["Ames Research Center", "NASA Ames Research Center"],
         "children": [],
+        # The containment ROR actually publishes for this record, and the
+        # reason the Name 2 write is allowed to stand: the centre names NASA
+        # as its parent, and NASA is the id this record resolved for Name 1.
+        # A unit whose registry record does NOT say this is the UNC/NCSU case.
+        "parents": [{
+            "name": "National Aeronautics and Space Administration",
+            "id": "https://ror.org/027ka1x80",
+        }],
     },
     "massachusetts institute of technology": {
         "score": 0.97,
@@ -328,6 +336,7 @@ class MockRORClient(RORClient):
             "domain": mock_data["domain"],
             "website": mock_data.get("website"),
             "children": mock_data.get("children", []),
+            "parents": mock_data.get("parents", []),
             "country": mock_data.get("country"),
             "query_used": name,
             "country_filter": country_code,

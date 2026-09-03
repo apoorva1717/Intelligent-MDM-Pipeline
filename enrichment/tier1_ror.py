@@ -757,7 +757,7 @@ def _country_ok(org: dict[str, Any], want_country_code: str | None) -> bool:
 
 
 def _extract_org_fields(org: dict[str, Any]) -> dict[str, Any]:
-    """Extract common fields (name, website, types, children, country) from an org dict."""
+    """Extract common fields (name, website, types, relationships, country) from an org dict."""
     org_names = org.get("names", [])
 
     display_name = None
@@ -803,6 +803,21 @@ def _extract_org_fields(org: dict[str, Any]) -> dict[str, Any]:
         {"name": r["label"], "id": r["id"]}
         for r in org.get("relationships", [])
         if r.get("type", "").lower() == "child"
+    ]
+
+    # The same relationship block, read the other way. A unit ROR publishes as
+    # its own record names the organisation(s) it belongs to, and that is the
+    # only statement in the response about WHOSE department this is: the
+    # affiliation and query endpoints both answer a bare department string
+    # ("Department of Biomedical Engineering") with whichever such record
+    # scores highest anywhere in the country, so the name alone cannot say.
+    # `_match_child_locally` already reads this graph from the parent's side;
+    # carrying the child's side too is what lets a dept-slot write check that
+    # the unit it matched belongs to the record it is being written onto.
+    parents = [
+        {"name": r["label"], "id": r["id"]}
+        for r in org.get("relationships", [])
+        if r.get("type", "").lower() == "parent"
     ]
 
     country = None
@@ -861,6 +876,7 @@ def _extract_org_fields(org: dict[str, Any]) -> dict[str, Any]:
         "domain": domain,
         "website": website,
         "children": children,
+        "parents": parents,
         "country": country,
         "country_code": _org_country_code(org),
         "org_names": org_names,

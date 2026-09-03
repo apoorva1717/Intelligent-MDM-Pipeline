@@ -456,3 +456,47 @@ a lane learns to write something new, and the log already knows.
   carrying the matched name forward from Tier 1 as a transient (`_registry_matched_name`),
   which is new plumbing through the registry lanes and wants its own gate. Row ids:
   13334925, 13338211.
+
+* **Sibling-aware anchor — Moores and Texas Heart Institute bracket the design.** A
+  registry match into a department slot now needs an anchor: the record's `ror_id` among
+  the matched unit's published parents, or — with no identifier to hang it on —
+  separator-fold exactness plus a location the registry does not contradict. Two rows sit
+  either side of what the parent graph can prove:
+
+  | row | matched unit | its parents | record | truth |
+  |---|---|---|---|---|
+  | **13348118** | Moores Cancer Center `01qkmtm61` | UC San Diego Health System `01kbfgm16` | UC San Diego `0168r3w48` | **true child, unprovable** |
+  | **13146053** | Texas Heart Institute `00r4vsg44` | *none* (`related` → Texas Medical Center) | Baylor College of Medicine `02pttbw34` | **false child, undisprovable** |
+
+  ROR publishes no edge between `01kbfgm16` and `0168r3w48` — the health system record
+  carries no parent at all, and UCSD lists its medical centre only as `related` — so
+  Moores dead-ends upward exactly as THI does. Both are fold-exact, both have agreeing
+  locations, both refuse. **Only real-world facts separate them, so no mechanical
+  relaxation that saves Moores excludes Texas Heart Institute.** Moores is the accepted
+  cost: it loses `ror:verified` and its unit identifier and ships `input:low`, with the
+  value itself unchanged.
+
+* **13364434 — the lab sits above the department.** The absorb fix restores
+  "Department of Biological Sciences", which the stale-incumbent drop had deleted, but it
+  lands in Name 3 under Name 2's "Greenberg Laboratory" rather than above it. Unit
+  ordering territory (`dept_block`'s rank step orders divisions above departments and does
+  not rank a lab against one); out of scope for the anchor/absorb package. Row id:
+  13364434.
+
+* **13213468 — "Department of Philosophy" is the record's own words, and the absorb was
+  deleting them.** Reported first as an LLM invention that the absorb fix had let escape
+  unflagged. It is not: the record supplies `Dept of  Philosophy` in **Name 4**, and the
+  shipped value is that string expanded — verdict `same`, correctly unflagged. The
+  misreading came from the absorb's own log line, whose `supplied` field names the input
+  of the slot being TESTED (Name 3's "Social Sciences") while `dropped` names the value
+  being deleted, which had been packed up from Name 4. Two different slots' words in one
+  event, and the log reads as though they were one. The row is a restore, in the same
+  class as 13364434, not an invention.
+
+  What this cost: a "doubt follows the value" change was built on the misreading — Tier 2
+  dept writes recording a verdict, verdicts travelling with values through
+  `dept_block.normalise`, and a missing-verdict fallback in the flag layer. It was
+  reverted. Worth noting for whoever revisits it: it moved **49 rows** on the four
+  workbooks and drove S1's frozen misses from 3 to 82, because refusing and re-attributing
+  dept slots changes the downstream query path enough to leave the warm cache. **It is not
+  gateable against this cache** and needs its own warming run. Row id: 13213468.

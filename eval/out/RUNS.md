@@ -21,7 +21,7 @@ here is relabelled or extrapolated to stand for the missing strata.
 | evidence cache |entries: 5365   keys-sha256[:12]: d801665da8fc |
 | cache path | `<scratch>/cache` (session-local; not `logs/cache`) |
 | mode | `--frozen` against the warm cache — 0 network calls on every run |
-| `pytest -q` | 5 failed / 3076 passed / 7 skipped (the five pre-existing failures) |
+| `pytest -q` | **8 failed / 3073 passed / 7 skipped** — see the correction below |
 
 ## Runs
 
@@ -201,7 +201,7 @@ precision/recall; precision/recall over the annotation vocabulary only; G6 kept 
 | working tree | clean at run time (`git status --porcelain` empty) |
 | evidence cache | entries 7134, keys-sha256[:12] `0d01989dd9c7` |
 | mode | `--frozen`, 0 network calls on every run |
-| `pytest -q` | 5 failed / 3250 passed / 7 skipped (the five pre-existing failures) |
+| `pytest -q` | **8 failed / 3247 passed / 7 skipped** — see the correction below |
 | supersedes | `f57782f` and `d3a3cfc`, both kept in place |
 
 > **The cache is not the one `f57782f` ran against** (5397 entries, `8d9caf4f8625` → 7134
@@ -345,3 +345,27 @@ the warmer cache resolves lanes that previously degraded.
 that are in no registry, which is what the stratum was constructed to contain. Its 0.836
 precision and 0.648 recall should be read against that, not against S1's 84-of-100 registry
 resolution.
+
+
+---
+
+# Correction — the `pytest -q` lines said five, the tree says eight
+
+Both `pytest -q` figures above originally read "5 failed / … (the five pre-existing
+failures)". Re-running the full suite at those exact SHAs gives **eight**, and the same
+eight at both:
+
+| | recorded | actual |
+|---|---|---|
+| `d3a3cfc` | 5 failed / 3076 passed | **8 failed / 3073 passed** |
+| `327ee53` | 5 failed / 3250 passed | **8 failed / 3247 passed** |
+
+**The totals were consistent; the split was not.** 5 + 3076 = 3081 = 8 + 3073, and
+5 + 3250 = 3255 = 8 + 3247. Same test set, same run, three tests recorded as passing that
+were already failing — so nothing about the sizes of those runs is in doubt, only the
+pass/fail division within them.
+
+The eight are the same eight at `f57782f`, `2125ad2`, `e31b53b`, `f292bfa`, `e396722`,
+`a17a2e0` and `96dd528` as well: no commit in the range introduced any of them. They are
+now pinned in `tests/KNOWN_FAILURES.md`, which every future gate asserts against as a SET
+rather than as a count.

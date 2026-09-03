@@ -13,6 +13,7 @@ relationships list using rapidfuzz, saving a second API call.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import os
@@ -1277,6 +1278,9 @@ _IDENTITY_REFUSALS: frozenset[str] = frozenset({
     # A registry match that disagreed with the record on BOTH its name and its
     # region — see `_refuse_region_contradicted_registry_match`.
     "registry_region_mismatch",
+    # A registry match written into a DEPARTMENT slot that nothing tied to the
+    # record — see `_dept_registry_match_anchored`.
+    "registry_unanchored",
 })
 
 #: Lane precedence. Refusal strength is COMPARISON strength, not source
@@ -2809,6 +2813,24 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # Checked against the SUPPLIED value, and only once the slot above has
     # absorbed it: while Name 2 still reads "Department of Materials Science
     # and", its Name 3 "Engineering" is a genuine continuation and is kept.
+    #
+    # …and only while the slot still HOLDS what the record supplied. This is
+    # the stale-incumbent family — the same defect the Foote package fixed by
+    # making comparisons run against what the slot holds rather than what it
+    # once held, and the same guard the Name 1 echo pass below already
+    # carries. The test absorbs `_supplied`; the drop deletes `_val`; where
+    # those are different values the rule has cleared something it never
+    # compared. 13364434 is the worked example: UC 0 merged Name 1 and Name 2
+    # and preprocessing moved the department into Name 3, so the slot's
+    # supplied text is "Greenberg Lab" — absorbed by Name 2's "Greenberg
+    # Laboratory" — while the slot itself holds "Department of Biological
+    # Sciences", a real department that the absorb then deleted.
+    #
+    # So the drop needs one of two things to be true: what the slot HOLDS is
+    # itself accounted for by the slot above (the duplicate case, and the
+    # honest reading of "this slot adds nothing"), or the slot still holds the
+    # supplied value and THAT was absorbed (the continuation case the rule was
+    # written for).
     for _i, _f in enumerate(DEPT_ENRICHED_FIELDS):
         if _i == 0:
             continue
@@ -2817,13 +2839,18 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
         _supplied = _slot_input_value(result, _f.replace("_enriched", ""))
         if not (_above and _val and _supplied):
             continue
-        if introduces_nothing_new(str(_above), str(_supplied)):
+        _still_supplied = is_pure_repair(str(_supplied), str(_val))
+        if introduces_nothing_new(str(_above), str(_val)) or (
+            _still_supplied
+            and introduces_nothing_new(str(_above), str(_supplied))
+        ):
             logger.info({
                 "record_id": result.get("record_id"),
                 "step": f"{_f}_continuation_absorbed",
                 "supplied": _supplied,
                 "absorbed_by": _above,
                 "dropped": _val,
+                "still_holds_supplied": _still_supplied,
             })
             result.transform(
                 _f, None, rule_id="dept-slot-continuation:absorbed",
@@ -2962,6 +2989,7 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
                 _slot_origin_map[_slot] = _settled_origins[_i]
             else:
                 _slot_origin_map.pop(_slot, None)
+
 
     for f in (*NAME_SLOTS, "care_of", "contact",
               "email", "street1", "street2", "street3", "street4", "street5"):
@@ -3605,6 +3633,129 @@ def _match_child_locally(
     if best and best_score >= _CHILD_MATCH_THRESHOLD:
         return {**best, "score": best_score}
     return None
+
+
+#: A registry match into a DEPT slot that nothing tied to this record.
+REASON_REGISTRY_UNANCHORED = "registry_unanchored"
+
+#: Verdicts from the registry clients' own locality comparator that count as
+#: the registry contradicting the record about where the unit is.
+_CONTRADICTED_LOCATION: frozenset[str] = frozenset({"contradicted"})
+
+
+def _dept_registry_match_anchored(
+    result: Any,
+    slot: str,
+    proposal: Any,
+) -> tuple[bool, str | None]:
+    """May this registry match be written into department slot *slot*?
+
+    Name 1 is identified by the record's own name. A department is not: the
+    lane hands the registry a bare unit string ("Department of Biomedical
+    Engineering"), and both ROR endpoints answer it with whichever unit of
+    that name scores highest ANYWHERE — so the answer says what the unit is
+    called and nothing about whose it is. `_re_verify` asks only that the
+    country agrees and that the identifier differs from Name 1's, and both are
+    true of every department in the country. 13342181 supplied "Dept of
+    Biomedical Engineering" in Miami and shipped UNC/NCSU's Raleigh department
+    at `ror:verified`, with `bme.unc.edu` in Department Domain, onto a Florida
+    International University record.
+
+    So the match needs an anchor, and there are exactly two:
+
+    (a) The record HAS a resolved `ror_id` and the matched unit publishes it
+        as a parent. This is the same relationship block `_match_child_locally`
+        reads from the parent's side, asked from the child's — it is ROR
+        stating the containment, not the pipeline inferring it.
+
+    (b) The record has NO registry identifier to hang the unit on (or the
+        match came from a registry with no parent graph). Then the only thing
+        that can identify the unit is the record's own words, so the
+        `e396722` two-disagreement rule applies here as it does to Name 1: a
+        match that is neither separator-fold exact against what the record
+        states NOR registered where the record is has disagreed twice and does
+        not write. The location half is the registry client's own
+        `location_verdict`, computed on every match today and consulted by
+        nothing.
+
+    Returns ``(True, None)`` to allow, or ``(False, reason)``. The reason is
+    an `_IDENTITY_REFUSALS` member so the refused match reaches the steward
+    through `Suggested Name` rather than being discarded.
+    """
+    res = getattr(proposal, "registry_response", None) or {}
+    registry = str(getattr(proposal, "registry", "") or "").upper()
+    record_ror = str(result.get("ror_id") or "").strip()
+    matched = str(getattr(proposal, "value", "") or "").strip()
+
+    # ── (a) the registry states the containment ──────────────────────────
+    if record_ror and registry == "ROR":
+        parent_ids = {
+            str(p.get("id") or "").strip()
+            for p in (res.get("parents") or [])
+        }
+        if record_ror in parent_ids:
+            return True, None
+        logger.info({
+            "record_id": result.get("record_id"),
+            "step": "dept_registry_match_unanchored",
+            "field": slot,
+            "registry": registry,
+            "matched": matched,
+            "matched_id": getattr(proposal, "registry_id", None),
+            "matched_parents": sorted(parent_ids) or None,
+            "record_ror_id": record_ror,
+        })
+        return False, REASON_REGISTRY_UNANCHORED
+
+    # ── (b) no identifier to anchor to: the two-disagreement rule ────────
+    #
+    # Compared against BOTH what the record supplied for the slot and what the
+    # slot holds going in: either being the registry's own name is the record
+    # stating it, which is the exactness arm the rule allows.
+    supplied = _slot_input_value(result, slot)
+    incumbent = _comparison_incumbent(result, slot)
+    fold_exact = any(
+        separator_fold_exact(candidate, matched)
+        for candidate in (supplied, incumbent)
+        if candidate and str(candidate).strip()
+    )
+    contradicted = str(res.get("location_verdict") or "") in _CONTRADICTED_LOCATION
+    if fold_exact or not contradicted:
+        return True, None
+    logger.info({
+        "record_id": result.get("record_id"),
+        "step": "dept_registry_match_region_contradicted",
+        "field": slot,
+        "registry": registry,
+        "matched": matched,
+        "matched_id": getattr(proposal, "registry_id", None),
+        "supplied": supplied,
+        "location_detail": res.get("location_detail"),
+        "location_scope": res.get("location_scope"),
+    })
+    return False, REASON_REGISTRY_REGION_MISMATCH
+
+
+def _refuse_dept_registry_match(
+    result: Any, slot: str, proposal: Any, reason: str,
+) -> None:
+    """Record a refused department match without emptying the slot.
+
+    The refusal is about the CANDIDATE, not the column: the value the slot
+    already holds — Tier 2's expansion of what the record supplied — is the
+    record's own answer and stands untouched. The registry's name goes to
+    `Suggested Name` so the steward is handed what was refused, and the
+    identifier and its Department Domain go with it, because they name the
+    same wrong unit.
+    """
+    _note_suggestion(
+        result, field=slot, value=getattr(proposal, "value", None),
+        lane=str(getattr(proposal, "registry", "") or "ror").lower(),
+        reason=reason,
+    )
+    result.setdefault("_ev_name_suggestion", {})[slot] = getattr(
+        proposal, "value", None,
+    )
 
 
 # ── Tier result application helpers ───────────────────────────────────────────
@@ -5212,6 +5363,39 @@ class Orchestrator:
                 ),
             )
 
+            if (
+                proposal.from_registry
+                and proposal.registry_response
+                and field != "name1"
+            ):
+                # Same anchor test as the dept fall-through: a unit matched by
+                # its bare name is not this record's unit until something says
+                # so. Name 1 is untouched — it is identified by the record's
+                # own name and has its own rules.
+                _ok, _why = _dept_registry_match_anchored(result, field, proposal)
+                if not _ok:
+                    _refuse_dept_registry_match(result, field, proposal, _why)
+                    # The slot still holds the value written just above — the
+                    # MODEL's proposal, which is the record's own words
+                    # canonicalised. It counts as written, by the lane that
+                    # actually wrote it: carrying the registry origin here
+                    # would describe the record as `ROR` / `high` / `enriched`
+                    # on the strength of a match that was refused.
+                    wrote.append(
+                        dataclasses.replace(
+                            proposal,
+                            value=proposal.proposed,
+                            origin=(
+                                ORIGIN_SERP if proposal.evidence_index is not None
+                                else ORIGIN_LLM
+                            ),
+                            registry=None,
+                            registry_id=None,
+                            registry_response=None,
+                        ),
+                    )
+                    continue
+
             if proposal.from_registry and proposal.registry_response:
                 res = proposal.registry_response
                 _write_registry_name(
@@ -6667,6 +6851,14 @@ class Orchestrator:
                 continue
 
             if proposal.from_registry:
+                _ok, _why = _dept_registry_match_anchored(result, slot, proposal)
+                if not _ok:
+                    # The slot keeps what it holds — Tier 2's expansion of the
+                    # record's own words — and the match travels as a
+                    # suggestion. Department Domain is NOT taken: it names the
+                    # unit that was just refused.
+                    _refuse_dept_registry_match(result, slot, proposal, _why)
+                    continue
                 _write_registry_name(
                     result, slot, proposal.value,
                     registry=proposal.registry or "ROR",
