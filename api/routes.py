@@ -1068,6 +1068,19 @@ _DEDUP_HEADER_ALIASES: dict[str, str] = {
     "leiid": "lei_id",
     "lei": "lei_id",
     "enrichedname": "enriched_name",
+    # v2 (C.4). Six columns /enrich/file writes that adjudication never saw.
+    # The first three are alternate names and the institution/company verdict —
+    # the signals the slot classifier and the acronym/cross-slot candidate
+    # rules read. The two provenance columns let an id conflict say WHY it is
+    # a conflict rather than only that it is one. "Building" is bound as a
+    # hint: it is shown to the model and kept out of blocking and the
+    # signature key, because a building is not an entity.
+    "operatingname": "operating_name",
+    "suggestedname": "suggested_name",
+    "recordtype": "record_type",
+    "roridprovenance": "ror_id_provenance",
+    "leiidprovenance": "lei_id_provenance",
+    "building": "building",
 }
 
 

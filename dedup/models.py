@@ -50,6 +50,25 @@ class DedupRow(BaseModel):
     ror_id: Optional[str] = Field(default=None, description="ROR id from Phase 1, if resolved (institution hint).")
     lei_id: Optional[str] = Field(default=None, description="GLEIF LEI from Phase 1, if resolved (company legal-entity hint).")
     enriched_name: Optional[str] = Field(default=None, description="Phase 1 official name, if resolved.")
+    # Phase 1 columns the file route used to drop on the floor (v2, C.4). All
+    # optional with a None default, so every existing construction — the JSON
+    # route, the tests, the ADF payload — is unchanged by their arrival.
+    operating_name: Optional[str] = Field(
+        default=None, description="Trading / operating name from Phase 1, if any.")
+    suggested_name: Optional[str] = Field(
+        default=None, description="Phase 1's suggested canonical name, if any.")
+    record_type: Optional[str] = Field(
+        default=None, description="research_institution | company | unknown.")
+    ror_id_provenance: Optional[str] = Field(
+        default=None, description="How the ROR id was reached (ror:verified, llm:provisional, …).")
+    lei_id_provenance: Optional[str] = Field(
+        default=None, description="How the LEI was reached.")
+    # Building is a HINT and nothing else: it is shown to the model and never
+    # reaches blocking or the signature key. Two records in one building are
+    # not thereby one entity, and two in different buildings at one street
+    # address are not thereby two — the delivery point is the address.
+    building: Optional[str] = Field(
+        default=None, description="Building, passed to the model as a hint only.")
 
 
 class DedupRequest(BaseModel):

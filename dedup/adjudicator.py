@@ -22,14 +22,17 @@ from typing import Any, List, Optional
 from dedup.llm import DedupLLM, parse_json_object
 from dedup.models import DedupResponse, DedupResultRow, DedupRow, DedupSummary
 from dedup.prompts import (
-    PROMPT_VERSION,
-    SYSTEM_PROMPT,
     build_mode_a_user_prompt,
+    build_mode_a_user_prompt_v2,
     build_mode_b_user_prompt,
+    build_mode_b_user_prompt_v2,
+    prompt_version,
+    system_prompt,
 )
 from dedup.candidates import CandidateUnit, generate_candidate_pairs
+from dedup.flags import v2_blocking, v2_name2
 from dedup.cluster_key import cluster_hash
-from dedup.signatures import Signature, build_signatures, group_rows_by_block
+from dedup.signatures import Signature, build_blocks, build_signatures
 
 logger = logging.getLogger(__name__)
 
@@ -249,6 +252,65 @@ _NONMERGE_MARKERS = (
 )
 
 
+def _enforce_address_split(
+    entities: List[Entity], addresses: dict, next_index: int
+) -> tuple[List[Entity], int]:
+    """Deterministic guard: an entity may not span incompatible delivery points.
+
+    The city key (``country|city|house``) deliberately unions two blocks whose
+    zips disagree, so that one transposed digit does not split a door. That
+    widening has to be paid for somewhere: without this guard it would also let
+    the model merge two genuinely different doors that happen to share a house
+    number in one city. Here the pair is separated again and both sides routed
+    to review — never silently kept together, and never silently dropped.
+
+    Splits off the members incompatible with the entity's FIRST signature, so
+    the outcome does not depend on which member the LLM happened to name first.
+    """
+    from dedup.address import address_compatible
+
+    def rows_of(sig: Signature) -> List[Any]:
+        return [addresses[r] for r in sig.row_ids if r in addresses]
+
+    result: List[Entity] = []
+    for ent in entities:
+        if len(ent.signatures) < 2:
+            result.append(ent)
+            continue
+        anchor = rows_of(ent.signatures[0])
+        kept: List[Signature] = [ent.signatures[0]]
+        split: List[Signature] = []
+        for sig in ent.signatures[1:]:
+            others = rows_of(sig)
+            incompatible = bool(anchor) and bool(others) and all(
+                address_compatible(a, b) == "incompatible"
+                for a in anchor
+                for b in others
+            )
+            (split if incompatible else kept).append(sig)
+        if not split:
+            result.append(ent)
+            continue
+        logger.warning(
+            "Dedup: entity %s spans incompatible delivery points; splitting "
+            "%d signature(s) to manual_review", ent.entity_id, len(split),
+        )
+        ent.signatures = kept
+        result.append(ent)
+        for sig in split:
+            sig.uncertain = True
+            sig.merge_reasoning = (
+                "Split: the delivery points are incompatible (different house "
+                "number, or postcodes more than one edit apart); routed to "
+                "manual review."
+            )
+            result.append(Entity(
+                entity_id=f"e{next_index}", signatures=[sig], adjudicated=True,
+            ))
+            next_index += 1
+    return result, next_index
+
+
 def _reasoning_disowns_membership(entities: List[Entity]) -> bool:
     """True when a MERGED entity (>=2 signatures) carries reasoning that
     explicitly asserts a non-merge — a self-contradicting verdict. The INVARIANT
@@ -298,20 +360,15 @@ async def _mode_a(
             continue
 
         by_id = {s.signature_id: s for s in bucket}
-        payload = [
-            {
-                "signature_id": s.signature_id,
-                "name1": s.name1,
-                "name2": s.name2,
-                "ror_id": s.ror_id or "none",
-                "lei_id": s.lei_id or "none",
-            }
-            for s in bucket
-        ]
-        user_prompt = build_mode_a_user_prompt(payload)
+        anchor = signatures[0] if signatures else None
+        payload = [_signature_payload(s, anchor) for s in bucket]
+        user_prompt = (
+            build_mode_a_user_prompt_v2(payload) if v2_name2()
+            else build_mode_a_user_prompt(payload)
+        )
 
         async with semaphore:
-            call = await llm.adjudicate(SYSTEM_PROMPT, user_prompt)
+            call = await llm.adjudicate(system_prompt(), user_prompt)
         stats.llm_calls += 1
         _record_call_stats(stats, call)
 
@@ -427,29 +484,27 @@ async def _mode_b(
             next_index += 1
             continue
 
-        candidate = {
-            "signature_id": sig.signature_id,
-            "name1": sig.name1,
-            "name2": sig.name2,
-            "ror_id": sig.ror_id or "none",
-            "lei_id": sig.lei_id or "none",
-        }
+        anchor = signatures[0]
+        candidate = _signature_payload(sig, anchor)
         canonical_payload = [
             {
                 "entity_id": e.entity_id,
                 "institution": e.institution or e.signatures[0].name1,
                 "department": e.department or e.signatures[0].name2,
-                "name1": e.signatures[0].name1,
-                "name2": e.signatures[0].name2,
+                **{k: v for k, v in _signature_payload(e.signatures[0], anchor).items()
+                   if k != "signature_id"},
                 "ror_id": next((s.ror_id for s in e.signatures if s.ror_id), "none"),
                 "lei_id": next((s.lei_id for s in e.signatures if s.lei_id), "none"),
             }
             for e in compatible
         ]
-        user_prompt = build_mode_b_user_prompt(candidate, canonical_payload)
+        user_prompt = (
+            build_mode_b_user_prompt_v2(candidate, canonical_payload) if v2_name2()
+            else build_mode_b_user_prompt(candidate, canonical_payload)
+        )
 
         async with semaphore:
-            call = await llm.adjudicate(SYSTEM_PROMPT, user_prompt, max_tokens=1000)
+            call = await llm.adjudicate(system_prompt(), user_prompt, max_tokens=1000)
         stats.llm_calls += 1
         _record_call_stats(stats, call)
 
@@ -539,18 +594,83 @@ def _entity_unit(index: int, ent: Entity) -> CandidateUnit:
         lei_id=next((s.lei_id for s in ent.signatures if s.lei_id), None),
         has_name2=ent.has_name2,
         adjudicated=ent.adjudicated,
+        row_ids=tuple(ent.row_ids),
+        aliases=tuple(
+            alias for sig in ent.signatures for alias in sig.aliases
+        ),
+        operating_name=next(
+            (s.operating_name for s in ent.signatures if s.operating_name), None),
+        suggested_name=next(
+            (s.suggested_name for s in ent.signatures if s.suggested_name), None),
     )
 
 
-def _entity_prompt_fields(ent: Entity) -> dict:
-    sig = ent.signatures[0]
+def _address_gate(addresses: dict) -> Any:
+    """A residue eligibility gate over parsed delivery points, or None.
+
+    ``None`` when the flag is off, so ``generate_candidate_pairs`` takes the v1
+    path untouched rather than one that merely happens to answer the same.
+    """
+    from dedup.address import any_compatible
+
+    def gate(x: CandidateUnit, y: CandidateUnit) -> bool:
+        return any_compatible(
+            [addresses[r] for r in x.row_ids if r in addresses],
+            [addresses[r] for r in y.row_ids if r in addresses],
+        )
+
+    return gate
+
+
+def _signature_payload(sig: Signature, anchor: Optional[Signature] = None) -> dict:
+    """What one record looks like to the model.
+
+    v1's five fields, or v2's twelve. The extra seven are not decoration: five
+    of them are columns the file route used to drop before adjudication ever
+    saw them (C.4), ``aliases`` carries the trading name or opaque code the
+    slot classifier lifted out of the department, and ``street_match`` reports
+    the one part of the address that blocking did NOT already settle.
+
+    ``street_match`` is stated relative to *anchor* — the block's first
+    signature — so every record in one prompt is described against the same
+    reference rather than against whichever neighbour came before it.
+    """
+    if not v2_name2():
+        return {
+            "signature_id": sig.signature_id,
+            "name1": sig.name1,
+            "name2": sig.name2,
+            "ror_id": sig.ror_id or "none",
+            "lei_id": sig.lei_id or "none",
+        }
+
+    label = "unknown"
+    if anchor is not None and sig.address is not None and anchor.address is not None:
+        from dedup.address import street_match
+
+        label = street_match(sig.address, anchor.address)
+
     return {
         "signature_id": sig.signature_id,
-        "name1": sig.name1,
-        "name2": sig.name2,
-        "ror_id": next((s.ror_id for s in ent.signatures if s.ror_id), "none"),
-        "lei_id": next((s.lei_id for s in ent.signatures if s.lei_id), "none"),
+        "institution": sig.institution or sig.name1,
+        "department": sig.department,
+        "aliases": list(sig.aliases),
+        "operating_name": sig.operating_name or "none",
+        "suggested_name": sig.suggested_name or "none",
+        "record_type": sig.record_type or "unknown",
+        "ror_id": sig.ror_id or "none",
+        "lei_id": sig.lei_id or "none",
+        "street_match": label,
+        "hints": list(sig.hints),
     }
+
+
+def _entity_prompt_fields(ent: Entity, anchor: Optional[Signature] = None) -> dict:
+    sig = ent.signatures[0]
+    payload = _signature_payload(sig, anchor)
+    payload["ror_id"] = next((s.ror_id for s in ent.signatures if s.ror_id), "none")
+    payload["lei_id"] = next((s.lei_id for s in ent.signatures if s.lei_id), "none")
+    return payload
 
 
 async def _adjudicate_residue(
@@ -560,6 +680,8 @@ async def _adjudicate_residue(
     semaphore: asyncio.Semaphore,
     stats: BlockStats,
     cfg: _CandidateConfig,
+    address_gate: Any = None,
+    extra_rules: bool = False,
 ) -> List[Entity]:
     """Nominate residue pairs (ID / name / token) the bucketed pass never
     compared, adjudicate each via a pairwise LLM call, and apply the verdicts.
@@ -577,6 +699,8 @@ async def _adjudicate_residue(
         units,
         name_threshold=cfg.name_threshold,
         token_threshold=cfg.token_threshold,
+        address_gate=address_gate,
+        extra_rules=extra_rules,
     )
     stats.candidates_generated += len(candidates)
     for c in candidates:
@@ -624,23 +748,27 @@ async def _adjudicate_residue(
         if find(c.a) == find(c.b):
             continue  # already merged transitively — don't re-ask
         canon_ent, cand_ent = entities[c.a], entities[c.b]
-        user_prompt = build_mode_b_user_prompt(
-            _entity_prompt_fields(cand_ent),
-            [{
-                "entity_id": canon_ent.entity_id,
-                "institution": canon_ent.institution or canon_ent.signatures[0].name1,
-                "department": canon_ent.department or canon_ent.signatures[0].name2,
-                **{k: v for k, v in _entity_prompt_fields(canon_ent).items()
-                   if k != "signature_id"},
-            }],
-        )
+        anchor = entities[0].signatures[0] if entities[0].signatures else None
+        canonical = {
+            "entity_id": canon_ent.entity_id,
+            "institution": canon_ent.institution or canon_ent.signatures[0].name1,
+            "department": canon_ent.department or canon_ent.signatures[0].name2,
+            **{k: v for k, v in _entity_prompt_fields(canon_ent, anchor).items()
+               if k != "signature_id"},
+        }
+        build = build_mode_b_user_prompt_v2 if v2_name2() else build_mode_b_user_prompt
+        user_prompt = build(_entity_prompt_fields(cand_ent, anchor), [canonical])
         async with semaphore:
-            call = await llm.adjudicate(SYSTEM_PROMPT, user_prompt, max_tokens=1000)
+            call = await llm.adjudicate(system_prompt(), user_prompt, max_tokens=1000)
         stats.llm_calls += 1
         _record_call_stats(stats, call)
 
         canon_name = canon_ent.signatures[0].name1
         cand_name = cand_ent.signatures[0].name1
+        # Which rule put this pair in front of the model. Recorded in the
+        # Reasoning so a reviewer can tell an id convergence from a guess at an
+        # acronym — the two deserve very different amounts of trust.
+        rule = f" [{c.rule}]" if v2_name2() else ""
         canon_ent.adjudicated = True
         cand_ent.adjudicated = True
 
@@ -660,15 +788,15 @@ async def _adjudicate_residue(
         tail = f" ({reasoning})" if reasoning else ""
 
         if decision == "match":
-            note = f"adjudicated vs {canon_name}: merged{tail}"
+            note = f"adjudicated vs {canon_name}{rule}: merged{tail}"
             for s in cand_ent.signatures:
                 s.merge_reasoning = note
                 s.merge_confidence = confidence
             union(c.a, c.b)
             _log_llm_call("R", stats, call, {"match": 1})
         elif decision in ("new", "distinct"):
-            distinct_note[c.b] = f"adjudicated vs {canon_name}: distinct{tail}"
-            distinct_note[c.a] = f"adjudicated vs {cand_name}: distinct{tail}"
+            distinct_note[c.b] = f"adjudicated vs {canon_name}{rule}: distinct{tail}"
+            distinct_note[c.a] = f"adjudicated vs {cand_name}{rule}: distinct{tail}"
             stats.rejected_with_reasoning += 1
             _log_llm_call("R", stats, call, {"distinct": 1})
         else:
@@ -718,18 +846,29 @@ async def _adjudicate_residue(
 # STEP C — emit clusters, fan out to rows
 # ---------------------------------------------------------------------------
 
+#: Why a cluster built out of address-less rows is not asserted outright.
+UNVERIFIED_DELIVERY_POINT = "unverified delivery point"
+
+
 def _emit_rows(
     block_id: str,
     entities: List[Entity],
     model: str,
     model_version: str,
     stats: BlockStats,
+    unverified_block: bool = False,
 ) -> List[DedupResultRow]:
     """Build one output row per input row.
 
     Each cluster's id is a content hash of its member row_ids (see
     ``cluster_hash``) — already globally unique and stable, so no post-hoc
     renumbering is needed.
+
+    ``unverified_block`` (v2) marks a block whose rows named no usable house
+    number. Such rows may still be duplicates of each other, and the cluster
+    id says so, but nothing established the delivery point they share — so the
+    cluster is routed to review rather than asserted. A singleton is left
+    alone: there is no claim in it to qualify.
     """
     out: List[DedupResultRow] = []
 
@@ -744,8 +883,13 @@ def _emit_rows(
 
         for sig in ent.signatures:
             for rid in sig.row_ids:
+                demoted = False
                 if sig.uncertain:
                     routing = "manual_review"
+                    stats.rows_manual_review += 1
+                elif cluster_id is not None and unverified_block:
+                    routing = "manual_review"
+                    demoted = True
                     stats.rows_manual_review += 1
                 elif cluster_id is not None:
                     routing = "cluster"
@@ -780,6 +924,13 @@ def _emit_rows(
                 else:
                     confidence = None
 
+                if demoted:
+                    reasoning = (
+                        f"{UNVERIFIED_DELIVERY_POINT}: {reasoning}"
+                        if reasoning
+                        else UNVERIFIED_DELIVERY_POINT
+                    )
+
                 out.append(DedupResultRow(
                     row_id=rid,
                     block_id=block_id,
@@ -791,7 +942,7 @@ def _emit_rows(
                     reasoning=reasoning,
                     model=model,
                     model_version=model_version,
-                    prompt_version=PROMPT_VERSION,
+                    prompt_version=prompt_version(),
                 ))
     return out
 
@@ -819,7 +970,7 @@ def _log_llm_call(mode: str, stats: BlockStats, call: Any, decisions: dict) -> N
             "completion_tokens": call.completion_tokens,
             "decisions": decisions,
             "model_version": call.model_version,
-            "prompt_version": PROMPT_VERSION,
+            "prompt_version": prompt_version(),
         },
     )
 
@@ -835,8 +986,19 @@ async def _process_block(
     threshold: int,
     semaphore: asyncio.Semaphore,
     cfg: _CandidateConfig,
+    unverified_block: bool = False,
 ) -> tuple[List[DedupResultRow], BlockStats]:
     stats = BlockStats(block_id=block_id, rows_in=len(rows))
+
+    # Parsed once per block and passed down: the residue gate and the address
+    # guard must read the same delivery points, and re-parsing in each would
+    # be two places for them to drift apart.
+    if v2_blocking():
+        from dedup.address import parse_address
+        addresses = {row.row_id: parse_address(row) for row in rows}
+        address_gate = _address_gate(addresses)
+    else:
+        addresses, address_gate = {}, None
 
     signatures = build_signatures(rows)
     stats.distinct_signatures = len(signatures)
@@ -857,8 +1019,19 @@ async def _process_block(
     # compared (cross-Name2-boundary, lone-bucket). Runs BEFORE the identity
     # guard so a bad name/token merge across conflicting ROR/LEI is still split.
     entities = await _adjudicate_residue(
-        block_id, entities, llm, semaphore, stats, cfg
+        block_id, entities, llm, semaphore, stats, cfg, address_gate,
+        # The acronym and cross-slot rules are for blocks the bucketed pass
+        # cannot cover in one call — the same size test that selects Mode B.
+        extra_rules=v2_name2() and n > threshold,
     )
+
+    # 0) A merge across incompatible delivery points is split back apart. Runs
+    #    before the identity guard for the same reason the residue pass does:
+    #    the later guards should see the address-corrected grouping.
+    if v2_blocking():
+        entities, _ = _enforce_address_split(
+            entities, addresses, _next_entity_index(entities)
+        )
 
     # Deterministic verdict guards, applied uniformly to both modes' output.
     # 1) A merge across different non-empty ROR/LEI ids is split to
@@ -878,6 +1051,7 @@ async def _process_block(
 
     out = _emit_rows(
         block_id, entities, llm.model, stats.model_version or llm.model, stats,
+        unverified_block=unverified_block,
     )
 
     logger.info(
@@ -952,12 +1126,15 @@ async def cluster_blocks(
     semaphore = asyncio.Semaphore(max(1, concurrency))
     cfg = _resolve_candidate_config(settings)
 
-    blocks = group_rows_by_block(rows)
+    blocks = build_blocks(rows)
 
     block_outputs = await asyncio.gather(
         *[
-            _process_block(block_id, block_rows, llm, threshold, semaphore, cfg)
-            for block_id, block_rows in blocks.items()
+            _process_block(
+                block.block_id, block.rows, llm, threshold, semaphore, cfg,
+                unverified_block=block.unverified,
+            )
+            for block in blocks.values()
         ]
     )
 
@@ -1001,7 +1178,7 @@ async def cluster_blocks(
             "total_completion_tokens": total_completion_tokens,
             "total_tokens": total_prompt_tokens + total_completion_tokens,
             "total_latency_ms": total_latency_ms,
-            "prompt_version": PROMPT_VERSION,
+            "prompt_version": prompt_version(),
             # Residue candidate telemetry (measures this change's volume effect).
             "candidates_generated": candidates_generated,
             "candidates_by_rule": dict(candidates_by_rule),
