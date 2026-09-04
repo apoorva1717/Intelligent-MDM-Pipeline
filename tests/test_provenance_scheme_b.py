@@ -393,9 +393,9 @@ class TestOneFixturePerState:
         )
 
     def test_input_low_when_nothing_came_back(self):
-        """`input:1:rule` → `input:low`. This string IS the retired
-        `low-confidence-unchanged` flag code — see
-        :class:`TestTheRetiredCodeIsExactlyThisString`."""
+        """`input:1:rule` → `input:low`. This string IS what the
+        `low-confidence-unchanged` flag code is derived from — see
+        :class:`TestTheDerivedCode`."""
         record = _record()
         record.write(
             "name1_enriched", "Aixelo",
@@ -654,19 +654,28 @@ class TestBehaviourInvariance:
             validate_all(row.get(column) for column in PROVENANCE_COLUMNS)
 
 
-class TestTheRetiredCode:
-    """`low-confidence-unchanged` is gone from the vocabulary and its meaning
-    is not."""
+class TestTheDerivedCode:
+    """`low-confidence-unchanged` is emitted by nobody and derived by one
+    place."""
 
-    def test_it_can_never_appear_in_flag_codes_again(self):
-        from enrichment.flags import ALL_CODES, LOW_CONFIDENCE_UNCHANGED
+    def test_it_is_in_the_vocabulary_but_cannot_be_raised(self):
+        """Both halves matter. It is a code again, so a consumer counting
+        codes can see the doubt; and no tier can put it there, so the token
+        and the provenance cannot drift apart the way they once did."""
+        import pytest
+        from enrichment.flags import (
+            ALL_CODES, LOW_CONFIDENCE_UNCHANGED, render,
+        )
 
-        assert LOW_CONFIDENCE_UNCHANGED not in ALL_CODES
+        assert LOW_CONFIDENCE_UNCHANGED in ALL_CODES
+        with pytest.raises(ValueError):
+            render({LOW_CONFIDENCE_UNCHANGED: {"name1"}})
 
-    def test_its_prose_survives_for_the_derived_flag(self):
+    def test_its_prose_and_position_are_what_they_were(self):
         """"Review UX is unchanged" is a testable claim, not a hope: the
-        clause a reviewer reads is still rendered, from the same template, in
-        the same position in a multi-part reason."""
+        clause a reviewer reads is rendered from the same template, in the
+        same position in a multi-part reason, whether or not the token ships
+        beside it."""
         from enrichment.flags import (
             LOW_CONFIDENCE_UNCHANGED, _CODE_ORDER, _REASONS, render,
         )
@@ -674,7 +683,7 @@ class TestTheRetiredCode:
         assert LOW_CONFIDENCE_UNCHANGED in _CODE_ORDER
         rendered = render({}, low_confidence=["name1"])
         assert rendered["flag_for_review"] is True
-        assert rendered["flag_codes"] == []
+        assert rendered["flag_codes"] == [LOW_CONFIDENCE_UNCHANGED]
         assert _REASONS[LOW_CONFIDENCE_UNCHANGED] in rendered["flag_reason"]
         assert rendered["flagged_fields"] == ["name1"]
 

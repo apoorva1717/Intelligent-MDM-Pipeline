@@ -189,8 +189,11 @@ class TestFlagFieldsStayConsistent:
             assert bool(r.flag_reason) is (
                 bool(r.flag_codes) or bool(r.flag_low_confidence)
             )
-            # The retired token can never come back as a code.
-            assert flags.LOW_CONFIDENCE_UNCHANGED not in r.flag_codes
+            # The derived token appears exactly when the derivation says so,
+            # and is never raised independently of it.
+            assert (
+                flags.LOW_CONFIDENCE_UNCHANGED in r.flag_codes
+            ) is bool(r.flag_low_confidence)
 
     def test_codes_are_deduplicated_and_ordered(self):
         """Two conditions touching the same field yield two codes, once each,
@@ -390,9 +393,9 @@ class TestFlaggedConditions:
         )
         # Name 2 is a department slot, and the marker is the only thing that
         # can speak for it: there is no corroborating evidence class for a
-        # unit name. The code is retired, so the doubt arrives as the derived
-        # low instead — same field, same prose, no token.
-        assert out["flag_codes"] == []
+        # unit name. The doubt arrives as the derived low, and the code it
+        # emits is the only one on the record — nothing else was raised.
+        assert out["flag_codes"] == [flags.LOW_CONFIDENCE_UNCHANGED]
         assert out["flag_low_confidence"] == ["name2"]
         assert out["flag_for_review"] is True
         assert out["flagged_fields"] == ["name2"]
@@ -422,7 +425,7 @@ class TestFlaggedConditions:
             _ev_low_conf_unchanged={"name1"},
         )
         assert "unverified-inference" not in out["flag_codes"]
-        assert out["flag_codes"] == []
+        assert out["flag_codes"] == [flags.LOW_CONFIDENCE_UNCHANGED]
         assert out["flag_low_confidence"] == ["name1"]
         assert out["flag_for_review"] is True
 
@@ -435,7 +438,7 @@ class TestFlaggedConditions:
             name2_enriched="Chemistry Bits",
             _ev_low_conf_unchanged={"name2"},
         )
-        assert out["flag_codes"] == []
+        assert out["flag_codes"] == [flags.LOW_CONFIDENCE_UNCHANGED]
         assert out["flag_low_confidence"] == ["name2"]
         assert out["flagged_fields"] == ["name2"]
 
@@ -655,11 +658,14 @@ class TestRenderAndRetract:
             name1_enriched="Acme Labs", name2_enriched="Chemistry",
             _ev_low_conf_unchanged={"name2"}, _domain_unverified=True,
         )
-        # The retired code is not in the scope map, because it is not a code.
-        # The field it concerned is in `flag_low_confidence`, and
-        # `flagged_fields` is still the union of both halves — which is what a
-        # consumer of that column actually reads.
-        assert out["flag_scopes"] == {flags.DOMAIN_UNVERIFIED: ["domain"]}
+        # The derived code IS in the scope map — it is a code again — but its
+        # scope is rendered from `flag_low_confidence` and not from anything a
+        # tier put there. `flagged_fields` is still the union of both halves,
+        # which is what a consumer of that column actually reads.
+        assert out["flag_scopes"] == {
+            flags.LOW_CONFIDENCE_UNCHANGED: ["name2"],
+            flags.DOMAIN_UNVERIFIED: ["domain"],
+        }
         assert out["flag_low_confidence"] == ["name2"]
         assert out["flagged_fields"] == ["name2", "domain"]
 
@@ -701,14 +707,21 @@ class TestRenderAndRetract:
 
     def test_retract_drops_the_derived_low_and_re_renders(self):
         """The derived low is withdrawn the way a code is, and reported under
-        the retired code's name — the STATEMENT withdrawn is the one that code
-        used to make, and its prose is what was rendered, so a telemetry line
-        saying anything else would describe a different withdrawal."""
+        the derived code's name — the STATEMENT withdrawn is the one that code
+        makes, and its prose is what was rendered, so a telemetry line saying
+        anything else would describe a different withdrawal.
+
+        `retract` is handed back the `flag_scopes` this render produced, which
+        now carries the derived code's own entry. The withdrawal has to come
+        off `flag_low_confidence` and take that entry with it — reading the
+        scope map instead would leave the clause and the token standing on a
+        record whose doubt was just withdrawn."""
         result = _Flagged(flags.render(
             {flags.DOMAIN_UNVERIFIED: {"domain"}},
             low_confidence=["name1"],
         ))
         assert "left exactly as supplied" in result.flag_reason
+        assert flags.LOW_CONFIDENCE_UNCHANGED in result.flag_codes
         assert flags.retract(result, [], "name1") == (
             flags.LOW_CONFIDENCE_UNCHANGED,
         )
@@ -788,11 +801,30 @@ class TestRenderAndRetract:
         assert result.flagged_fields == ["name2"]
         assert result.flag_scopes == {flags.MULTIPLE_CONTACTS: ["name2"]}
 
-    def test_the_retired_code_cannot_be_raised_as_a_code(self):
-        """A caller that has not been migrated fails loudly. Silently
-        discarding its scope would lose a real doubt about a real field."""
-        with pytest.raises(ValueError, match="retired"):
+    def test_the_derived_code_cannot_be_raised_as_a_code(self):
+        """A caller that raises the derived code fails loudly. Silently
+        discarding its scope would lose a real doubt about a real field, and
+        accepting it would reopen the drift the derivation closed: a marker a
+        tier remembers to leave, disagreeing with the write history."""
+        with pytest.raises(ValueError, match="derived"):
             flags.render({flags.LOW_CONFIDENCE_UNCHANGED: {"name1"}})
+
+    def test_a_re_render_of_its_own_scope_map_is_not_a_raise(self):
+        """The guard is about a caller RAISING the code, not about the map
+        `render` itself produced. `retract` and `raise_after` hand that map
+        straight back with the derived list beside it, and it re-renders
+        byte-identically."""
+        first = flags.render(
+            {flags.DOMAIN_UNVERIFIED: {"domain"}}, low_confidence=["name1"],
+        )
+        assert flags.LOW_CONFIDENCE_UNCHANGED in first["flag_scopes"]
+        again = flags.render(
+            first["flag_scopes"],
+            first["flag_details"],
+            first["flag_notes"],
+            first["flag_low_confidence"],
+        )
+        assert again == first
 
     def test_retracting_the_last_code_clears_the_record(self):
         result = _Flagged(flags.render({flags.NO_MATCH: {"name1"}}))
@@ -1286,9 +1318,22 @@ class TestAReviewRequestAlwaysCarriesAReason:
     happens to raise is covered too.
     """
 
+    @staticmethod
+    def _render_one(code):
+        """Render *code* alone on Name 1, however that code is emitted.
+
+        `low-confidence-unchanged` is derived and refuses to be raised, so it
+        reaches `render` through `low_confidence=` — the only path it has.
+        Every other code is raised with a scope. The point of parametrising
+        over the whole vocabulary is that no code escapes the assertion, so
+        the one that is emitted differently is routed rather than skipped."""
+        if code == flags.LOW_CONFIDENCE_UNCHANGED:
+            return flags.render({}, low_confidence=["name1"])
+        return flags.render({code: ["name1"]})
+
     @pytest.mark.parametrize("code", [c for c in flags.ALL_CODES])
     def test_every_code_that_requests_review_renders_prose(self, code):
-        out = flags.render({code: ["name1"]})
+        out = self._render_one(code)
         if out["flag_for_review"]:
             assert out["flag_reason"], f"{code} queues a row with no reason"
 
@@ -1296,12 +1341,12 @@ class TestAReviewRequestAlwaysCarriesAReason:
     def test_every_code_renders_prose_even_when_advisory(self, code):
         """An advisory code does not queue the row, but it still explains
         itself — the column is what a reviewer reads either way."""
-        assert flags.render({code: ["name1"]})["flag_reason"]
+        assert self._render_one(code)["flag_reason"]
 
-    def test_the_derived_low_alone_queues_with_a_clause_and_no_code(self):
+    def test_the_derived_low_alone_queues_with_its_own_code_and_clause(self):
         out = flags.render({}, low_confidence=["name1"])
         assert out["flag_for_review"] is True
-        assert out["flag_codes"] == []
+        assert out["flag_codes"] == [flags.LOW_CONFIDENCE_UNCHANGED]
         assert out["flag_reason"]
         assert "name1" in out["flagged_fields"]
 
@@ -1318,7 +1363,9 @@ class TestAReviewRequestAlwaysCarriesAReason:
         assert out["flag_for_review"] is False
         assert out["flag_reason"]
 
-    @pytest.mark.parametrize("code", [c for c in flags.ALL_CODES])
+    @pytest.mark.parametrize(
+        "code", [c for c in flags.ALL_CODES if c != flags.LOW_CONFIDENCE_UNCHANGED],
+    )
     def test_a_code_combined_with_a_derived_low_keeps_both_clauses(self, code):
         out = flags.render({code: ["name2"]}, low_confidence=["name1"])
         assert out["flag_for_review"] is True

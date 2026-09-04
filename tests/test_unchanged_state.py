@@ -154,13 +154,13 @@ class TestTheThreeStates:
         assert resolve(record).state == UNCHANGED_UNRESOLVED
 
         out = _run(record)
-        # The code is retired; the doubt is not. `unchanged-unresolved` IS
-        # `input:low` on Name 1, and the flag is derived from that — so this
-        # asserts the state through the column that now carries it, and
-        # through the flag it still raises.
+        # `unchanged-unresolved` IS `input:low` on Name 1, the flag is derived
+        # from that, and the code is derived from the flag — so this asserts
+        # the state through the provenance column that carries it and through
+        # the two flag columns it reaches.
         assert out["name1_provenance"] == "input:low"
         assert out["flag_for_review"] is True
-        assert LOW_CONFIDENCE_UNCHANGED not in out["flag_codes"]
+        assert LOW_CONFIDENCE_UNCHANGED in out["flag_codes"]
         assert "name1" in out["flagged_fields"]
 
     def test_evidence_outranks_a_second_opinion(self):

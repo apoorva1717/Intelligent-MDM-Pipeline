@@ -1068,38 +1068,73 @@ def flag_for_review_is_set(value: object) -> bool:
 #: so none of the three can fire on a raw input audit. That is the same
 #: constraint ``G7-VERIFY-001`` carries and for the same reason.
 #:
-#: Two entries name flags the current pipeline does not emit as tokens, and
-#: both are deliberate:
+#: Both entries this table once carried for flags the pipeline did not emit
+#: as tokens — ``dept-via-contact`` and ``low-confidence-unchanged`` — are now
+#: emitted, and the mapping did not have to change to accommodate either. The
+#: first was reported under ``dept-via-lab`` with "the contact's own
+#: affiliation" in the reason and has its own code; the second is derived from
+#: the record's provenance by ``enrichment.flags.render`` rather than raised
+#: by a tier. An audit of an enriched file still supplies
+#: ``low-confidence-unchanged`` from the ``Name 1 / Name 2 Provenance``
+#: columns when ``Flag Codes`` does not carry it (see
+#: :func:`provenance_is_low`), because a file exported before that change has
+#: the state in the provenance column and nowhere else.
 #:
-#: * ``dept-via-contact`` — the condition is real (Tier 2A ``2A_population``:
-#:   the department came from the affiliation of the person in Contact) but it
-#:   is reported under ``dept-via-lab`` with "the contact's own affiliation" in
-#:   the reason, because it asks the reviewer the same question. Both map here
-#:   so the mapping stays correct whichever way that is later resolved.
-#: * ``low-confidence-unchanged`` — RETIRED as a token by the provenance
-#:   migration. The state it named is ``input:low`` on the field, which is what
-#:   the ``Name 1 / Name 2 Provenance`` columns carry, so the caller supplies
-#:   it from there; see :func:`provenance_is_low`. Mapping the token as well
-#:   costs nothing and keeps this table readable as the whole rule.
+#: Five flag codes map to NOTHING, and each is a decision:
+#:
+#: * ``overflow`` and ``name3-not-demoted`` are already reported as
+#:   ``G1-NAME-001`` and ``G4-NAME-015`` from the record's own content, so
+#:   raising them again from the flag would count one defect twice;
+#: * ``registry-location-mismatch`` is advisory in the pipeline
+#:   (``enrichment.flags.ADVISORY_CODES``) — a registered address differing
+#:   from an operating site is ordinary and asks nobody for anything — and a
+#:   code that put it in a reviewer's queue would contradict that;
+#: * ``entity-superseded`` and ``source-conflict`` ask a business question,
+#:   not a data-quality one. Which legal entity a customer record should point
+#:   at after a merger, and which of two disagreeing registries is the
+#:   identity of record, are decisions about contracts and open orders that no
+#:   catalogue code carries the meaning for. They ship in ``Flag Codes`` with
+#:   the successor named in the reason, and are deliberately not laundered
+#:   into "confirm this value".
 FLAG_CODE_ISSUES: dict[str, str] = {
     # Nothing the pipeline can do resolves these — a name column holding an
     # internal code, two email addresses both of which are the record's own,
-    # two people in one Contact field.
+    # two people in one Contact field, a record that states two places and
+    # cannot say which one it is for.
     "opaque-code": "G6-RESOLVE-001",
     "email-conflict": "G6-RESOLVE-001",
     "multiple-contacts": "G6-RESOLVE-001",
-    # A value was written; nothing independent backs it.
+    "name-states-another-site": "G6-RESOLVE-001",
+    # A value was written; nothing independent backs it. `relocated-unverified`
+    # belongs here for the same reason as the rest: preprocessing MOVED the
+    # value into the slot it ships in, which is a write, and no registry, page
+    # or model vouched for the placement.
     "domain-unverified": "G7-CONFIRM-001",
     "unverified-inference": "G7-CONFIRM-001",
     "dept-via-lab": "G7-CONFIRM-001",
     "dept-via-contact": "G7-CONFIRM-001",
+    "relocated-unverified": "G7-CONFIRM-001",
     # The pipeline could not establish the value at all.
     "low-confidence-unchanged": "G8-VERIFY-001",
     "no-match": "G8-VERIFY-001",
     "person-unresolved": "G8-VERIFY-001",
 }
 
-#: The retired token the caller re-supplies from the provenance columns.
+#: The flag codes that deliberately map to no catalogue code. Declared rather
+#: than left implicit so the pairing is a decision a test can hold the
+#: vocabulary to: a code added to ``enrichment.flags.ALL_CODES`` is either
+#: mapped above or named here, and never silently neither. The reasons are in
+#: the comment on :data:`FLAG_CODE_ISSUES`.
+UNMAPPED_FLAG_CODES: frozenset[str] = frozenset({
+    "overflow",
+    "name3-not-demoted",
+    "registry-location-mismatch",
+    "entity-superseded",
+    "source-conflict",
+})
+
+#: The derived token an audit re-supplies from the provenance columns when
+#: ``Flag Codes`` does not already carry it.
 DERIVED_LOW_FLAG_CODE = "low-confidence-unchanged"
 
 # `Flag Codes` ships as a semicolon-joined string in XLSX and as a list in
@@ -1130,12 +1165,13 @@ def split_flag_codes(value: object) -> list[str]:
 def provenance_is_low(value: object) -> bool:
     """Whether a provenance scalar reads ``low`` confidence.
 
-    ``low-confidence-unchanged`` was retired as a flag code: "left exactly as
-    supplied — the canonical form could not be established" and ``input:low``
-    are the same statement, and the pipeline stopped recording it twice. An
-    audit of an enriched file therefore cannot find that token in ``Flag
-    Codes`` and has to read the state where it now lives, which is the
-    ``Name 1 / Name 2 Provenance`` columns.
+    ``low-confidence-unchanged`` says "left exactly as supplied — the
+    canonical form could not be established", which is what ``input:low`` on
+    the field says, and the pipeline derives the one from the other. The token
+    is in ``Flag Codes`` again, so an audit of a current export finds it
+    there; this reads the state where it lives instead, which is what an
+    export taken while the token was withdrawn carries and the only thing a
+    file without a ``Flag Codes`` column at all can offer.
 
     Parsed through the provenance grammar rather than by string prefix:
     ``web:acme.com:low`` contains two colons and a naive split puts the domain

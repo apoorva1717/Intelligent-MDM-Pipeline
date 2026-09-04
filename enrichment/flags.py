@@ -35,12 +35,21 @@ Three rules follow from that, and this module exists to enforce them:
 The three output fields are a contract with DATAshaper and are always
 consistent: ``flag_reason`` is the prose rendering of ``flag_codes``, and
 ``flag_for_review`` says whether the record is being put in front of a
-reviewer. That last one is DERIVED rather than "non-empty codes", in both
-directions — a core field at ``low`` confidence raises it with no code
-attached, and an :data:`ADVISORY_CODES` code emits its prose without raising
-it. A row can therefore ship with ``flag_for_review`` false and a populated
+reviewer. That last one is DERIVED rather than "non-empty codes" — an
+:data:`ADVISORY_CODES` code emits its prose without raising it. A row can
+therefore ship with ``flag_for_review`` false and a populated
 ``flag_reason``: something is worth saying about the record, and nothing is
-being asked of anyone. The scope is
+being asked of anyone.
+
+The derived doubt has a code again. ``low-confidence-unchanged`` was retired
+as a token by the provenance migration and is emitted once more, but it is
+still not a code any tier can raise: :func:`render` DERIVES it from
+``flag_low_confidence``, which is derived in turn from the record's own
+provenance, and a caller that passes it in ``scopes`` still gets a
+:class:`ValueError`. Nothing about the three shipped columns moves — the
+clause was always rendered at this code's ``_CODE_ORDER`` position and the
+flag was always raised by it — so only the machine-readable token came back,
+for the consumers that read the vocabulary rather than the prose. The scope is
 encoded in the reason text as well as in ``flagged_fields``, so a consumer
 that reads only the two pre-Fix-8 columns still learns which field is in
 doubt. :func:`render` builds all three, and is the only thing that does.
@@ -82,19 +91,38 @@ logger = logging.getLogger(__name__)
 # prose template in `_REASONS`.
 
 NO_MATCH = "no-match"
-#: RETIRED by the provenance migration, and kept for exactly two jobs: its
-#: prose (`_REASONS`) is still what the derived flag says, and its slot in
-#: `_CODE_ORDER` is still where that prose appears in a multi-part reason. It
-#: is NOT in `ALL_CODES` and can never appear in `flag_codes` again.
+#: DERIVED, never raised. It says "left exactly as supplied — the canonical
+#: form could not be established with enough confidence to rewrite it", which
+#: is the definition of `input:low` on the field, so the record's own
+#: provenance decides it: `low_confidence_core_fields` reads the write
+#: history, `compute_flags` passes the result to `render` as
+#: `low_confidence=`, and `render` emits the code from that and from nothing
+#: else.
 #:
-#: It said "left exactly as supplied — the canonical form could not be
-#: established with enough confidence to rewrite it". That is the definition of
-#: `input:low` on the field, which the record now carries in its provenance, so
-#: the code was a second recording of a fact the column already stated — and
-#: the two could disagree, because one was raised by a tier remembering to
-#: leave a marker and the other is derived from the write history.
+#: That derivation is the whole of the provenance migration and it stands. The
+#: migration also withdrew the TOKEN, on the ground that the column already
+#: stated the fact — but a consumer reading `flag_codes` cannot see a
+#: confidence column it was not given, and the issue catalogue's
+#: `G8-VERIFY-001` is defined over this vocabulary. So the token is emitted
+#: again while the rule that produced the drift stays closed: a tier that
+#: passes this code in `scopes` still gets a `ValueError`, because a marker a
+#: tier remembers to leave and a fact derived from the write history are
+#: exactly the two things that could once disagree.
 LOW_CONFIDENCE_UNCHANGED = "low-confidence-unchanged"
 DEPT_VIA_LAB = "dept-via-lab"
+#: The department was read off the affiliation of the PERSON in the Contact
+#: column, on a record that stated no department of its own (Tier 2A
+#: `2A_population`). The same reviewer question as `dept-via-lab` — is this
+#: the right unit for this record — reached from the other direction, and it
+#: was reported under that code with the source in the reason text.
+#:
+#: Its own token now, because the two are not the same finding to anything
+#: that reads codes rather than prose: one says a parent was inferred from a
+#: child unit's page, the other that a unit was inferred from an individual
+#: who happens to be named on the record. The prose is unchanged — this
+#: code's `_REASONS` entry is character-for-character what the shared
+#: template rendered — so `flag_reason` does not move.
+DEPT_VIA_CONTACT = "dept-via-contact"
 PERSON_UNRESOLVED = "person-unresolved"
 OVERFLOW = "overflow"
 OPAQUE_CODE = "opaque-code"
@@ -163,10 +191,13 @@ REGISTRY_LOCATION_MISMATCH = "registry-location-mismatch"
 NAME_STATES_ANOTHER_SITE = "name-states-another-site"
 
 #: Every code that can appear in `flag_codes`. `LOW_CONFIDENCE_UNCHANGED` is
-#: deliberately absent — see its definition above.
+#: in the list and is the one code no caller may raise — `render` derives it
+#: from `low_confidence=`; see its definition above.
 ALL_CODES: tuple[str, ...] = (
     NO_MATCH,
+    LOW_CONFIDENCE_UNCHANGED,
     DEPT_VIA_LAB,
+    DEPT_VIA_CONTACT,
     PERSON_UNRESOLVED,
     OVERFLOW,
     OPAQUE_CODE,
@@ -243,6 +274,7 @@ _CODE_ORDER: tuple[str, ...] = (
     NAME_STATES_ANOTHER_SITE,
     REGISTRY_LOCATION_MISMATCH,
     DEPT_VIA_LAB,
+    DEPT_VIA_CONTACT,
     NAME3_NOT_DEMOTED,
     MULTIPLE_CONTACTS,
     EMAIL_CONFLICT,
@@ -269,6 +301,15 @@ _REASONS: dict[str, str] = {
         "parent department was inferred from the lab's own page, not read "
         "from a stated department — confirm the department is the right "
         "parent for this lab"
+    ),
+    # Character-for-character what `_DETAILED_REASONS[DEPT_VIA_LAB]` rendered
+    # for this path with `detail="the contact's own affiliation"`, which is
+    # how it was reported before it had a code. The token changed; the
+    # sentence a reviewer reads did not.
+    DEPT_VIA_CONTACT: (
+        "the department was inferred from the contact's own affiliation, not "
+        "read from a stated department — confirm it is the right unit for "
+        "this record"
     ),
     PERSON_UNRESOLVED: (
         "holds a person, and the organisation they belong to could not be "
@@ -372,11 +413,6 @@ _DETAILED_REASONS: dict[str, str] = {
         "a name field named a site the address block contradicts ({detail}) "
         "— confirm which location this record is for"
     ),
-    # The department was DERIVED rather than stated — from a lab's page, or
-    # from the affiliation of the person in the Contact column. The record
-    # never named a unit, so what ships is an inference about someone or
-    # something else that the record happens to mention, and a steward should
-    # confirm it is the unit this customer's mail belongs to.
     # Preprocessing MOVED this content into the slot — out of a street
     # line, out of Name 1, or out of another name slot. The record wrote
     # the value somewhere, but not here, and nothing has since vouched
@@ -385,10 +421,6 @@ _DETAILED_REASONS: dict[str, str] = {
     RELOCATED_UNVERIFIED: (
         "was moved here from {detail} — confirm it names this record's "
         "unit or site rather than a neighbouring one"
-    ),
-    DEPT_VIA_LAB: (
-        "the department was inferred from {detail}, not read from a stated "
-        "department — confirm it is the right unit for this record"
     ),
     # §1f. The pipeline WROTE a canonical form it could not fully reconcile
     # with the record's own text — an `undecidable` verdict: nothing
@@ -766,7 +798,7 @@ def render(
     scopes: dict[str, Iterable[str]],
     details: dict[str, str] | None = None,
     notes: dict[str, str] | None = None,
-    low_confidence: Iterable[str] = (),
+    low_confidence: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Render a code -> field-scope map into the five output fields.
 
@@ -789,46 +821,65 @@ def render(
     keeps the code, the scope and the existing wording untouched, which is the
     point: the flag vocabulary does not grow every time the pipeline learns
     something. A code with no note renders byte-identically to before.
+
+    *low_confidence* carries the fields whose provenance derives ``low``, and
+    is the ONLY way ``low-confidence-unchanged`` is emitted: the code, its
+    scope and its clause are all built from this list, and an entry for it in
+    *scopes* is ignored. Passing it in *scopes* without passing this list at
+    all is a caller raising a derived code, which is the drift the provenance
+    migration closed, and raises :class:`ValueError`. ``None`` (the default)
+    is what "did not pass the list" means; ``[]`` is a caller that derived it
+    and found nothing, which is why :func:`retract` can withdraw the last
+    field without tripping the guard.
     """
-    if LOW_CONFIDENCE_UNCHANGED in scopes:
-        # Raised rather than dropped. The code is retired, so a caller that
-        # still passes it is a caller that has not been migrated — and
-        # silently discarding its scope would lose a real doubt about a real
-        # field, which is the one outcome worse than failing here.
+    if LOW_CONFIDENCE_UNCHANGED in scopes and low_confidence is None:
+        # Raised rather than dropped. The code is derived, so a caller that
+        # raises it is a caller that has not been migrated — and silently
+        # discarding its scope would lose a real doubt about a real field,
+        # which is the one outcome worse than failing here.
         raise ValueError(
-            f"{LOW_CONFIDENCE_UNCHANGED!r} is retired and cannot be raised as "
+            f"{LOW_CONFIDENCE_UNCHANGED!r} is derived and cannot be raised as "
             "a code; pass its fields as `low_confidence=` instead, or let "
             "`low_confidence_core_fields` derive them from the provenance",
         )
-    ordered = [c for c in _CODE_ORDER if c in scopes]
-    scoped = {c: _sorted_fields(set(scopes[c] or ())) for c in ordered}
+    # The derived code's own entry in a re-rendered scope map is dropped here
+    # and rebuilt from `low` below. `retract` and `raise_after` hand back the
+    # `flag_scopes` a previous render produced, which now carries it; taking
+    # it from the map instead of from the list would let a withdrawal empty
+    # `flag_low_confidence` and leave the clause standing.
+    raised = {
+        c: _sorted_fields(set(f or ()))
+        for c, f in scopes.items() if c != LOW_CONFIDENCE_UNCHANGED
+    }
     kept = {
         c: str(v) for c, v in (details or {}).items()
-        if c in scoped and c in _DETAILED_REASONS and v
+        if c in raised and c in _DETAILED_REASONS and v
     }
     kept_notes = {
-        c: str(v) for c, v in (notes or {}).items() if c in scoped and v
+        c: str(v) for c, v in (notes or {}).items() if c in raised and v
     }
     low = _sorted_fields(set(low_confidence or ()))
 
+    ordered: list[str] = []
+    scoped: dict[str, list[str]] = {}
     reasons: list[str] = []
     flagged: set[str] = set()
-    # `_CODE_ORDER` still holds `LOW_CONFIDENCE_UNCHANGED`, and it is never in
-    # `scopes` any more — the slot is walked so the derived clause appears at
-    # the position the retired code occupied. A reviewer reading a multi-part
-    # reason sees the same clause in the same place as before the migration;
-    # only `flag_codes` lost the token.
+    # One pass over `_CODE_ORDER`, the derived code included: it occupies the
+    # slot it always occupied, so a reviewer reading a multi-part reason sees
+    # the same clause in the same place, and `flag_codes` now names it there
+    # too. It takes no detail and no note — its prose states a fact about the
+    # write history and has no value to name.
     for code in _CODE_ORDER:
         if code == LOW_CONFIDENCE_UNCHANGED:
-            if low:
-                flagged.update(low)
-                reasons.append(
-                    f"{_label(low)}: {_REASONS[LOW_CONFIDENCE_UNCHANGED]}",
-                )
+            if not low:
+                continue
+            fields = low
+        elif code in raised:
+            fields = raised[code]
+        else:
             continue
-        if code not in scoped:
-            continue
-        fields = scoped[code]
+        ordered.append(code)
+        scoped[code] = fields
         flagged.update(fields)
         prose = (
             _DETAILED_REASONS[code].format(detail=kept[code])
@@ -842,14 +893,16 @@ def render(
     return {
         "flag_codes": ordered,
         "flagged_fields": _sorted_fields(flagged),
-        # DERIVED, not "true iff there is a code", in both directions. A core
-        # field at `low` raises the flag with no code attached, which is the
-        # whole of the authorised taxonomy change: `low-confidence-unchanged`
-        # was a code that existed only to say what the confidence already
-        # says. And an ADVISORY_CODES code does not raise it at all — the
-        # code and its prose ship, the review request does not. A record
-        # carrying an advisory code alongside a substantive one is still
-        # queued, by the substantive one.
+        # DERIVED, not "true iff there is a code": an ADVISORY_CODES code
+        # does not raise it at all — the code and its prose ship, the review
+        # request does not. A record carrying an advisory code alongside a
+        # substantive one is still queued, by the substantive one.
+        #
+        # `or bool(low)` is now redundant — the derived code is in `ordered`
+        # whenever `low` is non-empty, and it is not advisory — and is kept
+        # because it is the statement that has to stay true: a core field at
+        # `low` queues the row. If the code's emission ever changes again,
+        # this clause is what stops the queue changing with it.
         "flag_for_review": (
             bool(set(ordered) - ADVISORY_CODES) or bool(low)
         ),
@@ -1268,14 +1321,15 @@ def compute_flags(result: dict[str, Any]) -> None:
     if evidence.get("_ev_dept_via_lab"):
         raise_flag(DEPT_VIA_LAB, "name2", demoted_to)
     if evidence.get("_ev_dept_via_person"):
-        # Same code, same reviewer question — "is this the right unit for this
-        # record?" — reached from the other direction. The detail names the
-        # source so the sentence is true of the record it sits on; the lab
-        # case supplies no detail and keeps its existing prose exactly.
-        details.setdefault(
-            DEPT_VIA_LAB, "the contact's own affiliation",
-        )
-        raise_flag(DEPT_VIA_LAB, "name2")
+        # Its own code, same reviewer question — "is this the right unit for
+        # this record?" — reached from the other direction. It was raised as
+        # `dept-via-lab` carrying "the contact's own affiliation" as the
+        # detail, which said the right thing in prose and the wrong thing in
+        # the vocabulary: a consumer counting codes could not tell a parent
+        # inferred from a lab page from a unit inferred from a person. The
+        # sentence is unchanged — `_REASONS[DEPT_VIA_CONTACT]` is exactly
+        # what that template rendered — and no detail is needed to say it.
+        raise_flag(DEPT_VIA_CONTACT, "name2")
     if evidence.get("_ev_name3_not_demoted"):
         raise_flag(NAME3_NOT_DEMOTED, *DEPT_SLOTS)
 

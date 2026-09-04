@@ -1246,11 +1246,21 @@ class TestTheFlagVocabularyIsClosed:
             # `registry-location-mismatch`, which is a disagreement with an
             # outside register and is advisory for that reason.
             "name-states-another-site",
-            # `low-confidence-unchanged` was RETIRED by the provenance
-            # migration — it said exactly what `input:low` on the field says,
-            # and the flag is now derived from that. Its prose survives on the
-            # derived flag; the token cannot be emitted again. See
-            # tests/test_provenance_scheme_b.py::TestTheRetiredCode.
+            # DERIVED, not raised: `low-confidence-unchanged` says exactly
+            # what `input:low` on the field says, and `render` emits it from
+            # the provenance-derived list and from nothing else. It is in the
+            # vocabulary because the issue catalogue's `G8-VERIFY-001` is
+            # defined over the vocabulary and a consumer reading `Flag Codes`
+            # cannot see a confidence column it was not given; a tier that
+            # tries to raise it still fails. See
+            # tests/test_provenance_scheme_b.py::TestTheDerivedCode.
+            "low-confidence-unchanged",
+            # The department came from the affiliation of the PERSON in the
+            # Contact column (Tier 2A `2A_population`) rather than from a
+            # child unit's page. It was reported under `dept-via-lab` with
+            # the source named in the reason; the prose is unchanged and the
+            # two findings are now separable by anything that counts codes.
+            "dept-via-contact",
         }
 
 

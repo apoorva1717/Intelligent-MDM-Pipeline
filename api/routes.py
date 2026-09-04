@@ -55,6 +55,7 @@ from enrichment.issue_detection import (
     split_flag_codes,
     DERIVED_LOW_FLAG_CODE,
 )
+from enrichment.flags import name2_needs_no_verification
 from enrichment.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
@@ -194,7 +195,37 @@ def _flag_for_review(row: dict[str, str], headers: list[str]) -> bool | None:
 _CORE_PROVENANCE_HEADERS: tuple[str, ...] = ("Name 1 Provenance", "Name 2 Provenance")
 
 
-def _flag_codes(row: dict[str, str], headers: list[str]) -> list[str] | None:
+def _name2_has_no_canonical_form(record: EnrichmentRecord) -> bool:
+    """Whether this record's Name 2 is a phrase nothing could confirm.
+
+    The pipeline's own exemption, asked of a parsed row instead of a record in
+    flight: an administrative desk ("Accounts Payable", "Central Receiving")
+    or a phrase built only of facility functions ("Central Warehouse") has no
+    institutional spelling for a reviewer to establish, so ``compute_flags``
+    withholds the derived doubt and ships ``input:low`` on the field anyway —
+    the column states what happened, and only the review request is withheld.
+
+    An audit that read the provenance column and stopped there would put the
+    request back, and ask a steward to canonicalise a phrase the pipeline
+    declined to search for. The predicate is
+    :func:`enrichment.flags.name2_needs_no_verification`, the same one the
+    flag uses; it is handed a mapping rather than the model because it reads
+    the enriched-record field names and the address tokens its
+    ``identifies_nothing`` half compares against.
+    """
+    return name2_needs_no_verification({
+        "name2_enriched": record.name2,
+        "city": record.city,
+        "region": record.region,
+        "country_region_key": record.country_region_key,
+    })
+
+
+def _flag_codes(
+    row: dict[str, str],
+    headers: list[str],
+    record: EnrichmentRecord | None = None,
+) -> list[str] | None:
     """The row's enrichment flag codes, or ``None`` when this is a raw file.
 
     ``None`` and ``[]`` carry the same distinction as in :func:`_flag_for_review`:
@@ -203,13 +234,22 @@ def _flag_codes(row: dict[str, str], headers: list[str]) -> list[str] | None:
     G6-RESOLVE-001 / G7-CONFIRM-001 / G8-VERIFY-001; only ``None`` says the
     question was never asked.
 
-    ``low-confidence-unchanged`` is added from the provenance columns rather
-    than read from ``Flag Codes``, where it can no longer appear: the
-    provenance migration retired the token because ``input:low`` on the field
-    says the same thing, and this is where an audit of an enriched file finds
-    that state. Reading only ``Flag Codes`` would have left G8-VERIFY-001 dark
-    for the largest population it exists to describe — the rows the pipeline
-    left exactly as supplied.
+    ``low-confidence-unchanged`` is added from the provenance columns as well
+    as read from ``Flag Codes``. The pipeline emits the token again, so a
+    current export names it; an export taken while it was withdrawn has the
+    state in ``Name 1 / Name 2 Provenance`` and nowhere else, and reading only
+    ``Flag Codes`` would leave G8-VERIFY-001 dark for the largest population
+    it exists to describe — the rows the pipeline left exactly as supplied.
+    Both paths reach the same code, and the ``not in`` check is what keeps a
+    row that carries it twice from saying so.
+
+    *record* is the parsed row, and is consulted for one thing: the Name 2
+    exemption the pipeline itself applies (see
+    :func:`_name2_has_no_canonical_form`). Without it the two halves of this
+    function contradict each other — the ``Flag Codes`` half honours the
+    exemption because ``compute_flags`` made it, and the provenance half would
+    re-raise the doubt from a column that is `input:low` precisely because
+    nothing could confirm a phrase that has nothing to confirm.
     """
     codes: list[str] | None = None
     for header in headers:
@@ -219,13 +259,24 @@ def _flag_codes(row: dict[str, str], headers: list[str]) -> list[str] | None:
 
     for header in headers:
         norm = _norm_header(header)
-        if any(norm == _norm_header(c) for c in _CORE_PROVENANCE_HEADERS):
-            if codes is None:
-                codes = []
-            if provenance_is_low(row.get(header)):
-                if DERIVED_LOW_FLAG_CODE not in codes:
-                    codes.append(DERIVED_LOW_FLAG_CODE)
-                break
+        if not any(norm == _norm_header(c) for c in _CORE_PROVENANCE_HEADERS):
+            continue
+        if codes is None:
+            codes = []
+        if not provenance_is_low(row.get(header)):
+            continue
+        if (
+            norm == _norm_header("Name 2 Provenance")
+            and record is not None
+            and _name2_has_no_canonical_form(record)
+        ):
+            # The pipeline looked at this slot and decided there was nothing
+            # to ask. Keep looking at the other column rather than stopping:
+            # a Name 1 doubt on the same row still stands.
+            continue
+        if DERIVED_LOW_FLAG_CODE not in codes:
+            codes.append(DERIVED_LOW_FLAG_CODE)
+        break
     return codes
 
 
@@ -492,7 +543,7 @@ async def _audit_upload(file: UploadFile) -> dict[str, list[str]]:
             detect_issues(
                 record, present,
                 flag_for_review=_flag_for_review(row, headers),
-                flag_codes=_flag_codes(row, headers),
+                flag_codes=_flag_codes(row, headers, record),
             ),
         )
 
@@ -794,7 +845,7 @@ def _audit_rows(
             for code in detect_issues(
                 record, present,
                 flag_for_review=_flag_for_review(row, headers),
-                flag_codes=_flag_codes(row, headers),
+                flag_codes=_flag_codes(row, headers, record),
             )
             if code not in _ISSUES_SUPPRESSED_CODES
         ]

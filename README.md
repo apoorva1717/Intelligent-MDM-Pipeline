@@ -953,7 +953,7 @@ The doubt an unchanged Name 1 carries is not one thing, so one outcome cannot ex
 |---|---|---|---|
 | `unchanged-verified` | the input name is corroborated by evidence independent of the record: an ownership-guard-passing domain tied to Name 1, or a [page read](#stage-5b-page-read-corroborator) that states this organisation's identity | `input:verified+web` (or `+wikidata` / `+registry` per the actual witness) | No |
 | `unchanged-confirmed` | the company-canonical model, asked what the organisation is called and never shown the record's answer, returned it — `normalize_key(proposal) == normalize_key(input)` | `input:provisional+llm` — the one `+llm` the [confidence table](#the-provenance-grammar--scheme-b) allows, and `provisional` because hard rule 1 bars a model from carrying anything to `verified` | No |
-| `unchanged-unresolved` | nothing came back, or what came back was refused by the identity guard and names something materially different | `input:low` | Yes — **derived** from the confidence, with the same reason text. The `low-confidence-unchanged` code is [retired](#the-derived-review-flag): it said exactly what `input:low` says |
+| `unchanged-unresolved` | nothing came back, or what came back was refused by the identity guard and names something materially different | `input:low` | Yes — **derived** from the confidence, with the same reason text, and the `low-confidence-unchanged` code is [derived from it too](#the-derived-review-flag): the code says exactly what `input:low` says, and no tier may raise it |
 
 **Decided once, from the settled record.** The same rule as [`compute_flags`](#flag-rules) and for the same reason: which tier ran is not the question. That is also what makes the treatment consistent, because the answer no longer depends on which branch reached the passthrough. The per-branch `_ev_low_conf_unchanged` markers for Name 1 are gone; the department slots keep theirs.
 
@@ -1318,7 +1318,7 @@ The flag was correct when `compute_flags` ran and stopped being correct afterwar
 
 | withdrawn on a propagated `name1_enriched` | registry mode | name-form mode |
 |---|---|---|
-| the derived low (ex-`low-confidence-unchanged`) | ✅ | ✅ |
+| the derived low (`low-confidence-unchanged`) | ✅ | ✅ |
 | `no-match` | ✅ | — |
 | `unverified-inference` | ✅ | — |
 
@@ -1682,9 +1682,11 @@ core fields    := Name 1, Name 2
 advisory codes := registry-location-mismatch, domain-unverified
 ```
 
-The flag no longer follows from `flag_codes` alone. A core field whose [provenance confidence](#the-provenance-grammar--scheme-b) is `low` raises it with **no code attached**, because `low-confidence-unchanged` was a code whose entire content was *"the value was left in place and nothing corroborated it"* — which is the definition of `input:low`. Recording it twice meant the two could disagree: one was raised by a tier remembering to leave a marker, the other is derived from the record's write history.
+The flag no longer follows from `flag_codes` alone: an advisory code emits its prose without asking anyone to act (below), so a populated `Flag Reason` beside `flag_for_review = false` is a valid state.
 
-**`low-confidence-unchanged` is retired.** It cannot appear in `flag_codes` again — it is not in `ALL_CODES`, and `flags.render` **raises** if a caller still passes it, rather than silently discarding a real doubt about a real field. What survives is the part a human reads: its reason text is attached to the derived flag, in the same position in a multi-part reason, so `Flag Reason` is byte-identical to what it was before the migration on all 100 records of the reference batch.
+**`low-confidence-unchanged` is derived, never raised.** Its entire content is *"the value was left in place and nothing corroborated it"* — which is the definition of `input:low` — so it is read off the record's write history by `flags.low_confidence_core_fields` and emitted by `flags.render` from that list and from nothing else. A tier that passes it in `scopes` still gets a **`ValueError`**, because a marker a tier remembers to leave and a fact derived from the write history are exactly the two things that could once disagree.
+
+The token itself was withdrawn by the provenance migration on the ground that the confidence column already stated the fact, and is **emitted again**: a consumer reading `flag_codes` cannot see a column it was not given, and the Issue Catalogue's [`G8-VERIFY-001`](#post-issues) is defined over this vocabulary, so withdrawing the token made the largest population the catalogue describes reachable only by reading provenance. Nothing else moved — the clause was always rendered at this code's position in a multi-part reason, and the flag was always raised by it — so `Flag Reason`, `Flag for Review` and `Flagged Fields` are byte-identical either side of the change on all four demo strata.
 
 **An advisory code states a finding without requesting a review.** Two carry it: `registry-location-mismatch` and `domain-unverified`. The code, its field scope and its reason prose are emitted exactly as any other code — what it no longer does is put the record in the queue. The reason is what a contradicted registry address usually turns out to mean: a register holds the addresses of a legal **entity** (GLEIF publishes two, the incorporation address and the head office), and a large organisation operates from far more sites than that. Merck has plants in fifty places behind a single Darmstadt LEI record; Arkema Inc. is registered in King of Prussia PA while the record names its North Carolina site. Neither is a doubt about *which* company the record names, and asking a human to confirm each one spends the reviewer's attention on the ordinary case. The disagreement is still worth **saying** — a reviewer already in the record for another reason should see it — so only the queue membership goes.
 
@@ -1703,7 +1705,9 @@ One case is not derivable and is read from the tier's marker instead: the **depa
 | Code | Raised when | Scope |
 |---|---|---|
 | `no-match` | Every tier failed: no identifier, no domain, no evidence URL, no field changed. Suppressed when any other code applies — it means "nothing to go on at all" | `name1` |
+| `low-confidence-unchanged` | **Derived**, never raised: a core field (Name 1, Name 2) whose provenance confidence is `low` — the pipeline left the value exactly as supplied and could not establish a canonical form. Withheld for a Name 2 that *has* no canonical form (an administrative desk, or a phrase of pure facility functions) — the provenance still says `input:low`, only the review request goes | the `low` core field(s) |
 | `dept-via-lab` | UC 13 fired: Name 2 was a granular unit and the parent department was **inferred from the lab's page**, not read from a stated department | `name2`, `name3` |
+| `dept-via-contact` | Tier 2A `2A_population`: the record stated no department and one was read off the **affiliation of the person in Contact**. Reported under `dept-via-lab` until it had a code of its own; the reason prose is unchanged | `name2` |
 | `name3-not-demoted` | UC 13 fired but every slot below Name 2 was already populated, so the lab name could not be moved down | `name2`…`name5` |
 | `person-unresolved` | A person was detected in Name 1 and their affiliation could not be resolved | `name1` |
 | `overflow` | preprocessing ran out of name/street slots, or UC 0's rewrite had a piece with no slot left — content the SAP field split could not place. **Not** raised for a split UC 0 repaired | the overflowing pair (e.g. `name3`, `name4`); the whole name block when preprocessing ran out of slots |
@@ -2298,13 +2302,13 @@ The catalogue is aligned to **Issue Catalogue v2**: 41 declared entries, of whic
 
   | Issue code | Group | Raised by these `flag_codes` | What the reviewer is being asked |
   |---|---|---|---|
-  | `G6-RESOLVE-001` | G6 | `opaque-code`, `email-conflict`, `multiple-contacts` | Supply a value no automated path can resolve — a name behind an internal code, which of two addresses the mail is for, one contact per record |
-  | `G7-CONFIRM-001` | G7 | `domain-unverified`, `unverified-inference`, `dept-via-lab`, `dept-via-contact` | Confirm a value the pipeline *wrote* that nothing independent backs |
+  | `G6-RESOLVE-001` | G6 | `opaque-code`, `email-conflict`, `multiple-contacts`, `name-states-another-site` | Supply a value no automated path can resolve — a name behind an internal code, which of two addresses the mail is for, one contact per record, which of two places the record is for |
+  | `G7-CONFIRM-001` | G7 | `domain-unverified`, `unverified-inference`, `dept-via-lab`, `dept-via-contact`, `relocated-unverified` | Confirm a value the pipeline *wrote* that nothing independent backs |
   | `G8-VERIFY-001` | G8 | `low-confidence-unchanged`, `no-match`, `person-unresolved` | Establish a value the pipeline could not — it shipped the record's own, or none |
 
-  The mapping is `enrichment.issue_detection.FLAG_CODE_ISSUES` and is many-to-one on purpose: flags that ask for the same work are one queue, not three. A flag it does not map raises nothing — `overflow` and `name3-not-demoted` are already reported as `G1-NAME-001` and `G4-NAME-015` from the record's own content, and raising them again from the flag would double-count one defect.
+  The mapping is `enrichment.issue_detection.FLAG_CODE_ISSUES` and is many-to-one on purpose: flags that ask for the same work are one queue, not three. **Five flag codes map to nothing**, and the five are declared in `UNMAPPED_FLAG_CODES` rather than left implicit, so a code that maps to nothing and a code that maps to nothing *deliberately* are distinguishable: `overflow` and `name3-not-demoted` are already reported as `G1-NAME-001` and `G4-NAME-015` from the record's own content and would double-count one defect; `registry-location-mismatch` is [advisory](#the-derived-review-flag) and a catalogue code would put it in the queue the pipeline kept it out of; `entity-superseded` and `source-conflict` ask which legal entity a record should point at after a merger, which is a business decision no catalogue code carries the meaning for.
 
-  `low-confidence-unchanged` is the one code read from somewhere other than `Flag Codes`. It was [retired as a token](#the-derived-review-flag) because `input:low` on the field says the same thing, so the endpoint derives it from the `Name 1 Provenance` / `Name 2 Provenance` columns. Measured on a 99-row enriched export, that is 40 of the 40 rows carrying `G8-VERIFY-001`: reading only `Flag Codes` would have left the code dark for the entire population it describes.
+  `low-confidence-unchanged` is also read from the `Name 1 Provenance` / `Name 2 Provenance` columns, not only from `Flag Codes`. The pipeline [emits the token](#the-derived-review-flag) again, so a current export names it; an export taken while it was withdrawn has the state in the provenance columns and nowhere else. Measured on a 99-row enriched export of that vintage, that is 40 of the 40 rows carrying `G8-VERIFY-001`. The provenance path applies the same Name 2 exemption the pipeline does — a `Name 2 Provenance` of `input:low` on an administrative desk raises nothing, because `compute_flags` decided there was nothing to ask.
 
   None of the four is a raw-input rule, and none touches the reduction metric — G6 is expected to persist, G7 and G8 are reported in the comparison's own **Verification** block.
 - **`origin` records who raises a rule** — `DS` (native DATAshaper rule), `API` (this service), or `BOTH`. All 11 DS-only codes are raised here by default, which duplicates them in DATAshaper; that is deliberate, because `/issues` is also run standalone on a raw workbook. Pass `origins=("API", "BOTH")` to `detect_issues` for a feed that must not duplicate a native DS rule.
