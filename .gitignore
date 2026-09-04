@@ -41,6 +41,3 @@ tests/fixtures/llm/
 
 # Dated backups of moved evidence-cache namespaces (see utils/cache.py).
 _cache_backup_*/
-
-# Office lock/temp files
-~$*
