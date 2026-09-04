@@ -36,7 +36,13 @@ from enrichment.name_repack import (
     merge_split_runs,
     repack_name_block,
 )
-from enrichment.orchestrator import Orchestrator
+from enrichment.registry_match import FUZZY_TIER
+from enrichment.orchestrator import (
+    Orchestrator,
+    _init_result,
+    _stated_name,
+    _write_registry_name,
+)
 from tests.mocks.lei_mock import MockLEIClient
 from tests.mocks.page_mock import MockPageFetcher
 from tests.mocks.ror_mock import MockRORClient
@@ -358,3 +364,69 @@ class TestSplitRecordsAreEnriched:
             name2="Training Command Jacksonville",
         )
         assert all(len(v) <= NAME_FIELD_WIDTH for v in _block(r) if v)
+
+
+# ---------------------------------------------------------------------------
+# What the record STATES, once a run has been merged
+# ---------------------------------------------------------------------------
+
+class TestTheMergedNameIsWhatTheRecordStates:
+    """`{slot}_original` is the SAP column, and after a merge that is half a
+    name. Anything asking "what does this record state" must see the joined
+    value instead.
+
+    13044976 supplied "University of Texas" / "Health Science Center" /
+    "Central Receiving". UC 0 merged the first two correctly and ROR returned
+    "The University of Texas at San Antonio Health Science Center" at 0.98 —
+    then the identity gate judged it against `name1_original`, which is still
+    "University of Texas", called it a different entity, and the refusal path
+    restored that same fragment. "Health Science Center", consumed out of
+    Name 2 by the merge, shipped nowhere. Silently: the repack raises
+    `overflow` for a piece with no slot left, and there was no piece left to
+    place.
+    """
+
+    def _merged(self):
+        """The record as it stands after the UC 0 branch has merged it."""
+        result = _init_result(EnrichmentRecord(
+            record_id="13044976", country="US",
+            name1="University of Texas", name2="Health Science Center",
+            name3="Central Receiving", city="San Antonio", state="TX",
+        ))
+        result["_uc0_merged"] = {
+            "runs": [["name1", "name2"]],
+            "names": {
+                "name1": "University of Texas Health Science Center",
+                "name2": "Central Receiving",
+                "name3": None, "name4": None, "name5": None,
+            },
+        }
+        return result
+
+    def test_the_stated_name_is_the_joined_value(self):
+        assert _stated_name(self._merged(), "name1") == (
+            "University of Texas Health Science Center"
+        )
+
+    def test_a_record_that_arrived_whole_reads_its_column(self):
+        result = _init_result(EnrichmentRecord(
+            record_id="t", country="US", name1="University of Texas",
+        ))
+        assert _stated_name(result, "name1") == "University of Texas"
+        assert _stated_name(result, "name2") is None
+
+    def test_a_refused_registry_name_restores_the_whole_name(self):
+        """The drop itself. The candidate is refused either way — what must
+        not happen is the record shipping the fragment the merge consumed.
+
+        Fuzzy, as ROR's 0.98 was: an exact match states the record's own
+        wording and the identity question is not re-asked."""
+        result = self._merged()
+        written = _write_registry_name(
+            result, "name1", "North Canyon Medical Center", "ROR",
+            match_tier=FUZZY_TIER,
+        )
+        assert written is False
+        assert result["name1_enriched"] == (
+            "University of Texas Health Science Center"
+        )

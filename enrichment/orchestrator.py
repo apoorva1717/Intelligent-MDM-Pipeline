@@ -1096,7 +1096,7 @@ def _write_registry_name(
     # separate decision and is left alone; this refuses only the NAME, and
     # says so where a reviewer can see it.
     incumbent_value = (
-        result.get("name1_original") if field == "name1"
+        _stated_name(result, "name1") if field == "name1"
         else _comparison_incumbent(result, field)
     )
     decision = name_gate.evaluate(
@@ -1654,6 +1654,31 @@ def _site_qualifier_head(name: str | None) -> str | None:
 _RELOCATED_ORIGINS: frozenset[str] = frozenset({
     dept_block.ORIGIN_STREET, dept_block.ORIGIN_SPLIT, dept_block.ORIGIN_MOVED,
 })
+
+
+def _stated_name(result: Any, slot: str) -> str | None:
+    """What the RECORD states for *slot*, after a UC 0 merge.
+
+    `{slot}_original` is the SAP column, and on a merged record that is a
+    FRAGMENT of the name — `_init_result` runs before the merge on purpose, so
+    the `*_changed` flags and the response's original columns keep reporting
+    what SAP supplied. The identity question is a different one: 13044976
+    supplied "University of Texas" / "Health Science Center" / "Central
+    Receiving", UC 0 merged the first two into the name the record actually
+    states, and everything that read `name1_original` afterwards saw only
+    "University of Texas". ROR's 0.98 "The University of Texas at San Antonio
+    Health Science Center" was refused as a DIFFERENT ENTITY against half a
+    name, and the refusal path then restored that same half — so "Health
+    Science Center", consumed out of Name 2 by the merge, shipped nowhere.
+    Silently: the repack's overflow flag fires when a piece has no slot left,
+    and this content was gone before there was anything to place.
+
+    So: the merged value where the block was merged, the column otherwise.
+    Empty for every record that arrived intact.
+    """
+    merged = (result.get("_uc0_merged") or {}).get("names") or {}
+    value = merged.get(slot) or result.get(f"{slot}_original")
+    return str(value).strip() if value and str(value).strip() else None
 
 
 def _comparison_incumbent(result: Any, slot: str) -> str | None:
@@ -7782,6 +7807,14 @@ class Orchestrator:
                     "runs": [list(run) for run in merged_runs],
                     "names": dict(merged),
                 }
+                # Re-taken over the merge. `name1_supplied` answers "what did
+                # the record state", and after a merge the answer is the
+                # joined value, not the fragment the SAP column happened to
+                # hold — the region-refusal gate reads this to decide whether
+                # a registry match is the name the record states, and half a
+                # name is never that. Still before any lane has written the
+                # column, which is the property the assignment above needs.
+                result["name1_supplied"] = record.name1
                 if 0 not in result["use_cases_triggered"]:
                     result["use_cases_triggered"].append(0)
 
