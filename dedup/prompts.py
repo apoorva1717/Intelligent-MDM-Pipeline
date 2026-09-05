@@ -19,7 +19,7 @@ PROMPT_VERSION = "p2-dedup-v3"
 #: ``department_relation``. Any output produced under one of these is not
 #: comparable with output produced under the other, and the version column is
 #: how a reader tells which they are holding.
-PROMPT_VERSION_V2 = "p2-dedup-v4"
+PROMPT_VERSION_V2 = "p2-dedup-v8"
 
 
 # Shared by both modes. Describes the two-level identity model and the
@@ -42,6 +42,8 @@ Rules:
 - A shared LEI (Legal Entity Identifier) means the records are the same legal entity (typically a company). Treat it like ROR: a strong same-INSTITUTION signal, but it still does not by itself merge records with DIFFERENT Name 2 departments, and you must still compare Name 2. Conversely, DIFFERENT non-empty LEIs are a strong signal of different entities.
 
 Judge names accounting for: cross-language translations (German↔English etc.), abbreviations and acronyms ("Dept" = "Department", "Mech Eng" = "Mechanical Engineering"), word reordering, legal-form suffixes (GmbH, AG, Inc., Ltd, e.V.), historical renames or restructures, and spelling variants/typos.
+
+For every record you must also report `institution_relation` — whether its INSTITUTION is the "same" organisation as, "different" from, or "uncertain" against the entity you compared it with. This is a separate question from whether the two are the same entity: two records can be the same institution and different entities because their departments differ. Answer it for every signature, including ones you place in their own entity.
 
 If you cannot decide with reasonable confidence, return uncertain. Do not guess — uncertain routes to a human reviewer, which is the safe outcome.\
 """
@@ -75,16 +77,32 @@ Each record gives you:
 - record_type, ror_id, lei_id: what Phase 1 resolved.
 - street_match: how the two street strings compared. "differs" means only that the strings did not match — the delivery point already matched on postcode and house number, so it is NEVER a reason to call two records different entities.
 
+An `evidence` block may list deterministic signals computed for a pair of records — id, acronym, suffix_only, name_variant, cross_slot. They are HINTS about whether the two INSTITUTIONS are the same, computed from the names by rule. They are not decisions, they never say anything about the departments, and a pair with no evidence line is not thereby different.
+
 SAME ENTITY when: same institution at this delivery point AND
   (a) both have no department, or
   (b) both have a department and one is a variant, abbreviation, or sub-unit of the other.
 DIFFERENT ENTITY when: one has a department and the other has none; or the departments are
-different organisational units; or the institutions are different organisations (a brand,
-subsidiary, or successor company is a different organisation unless an alias field says otherwise).
-Acronyms, abbreviations, truncations, legal-suffix differences, spelling variants and renames
-are the SAME institution. Shared ROR/LEI means same institution, not same entity.
+different organisational units; or the institutions are different organisations.
+
+Evidence that two institutions are the same: shared ROR/LEI, an alias field, or an
+`evidence` line. Acronyms, initialisms, truncations, spelling variants and legal-form or
+corporate-structure differences (Inc, Corp, LLC, Holdings, Group, Company) are the SAME
+institution by rule and need no further support; an LLC or Inc suffix is never evidence
+of a different organisation. DIFFERENT organisations have different distinctive name
+tokens — HP Inc vs Hewlett Packard Enterprise, Takeda Oncology vs Takeda Pharmaceuticals
+U.S.A., Texas A&M vs University of Texas — even at the same address.
+
+A shared ROR or LEI identifies the organisation family, not the legal entity. The
+institution is the legal entity that would be invoiced. Two records whose distinctive
+name tokens differ are different institutions even with the same ROR (EMD Serono, Inc.
+vs EMD Serono Research and Development Institute, Inc.). A one-sided ROR or LEI, or a
+record_type disagreement, is a Phase 1 coverage artefact and is never evidence that two
+records are different organisations.
 
 Judge names accounting for: cross-language translations (German↔English etc.), abbreviations and acronyms ("Dept" = "Department", "Mech Eng" = "Mechanical Engineering"), word reordering, legal-form suffixes (GmbH, AG, Inc., Ltd, e.V.), historical renames or restructures, and spelling variants/typos.
+
+For every record you must also report `institution_relation` — whether its INSTITUTION is the "same" organisation as, "different" from, or "uncertain" against the entity you compared it with. This is a separate question from whether the two are the same entity: two records can be the same institution and different entities because their departments differ. Answer it for every signature, including ones you place in their own entity.
 
 If you cannot decide with reasonable confidence, return uncertain. Do not guess — uncertain routes to a human reviewer, which is the safe outcome.\
 """
@@ -123,7 +141,31 @@ def build_mode_a_user_prompt(signatures: List[dict]) -> str:
     )
 
 
-def build_mode_a_user_prompt_v2(signatures: List[dict]) -> str:
+def render_evidence(lines: List[tuple]) -> str:
+    """The ``evidence:`` block, or "" when nothing fired.
+
+    ``lines`` is a list of ``(left_id, right_id, rules)``. Pairs with no rules
+    are not printed: a listing of every pair with most of them blank reads as a
+    table of negative findings, and there is no such finding — an absent line
+    means the deterministic rules had nothing to say, not that the two records
+    differ.
+    """
+    rendered = [
+        f"  {left} ~ {right}: {', '.join(rules)}"
+        for left, right, rules in lines if rules
+    ]
+    if not rendered:
+        return ""
+    return (
+        "\nevidence (deterministic hints about the INSTITUTIONS only; "
+        "not decisions, and silent about departments):\n"
+        + "\n".join(rendered) + "\n"
+    )
+
+
+def build_mode_a_user_prompt_v2(
+    signatures: List[dict], evidence: List[tuple] = (),
+) -> str:
     """Mode A (partition) user message, v2.
 
     Same JSON contract as v1 — every signature_id appears exactly once — with
@@ -138,10 +180,15 @@ def build_mode_a_user_prompt_v2(signatures: List[dict]) -> str:
         '{"entities":[{"signature_ids":["s1","s3"],"institution":"<short label>",'
         '"department":"<short label or empty>","department_relation":'
         '"same"|"variant"|"different"|"n/a","confidence":<0-1>,'
-        '"reasoning":"<1-2 sentences>"}],"uncertain_signature_ids":["s7"]}\n'
+        '"reasoning":"<1-2 sentences>"}],"uncertain_signature_ids":["s7"],'
+        '"uncertain_reasons":{"s7":"<why, 1 sentence>"},'
+        '"institution_relation":{"s1":"same","s2":"different","s7":"uncertain"}}\n'
         "Every input signature_id must appear exactly once, across either "
-        "entities[].signature_ids or uncertain_signature_ids.\n\n"
-        f"Records:\n{listing}"
+        "entities[].signature_ids or uncertain_signature_ids, and every one "
+        "must have an institution_relation entry — for a signature in its own "
+        "entity, state the relation to the closest entity you rejected.\n\n"
+        f"Records:\n{listing}\n"
+        f"{render_evidence(list(evidence))}"
     )
 
 
@@ -166,7 +213,9 @@ def build_mode_b_user_prompt(candidate: dict, canonicals: List[dict]) -> str:
     )
 
 
-def build_mode_b_user_prompt_v2(candidate: dict, canonicals: List[dict]) -> str:
+def build_mode_b_user_prompt_v2(
+    candidate: dict, canonicals: List[dict], evidence: List[tuple] = (),
+) -> str:
     """Mode B / residue user message, v2. Same contract, richer records."""
     payload = json.dumps(
         {"candidate": candidate, "entities": canonicals},
@@ -178,6 +227,8 @@ def build_mode_b_user_prompt_v2(candidate: dict, canonicals: List[dict]) -> str:
         "the listed entities, or a new entity. Return STRICT JSON only:\n"
         '{"decision":"match"|"new"|"uncertain","matched_entity_id":"<id or null>",'
         '"department_relation":"same"|"variant"|"different"|"n/a",'
+        '"institution_relation":"same"|"different"|"uncertain",'
         '"confidence":<0-1>,"reasoning":"<1-2 sentences>"}\n\n'
-        f"{payload}"
+        f"{payload}\n"
+        f"{render_evidence(list(evidence))}"
     )

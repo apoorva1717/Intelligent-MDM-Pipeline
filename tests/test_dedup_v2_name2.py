@@ -79,10 +79,16 @@ SLOT_CASES = [
     ("13135468 Name 1's own tail is not a department",
      "EMD Serono Research & Development", "Institute, Inc", [],
      "overflow", "EMD Serono Research & Development Institute, Inc", ""),
-    ("13345937 a truncated Name 1 continues into Name 2",
+    # With the full spelling present in the block this is a SPLIT name, not a
+    # truncation: institution_split is asked first and matches. The outcome —
+    # one institution, no department — is the same either way.
+    ("13345937 a name split across two cells, with the full form in the block",
      "Palo Alto Veterans Institute for", "Research",
      ["Palo Alto Veterans Institute for Research"],
-     "overflow", "Palo Alto Veterans Institute for Research", ""),
+     "institution_split", "Palo Alto Veterans Institute for Research", ""),
+    ("13011226 a truncated Name 1 continues into Name 2, nothing to match",
+     "American School of Classical Studies at", "Athens", [],
+     "overflow", "American School of Classical Studies at Athens", ""),
     ("13130623 an opaque Name 1 means Name 2 is the institution",
      "GHW23", "Case Western Reserve University",
      ["Case Western Reserve University"],
@@ -206,6 +212,111 @@ def test_a_real_department_still_splits(name2_only) -> None:
     )
     assert len(signatures) == 2
     assert sorted(s.has_name2 for s in signatures) == [False, True]
+
+
+def test_institution_split_empties_a_department_that_is_the_institution(name2_only) -> None:
+    """The EMD block: one company written four ways, two of them across cells.
+
+    "EMD Serono, Inc." + "Research and Development Institute" is not a
+    department of EMD Serono. Read as one, it lands on the populated side of
+    the asymmetry rule while the bare "EMD Serono Research and Development
+    Institute, Inc." lands on the empty side, and the rule then declares two
+    spellings of one company to be different entities — correctly applying
+    itself to a false premise.
+    """
+    signatures = build_signatures(_rows(
+        ("EMD Serono, Inc.", "Research and Development Institute"),
+        ("EMD Serono Research Institute, Inc.", "Research and Development Institute"),
+        ("EMD Serono Research and Development Institute, Inc.", None),
+    ))
+    # One signature, not three: with the full name selected from the block,
+    # all three rows resolve to the SAME institution and collapse before any
+    # model is consulted. That is the point of selecting the name rather than
+    # composing it — a composed name is a third spelling that matches nothing.
+    assert len(signatures) == 1
+    assert signatures[0].has_name2 is False
+    assert signatures[0].institution == (
+        "EMD Serono Research and Development Institute, Inc."
+    )
+    assert len(signatures[0].row_ids) == 3
+
+
+def test_a_split_names_fragments_are_hints_and_never_aliases(name2_only) -> None:
+    """A piece of a name is not another name for the whole thing.
+
+    "EMD Serono, Inc." is half of "EMD Serono Research and Development
+    Institute, Inc." — and it is also, separately, the entire name of a
+    different company at the same address. Filed as an alias it read as "this
+    institute is also called EMD Serono, Inc.", the cross_slot rule matched it
+    against that company, and the model merged the two: a company swallowed by
+    its own research arm. Both fragments are kept, as hints, which are shown
+    and never matched on.
+    """
+    result = classify_slots(
+        "EMD Serono, Inc.", "Research and Development Institute",
+        block_name1s=[
+            "EMD Serono, Inc.",
+            "EMD Serono Research and Development Institute, Inc.",
+        ],
+    )
+    assert result.kind == "institution_split"
+    assert result.aliases == []
+    assert result.hints == [
+        "EMD Serono, Inc.", "Research and Development Institute",
+    ]
+
+
+def test_a_split_fragment_is_not_cross_slot_evidence(name2_only) -> None:
+    """The regression this rule exists to prevent, asserted at the rule."""
+    from dedup.candidates import pair_evidence
+
+    class Unit:
+        def __init__(self, institution, aliases=(), ror=None):
+            self.institution = institution
+            self.aliases = aliases
+            self.operating_name = None
+            self.suggested_name = None
+            self.ror_id = ror
+            self.lei_id = None
+
+    bare = Unit("EMD Serono, Inc.", ror="https://ror.org/027zrs220")
+    institute = Unit(
+        "EMD Serono Research and Development Institute, Inc.",
+        ror="https://ror.org/027zrs220",
+    )
+    assert pair_evidence(bare, institute) == ("id",)
+
+
+def test_institution_split_fires_when_the_slots_overlap(name2_only) -> None:
+    """13138597's Name 1 already repeats "Research" and "Institute".
+
+    So the concatenation stutters and Jaro-Winkler reads it at 0.88, under the
+    0.92 bar. The containment arm is what catches it: neither slot introduces a
+    token the full name does not already carry.
+    """
+    result = classify_slots(
+        "EMD Serono Research Institute, Inc.", "Research and Development Institute",
+        block_name1s=[
+            "EMD Serono Research Institute, Inc.",
+            "EMD Serono Research and Development Institute, Inc.",
+        ],
+    )
+    assert result.kind == "institution_split"
+    assert result.department == ""
+
+
+def test_institution_split_needs_the_full_name_in_the_block(name2_only) -> None:
+    """Without a record spelling the whole name, a department stays a department.
+
+    The rule reads a name that IS present somewhere in the block; it never
+    invents one out of two slots that merely sit next to each other.
+    """
+    result = classify_slots(
+        "EMD Serono, Inc.", "Research and Development Institute",
+        block_name1s=["EMD Serono, Inc.", "Pfizer Inc."],
+    )
+    assert result.kind == "department"
+    assert result.department == "Research and Development Institute"
 
 
 def test_overflow_rebuilds_one_institution_from_two_cells(name2_only) -> None:
@@ -335,9 +446,20 @@ def test_acronym_nominates_a_short_name_against_its_initials() -> None:
 
 
 def test_acronym_drops_the_connector_words() -> None:
-    """"University of Texas" is UT to everyone who writes it down."""
-    units = [_unit(0, "University of Texas"), _unit(1, "UT")]
+    """"University of Texas Health" initialises to UTH, not UOTH."""
+    units = [_unit(0, "University of Texas Health"), _unit(1, "UTH")]
     assert _rules(units, extra_rules=True) == {(0, 1): "acronym"}
+
+
+def test_acronym_does_not_fire_on_two_letters() -> None:
+    """"HP" matches the initials of any two-word H-P name by coincidence.
+
+    Hewlett Packard Enterprise is a different company at the same street
+    address; an acronym line asserting otherwise would be handing the model
+    evidence for the merge this batch exists to forbid.
+    """
+    units = [_unit(0, "Hewlett Packard Enterprise Company"), _unit(1, "HP Inc")]
+    assert _rules(units, extra_rules=True) == {}
 
 
 def test_acronym_does_not_fire_on_a_long_name() -> None:
@@ -400,3 +522,147 @@ def test_the_reasoning_names_the_rule_that_nominated_the_pair(flags_on, fixture)
     )
     reasons = [r.reasoning or "" for r in results.values()]
     assert any("[id]" in reason for reason in reasons)
+
+
+# ---------------------------------------------------------------------------
+# The third outcome — link for review
+# ---------------------------------------------------------------------------
+
+def test_an_uncertain_pair_with_evidence_shares_a_link_id(flags_on, fixture) -> None:
+    """One organisation, two records, and no claim that they are one record.
+
+    Before this the file had two outcomes: a Cluster ID, or nothing. A pair the
+    model recognises as one organisation but declines to merge on legal-entity
+    grounds had to be reported as one or the other, so the finding was either
+    overstated as a duplicate or thrown away as "unique".
+    """
+    results, _summary = asyncio.run(
+        run_clustering(fixture_dedup_rows(fixture), SpecOracleLLM(fixture))
+    )
+    left, right = results["13185655"], results["13350355"]
+    assert left.link_id is not None and left.link_id == right.link_id
+    assert left.cluster_id is None and right.cluster_id is None, (
+        "a link is not a merge"
+    )
+    assert left.routing == right.routing == "manual_review"
+    assert left.reasoning, "the model's reason must survive to the row"
+
+
+def _sig(sid, name, relation=None, ror=None):
+    from dedup.signatures import Signature
+
+    return Signature(
+        signature_id=sid, norm_name1=name.lower(), norm_name2="",
+        name1=name, name2="", ror_id=ror, row_ids=[sid],
+        institution=name, institution_relation=relation,
+    )
+
+
+def _entities(*signatures):
+    from dedup.adjudicator import Entity
+
+    return [
+        Entity(entity_id=f"e{i}", signatures=[sig])
+        for i, sig in enumerate(signatures, start=1)
+    ]
+
+
+def test_two_unrelated_institutions_are_not_linked() -> None:
+    """A link needs a reason to exist, and sharing a block is not one."""
+    from dedup.adjudicator import _institution_links
+
+    links, conflicts = _institution_links(
+        _entities(_sig("r1", "Acme Biotech", "different"),
+                  _sig("r2", "Zenith Shipping", "different"))
+    )
+    assert links == {} and conflicts == []
+
+
+def test_a_shared_registry_id_links_regardless_of_the_model() -> None:
+    """The registry has standing of its own; a link is not the model's to veto."""
+    from dedup.adjudicator import _institution_links
+
+    links, conflicts = _institution_links(
+        _entities(_sig("r1", "EMD Serono, Inc.", "different", ror="r"),
+                  _sig("r2", "EMD Serono R&D Institute, Inc.", "different", ror="r"))
+    )
+    assert len(set(links.values())) == 1 and set(links) == {"r1", "r2"}
+    assert [sig.signature_id for sig, _ in conflicts] == ["r1", "r2"], (
+        "the registry and the model disagree — that is the steward's question"
+    )
+
+
+def test_evidence_plus_a_same_verdict_links_without_review() -> None:
+    from dedup.adjudicator import _flag_institution_conflicts, _institution_links
+
+    entities = _entities(
+        _sig("r1", "Stanford University", "same"),
+        _sig("r2", "Stanford University", "same"),
+    )
+    links, conflicts = _institution_links(entities)
+    _flag_institution_conflicts(conflicts)
+    assert len(set(links.values())) == 1
+    assert not any(s.uncertain for e in entities for s in e.signatures), (
+        "agreement is not a question"
+    )
+
+
+def test_an_uncertain_verdict_with_evidence_links_and_asks() -> None:
+    from dedup.adjudicator import _institution_links
+
+    links, _conflicts = _institution_links(
+        _entities(_sig("r1", "United States Gypsum Company", "uncertain"),
+                  _sig("r2", "USG Corporation, Inc.", "uncertain"))
+    )
+    assert len(set(links.values())) == 1
+
+
+def test_the_link_id_column_is_absent_with_the_flags_off(
+    monkeypatch: pytest.MonkeyPatch, fixture,
+) -> None:
+    """The v1 workbook keeps exactly v1's columns."""
+    from api.routes import _DEDUP_RESULT_COLUMNS, _build_dedup_xlsx, _rows_to_dedup_rows
+    from config import Settings
+    from dedup.adjudicator import cluster_blocks
+    from tests.dedup_v2_support import V1ReplayLLM, fixture_row_dicts
+
+    import io
+    import openpyxl
+
+    for flag in V2_FLAGS:
+        monkeypatch.setenv(flag, "false")
+    row_dicts = fixture_row_dicts(fixture)
+    headers = fixture["input_columns"]
+    rows = _rows_to_dedup_rows(row_dicts)
+    response = asyncio.run(
+        cluster_blocks(rows, V1ReplayLLM(fixture), settings=Settings())
+    )
+    workbook = openpyxl.load_workbook(
+        io.BytesIO(_build_dedup_xlsx(headers, row_dicts, rows, response))
+    )
+    written = [cell.value for cell in workbook.active[1]]
+    assert written[-len(_DEDUP_RESULT_COLUMNS):] == _DEDUP_RESULT_COLUMNS
+    assert "Link ID" not in written
+
+
+def test_the_link_id_column_is_written_with_the_flags_on(flags_on, fixture) -> None:
+    from api.routes import _build_dedup_xlsx, _rows_to_dedup_rows
+    from config import Settings
+    from dedup.adjudicator import cluster_blocks
+    from tests.dedup_v2_support import fixture_row_dicts
+
+    import io
+    import openpyxl
+
+    row_dicts = fixture_row_dicts(fixture)
+    headers = fixture["input_columns"]
+    rows = _rows_to_dedup_rows(row_dicts)
+    response = asyncio.run(
+        cluster_blocks(rows, SpecOracleLLM(fixture), settings=Settings())
+    )
+    workbook = openpyxl.load_workbook(
+        io.BytesIO(_build_dedup_xlsx(headers, row_dicts, rows, response))
+    )
+    header_row = [cell.value for cell in workbook.active[1]]
+    assert header_row.index("Link ID") == header_row.index("Cluster ID") + 1
+    assert "Link ID" in [cell.value for cell in workbook["Dedup Debug"][1]]

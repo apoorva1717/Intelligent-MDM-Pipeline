@@ -94,6 +94,11 @@ class DedupResultRow(BaseModel):
     # member row_ids); null for rows that are not in a duplicate cluster. Same
     # membership => same id across runs; a membership change => a new id.
     cluster_id: Optional[str] = None
+    # Same ORGANISATION, not the same record. Two rows sharing a Link ID and no
+    # Cluster ID are related and not duplicates — the outcome the file had no
+    # way to express, so every such finding was previously either overstated as
+    # a merge or lost as "unique". Null when the row is linked to nothing.
+    link_id: Optional[str] = None
     routing: Literal["cluster", "unique", "manual_review"]
     llm_flag: bool
     signature_id: str

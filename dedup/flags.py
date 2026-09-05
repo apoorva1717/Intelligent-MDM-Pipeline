@@ -50,3 +50,14 @@ def v2_name2() -> bool:
 def v2_id_conflict() -> bool:
     """ROR/LEI conflict routing (change D)."""
     return _enabled(ID_CONFLICT)
+
+
+def v2_any() -> bool:
+    """Whether any v2 change is active.
+
+    Gates the parts of the OUTPUT CONTRACT that belong to v2 as a whole rather
+    than to one change — the ``Link ID`` column. With every flag off the
+    workbook has exactly v1's columns, which is the promise the flags-off tests
+    hold this change to.
+    """
+    return v2_blocking() or v2_name2() or v2_id_conflict()

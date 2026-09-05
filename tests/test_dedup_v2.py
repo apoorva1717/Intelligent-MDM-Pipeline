@@ -39,6 +39,7 @@ os.environ.setdefault("MOCK_EXTERNAL_CALLS", "true")
 os.environ.setdefault("OPENAI_API_KEY", "test-key-for-mocks")
 
 from tests.dedup_v2_support import (  # noqa: E402
+    ADDRESS_LESS_MERGE_GROUPS,
     MUST_LINK,
     MUST_LINK_FOR_REVIEW,
     MUST_MERGE,
@@ -123,19 +124,63 @@ def test_must_merge_rows_are_comparable_at_all(group, adversary_run) -> None:
     )
 
 
+@pytest.mark.parametrize("group", ADDRESS_LESS_MERGE_GROUPS)
+def test_an_address_less_merge_still_routes_to_review(group, oracle_run) -> None:
+    """The names matched. Nothing said the two records share a door.
+
+    Lee Memorial Health System and United States Gypsum both merge on name
+    evidence alone — neither row in either pair carries a usable address. The
+    Cluster ID stands because the names are conclusive; the routing says a
+    human confirms it, because the delivery point never existed to confirm.
+    """
+    _fixture, results, _summary, _llm = oracle_run
+    row_ids = MUST_MERGE[group]
+    routings = {row_id: results[row_id].routing for row_id in row_ids}
+    assert set(routings.values()) == {"manual_review"}, (
+        f"{group}: an address-less cluster must route to review, got {routings}\n"
+        f"{describe(results, row_ids)}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # MUST_LINK_FOR_REVIEW
 # ---------------------------------------------------------------------------
 
+def link_of(results, row_id):
+    """A row's Link ID, or None when it is linked to nothing."""
+    return getattr(results.get(row_id), "link_id", None)
+
+
 @pytest.mark.parametrize("group", sorted(MUST_LINK_FOR_REVIEW), ids=sorted(MUST_LINK_FOR_REVIEW))
-def test_must_link_shares_a_cluster(group, oracle_run) -> None:
+def test_must_link_carries_the_finding_in_the_right_column(group, oracle_run) -> None:
+    """Which id carries a review link is the whole of what it claims.
+
+    A shared Cluster ID says "these are one record, please confirm". A shared
+    Link ID with NO Cluster ID says "these are one organisation and two
+    records". Putting a finding in the wrong column either overstates it or
+    loses it, so the column is asserted, not just the routing.
+    """
     _fixture, results, _summary, _llm = oracle_run
-    row_ids = MUST_LINK_FOR_REVIEW[group]
+    spec = MUST_LINK_FOR_REVIEW[group]
+    row_ids = list(spec.rows)
     clusters = {cluster_of(results, row_id) for row_id in row_ids}
-    assert len(clusters) == 1 and None not in clusters, (
-        f"{group}: expected one shared Cluster ID across {row_ids}, got "
-        f"{sorted(str(c) for c in clusters)}\n{describe(results, row_ids)}"
-    )
+    if spec.shares_cluster:
+        assert len(clusters) == 1 and None not in clusters, (
+            f"{group}: expected one shared Cluster ID across {row_ids}, got "
+            f"{sorted(str(c) for c in clusters)}\n{spec.why}\n"
+            f"{describe(results, row_ids)}"
+        )
+    else:
+        links = {link_of(results, row_id) for row_id in row_ids}
+        assert len(links) == 1 and None not in links, (
+            f"{group}: expected one shared Link ID across {row_ids}, got "
+            f"{sorted(str(l) for l in links)}\n{spec.why}\n"
+            f"{describe(results, row_ids)}"
+        )
+        assert len(clusters) == len(row_ids) or clusters == {None}, (
+            f"{group}: a link is not a merge — these rows must not share a "
+            f"Cluster ID\n{describe(results, row_ids)}"
+        )
 
 
 @pytest.mark.parametrize("group", sorted(MUST_LINK_FOR_REVIEW), ids=sorted(MUST_LINK_FOR_REVIEW))
@@ -147,7 +192,7 @@ def test_must_link_routes_every_member_to_manual_review(group, oracle_run) -> No
     conflicting ROR ids.
     """
     _fixture, results, _summary, _llm = oracle_run
-    row_ids = MUST_LINK_FOR_REVIEW[group]
+    row_ids = list(MUST_LINK_FOR_REVIEW[group].rows)
     routings = {row_id: results[row_id].routing for row_id in row_ids if row_id in results}
     assert set(routings.values()) == {"manual_review"}, (
         f"{group}: expected every member to route to manual_review, got {routings}\n"
@@ -174,13 +219,12 @@ def test_must_not_merge(label, anchors, forbidden, oracle_run) -> None:
         if cluster_of(results, row_id) is not None
         and cluster_of(results, row_id) in anchor_clusters
     ]
-    # Rows listed together must also stay apart from each other (HP vs HPE,
-    # the two off-site Assay Depot addresses).
-    for i, left in enumerate(forbidden):
-        for right in forbidden[i + 1:]:
-            shared = cluster_of(results, left)
-            if shared is not None and shared == cluster_of(results, right):
-                violations.append((f"{left}+{right}", shared))
+    # Only anchor-against-forbidden. Whether two forbidden rows belong together
+    # is a separate question that this table does not answer: the two
+    # address-less NASA rows are a real judgement call about "Ames Research
+    # Center" against "Intelligent Systems Division / Ames Research Center",
+    # and it lives in MODEL_JUDGEMENT. HP against HPE needs no extra rule —
+    # one is the anchor and the other is forbidden against it.
     assert not violations, (
         f"{label}: {violations} share a cluster with the anchor group {anchors}\n"
         f"{describe(results, [*anchors, *forbidden])}"
@@ -225,11 +269,6 @@ def test_structural_must_not_merge_survives_a_wrong_model(
 # MUST_LINK — same organisation, different site
 # ---------------------------------------------------------------------------
 
-def link_of(results, row_id):
-    """A row's Link ID, or None while the column does not exist yet."""
-    return getattr(results.get(row_id), "link_id", None)
-
-
 @pytest.mark.parametrize("group", sorted(MUST_LINK), ids=sorted(MUST_LINK))
 def test_must_link_shares_one_link_id(group, oracle_run) -> None:
     """One organisation across several delivery points is ONE Link ID.
@@ -245,6 +284,31 @@ def test_must_link_shares_one_link_id(group, oracle_run) -> None:
         f"{group}: expected one shared Link ID.\n{spec.why}\ngot {links}\n"
         f"{describe(results, spec.rows)}"
     )
+
+
+@pytest.mark.parametrize("group", sorted(MUST_LINK), ids=sorted(MUST_LINK))
+def test_must_link_routing(group, oracle_run) -> None:
+    """A link states a relationship; it does not by itself demand review.
+
+    Review is for a disagreement — the registry and the model saying different
+    things about one pair. Sending every linked pair to a human instead would
+    bury the four real questions in this batch under dozens of statements of
+    the obvious.
+    """
+    _fixture, results, _summary, _llm = oracle_run
+    spec = MUST_LINK[group]
+    if spec.review is None:
+        pytest.skip("routing for this group is asserted by its own expectation")
+    routings = {row_id: results[row_id].routing for row_id in spec.rows}
+    if spec.review:
+        assert set(routings.values()) == {"manual_review"}, (
+            f"{group}: expected review\n{spec.why}\n{describe(results, spec.rows)}"
+        )
+    else:
+        assert "manual_review" not in routings.values(), (
+            f"{group}: a plain link must not route to review — {routings}\n"
+            f"{spec.why}\n{describe(results, spec.rows)}"
+        )
 
 
 @pytest.mark.parametrize("group", sorted(MUST_LINK), ids=sorted(MUST_LINK))

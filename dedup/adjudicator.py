@@ -29,9 +29,9 @@ from dedup.prompts import (
     prompt_version,
     system_prompt,
 )
-from dedup.candidates import CandidateUnit, generate_candidate_pairs
-from dedup.flags import v2_blocking, v2_name2
-from dedup.cluster_key import cluster_hash
+from dedup.candidates import CandidateUnit, generate_candidate_pairs, pair_evidence
+from dedup.flags import v2_any, v2_blocking, v2_id_conflict, v2_name2
+from dedup.cluster_key import cluster_hash, link_hash
 from dedup.signatures import Signature, build_blocks, build_signatures
 
 logger = logging.getLogger(__name__)
@@ -197,7 +197,17 @@ def _enforce_identity_split(
     into singletons and flag each for human review; we never guess a safe
     regrouping (the safe outcome is manual_review). Returns the (expanded)
     entity list, the next free id index, and whether any split fired.
+
+    Under ``DEDUP_V2_ID_CONFLICT`` the entity is KEPT and routed to review
+    instead (see :func:`_route_identity_conflict`). Exploding it into
+    singletons destroys the finding: two records at one door carrying two
+    different ROR ids is a Phase 1 resolution problem, and the pair is the
+    evidence for it. Split apart they become two unremarkable unique rows, and
+    a steward has nothing to look at.
     """
+    if v2_id_conflict():
+        return _route_identity_conflict(entities), next_index, False
+
     result: List[Entity] = []
     fired = False
     for ent in entities:
@@ -235,6 +245,108 @@ def _enforce_identity_split(
                 reasoning=reason,
             ))
     return result, next_index, fired
+
+
+def _ordered_distinct(values: Any) -> List[str]:
+    """Distinct non-empty values in first-appearance order.
+
+    NOT ``_distinct_nonempty``, which returns a set: iterating a set of strings
+    is hash-ordered, so a reason string built from one names its two ids in an
+    order that can change between interpreters. The v1 split path sorts its set
+    before rendering and is safe; anything new has to preserve order itself.
+    """
+    seen: dict = {}
+    for value in values:
+        if value:
+            seen.setdefault(value, None)
+    return list(seen)
+
+
+def _signature_order(sig: Signature) -> tuple:
+    """Sort key putting a block's signatures back in build order (s1, s2, …).
+
+    An entity's ``signatures`` list is in the order the MODEL happened to write
+    the ids, which is not a property of the data. Anything user-visible derived
+    from it — the two ids named in an id-conflict reason — has to be re-ordered
+    off the signature ids, or the same conflict reads differently between runs.
+    """
+    raw = (sig.signature_id or "").lstrip("s")
+    return (0, int(raw)) if raw.isdigit() else (1, sig.signature_id or "")
+
+
+def _short_id(value: str) -> str:
+    """``https://ror.org/04v7hvq31`` → ``04v7hvq31``; an LEI unchanged."""
+    return str(value).rstrip("/").rsplit("/", 1)[-1]
+
+
+def _inferred_from_short_name(sig: Signature, kind: str) -> Optional[str]:
+    """A note when this signature's id was guessed from a name too thin to guess from.
+
+    A one- or two-token Name 1 — "Scripps", "Takeda" — is a brand, not an
+    organisation: it names a family with several members and a resolver picking
+    one of them is choosing, not resolving. When Phase 1's provenance says the
+    id was not registry-verified AND the name it came from is that short, the
+    conflict has a likely cause and the reviewer should be told it rather than
+    left to rediscover it.
+
+    Silent when the provenance column says verified, and silent when it says
+    nothing at all — an absent provenance is not evidence of inference.
+    """
+    provenance = sig.ror_provenance if kind == "ROR" else sig.lei_provenance
+    if not provenance or ":verified" in provenance:
+        return None
+    tokens = (sig.institution or sig.name1 or "").split()
+    if not tokens or len(tokens) > 2:
+        return None
+    identifier = sig.ror_id if kind == "ROR" else sig.lei_id
+    return (
+        f"{kind} {_short_id(identifier)} was inferred "
+        f"({provenance}) from a {len(tokens)}-token name "
+        f"({' '.join(tokens)!r})"
+    )
+
+
+def _route_identity_conflict(entities: List[Entity]) -> List[Entity]:
+    """Keep the entity, route it to review, and say what the conflict is.
+
+    v1 split such an entity into singletons. That is the one outcome that
+    cannot be right: either the records are the same and the split is wrong, or
+    they are different and the ids are doing their job — and in both cases the
+    thing a steward needs is the PAIR, with both ids named. The cluster id
+    therefore stands, the routing says "confirm this", and the reasoning names
+    the two ids in the order the signatures appear.
+    """
+    for ent in entities:
+        if len(ent.signatures) < 2:
+            continue
+        ordered = sorted(ent.signatures, key=_signature_order)
+        for kind, ids in (
+            ("ROR", _ordered_distinct(s.ror_id for s in ordered)),
+            ("LEI", _ordered_distinct(s.lei_id for s in ordered)),
+        ):
+            if len(ids) < 2:
+                continue
+            logger.warning(
+                "Dedup: entity %s holds conflicting %s ids %s; routing to "
+                "manual_review with the cluster intact", ent.entity_id, kind, ids,
+            )
+            reason = (
+                f"id conflict: {kind} "
+                + " vs ".join(_short_id(value) for value in ids)
+            )
+            notes = [
+                note for note in (
+                    _inferred_from_short_name(sig, kind) for sig in ordered
+                ) if note
+            ]
+            if notes:
+                reason = f"{reason} — {'; '.join(dict.fromkeys(notes))}"
+            for sig in ent.signatures:
+                sig.uncertain = True
+                sig.merge_reasoning = reason
+            ent.reasoning = reason
+            break
+    return entities
 
 
 # Explicit non-merge assertions. Read ONLY to demote toward manual_review —
@@ -362,10 +474,15 @@ async def _mode_a(
         by_id = {s.signature_id: s for s in bucket}
         anchor = signatures[0] if signatures else None
         payload = [_signature_payload(s, anchor) for s in bucket]
-        user_prompt = (
-            build_mode_a_user_prompt_v2(payload) if v2_name2()
-            else build_mode_a_user_prompt(payload)
-        )
+        if v2_name2():
+            evidence = [
+                (left.signature_id, right.signature_id, pair_evidence(left, right))
+                for index, left in enumerate(bucket)
+                for right in bucket[index + 1:]
+            ]
+            user_prompt = build_mode_a_user_prompt_v2(payload, evidence)
+        else:
+            user_prompt = build_mode_a_user_prompt(payload)
 
         async with semaphore:
             call = await llm.adjudicate(system_prompt(), user_prompt)
@@ -419,6 +536,15 @@ async def _mode_a(
             ))
             next_index += 1
 
+        # v2 gives an uncertain verdict somewhere to put its reason. Without
+        # it the instruction "list both signatures and give the reason" has no
+        # slot to write into, and a reviewer opening the workbook on a
+        # link-for-review row finds an empty Reasoning cell — which by the
+        # emission contract means "never nominated", the opposite of the truth.
+        uncertain_reasons = parsed.get("uncertain_reasons") or {}
+        if not isinstance(uncertain_reasons, dict):
+            uncertain_reasons = {}
+        _record_institution_relation(by_id, parsed.get("institution_relation"))
         for sid in parsed.get("uncertain_signature_ids", []) or []:
             sig = by_id.get(sid)
             if sig is None or sid in assigned:
@@ -426,6 +552,9 @@ async def _mode_a(
             assigned.add(sid)
             decision_counts["uncertain"] += 1
             sig.uncertain = True
+            reason = uncertain_reasons.get(sid)
+            if isinstance(reason, str) and reason.strip():
+                sig.merge_reasoning = reason.strip()
             entities.append(Entity(
                 entity_id=f"e{next_index}", signatures=[sig], adjudicated=True,
             ))
@@ -498,10 +627,16 @@ async def _mode_b(
             }
             for e in compatible
         ]
-        user_prompt = (
-            build_mode_b_user_prompt_v2(candidate, canonical_payload) if v2_name2()
-            else build_mode_b_user_prompt(candidate, canonical_payload)
-        )
+        if v2_name2():
+            evidence = [
+                (sig.signature_id, e.entity_id, pair_evidence(sig, e.signatures[0]))
+                for e in compatible
+            ]
+            user_prompt = build_mode_b_user_prompt_v2(
+                candidate, canonical_payload, evidence
+            )
+        else:
+            user_prompt = build_mode_b_user_prompt(candidate, canonical_payload)
 
         async with semaphore:
             call = await llm.adjudicate(system_prompt(), user_prompt, max_tokens=1000)
@@ -509,6 +644,9 @@ async def _mode_b(
         _record_call_stats(stats, call)
 
         parsed = parse_json_object(call.raw) if call.error is None else None
+        if parsed is not None:
+            _record_institution_relation({sig.signature_id: sig},
+                                         {sig.signature_id: parsed.get("institution_relation")})
         if parsed is None:
             stats.errors += 1
             logger.error(
@@ -756,8 +894,19 @@ async def _adjudicate_residue(
             **{k: v for k, v in _entity_prompt_fields(canon_ent, anchor).items()
                if k != "signature_id"},
         }
-        build = build_mode_b_user_prompt_v2 if v2_name2() else build_mode_b_user_prompt
-        user_prompt = build(_entity_prompt_fields(cand_ent, anchor), [canonical])
+        if v2_name2():
+            user_prompt = build_mode_b_user_prompt_v2(
+                _entity_prompt_fields(cand_ent, anchor), [canonical],
+                [(
+                    cand_ent.signatures[0].signature_id,
+                    canon_ent.entity_id,
+                    pair_evidence(cand_ent.signatures[0], canon_ent.signatures[0]),
+                )],
+            )
+        else:
+            user_prompt = build_mode_b_user_prompt(
+                _entity_prompt_fields(cand_ent, anchor), [canonical]
+            )
         async with semaphore:
             call = await llm.adjudicate(system_prompt(), user_prompt, max_tokens=1000)
         stats.llm_calls += 1
@@ -850,6 +999,191 @@ async def _adjudicate_residue(
 UNVERIFIED_DELIVERY_POINT = "unverified delivery point"
 
 
+_RELATIONS = ("same", "different", "uncertain")
+
+
+def _record_institution_relation(by_id: dict, reported: Any) -> None:
+    """Store the model's institution verdict on each signature it named.
+
+    Tolerant by construction: an absent or malformed value leaves the
+    signature's relation ``None``, which the linker reads as "never asked"
+    rather than as "different". A field the model forgot must not become a
+    silent assertion that two organisations are unrelated.
+    """
+    if isinstance(reported, str):
+        reported = {sid: reported for sid in by_id}
+    if not isinstance(reported, dict):
+        return
+    for sid, value in reported.items():
+        sig = by_id.get(sid)
+        if sig is None or not isinstance(value, str):
+            continue
+        value = value.strip().lower()
+        if value in _RELATIONS:
+            sig.institution_relation = value
+
+
+def _institution_links(
+    entities: List[Entity], cross_block: bool = False
+) -> tuple[dict, List[tuple]]:
+    """Group signatures into institution families, and find conflicts.
+
+    The Link ID answers "same ORGANISATION?" and the Cluster ID answers "same
+    RECORD?", and the two are computed independently on purpose. Deriving the
+    link from the merge outcome would make it say nothing the Cluster ID does
+    not already say — and the cases worth linking are exactly the ones that did
+    NOT merge: a company and its research institute, a parent and its
+    subsidiary, a university and the LLC that runs its warehouse.
+
+    A pair is one family when any of these holds:
+
+    * they share a ROR or LEI — a registry says so;
+    * a deterministic ``evidence`` line fires AND the model called the
+      institution the "same" on either side;
+    * a deterministic line fires AND the model was "uncertain" on either side.
+
+    A CONFLICT is the fourth case: deterministic evidence (or a shared registry
+    id) says one organisation and the model says "different". That is a
+    disagreement between two sources that both have standing, and it is the one
+    thing a steward must see — so it links AND routes to review. A flag with no
+    connection is useless to whoever opens the workbook: two rows marked for
+    review and nothing saying they are about each other.
+
+    ``cross_block`` restricts the pair test to the registry arm. An institution
+    family is not a property of one delivery point — HGST at Great Oaks Pkwy
+    and HGST at Yerba Buena Rd are one organisation, and a Link ID that stopped
+    at the block boundary would say so twice and connect neither. The model,
+    however, only ever compares within a block, so across blocks the shared ROR
+    or LEI is the only evidence there is; the within-block links then join
+    those families transitively.
+
+    Returns ``({row_id: link_id}, [(signature, counterpart), …])``.
+    """
+    signatures = [sig for ent in entities for sig in ent.signatures]
+    if len(signatures) < 2:
+        return {}, []
+
+    # Keyed on POSITION, never on signature_id: those restart at "s1" in every
+    # block (dedup/signatures.py), so across blocks they collide and every
+    # block's first signature is unioned with every other block's — which
+    # produced one Link ID for the entire file.
+    parent = list(range(len(signatures)))
+
+    def find(key: int) -> int:
+        while parent[key] != key:
+            parent[key] = parent[parent[key]]
+            key = parent[key]
+        return key
+
+    def union(left: int, right: int) -> None:
+        a, b = find(left), find(right)
+        if a != b:
+            parent[max(a, b)] = min(a, b)
+
+    conflicts: List[tuple] = []
+    for index, left in enumerate(signatures):
+        for offset, right in enumerate(signatures[index + 1:], start=index + 1):
+            shared_id = _ids_converge_pair(left, right)
+            if cross_block:
+                if shared_id:
+                    union(index, offset)
+                continue
+            evidence = bool(pair_evidence(left, right))
+            if not shared_id and not evidence:
+                continue
+            relations = {left.institution_relation, right.institution_relation}
+            # Every case that reached here links: agreement, uncertainty, and
+            # disagreement alike. What the disagreement changes is the routing,
+            # not whether the pair is connected.
+            union(index, offset)
+            if "different" in relations:
+                # Evidence or a registry id against the model's own verdict.
+                for sig in (left, right):
+                    if sig.institution_relation == "different":
+                        conflicts.append((sig, left if sig is right else right))
+
+    groups: dict = {}
+    for position, sig in enumerate(signatures):
+        groups.setdefault(find(position), []).append(sig)
+
+    links: dict = {}
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        row_ids = [rid for sig in members for rid in sig.row_ids]
+        link_id = link_hash(row_ids)
+        for rid in row_ids:
+            links[rid] = link_id
+    return links, conflicts
+
+
+def _merge_link_maps(local: dict, across: dict) -> dict:
+    """Join the within-block families with the across-block ones.
+
+    Two rows are one family if either map says so, so the two partitions are
+    unioned rather than one overriding the other: HGST's two "HGST Inc" rows
+    reach each other only through their local links to a "Hitachi Global
+    Storage Technologies" row, and those two reach each other only through a
+    shared ROR.
+    """
+    parent: dict = {}
+
+    def find(key: str) -> str:
+        parent.setdefault(key, key)
+        while parent[key] != key:
+            parent[key] = parent[parent[key]]
+            key = parent[key]
+        return key
+
+    def union(left: str, right: str) -> None:
+        a, b = find(left), find(right)
+        if a != b:
+            parent[max(a, b)] = min(a, b)
+
+    for mapping in (local, across):
+        groups: dict = {}
+        for row_id, link_id in mapping.items():
+            groups.setdefault(link_id, []).append(row_id)
+        for members in groups.values():
+            for other in members[1:]:
+                union(members[0], other)
+
+    families: dict = {}
+    for row_id in parent:
+        families.setdefault(find(row_id), []).append(row_id)
+
+    merged: dict = {}
+    for members in families.values():
+        if len(members) < 2:
+            continue
+        link_id = link_hash(members)
+        for row_id in members:
+            merged[row_id] = link_id
+    return merged
+
+
+def _ids_converge_pair(left: Signature, right: Signature) -> bool:
+    return bool(
+        (left.lei_id and left.lei_id == right.lei_id)
+        or (left.ror_id and left.ror_id == right.ror_id)
+    )
+
+
+def _flag_institution_conflicts(conflicts: List[tuple]) -> None:
+    """Route a model-vs-evidence disagreement to a human, with the reason.
+
+    Not a merge and not a split: the entity structure is left exactly as the
+    model decided it. Only the routing changes, because the disagreement is the
+    finding — "the registry says these are one organisation and the model says
+    they are two" is precisely a steward's question, and resolving it either
+    way in code would be inventing an answer neither source gave.
+    """
+    for sig, _counterpart in conflicts:
+        sig.uncertain = True
+
+
+
+
 def _emit_rows(
     block_id: str,
     entities: List[Entity],
@@ -857,6 +1191,7 @@ def _emit_rows(
     model_version: str,
     stats: BlockStats,
     unverified_block: bool = False,
+    link_ids: Optional[dict] = None,
 ) -> List[DedupResultRow]:
     """Build one output row per input row.
 
@@ -935,6 +1270,7 @@ def _emit_rows(
                     row_id=rid,
                     block_id=block_id,
                     cluster_id=cluster_id,
+                    link_id=(link_ids or {}).get(rid),
                     routing=routing,
                     llm_flag=ent.llm_merged,
                     signature_id=sig.signature_id,
@@ -1049,6 +1385,13 @@ async def _process_block(
             for sig in ent.signatures:
                 sig.uncertain = True
 
+    # Conflicts are block-local — they are a disagreement about a comparison
+    # the model actually made, and it only compares within a block. Linking is
+    # deliberately NOT block-local and happens once, at the request level.
+    if v2_any():
+        _, conflicts = _institution_links(entities)
+        _flag_institution_conflicts(conflicts)
+
     out = _emit_rows(
         block_id, entities, llm.model, stats.model_version or llm.model, stats,
         unverified_block=unverified_block,
@@ -1071,7 +1414,7 @@ async def _process_block(
             "candidate_cap_exceeded": stats.candidate_cap_exceeded,
         },
     )
-    return out, stats
+    return out, stats, entities
 
 
 def _resolve_candidate_config(settings: Any) -> _CandidateConfig:
@@ -1139,6 +1482,7 @@ async def cluster_blocks(
     )
 
     all_rows: List[DedupResultRow] = []
+    all_entities: List[Entity] = []
     summary = DedupSummary(blocks=len(blocks), rows_in=len(rows))
     total_prompt_tokens = 0
     total_completion_tokens = 0
@@ -1149,8 +1493,9 @@ async def cluster_blocks(
     # cluster_id is a content hash of member row_ids (see cluster_hash) —
     # already globally unique and order-independent, so no cross-block
     # renumbering is required.
-    for out_rows, stats in block_outputs:
+    for out_rows, stats, block_entities in block_outputs:
         all_rows.extend(out_rows)
+        all_entities.extend(block_entities)
         summary.distinct_signatures += stats.distinct_signatures
         summary.clusters += stats.clusters
         summary.rows_clustered += stats.rows_clustered
@@ -1164,6 +1509,20 @@ async def cluster_blocks(
         candidates_by_rule.update(stats.candidates_by_rule)
         rejected_with_reasoning += stats.rejected_with_reasoning
         candidate_cap_exceeded_blocks += int(stats.candidate_cap_exceeded)
+
+    if v2_any():
+        # One Link ID per institution family across the whole request. Within
+        # each block the model's verdicts have already been applied; here the
+        # families those produced are joined wherever a registry id spans two
+        # blocks, so an organisation at three addresses carries one id.
+        block_links, _ = _institution_links(all_entities, cross_block=True)
+        local_links: dict = {}
+        for out_rows, _stats, block_entities in block_outputs:
+            links, _ = _institution_links(block_entities)
+            local_links.update(links)
+        merged = _merge_link_maps(local_links, block_links)
+        for row in all_rows:
+            row.link_id = merged.get(row.row_id)
 
     summary.candidates_generated = candidates_generated
     summary.rejected_with_reasoning = rejected_with_reasoning

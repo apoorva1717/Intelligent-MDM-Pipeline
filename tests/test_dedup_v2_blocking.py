@@ -388,7 +388,26 @@ def test_two_runs_produce_a_byte_identical_workbook(flags_on, fixture) -> None:
 
     Equal assignments are not the same claim as an equal file — the sheet
     assembly, the debug sheet and the column order all sit between them.
+
+    Compared member by member, excluding exactly one file. An .xlsx is a zip,
+    and openpyxl writes the current wall-clock time into ``docProps/core.xml``
+    as the document's created/modified date. Two runs a second apart therefore
+    differ in bytes that describe WHEN the file was made, not WHAT is in it —
+    so a raw byte comparison passes or fails on whether the two builds landed
+    inside the same second, which is a coin toss and not a property.
+
+    Everything else is asserted identical, and the excluded file is asserted to
+    be the ONLY difference — so if content ever starts drifting, this test says
+    so rather than widening quietly.
+
+    (``_build_dedup_xlsx`` could pin that timestamp and make the file literally
+    byte-identical. It deliberately does not: with the flags off this change is
+    required to leave v1's output untouched, and rewriting the archive would
+    alter every workbook v1 produces.)
     """
+    import io
+    import zipfile
+
     from api.routes import _build_dedup_xlsx, _rows_to_dedup_rows
     from config import Settings
     from dedup.adjudicator import cluster_blocks
@@ -396,11 +415,74 @@ def test_two_runs_produce_a_byte_identical_workbook(flags_on, fixture) -> None:
     row_dicts = fixture_row_dicts(fixture)
     headers = fixture["input_columns"]
 
-    def build() -> bytes:
+    def build() -> dict[str, bytes]:
         rows = _rows_to_dedup_rows(row_dicts)
         response = asyncio.run(
             cluster_blocks(rows, SpecOracleLLM(fixture), settings=Settings())
         )
-        return _build_dedup_xlsx(headers, row_dicts, rows, response)
+        raw = _build_dedup_xlsx(headers, row_dicts, rows, response)
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            return {name: archive.read(name) for name in archive.namelist()}
 
-    assert build() == build()
+    #: The only member openpyxl fills with a wall-clock value.
+    timestamped = "docProps/core.xml"
+
+    first, second = build(), build()
+    assert set(first) == set(second)
+    differing = {name for name in first if first[name] != second[name]}
+    assert differing <= {timestamped}, (
+        f"content differs between two runs of the same batch: {sorted(differing)}"
+    )
+
+
+def test_link_ids_do_not_collapse_across_unrelated_blocks(flags_on, fixture) -> None:
+    """Two organisations that share nothing must not share a Link ID.
+
+    A regression test for a real bug: the cross-block pass keyed its union-find
+    on ``signature_id``, and those restart at "s1" in every block
+    (dedup/signatures.py). Every block's first signature was therefore unioned
+    with every other block's, and the whole 200-row file came out carrying ONE
+    Link ID — which is not a wrong answer so much as no answer, and it made a
+    failing expectation look green.
+    """
+    results, _summary = asyncio.run(
+        run_clustering(fixture_dedup_rows(fixture), SpecOracleLLM(fixture))
+    )
+    links = {row_id: r.link_id for row_id, r in results.items() if r.link_id}
+    assert len(set(links.values())) >= 2, "every row landed in one link family"
+
+    # Two organisations with nothing in common: no shared id, no shared name,
+    # different states, different blocks.
+    stanford, hgst = links.get("13348869"), links.get("13057667")
+    assert stanford is not None and hgst is not None
+    assert stanford != hgst, (
+        "Stanford University and HGST share a Link ID — the union-find is "
+        "collapsing across blocks again"
+    )
+
+
+def test_link_ids_are_stable_across_runs_and_input_order(flags_on, fixture) -> None:
+    """A Link ID must name the same family tomorrow, and after a re-sort.
+
+    It is derived from the sorted member row_ids, not from an institution name
+    — the family spans several spellings by construction and choosing one of
+    them as the id's basis would be an arbitrary vote. That makes the id a
+    function of MEMBERSHIP: it survives a re-run and a re-ordered export, and
+    it changes when a row joins or leaves, which is the same contract
+    ``Cluster ID`` carries and the same one a reader already understands.
+    """
+    rows = fixture_dedup_rows(fixture)
+    shuffled = list(rows)
+    random.Random(20260905).shuffle(shuffled)
+    assert [r.row_id for r in shuffled] != [r.row_id for r in rows]
+
+    def links(source) -> dict[str, str]:
+        results, _summary = asyncio.run(
+            run_clustering(source, SpecOracleLLM(fixture))
+        )
+        return {row_id: r.link_id for row_id, r in results.items() if r.link_id}
+
+    first, second, reordered = links(rows), links(rows), links(shuffled)
+    assert first, "no row carried a Link ID at all"
+    assert first == second, "two runs of the same input disagreed"
+    assert first == reordered, "the input's row order reached the Link IDs"

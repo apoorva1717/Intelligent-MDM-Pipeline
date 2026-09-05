@@ -115,7 +115,10 @@ class Signature:
     #: Other names for the SAME institution — a trading name, an opaque code
     #: that sat in Name 1. Shown to the model; never part of the key.
     aliases: List[str] = field(default_factory=list)
-    #: Text that names a person or a place rather than an organisation.
+    #: Text shown to the model for context and never matched on: a person, a
+    #: place, a word left beside a delivery desk, or a fragment of a name this
+    #: record split across two slots. Distinct from ``aliases``, which are
+    #: other names for the whole institution and ARE matched on.
     hints: List[str] = field(default_factory=list)
     #: Phase 1 columns the file route used to drop (C.4).
     operating_name: Optional[str] = None
@@ -125,6 +128,13 @@ class Signature:
     lei_provenance: Optional[str] = None
     #: How this signature's slot text was read. Reported, never keyed on.
     slot_kind: str = "none"
+    #: The model's verdict on whether this signature's INSTITUTION is the same
+    #: organisation as the entity it was compared with — "same", "different",
+    #: "uncertain", or None when it was never asked. Separate from the entity
+    #: decision on purpose: two records can be one institution and two
+    #: entities, and the Link ID needs the first answer while the Cluster ID
+    #: needs the second.
+    institution_relation: Optional[str] = None
     #: The first member row's parsed delivery point, for the street label.
     address: Optional[object] = None
 

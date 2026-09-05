@@ -55,7 +55,8 @@ from enrichment.preprocess import (  # noqa: F401 — _normalise_dba is used via
 from enrichment.search_terms import has_no_canonical_form
 
 SlotKind = Literal[
-    "none", "logistics", "alias", "overflow", "institution", "contact", "department"
+    "none", "logistics", "alias", "overflow", "institution", "institution_split",
+    "contact", "department",
 ]
 
 #: Delivery, purchasing and back-office desks. Every site has one and none of
@@ -109,6 +110,12 @@ OVERFLOW_THRESHOLD = 0.92
 
 #: How close the Name 2 of an opaque-coded row must be to a real Name 1.
 INSTITUTION_THRESHOLD = 0.85
+
+#: How close a rebuilt name must be to a real institution in the block before
+#: the two slots count as one name split in half. Same bar as overflow, for the
+#: same reason: the outcome is an empty department, and an empty department is
+#: on the far side of the asymmetry rule from a populated one.
+INSTITUTION_SPLIT_THRESHOLD = 0.92
 
 
 @dataclass
@@ -178,6 +185,19 @@ def _is_logistics(value: str) -> bool:
     return bool(_LOGISTICS_RE.search(value)) or has_no_canonical_form(value)
 
 
+def _logistics_leftover(value: str) -> str:
+    """What is left of a delivery-desk phrase once the desk words come out.
+
+    "Center Distribution" leaves "Center". It is kept as a HINT and never
+    appended to the institution: "University of Texas Southwestern Medical" is
+    a truncation of a real name, and gluing a stray word from the slot below
+    onto it would manufacture a spelling that is neither what the record says
+    nor what the institution is called.
+    """
+    remainder = _LOGISTICS_RE.sub(" ", value)
+    return " ".join(remainder.replace(",", " ").split())
+
+
 # ---------------------------------------------------------------------------
 # The classifier
 # ---------------------------------------------------------------------------
@@ -227,6 +247,81 @@ def _is_overflow(name1: str, name2: str, block_name1s: Sequence[str]) -> bool:
     return bool(tokens) and tokens[-1].lower().strip(".,") in _DANGLING_CONNECTORS
 
 
+def _tokens(value: str) -> set:
+    return set(strip_legal_suffix(value).split())
+
+
+def _institution_split(
+    name1: str, name2: str, block_name1s: Sequence[str]
+) -> Optional[str]:
+    """The rebuilt institution when Name 2 is part of Name 1's OWN name.
+
+    Distinct from overflow, which completes a Name 1 that was cut off. Here
+    both slots hold a piece of one name and the pieces overlap, so neither is
+    a fragment of the other:
+
+        13353599  "EMD Serono, Inc."                   + "Research and Development Institute"
+        13138597  "EMD Serono Research Institute, Inc." + "Research and Development Institute"
+        13364185  "EMD Serono Research and Development Institute, Inc."
+
+    All three are one company. Read as a department, the first two are
+    departmental records and the third is a bare institution — which the
+    asymmetry rule then says are DIFFERENT entities, correctly applying the
+    rule to a premise that is false. The oracle hides this because it answers
+    from the fixture; a real model reads the fields it is given and splits them.
+
+    Two tests, either sufficient:
+
+    (a) a rebuilt form — the two slots concatenated, in either order, legal
+        suffixes stripped — is JW >= 0.92 to another institution in the block;
+    (b) neither slot introduces a token that other institution's name does not
+        already carry, so both are fragments of it. This is the arm 13138597
+        needs: its Name 1 already repeats "Research" and "Institute", so the
+        concatenation stutters and Jaro-Winkler reads it at 0.88.
+
+    Returns the institution the block spells in full, or None.
+
+    The returned name is SELECTED from the block, never composed. The two
+    slots are only evidence that this record means the name another record
+    already spells properly; concatenating them would invent a third spelling
+    ("EMD Serono Research Institute, Inc. Research and Development Institute")
+    that no record states and no registry holds. Both original slot values are
+    kept as aliases by the caller, so nothing is lost.
+    """
+    if not name1 or not name2:
+        return None
+    rebuilds = [f"{name1} {name2}".strip(), f"{name2} {name1}".strip()]
+    best: Optional[tuple[float, int, str]] = None
+
+    def offer(score: float, matched: str) -> None:
+        nonlocal best
+        # Highest similarity wins; then the fuller spelling; then the name
+        # itself, so a block with two equally good matches resolves the same
+        # way on every run.
+        key = (score, len(matched), matched)
+        if best is None or key > best:
+            best = key
+
+    for other in block_name1s:
+        if not other or other.strip() == name1.strip():
+            continue
+        target = strip_legal_suffix(other)
+        if not target:
+            continue
+        for rebuilt in rebuilds:
+            score = JaroWinkler.similarity(strip_legal_suffix(rebuilt), target)
+            if score >= INSTITUTION_SPLIT_THRESHOLD:
+                offer(score, other.strip())
+        target_tokens = set(target.split())
+        if (
+            target_tokens
+            and _tokens(name2) <= target_tokens
+            and _tokens(name1) <= target_tokens
+        ):
+            offer(INSTITUTION_SPLIT_THRESHOLD, other.strip())
+    return None if best is None else best[2]
+
+
 def _is_institution(name1: str, name2: str, block_name1s: Sequence[str]) -> bool:
     """Whether Name 1 is an opaque code and Name 2 is the real institution."""
     if not _OPAQUE_NAME1_RE.match(name1.strip()):
@@ -261,6 +356,8 @@ def classify_slots(
     trading name, and the desk/person rules that empty the department — are
     asked in that order, and the order is load-bearing:
 
+    * institution-split before overflow, because a Name 1 that already carries
+      part of the name is not a truncated one;
     * overflow before logistics, or PAVIR's "Research" is read as a facility
       function and its institution is never rebuilt;
     * opaque-Name-1 before everything, because when Name 1 is a customer code
@@ -291,6 +388,29 @@ def classify_slots(
             hints=[value for value in tail],
         )
 
+    matched = _institution_split(name1, head, block_name1s)
+    if matched is not None:
+        # Both slots held pieces of one name, and another record in the block
+        # spells that name in full. The pieces are kept — but as HINTS, not as
+        # aliases.
+        #
+        # An alias is another name for the whole institution. A fragment of a
+        # split name is not: "EMD Serono, Inc." is half of "EMD Serono Research
+        # and Development Institute, Inc.", and it is also, separately, the
+        # entire name of a different company at the same address. Filed as an
+        # alias it said "this institute is also called EMD Serono, Inc.", the
+        # cross_slot rule matched it against that company's institution, and
+        # the two merged — the company swallowed by its own research arm.
+        # Hints are shown and never matched on.
+        department = _department_of(tail, hints, aliases)
+        return SlotResult(
+            institution=matched,
+            department=department,
+            aliases=aliases,
+            kind="institution_split",
+            hints=[name1, head] + hints,
+        )
+
     if _is_overflow(name1, head, block_name1s):
         return SlotResult(
             institution=f"{name1} {head}".strip(),
@@ -310,7 +430,11 @@ def classify_slots(
         elif slot_kind == "contact":
             hints.append(value)
         elif slot_kind == "logistics":
-            pass  # a desk is not a unit; it names no entity to be different from
+            # A desk is not a unit; it names no entity to be different from.
+            # Anything left beside the desk words is shown as a hint.
+            leftover = _logistics_leftover(value)
+            if leftover and leftover.lower() != value.strip().lower():
+                hints.append(leftover)
         else:
             department_parts.append(value)
 

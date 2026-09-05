@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, List, Optional, Sequence, Tuple
 
 from rapidfuzz.distance import JaroWinkler
 
@@ -135,7 +135,7 @@ class Candidate:
         return (rank, -self.score, self.a, self.b)
 
 
-def _ids_converge(x: CandidateUnit, y: CandidateUnit) -> bool:
+def _ids_converge(x: Any, y: Any) -> bool:
     return bool(
         (x.lei_id and x.lei_id == y.lei_id)
         or (x.ror_id and x.ror_id == y.ror_id)
@@ -149,6 +149,13 @@ _ACRONYM_STOPWORDS = frozenset({"of", "the", "and", "for", "&"})
 #: An acronym is a short string. Six characters is "UTSWMC" — past that the
 #: initials of a long name start matching short names by accident.
 ACRONYM_MAX_LEN = 6
+
+#: And two characters is not an initialism at all, it is a coincidence: "HP"
+#: matches the initials of every two-word name beginning H, P — including
+#: "Hewlett Packard Enterprise", which is a DIFFERENT company at the same
+#: address and one of the traps this batch exists to catch. Every real acronym
+#: in the batch is three characters or more (GES, USG, UCSF, NIST, UTWMC).
+ACRONYM_MIN_LEN = 3
 ACRONYM_THRESHOLD = 0.8
 CROSS_SLOT_THRESHOLD = 0.85
 
@@ -172,10 +179,10 @@ def _acronym_score(x: CandidateUnit, y: CandidateUnit) -> float:
     """
     best = 0.0
     for long_unit, short_unit in ((x, y), (y, x)):
-        short = strip_legal_suffix(short_unit.name)
-        if not short or len(short) > ACRONYM_MAX_LEN:
+        short = strip_legal_suffix(_evidence_name(short_unit))
+        if not short or not ACRONYM_MIN_LEN <= len(short) <= ACRONYM_MAX_LEN:
             continue
-        initials = _initials(long_unit.name)
+        initials = _initials(_evidence_name(long_unit))
         if len(initials) < 2:
             continue
         best = max(best, JaroWinkler.similarity(initials, short))
@@ -191,8 +198,12 @@ def _cross_slot_score(x: CandidateUnit, y: CandidateUnit) -> float:
     """
     best = 0.0
     for source, target in ((x, y), (y, x)):
-        others = [*source.aliases, source.operating_name, source.suggested_name]
-        target_name = strip_legal_suffix(target.name)
+        others = [
+            *getattr(source, "aliases", ()),
+            getattr(source, "operating_name", None),
+            getattr(source, "suggested_name", None),
+        ]
+        target_name = strip_legal_suffix(_evidence_name(target))
         if not target_name:
             continue
         for other in others:
@@ -245,6 +256,91 @@ def nominate(
         return Candidate(a.index, b.index, "token", jac)
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Deterministic evidence, for the prompt
+# ---------------------------------------------------------------------------
+
+#: Words that say what KIND of legal thing an organisation is, not which one.
+#: A difference confined to these is a difference in company structure, never
+#: in identity — "Covia Corp" and "Covia Holdings LLC" are one company.
+CORPORATE_STRUCTURE_WORDS = frozenset({
+    "company", "holdings", "holding", "group", "corporation", "corp", "inc",
+    "co", "llc", "ltd", "limited", "incorporated", "plc", "gmbh", "ag", "sa",
+})
+
+#: At most this many extra tokens on the longer side for a token-containment
+#: match to still be one name. One extra word is a variant ("St Elizabeth
+#: Hospital" / "St Elizabeth Community Hospital"); four is a different
+#: organisation ("EMD Serono" / "EMD Serono Research and Development
+#: Institute"), and calling that one the same institution would merge a company
+#: with its own research arm.
+NAME_VARIANT_MAX_EXTRA_TOKENS = 1
+
+
+def _evidence_name(unit: Any) -> str:
+    """The institution of anything with one — a Signature or a CandidateUnit."""
+    return getattr(unit, "institution", "") or getattr(unit, "name", "") or ""
+
+
+def _strip_corporate_structure(name: str) -> str:
+    tokens = strip_legal_suffix(name).split()
+    while tokens and tokens[-1] in CORPORATE_STRUCTURE_WORDS:
+        tokens.pop()
+    return " ".join(tokens)
+
+
+def _name_variant(left: str, right: str) -> bool:
+    a, b = strip_legal_suffix(left), strip_legal_suffix(right)
+    if not a or not b:
+        return False
+    if JaroWinkler.similarity(a, b) >= 0.85:
+        return True
+    ta, tb = set(a.split()), set(b.split())
+    if ta <= tb:
+        return len(tb - ta) <= NAME_VARIANT_MAX_EXTRA_TOKENS
+    if tb <= ta:
+        return len(ta - tb) <= NAME_VARIANT_MAX_EXTRA_TOKENS
+    return False
+
+
+def pair_evidence(x: Any, y: Any) -> Tuple[str, ...]:
+    """Which deterministic same-institution signals fire for this pair.
+
+    Computed for every pair in a prompt, ungated by block size, and shown to
+    the model as a hint. It exists because the model kept declining to apply
+    rules the prompt already stated: told that acronyms are the same
+    institution, it still answered "'Ges Inc' could be an abbreviation of
+    'Global Equipment Services Inc' … there is no explicit alias support", and
+    refused four merges on the same reasoning. The rules were never the
+    problem; the model wanted a field to point at. This is that field.
+
+    These are hints about the INSTITUTIONS only. None of them says anything
+    about the departments, and none of them is a merge.
+    """
+    name_x, name_y = _evidence_name(x), _evidence_name(y)
+    fired: List[str] = []
+
+    if _ids_converge(x, y):
+        fired.append("id")
+
+    if _acronym_score(x, y) >= ACRONYM_THRESHOLD:
+        fired.append("acronym")
+
+    stripped_x, stripped_y = (
+        _strip_corporate_structure(name_x), _strip_corporate_structure(name_y),
+    )
+    if stripped_x and stripped_x == stripped_y and name_x.strip() != name_y.strip():
+        fired.append("suffix_only")
+
+    if _name_variant(name_x, name_y):
+        fired.append("name_variant")
+
+    if _cross_slot_score(x, y) >= CROSS_SLOT_THRESHOLD:
+        fired.append("cross_slot")
+
+    return tuple(fired)
 
 
 def _eligible(

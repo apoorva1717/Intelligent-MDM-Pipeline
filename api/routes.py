@@ -1025,11 +1025,15 @@ def _get_dedup_llm(settings: Settings):
     Mirrors ``_get_orchestrator`` — when ``MOCK_EXTERNAL_CALLS`` is set the
     mock client is used so the endpoint runs offline.
     """
+    from dedup.cache import wrap_if_enabled
+
     if settings.mock_external_calls:
         from tests.mocks.dedup_mock import MockDedupLLM
         logger.info("Mock mode enabled — using mock dedup LLM")
         return MockDedupLLM()
-    return DedupLLM(settings)
+    # Unwrapped unless DEDUP_FIXTURE_CACHE_DIR is set, so the shipped path is
+    # unchanged; set it to record or replay a run (see dedup/cache.py).
+    return wrap_if_enabled(DedupLLM(settings))
 
 
 # ---------------------------------------------------------------------------
@@ -1140,6 +1144,17 @@ _DEDUP_RESULT_COLUMNS = ["Cluster ID", "Routing", "LLM Flag", "Confidence", "Rea
 _DEDUP_DEBUG_SHEET = "Dedup Debug"
 _DEDUP_DEBUG_COLUMNS = ["row_id", "Cluster ID", "Block ID", "Signature ID"]
 
+# v2 adds one column, and only while a v2 flag is on: with all three off the
+# workbook must have exactly v1's columns. "Link ID" sits beside "Cluster ID"
+# because a reader comparing the two is asking the question the pair exists to
+# answer — same record, or merely same organisation?
+_DEDUP_RESULT_COLUMNS_V2 = [
+    "Cluster ID", "Link ID", "Routing", "LLM Flag", "Confidence", "Reasoning",
+]
+_DEDUP_DEBUG_COLUMNS_V2 = [
+    "row_id", "Cluster ID", "Link ID", "Block ID", "Signature ID",
+]
+
 
 def _build_dedup_xlsx(
     headers: list[str],
@@ -1161,30 +1176,41 @@ def _build_dedup_xlsx(
     """
     from openpyxl import Workbook
 
+    from dedup.flags import v2_any
+
+    linked = v2_any()
+    result_columns = _DEDUP_RESULT_COLUMNS_V2 if linked else _DEDUP_RESULT_COLUMNS
+    debug_columns = _DEDUP_DEBUG_COLUMNS_V2 if linked else _DEDUP_DEBUG_COLUMNS
+
     result_by_id = {r.row_id: r for r in response.rows}
 
     wb = Workbook()
     ws = wb.active
-    ws.append([*headers, *_DEDUP_RESULT_COLUMNS])
+    ws.append([*headers, *result_columns])
 
     debug_ws = wb.create_sheet(_DEDUP_DEBUG_SHEET)
-    debug_ws.append(_DEDUP_DEBUG_COLUMNS)
+    debug_ws.append(debug_columns)
 
     for row_dict, parsed in zip(row_dicts, rows):
         values = [row_dict.get(header, "") for header in headers]
         res = result_by_id.get(parsed.row_id)
         if res is None:
-            ws.append([*values, *([""] * len(_DEDUP_RESULT_COLUMNS))])
+            ws.append([*values, *([""] * len(result_columns))])
             continue
         ws.append([
             *values,
             res.cluster_id,
+            *([res.link_id] if linked else []),
             res.routing,
             res.llm_flag,
             res.confidence,
             res.reasoning,
         ])
-        debug_ws.append([res.row_id, res.cluster_id, res.block_id, res.signature_id])
+        debug_ws.append([
+            res.row_id, res.cluster_id,
+            *([res.link_id] if linked else []),
+            res.block_id, res.signature_id,
+        ])
 
     if source_contents is not None:
         _copy_extra_sheets(source_contents, wb)

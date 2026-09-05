@@ -67,7 +67,6 @@ MUST_MERGE: dict[str, list[str]] = {
     "Lee":                  ["13216611", "13340941"],
     "Stanford":             ["13348869", "13359026"],
     "Takeda40":             ["13017986", "13057204"],
-    "UTSW":                 ["13185655", "13350355"],
     "UTSA":                 ["13044882", "13044976"],
     "CWRU2109":             ["13210816", "13337284"],
     "CWRU2080":             ["13130623", "13141440"],
@@ -84,8 +83,8 @@ MUST_MERGE: dict[str, list[str]] = {
     "Hoag":                 ["13334046", "13335012", "13336374"],
     "HGST_GreatOaks":       ["13057667", "13118081"],
     "HGST_Yerba":           ["13038460", "13192407"],
-    "USG":                  ["13104512", "13158570"],
     "RRDS":                 ["13079821", "13181372"],
+    "USG":                  ["13104512", "13158570"],
     "GES_Hellyer":          ["13017251", "13226604"],
     "GES_Qume":             ["13223469", "13234427"],
     "EMD_RDI":              ["13135468", "13138597", "13353599", "13364185"],
@@ -119,6 +118,17 @@ class LinkGroup:
     rows: tuple[str, ...]
     sites: tuple[tuple[str, ...], ...]
     why: str
+    #: What a correct adjudicator says about the INSTITUTIONS — "same" for one
+    #: organisation written more than one way, "different" where the model has
+    #: standing to disagree with the registry (a parent and its institute
+    #: sharing a ROR). Drives the oracle's ``institution_relation``.
+    relation: str = "same"
+    #: Whether the link must also route to review. ``True`` = must, ``False`` =
+    #: must not, ``None`` = this group's routing is decided by something else
+    #: (an unverifiable address, an id conflict) and is asserted elsewhere.
+    #: A link is normally just a statement of relationship; it becomes a
+    #: steward's question only when the evidence and the model disagree.
+    review: Optional[bool] = None
 
 
 #: Same organisation, different delivery points. Every one of these is a real
@@ -167,6 +177,50 @@ MUST_LINK: dict[str, LinkGroup] = {
             "bridging the two sites."
         ),
     ),
+    "Stanford_family": LinkGroup(
+        rows=("13348869", "13367825"),
+        sites=(("13348869",), ("13367825",)),
+        review=False,
+        why=(
+            "One institution at 1291 Welch Rd, two entities: a bare Stanford "
+            "University record and Stanford's Fairchild Science department. "
+            "Same organisation, so they share a Link ID; different entities, "
+            "so they must not share a Cluster ID. Nothing is in doubt here — "
+            "no review."
+        ),
+    ),
+    "Army_family": LinkGroup(
+        rows=("13048062", "13146532"),
+        sites=(("13048062",), ("13146532",)),
+        review=False,
+        why=(
+            "United States Army at 6501 E 11 Mile Rd: Army Contracting Command "
+            "and Devcom Ground Vehicle Systems Center. One institution, two "
+            "commands."
+        ),
+    ),
+    "Merck_MRL": LinkGroup(
+        rows=("13118369", "13348301"),
+        sites=(("13118369",), ("13348301",)),
+        review=False,
+        why=(
+            "Merck & Co., Inc. at 320 Bent St, bare and with Merck Research "
+            "Laboratories below it. One institution, two entities."
+        ),
+    ),
+    "EMD_family": LinkGroup(
+        rows=("13033988", "13364185"),
+        sites=(("13033988",), ("13364185",)),
+        why=(
+            "EMD Serono, Inc. and EMD Serono Research and Development "
+            "Institute, Inc. share ROR 027zrs220 and are two legal entities. "
+            "The registry says one organisation and the model says two — a "
+            "disagreement between sources that both have standing, which is "
+            "exactly a steward's question. Linked AND routed to review."
+        ),
+        relation="different",
+        review=True,
+    ),
     "PAVIR": LinkGroup(
         rows=("13345790", "13345937", "13345935", "13346170"),
         sites=(("13345790", "13345937"), ("13345935", "13346170")),
@@ -178,12 +232,65 @@ MUST_LINK: dict[str, LinkGroup] = {
     ),
 }
 
-#: Cluster id shared, but every member must route to ``manual_review``: an
-#: unverifiable delivery point (PAVIR) or a hard-id conflict (Scripps).
-MUST_LINK_FOR_REVIEW: dict[str, list[str]] = {
-    "PAVIR_noaddr":     ["13345790", "13345937"],
-    "Scripps_Activity": ["13335883", "13336451"],
+@dataclass(frozen=True)
+class ReviewLink:
+    """Related, routed to a human, and NOT asserted as a duplicate.
+
+    Two shapes, and the difference is which id carries the finding:
+
+    ``shares_cluster=True``
+        One entity, but nothing verified it — an address that cannot be checked
+        (PAVIR), or two ROR ids that disagree (Scripps). The Cluster ID stands
+        and the routing says a person must confirm it.
+    ``shares_cluster=False``
+        Not one entity, and not unrelated either. The evidence says one
+        organisation; a real corporate distinction says not one record. The
+        finding lives in the Link ID, and there is deliberately no Cluster ID
+        to overstate it.
+    """
+
+    rows: tuple[str, ...]
+    shares_cluster: bool
+    why: str
+    relation: str = "same"
+
+
+#: Routed to review, every member, in all three cases.
+MUST_LINK_FOR_REVIEW: dict[str, ReviewLink] = {
+    "PAVIR_noaddr": ReviewLink(
+        rows=("13345790", "13345937"),
+        shares_cluster=True,
+        why="One organisation, one entity — at a delivery point neither row names.",
+    ),
+    "Scripps_Activity": ReviewLink(
+        rows=("13335883", "13336451"),
+        shares_cluster=True,
+        why=(
+            "One entity at 9060 Activity Rd carrying two different ROR ids. "
+            "The conflict is the finding; exploding the entity into singletons "
+            "loses it. Change D."
+        ),
+    ),
+    "UTSW": ReviewLink(
+        rows=("13185655", "13350355"),
+        shares_cluster=False,
+        why=(
+            "Utwmc LLC vs UT Southwestern Medical Center — acronym evidence, "
+            "different legal-entity form; steward decision by design. Moved "
+            "here from MUST_MERGE: the model is right that an LLC is a real "
+            "corporate distinction, and the expectation was wrong to demand a "
+            "merge it cannot honestly make."
+        ),
+        relation="different",
+    ),
 }
+
+#: Merge groups whose rows name no delivery point. The merge stands — the names
+#: say these are one record — but the cluster routes to review because nothing
+#: established the address behind it. Asserted so the rule stays visible: it is
+#: the only thing standing between "the names matched" and "these are the same
+#: customer".
+ADDRESS_LESS_MERGE_GROUPS = ("Lee", "USG")
 
 #: Expected to keep failing until Phase 1 stops overflowing "…and Technology"
 #: out of Name 1 and into Street 1. Marked xfail; not chased here.
@@ -294,10 +401,13 @@ def forbidden_pairs() -> set[frozenset[str]]:
 
 def expected_group_of(row_id: str) -> Optional[str]:
     """The expectation-table group a row belongs to, if the tables name one."""
-    for table in (MUST_MERGE, MUST_LINK_FOR_REVIEW, XFAIL):
+    for table in (MUST_MERGE, XFAIL):
         for name, ids in table.items():
             if row_id in ids:
                 return name
+    for name, link in MUST_LINK_FOR_REVIEW.items():
+        if row_id in link.rows:
+            return name
     return None
 
 
@@ -463,10 +573,15 @@ def _payload(user_prompt: str) -> dict[str, Any]:
     v1 heads its partition listing "Signatures:", v2 heads it "Records:"; both
     pairwise templates end with the payload after a blank line.
     """
+    # v5 appends an "evidence:" block after the payload; cut it off before
+    # parsing. The doubles answer from the expectation tables, not from the
+    # hints, so they read the records and ignore the block — which is also the
+    # point of keeping it out of the JSON.
+    body = user_prompt.split("\nevidence (", 1)[0]
     for marker in ("Signatures:\n", "Records:\n"):
-        if marker in user_prompt:
-            return json.loads(user_prompt.split(marker, 1)[1])
-    return json.loads(user_prompt.rsplit("\n\n", 1)[1])
+        if marker in body:
+            return json.loads(body.split(marker, 1)[1])
+    return json.loads(body.rsplit("\n\n", 1)[1])
 
 
 class _RecordingLLM:
@@ -542,8 +657,50 @@ class SpecOracleLLM(_RecordingLLM):
             for row_id, row in fixture["rows"].items()
         }
 
+    def _review_only(self, left: Iterable[str], right: Iterable[str]) -> bool:
+        """A pair that is one organisation but must not become one record."""
+        left, right = set(left), set(right)
+        for link in MUST_LINK_FOR_REVIEW.values():
+            if link.shares_cluster:
+                continue
+            if left & set(link.rows) and right & set(link.rows):
+                return True
+        return False
+
+    def _institution_relation(
+        self, left: Iterable[str], right: Iterable[str]
+    ) -> Optional[str]:
+        """What a correct adjudicator says about these two INSTITUTIONS.
+
+        Separate from ``_same_entity`` on purpose — that is the question the
+        Cluster ID answers, and this is the question the Link ID answers. A
+        pair can be one institution and two entities (Stanford bare against
+        Stanford's Fairchild department), and a pair can be two institutions
+        the registry files under one id (EMD Serono against its own research
+        institute).
+
+        The tables answer it where they speak. Everywhere else the default is
+        the deterministic evidence: ``pair_evidence`` exists precisely to be a
+        same-institution signal, so absent a table saying otherwise, agreeing
+        with it is what a correct adjudicator does.
+        """
+        left, right = set(left), set(right)
+        for table in (MUST_LINK, MUST_LINK_FOR_REVIEW):
+            for spec in table.values():
+                members = set(spec.rows)
+                if left & members and right & members:
+                    return spec.relation
+        for a in left:
+            for b in right:
+                group_a, group_b = expected_group_of(a), expected_group_of(b)
+                if group_a is not None and group_a == group_b:
+                    return "same"
+        return None
+
     def _same_entity(self, left: Iterable[str], right: Iterable[str]) -> bool:
         left, right = set(left), set(right)
+        if self._review_only(left, right):
+            return False
         for a in left:
             for b in right:
                 if frozenset({a, b}) in self._forbidden:
@@ -573,22 +730,62 @@ class SpecOracleLLM(_RecordingLLM):
                     break
             else:
                 groups.append([sid])
+        # A signature that is review-only against any other in this call is
+        # reported uncertain rather than grouped — the v7 instruction.
+        review = {
+            sid
+            for group in groups for sid in group
+            for other in groups for osid in other
+            if osid != sid and self._review_only(resolved[sid], resolved[osid])
+        }
+        relations: dict[str, str] = {}
+        for sig in signatures:
+            sid = sig["signature_id"]
+            verdicts = {
+                self._institution_relation(resolved[sid], resolved[other])
+                for other in resolved if other != sid
+            }
+            # One field, several counterparts: report the strongest signal, so
+            # a disagreement is never hidden behind an agreement elsewhere.
+            for candidate in ("different", "uncertain", "same"):
+                if candidate in verdicts:
+                    relations[sid] = candidate
+                    break
+            else:
+                relations[sid] = "same" if len(resolved) > 1 else "different"
         return json.dumps({
+            "institution_relation": relations,
             "entities": [
                 {
-                    "signature_ids": group,
+                    "signature_ids": [s for s in group if s not in review],
                     "institution": "",
                     "department": "",
                     "confidence": 1.0,
                     "reasoning": "SpecOracleLLM: grouped from the expectation tables.",
                 }
                 for group in groups
+                if [s for s in group if s not in review]
             ],
-            "uncertain_signature_ids": [],
+            "uncertain_signature_ids": sorted(review),
+            "uncertain_reasons": {
+                sid: (
+                    "SpecOracleLLM: one organisation, but a different legal "
+                    "entity — a steward decision, not a merge."
+                )
+                for sid in sorted(review)
+            },
         })
 
     def _answer_pair(self, payload: dict[str, Any]) -> str:
         candidate, entity_rows = self._pair_entries(payload)
+        relation = next(
+            (
+                verdict
+                for rows in entity_rows
+                if (verdict := self._institution_relation(candidate, rows))
+            ),
+            "same" if entity_rows else "different",
+        )
         for entity, rows in zip(payload.get("entities", []), entity_rows):
             if self._same_entity(candidate, rows):
                 return json.dumps({
@@ -597,6 +794,7 @@ class SpecOracleLLM(_RecordingLLM):
                     "confidence": 1.0,
                     "reasoning": "SpecOracleLLM: same entity per the expectation tables.",
                     "department_relation": "same",
+                    "institution_relation": relation,
                 })
         return json.dumps({
             "decision": "new",
@@ -604,6 +802,7 @@ class SpecOracleLLM(_RecordingLLM):
             "confidence": 1.0,
             "reasoning": "SpecOracleLLM: different entity per the expectation tables.",
             "department_relation": "different",
+            "institution_relation": relation,
         })
 
 
