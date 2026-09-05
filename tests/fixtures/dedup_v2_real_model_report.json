@@ -1,0 +1,320 @@
+{
+  "model": {
+    "blocks": 128,
+    "rows_in": 200,
+    "distinct_signatures": 171,
+    "clusters": 39,
+    "rows_clustered": 76,
+    "rows_unique": 107,
+    "rows_manual_review": 17,
+    "llm_calls": 38,
+    "errors": 0,
+    "candidates_generated": 11,
+    "rejected_with_reasoning": 10,
+    "candidate_cap_exceeded_blocks": 0
+  },
+  "cache": {
+    "hits": 38,
+    "misses": 0,
+    "dir": "tests/fixtures/dedup_v2_llm_cache"
+  },
+  "real": {
+    "merge": {
+      "Lee": true,
+      "Stanford": true,
+      "Takeda40": true,
+      "UTSA": true,
+      "CWRU2109": true,
+      "CWRU2080": true,
+      "CWRU2210": true,
+      "USC_Norris": true,
+      "Shell": true,
+      "Army_ACC": true,
+      "VA_Dallas": true,
+      "JFK": true,
+      "Marian": true,
+      "StElizabeth": true,
+      "Methodist": true,
+      "MedicalCity": true,
+      "Hoag": true,
+      "HGST_GreatOaks": true,
+      "HGST_Yerba": true,
+      "RRDS": true,
+      "USG": true,
+      "GES_Hellyer": true,
+      "GES_Qume": true,
+      "EMD_RDI": true,
+      "UCSF_Folsom": true,
+      "Nova": true,
+      "PAVIR_Miranda": true,
+      "Scripps_Waples": true,
+      "UTRGV": true,
+      "Merck_Cambridge_bare": true,
+      "Labcorp": true,
+      "Covia": true,
+      "Merck_Rahway": true,
+      "AssayDepot": true,
+      "Bruker": true
+    },
+    "not_merge": {
+      "Stanford / Fairchild Science": true,
+      "UCLA bare vs Center for Systems Biomedicine": true,
+      "Merck Cambridge bare vs MRL / ESC": true,
+      "Takeda 35 vs TDC Americas": true,
+      "EMD RDI vs EMD Serono, Inc. (bare)": true,
+      "Army ACC vs Devcom GVSC": true,
+      "Merck Rahway vs MRL - Kenilworth": true,
+      "Takeda 40 vs Takeda Oncology": true,
+      "UTSA vs UT Health / Texas A&M / THSU": true,
+      "HP Inc vs Hewlett Packard Enterprise": true,
+      "UCLA 675 vs 695": true,
+      "Bruker 40 Manning vs 15 Fortune": true,
+      "UCSF 1855 Folsom vs 1550 4th": true,
+      "UTRGV 1201 W University vs 1407 E Freddy Gonzalez": true,
+      "Labcorp 655 Fairfield vs 800 Technology": true,
+      "Assay Depot 505 Lomas Santa Fe vs N Acacia / S Hwy 101": true,
+      "NASA Mark Ave vs the address-less ISD rows": true
+    },
+    "link": {
+      "NASA_Ames": {
+        "sites_apart": true,
+        "shared_link_id": true,
+        "routing": true
+      },
+      "HGST": {
+        "sites_apart": true,
+        "shared_link_id": true,
+        "routing": true
+      },
+      "Scripps": {
+        "sites_apart": true,
+        "shared_link_id": true,
+        "routing": true
+      },
+      "Merck": {
+        "sites_apart": true,
+        "shared_link_id": true,
+        "routing": true
+      },
+      "Stanford_family": {
+        "sites_apart": true,
+        "shared_link_id": true,
+        "routing": true
+      },
+      "Army_family": {
+        "sites_apart": true,
+        "shared_link_id": true,
+        "routing": true
+      },
+      "Merck_MRL": {
+        "sites_apart": true,
+        "shared_link_id": true,
+        "routing": true
+      },
+      "EMD_family": {
+        "sites_apart": true,
+        "shared_link_id": true,
+        "routing": true
+      },
+      "PAVIR": {
+        "sites_apart": true,
+        "shared_link_id": true,
+        "routing": true
+      }
+    },
+    "link_for_review": {
+      "PAVIR_noaddr": {
+        "finding_carried": true,
+        "all_manual_review": true
+      },
+      "Scripps_Activity": {
+        "finding_carried": true,
+        "all_manual_review": true
+      },
+      "UTSW": {
+        "finding_carried": true,
+        "all_manual_review": true
+      }
+    },
+    "xfail": {
+      "NIST": false
+    },
+    "model_judgement": {
+      "NASA: 13128613 vs the two address-less ISD rows": {
+        "13128613": {
+          "cluster": null,
+          "routing": "unique",
+          "reasoning": "This record names only Ames Research Center, while the others specify narrower units within Ames. Same institution, but a different department-level entity from the more specific divisional records."
+        },
+        "13057138": {
+          "cluster": null,
+          "routing": "unique",
+          "reasoning": "All three records are the same NASA institution, but this record names a more specific sub-unit including Space Biosciences Research within Intelligent Systems Division at Ames. That is a different department entity from the broader Ames-only or Intelligent Systems Division entries."
+        },
+        "13120409": {
+          "cluster": null,
+          "routing": "unique",
+          "reasoning": "This record and the others share the same NASA institution, but this department is Intelligent Systems Division at Ames. It is broader than s1's Space Biosciences sub-unit and more specific than s3's Ames Research Center alone, so it is a separate entity."
+        }
+      }
+    }
+  },
+  "oracle": {
+    "merge": {
+      "Lee": true,
+      "Stanford": true,
+      "Takeda40": true,
+      "UTSA": true,
+      "CWRU2109": true,
+      "CWRU2080": true,
+      "CWRU2210": true,
+      "USC_Norris": true,
+      "Shell": true,
+      "Army_ACC": true,
+      "VA_Dallas": true,
+      "JFK": true,
+      "Marian": true,
+      "StElizabeth": true,
+      "Methodist": true,
+      "MedicalCity": true,
+      "Hoag": true,
+      "HGST_GreatOaks": true,
+      "HGST_Yerba": true,
+      "RRDS": true,
+      "USG": true,
+      "GES_Hellyer": true,
+      "GES_Qume": true,
+      "EMD_RDI": true,
+      "UCSF_Folsom": true,
+      "Nova": true,
+      "PAVIR_Miranda": true,
+      "Scripps_Waples": true,
+      "UTRGV": true,
+      "Merck_Cambridge_bare": true,
+      "Labcorp": true,
+      "Covia": true,
+      "Merck_Rahway": true,
+      "AssayDepot": true,
+      "Bruker": true
+    },
+    "not_merge": {
+      "Stanford / Fairchild Science": true,
+      "UCLA bare vs Center for Systems Biomedicine": true,
+      "Merck Cambridge bare vs MRL / ESC": true,
+      "Takeda 35 vs TDC Americas": true,
+      "EMD RDI vs EMD Serono, Inc. (bare)": true,
+      "Army ACC vs Devcom GVSC": true,
+      "Merck Rahway vs MRL - Kenilworth": true,
+      "Takeda 40 vs Takeda Oncology": true,
+      "UTSA vs UT Health / Texas A&M / THSU": true,
+      "HP Inc vs Hewlett Packard Enterprise": true,
+      "UCLA 675 vs 695": true,
+      "Bruker 40 Manning vs 15 Fortune": true,
+      "UCSF 1855 Folsom vs 1550 4th": true,
+      "UTRGV 1201 W University vs 1407 E Freddy Gonzalez": true,
+      "Labcorp 655 Fairfield vs 800 Technology": true,
+      "Assay Depot 505 Lomas Santa Fe vs N Acacia / S Hwy 101": true,
+      "NASA Mark Ave vs the address-less ISD rows": true
+    },
+    "link": {
+      "NASA_Ames": {
+        "sites_apart": true,
+        "shared_link_id": true,
+        "routing": true
+      },
+      "HGST": {
+        "sites_apart": true,
+        "shared_link_id": true,
+        "routing": true
+      },
+      "Scripps": {
+        "sites_apart": true,
+        "shared_link_id": true,
+        "routing": true
+      },
+      "Merck": {
+        "sites_apart": true,
+        "shared_link_id": true,
+        "routing": true
+      },
+      "Stanford_family": {
+        "sites_apart": true,
+        "shared_link_id": true,
+        "routing": true
+      },
+      "Army_family": {
+        "sites_apart": true,
+        "shared_link_id": true,
+        "routing": true
+      },
+      "Merck_MRL": {
+        "sites_apart": true,
+        "shared_link_id": true,
+        "routing": true
+      },
+      "EMD_family": {
+        "sites_apart": true,
+        "shared_link_id": true,
+        "routing": true
+      },
+      "PAVIR": {
+        "sites_apart": true,
+        "shared_link_id": true,
+        "routing": true
+      }
+    },
+    "link_for_review": {
+      "PAVIR_noaddr": {
+        "finding_carried": true,
+        "all_manual_review": true
+      },
+      "Scripps_Activity": {
+        "finding_carried": true,
+        "all_manual_review": true
+      },
+      "UTSW": {
+        "finding_carried": true,
+        "all_manual_review": true
+      }
+    },
+    "xfail": {
+      "NIST": false
+    },
+    "model_judgement": {
+      "NASA: 13128613 vs the two address-less ISD rows": {
+        "13128613": {
+          "cluster": null,
+          "routing": "unique",
+          "reasoning": "SpecOracleLLM: grouped from the expectation tables."
+        },
+        "13057138": {
+          "cluster": null,
+          "routing": "unique",
+          "reasoning": "SpecOracleLLM: grouped from the expectation tables."
+        },
+        "13120409": {
+          "cluster": null,
+          "routing": "unique",
+          "reasoning": "SpecOracleLLM: grouped from the expectation tables."
+        }
+      }
+    }
+  },
+  "llm_calls": {
+    "real": 38,
+    "oracle": 38
+  },
+  "routing": {
+    "real": {
+      "cluster": 76,
+      "unique": 107,
+      "manual_review": 17
+    },
+    "oracle": {
+      "cluster": 86,
+      "unique": 99,
+      "manual_review": 15
+    }
+  },
+  "differences": []
+}
