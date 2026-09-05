@@ -779,3 +779,116 @@ stated (§3.0); 7 gaps closed, 4 partially closed, 5 newly opened (§3.11); 8 de
 weakened or reversed (§3.12); 2 figures need redraw, 3 need edits, 3 unaffected (§4); suite is
 `5 failed, 1773 passed` with the 3 baseline failures persisting and 2 new ones named (§5); 7 items
 unresolved (§6). No file outside `docs/thesis/11_DELTA.md` was modified. Stop.
+
+---
+
+# Pass 13 — Delta: Phase 2 clustering v2 (flagged)
+
+Baseline: `95d081c` (`feature/llm-fixes`). Scope: the `/api/dedup/file` and
+`/api/dedup/cluster-block` path only. No file under `enrichment/` was modified — the Phase 1
+detectors this change depends on are imported, not edited — and the ADF / stored-procedure
+layer is untouched.
+
+## 1. What changed, by flag
+
+Three environment flags, all default-false (`dedup/flags.py`). Each gates one change; they
+work independently and together. **With all three off the output is byte-identical to v1**,
+asserted against a recorded 200-row run by `tests/test_dedup_v2_flags_off.py`.
+
+| Flag | Change | New modules | Touched |
+|---|---|---|---|
+| `DEDUP_V2_BLOCKING` | delivery-point blocking replaces the raw address hash | `dedup/address.py` | `dedup/signatures.py`, `dedup/candidates.py`, `dedup/adjudicator.py` |
+| `DEDUP_V2_NAME2` | the text below Name 1 is classified before it counts as a department | `dedup/name_slots.py` | `dedup/signatures.py`, `dedup/models.py`, `api/routes.py`, `dedup/prompts.py`, `dedup/candidates.py` |
+| `DEDUP_V2_ID_CONFLICT` | an ROR/LEI conflict is routed, not exploded | — | `dedup/adjudicator.py` |
+| *(any)* | the `Link ID` column | `dedup/cache.py` (record/replay) | `dedup/adjudicator.py`, `dedup/models.py`, `dedup/cluster_key.py`, `api/routes.py` |
+
+Full specification with `file:line` citations: `docs/13_CLUSTERING_DOSSIER.md` § v2 (flagged).
+
+## 2. Behaviour deltas on the 200-row stress batch
+
+Measured against the deployed model (`gpt-5.4-2026-03-05`, temperature 0, `p2-dedup-v8`),
+replaying the committed cache at `tests/fixtures/dedup_v2_llm_cache/`.
+
+| | v1 | v2 |
+|---|---|---|
+| blocks | 161 | 128 (11 of them address-less) |
+| distinct signatures | 190 | 171 |
+| clusters | 17 | 39 |
+| rows carrying a `Cluster ID` | 35 | 76 |
+| rows carrying a `Link ID` | — | 126, in 38 institution families |
+| `manual_review` | 10 | 17 |
+| LLM calls | 26 | 38 |
+
+**D-1 · Blocking is on the delivery point, not the spelling.** `country \| zip5 \| house`, with
+the house number recovered from `Street 1` when the column is empty, plus a city key that
+survives a zip typo. 15 MUST_MERGE groups were `unique` in v1 solely because their rows never
+shared a block.
+
+**D-2 · A row that names no house number joins no house-bearing block.** It blocks only with
+other address-less rows, and any cluster it forms routes to `manual_review`. Six rows.
+
+**D-3 · Delivery desks, trading names, people, and a Name 1 split across two cells stop being
+departments.** 22 of the 200 rows classify as something other than `none`/`department`.
+
+**D-4 · Six `/enrich/file` columns now reach adjudication** — `Operating Name`,
+`Suggested Name`, `Record Type`, `ROR ID Provenance`, `LEI ID Provenance`, `Building` (hint
+only). Previously dropped silently (§1.4 of the dossier).
+
+**D-5 · An ROR/LEI conflict keeps its entity and routes to review.** v1 split it into
+singletons, which destroyed the finding.
+
+**D-6 · New output column `Link ID`**, and a third routing outcome. Written only while a v2
+flag is on.
+
+**D-7 · `prompt_version` moves `p2-dedup-v3` → `p2-dedup-v8`** while any v2 flag is on. Output
+produced under the two is not comparable, which is what the column is for.
+
+## 3. New surfaces
+
+* `dedup/cache.py` — the record/replay layer Phase 2 did not have (dossier §6.1). Off unless
+  `DEDUP_FIXTURE_CACHE_DIR` is set. It is what makes the real-model measurement above
+  reproducible rather than a number nobody can check.
+* `tools/dedup_v2_real_model_run.py` — runs and scores the fixture against the deployment.
+* `tools/build_dedup_v2_fixture.py` — regenerates `tests/fixtures/dedup_v2_stress_200.json`.
+
+## 4. Tests
+
+Five new modules, 236 tests: `test_dedup_v2.py` (expectations), `test_dedup_v2_flags_off.py`
+(v1 byte-identity), `test_dedup_v2_blocking.py`, `test_dedup_v2_name2.py`,
+`test_dedup_v2_id_conflict.py`, plus `tests/dedup_v2_support.py` (not a test module). No
+existing test was modified.
+
+Suite at the end of this pass: **8 failed, 3595 passed, 12 skipped, 1 xfailed** — the 8 are
+exactly `tests/KNOWN_FAILURES.md`, unchanged by this work.
+
+## 5. Determinism
+
+Three latent order-dependencies were found and closed, each of which could have made two runs
+of one batch disagree:
+
+1. the cross-block Link ID union-find was keyed on `signature_id`, which restarts at `s1` in
+   every block — the whole file came out with one Link ID;
+2. `_distinct_nonempty` returns a **set**, so the two ids in an id-conflict reason were
+   rendered in hash order;
+3. an entity's `signatures` list is in the order the model wrote the ids, which is not a
+   property of the data.
+
+Gates: shuffled input → identical assignments, identical LLM-call count, identical `Reasoning`;
+two runs → identical workbook, member for member, excluding `docProps/core.xml` (openpyxl's
+wall-clock document date, which is not content).
+
+## 6. Unresolved
+
+**U-1 · NIST (`13338550`, `13136808`) does not cluster and is not v2's to fix.** Phase 1
+overflows "and Technology" out of Name 1 into `Street 1`, leaving `zip5` `90003` against
+`90030` and no comparable street. Marked xfail. *Evidence that would settle it:* a Phase 1 fix
+for the Name 1 overflow, after which the two rows share a `(country, zip5)` and the zip
+tolerance covers the transposition.
+
+**U-2 · The C.5 `acronym` and `cross_slot` NOMINATION rules have never fired end to end.**
+They are gated to blocks with more than `SIG_PARTITION_THRESHOLD` (12) signatures and the
+largest block in this batch holds 4. Unit-tested only. *Evidence that would settle it:* a
+stratum containing a block above the threshold. The same two similarity functions do run
+ungated as `evidence` lines in the prompt, so their behaviour on real data is observable.
+
+**U-3 · Phase 1 marked a one-token brand match `ror:verified`.** See `00_OPEN_ITEMS.md`.

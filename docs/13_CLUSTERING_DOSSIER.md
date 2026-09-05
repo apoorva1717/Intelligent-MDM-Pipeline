@@ -1501,6 +1501,275 @@ would each shift a `Cluster ID` distribution:
 
 ---
 
+# v2 (flagged)
+
+Three env flags, all default-false, each gating one change; they work
+independently and together. With all three off the output is byte-identical to
+v1, which `tests/test_dedup_v2_flags_off.py` asserts against a recorded run of
+the 200-row stress batch.
+
+| Flag | Change | Module | Reader |
+|---|---|---|---|
+| `DEDUP_V2_BLOCKING` | delivery-point blocking | dedup/address.py (new) | dedup/flags.py:40 |
+| `DEDUP_V2_NAME2` | classify the text below Name 1 | dedup/name_slots.py (new) | dedup/flags.py:45 |
+| `DEDUP_V2_ID_CONFLICT` | route an ROR/LEI conflict | dedup/adjudicator.py:309 | dedup/flags.py:50 |
+| *(any of the three)* | the `Link ID` column | dedup/adjudicator.py:1026 | dedup/flags.py:55 |
+
+---
+
+## v2 · B — delivery-point blocking (`DEDUP_V2_BLOCKING`)
+
+v1 blocks on `sha1(country \| postal_code \| street \| house_no)` with each part
+only case- and punctuation-folded (§2.1). Two records at one door fall into
+different blocks whenever the address was typed differently, and **nothing
+downstream can merge across blocks** (§2.4). That is the largest single source
+of missed duplicates in the stress batch: 15 of the 35 MUST_MERGE groups were
+`unique` in v1 purely because their rows never met.
+
+| Piece | Where | What it does |
+|---|---|---|
+| `parse_address` | dedup/address.py:160 | `(country, zip5, house, street_core, city_norm, house_hint)` |
+| `block_keys` | dedup/address.py:205 | `z:country\|zip5\|house`, `c:country\|city\|house`, `f:country\|zip5` |
+| `_v2_blocks` | dedup/signatures.py:193 | union-find over the keys; rows sorted by `Customer` |
+| `address_compatible` | dedup/address.py:276 | `exact` / `fuzzy` / `partial` / `incompatible` |
+| `streets_compatible` | dedup/address.py:233 | JW ≥ 0.85 **or** the token rule, with a numeric veto |
+| `street_match` | dedup/address.py:307 | the model-facing label: `exact\|fuzzy\|differs\|unknown` |
+| `_address_gate` | dedup/adjudicator.py:746 | residue eligibility (B.4) |
+| `_enforce_address_split` | dedup/adjudicator.py:367 | splits an entity spanning incompatible points |
+
+**The house number is only a house number if a street survives beside it**
+(dedup/address.py:180-190). A `Street 1` of `38` leaves nothing once the number
+is taken out, so the row is house-less and `38` is kept as `house_hint`.
+Treating it as a door would have blocked that PAVIR record against every real
+house 38 in 94304.
+
+**House-less rows never enter a house-bearing block.** They block only with
+each other, in the `f:` fallback space, and any cluster they form routes to
+`manual_review` with reason `unverified delivery point`
+(dedup/adjudicator.py:999). An address nobody can verify is not evidence that
+two records share a door. Their relationship to the verified blocks is carried
+by the `Link ID`, never by the `Cluster ID` — which is what makes
+`13120409` (Name 1/2/3 byte-identical to `13036862`'s) stay out of that
+building's cluster.
+
+**The city key pays for itself.** `c:country|city|house` survives a zip typo —
+UCSF at `94103` and `94143`, one door on Folsom St — and `_enforce_address_split`
+is what stops that widening also licensing a merge across two genuinely
+different doors that share a house number in one city.
+
+**The street check never reaches the model as "incompatible".** Two records only
+reach one prompt after zip and house already matched, so a failed string
+comparison of the street is not evidence they are at different addresses;
+`street_match` says `differs`, and the prompt says so explicitly.
+
+---
+
+## v2 · C — Name-2 slot classification (`DEDUP_V2_NAME2`)
+
+v1 treats every populated slot below Name 1 as a department (§3.2), and the
+deterministic asymmetry rule then forbids a departmental record from ever
+sharing an entity with a bare one (§4.3). The rule is right. The premise was
+not: in this batch that slot also holds delivery desks, trading names, Name 1's
+own tail, the institution itself, and people.
+
+`classify_slots` (dedup/name_slots.py:345) returns
+`(institution, department, aliases, kind, hints)` with `kind` one of
+`none / logistics / alias / overflow / institution / institution_split /
+contact / department`. Precedence is load-bearing and documented at the
+function. Phase 1's detectors are imported, never re-implemented:
+`has_no_canonical_form` (enrichment/search_terms.py:678), the DBA regexes
+(enrichment/preprocess.py:613), `_CO_ATTN_PREFIX_RE` and `_person_candidate`.
+
+| Kind | Count in the batch | Example |
+|---|---|---|
+| `none` | 135 | no text below Name 1 |
+| `department` | 43 | `Fairchild Science` |
+| `logistics` | 7 | `Central Receiving`, `Accounts Payable` |
+| `institution_split` | 6 | `EMD Serono, Inc.` + `Research and Development Institute` |
+| `alias` | 4 | `DBA Lee Health`, `A Kimball Electronics Company` |
+| `overflow` | 2 | `American School of Classical Studies at` + `Athens` |
+| `institution` | 2 | Name 1 `GHW23`, Name 2 `Case Western Reserve University` |
+| `contact` | 1 | `Emanuela Zacco - LCA Core` |
+
+The signature key becomes `(normalize_key(institution), normalize_key(department))`
+and `has_name2` becomes a statement about the department found
+(dedup/signatures.py:302, :131). Six columns the file route used to drop are now
+bound (api/routes.py:1082); `Building` is bound as a **hint only** and reaches
+neither blocking nor the key.
+
+**`institution_split` selects the name from the block, never composes it**
+(dedup/name_slots.py:254). Concatenating two slots invents a third spelling that
+no record states and no registry holds. Both original slot values are kept as
+**hints** — not aliases: a fragment of a split name is not another name for the
+whole institution, and filing it as an alias let `EMD Serono, Inc.` (half of the
+institute's name, and separately a different company's entire name) be matched
+against that company.
+
+**Two thresholds are tighter than the change request stated**, both raised and
+each for one counterexample — see § C.5 similarity thresholds below.
+
+**Prompt.** `p2-dedup-v8` (dedup/prompts.py:22, :66). Per record the model sees
+institution, department, aliases, operating_name, suggested_name, record_type,
+ror_id, lei_id, street_match and hints (dedup/adjudicator.py:763), plus an
+`evidence:` block of deterministic same-institution signals computed for every
+pair in the call (dedup/candidates.py:308, rendered at dedup/prompts.py:144).
+The response carries a required `institution_relation` per signature — a
+separate question from the entity decision, and the one the `Link ID` reads.
+
+---
+
+## v2 · D — id-conflict routing (`DEDUP_V2_ID_CONFLICT`)
+
+v1 answers a hard-identifier conflict by exploding the entity into singletons
+and flagging each (§4.4). That is the one outcome that cannot be right: either
+the records are the same and the split is wrong, or they are different and the
+ids did their job — and in both cases what a steward needs is the **pair**, with
+both ids named. Split apart they become two unremarkable unique rows.
+
+`_route_identity_conflict` (dedup/adjudicator.py:309) keeps the entity and its
+`Cluster ID`, marks every member uncertain, and writes
+`id conflict: ROR <a> vs <b>`. Two determinism traps were closed on the way:
+`_distinct_nonempty` (dedup/adjudicator.py:184) returns a **set**, so the ids
+were rendered in hash order — `_ordered_distinct` (:250) preserves first
+appearance; and an entity's `signatures` list is in the order the model wrote
+the ids, so the pair is re-sorted off the block's signature ids (`_signature_order`,
+:266). `_inferred_from_short_name` (:282) appends a provenance note when the
+column says an id was **not** registry-verified and the name it came from is one
+or two tokens; it is silent when the column says verified and silent when the
+column says nothing.
+
+---
+
+## v2 · Link ID
+
+The third outcome. Before it the file had two — a `Cluster ID`, or nothing — so
+a pair that is one organisation and two records had to be reported either as a
+duplicate (overstating) or as unique (losing the finding).
+
+`Link ID` answers **same organisation?**; `Cluster ID` answers **same record?**
+The two are computed independently on purpose: deriving the link from the merge
+outcome would make it say nothing the cluster does not already say, and the
+pairs worth linking are exactly the ones that did NOT merge.
+
+Two signatures are one family when any of these holds (dedup/adjudicator.py:1026):
+
+1. they share a ROR or LEI — a registry says so;
+2. a deterministic `evidence` line fires and the model called the institutions
+   the **same** on either side;
+3. a line fires and the model was **uncertain**;
+4. a line fires and the model said **different** — a conflict between two
+   sources that both have standing. It links *and* routes to review: a flag
+   with no connection is useless to whoever opens the workbook.
+
+Families are joined across blocks (`_merge_link_maps`, dedup/adjudicator.py:1120)
+because an institution family is not a property of one delivery point. Within a
+block the model's verdicts apply; across blocks the shared registry id is the
+only evidence there is, and the within-block families join through it.
+
+**Derivation and stability.** `link_hash` (dedup/cluster_key.py) is
+`l_` + sha256 over the **sorted member row_ids** — membership-derived, exactly
+like `cluster_hash`, with a different prefix so a reader can tell the two apart
+at a glance. It is deliberately *not* keyed on `(institution, country)`: a
+family spans several spellings by construction (`HGST Inc` / `Hitachi Global
+Storage Technologies`), and electing one of them as the id's basis would be an
+arbitrary vote that changes whenever the elected row changes. Membership-derived
+means the id survives a re-run and a re-ordered export and changes when a row
+joins or leaves — the same contract `Cluster ID` already carries. Pinned by
+`test_link_ids_are_stable_across_runs_and_input_order` and
+`test_link_ids_do_not_collapse_across_unrelated_blocks`
+(tests/test_dedup_v2_blocking.py). The second exists because the cross-block
+union-find was first keyed on `signature_id`, which restarts at `s1` in every
+block (§5.4) — every block's first signature was unioned with every other
+block's and the entire file came out carrying **one** Link ID.
+
+The column is written only while a v2 flag is on (api/routes.py:1151-1157), to
+the main sheet beside `Cluster ID` and to the `Dedup Debug` sheet.
+
+---
+
+## v2 · fixture outcomes
+
+35 MUST_MERGE groups, 17 MUST_NOT_MERGE entries, 9 MUST_LINK groups, 3
+link-for-review entries, 1 xfail. v1 column from the recorded run in the
+workbook; v2 column from `tools/dedup_v2_real_model_run.py` replaying the
+committed cache (`gpt-5.4-2026-03-05`, temperature 0, `p2-dedup-v8`).
+
+| Group | v1 | v2 | Rule that changed it |
+|---|---|---|---|
+| UTSA, MedicalCity, UTRGV, Covia, GES_Qume, Merck_Rahway, Bruker, PAVIR_Miranda, UCSF_Folsom | unique | clustered | B — one delivery point, one block |
+| JFK, Marian, Methodist, Hoag, StElizabeth | split across blocks | clustered | B — house number recovered from `Street 1` |
+| CWRU2080, CWRU2109 | unique | clustered | C — `institution` (Name 1 was `GHW23` / `KMB3 LLC`) |
+| GES_Hellyer, GES_Qume | unique | clustered | C — `alias` (`A Kimball Electronics Company`) |
+| UTSA | unique | clustered | C — `logistics` (`Central Receiving`) |
+| UCSF_Folsom | unique | clustered | C — `logistics` + `contact` |
+| Shell, PAVIR_Miranda | unique | clustered | C — `overflow` / `institution_split` |
+| EMD_RDI | split | clustered | C — `institution_split` |
+| USC_Norris, Army_ACC, VA_Dallas | unique | clustered | B + the model |
+| Lee, USG | unique / clustered | clustered, `manual_review` | B — address-less cluster |
+| Stanford_family, Army_family, Merck_MRL | split | linked, not clustered | Link ID — same institution, different department |
+| HGST, Merck, Scripps, NASA_Ames, PAVIR | split | linked across blocks | Link ID — shared registry id |
+| UTSW | unique | linked, `manual_review` | Link ID arm 4 — evidence vs the model |
+| EMD_family | split | linked, `manual_review` | Link ID arm 4 — shared ROR vs the model |
+| Scripps_Activity | split to singletons | clustered, `manual_review` | D — id conflict routed, not exploded |
+| NIST | unique | unique | unchanged — Phase 1 overflow, upstream |
+
+Every MUST_NOT_MERGE entry holds in both v1 and v2; v1 held them by being
+conservative, v2 holds them on the delivery point, the department rule and the
+distinctive-token rule.
+
+### The 17 `manual_review` rows
+
+| Reason category | Rows | Which |
+|---|---|---|
+| conflict (evidence or shared id vs the model's "different") | 9 | 5 EMD Serono, 2 UTSW, 2 Contra Costa |
+| address-less (cluster at an unverifiable delivery point) | 6 | 2 Lee, 2 USG, 2 PAVIR |
+| id conflict (ROR/LEI disagreement, change D) | 2 | Scripps at 9060 Activity Rd |
+| admitted uncertainty (the model said so) | 0 | — |
+
+v1 routed 10 rows to review, 5 of them by exploding one EMD entity into
+singletons. **`manual_review` now means a contradiction or an admitted
+uncertainty — never "we did not look".**
+
+---
+
+## v2 (flagged) — C.5 similarity thresholds
+
+Two bounds in `dedup/candidates.py` are tighter than the change request stated. Both were
+raised, never lowered, and each exists because of one counterexample in the stress batch.
+
+| Constant | Value | Cite | The counterexample |
+|---|---|---|---|
+| `ACRONYM_MIN_LEN` | **3** | dedup/candidates.py | `HP Inc` vs `Hewlett Packard Enterprise Company` |
+| `NAME_VARIANT_MAX_EXTRA_TOKENS` | **1** | dedup/candidates.py | `EMD Serono, Inc.` vs `EMD Serono Research and Development Institute, Inc.` |
+
+**`ACRONYM_MIN_LEN = 3`.** The spec bounds an acronym only from above (`≤ 6` chars after
+suffix strip). Unbounded below, `initials("Hewlett Packard Enterprise Company")` = `hpec`
+scores JW 0.83 against `hp` — over the 0.8 threshold. HP Inc and Hewlett Packard Enterprise
+are different companies at 1501 Page Mill Rd and are a MUST_NOT_MERGE pair; an `acronym`
+evidence line there would have handed the model support for the merge the batch exists to
+forbid. A two-letter string matches the initials of every two-word name beginning with those
+letters, which is a coincidence rather than an initialism. Every real acronym in the batch is
+three characters or longer: GES, USG, UCSF, NIST, UTWMC.
+
+**`NAME_VARIANT_MAX_EXTRA_TOKENS = 1`.** The spec's containment arm is "one token set ⊂ the
+other". Unbounded, `{emd, serono}` ⊂ `{emd, serono, research, and, development, institute}`
+fires, telling the model that EMD Serono, Inc. and its own research institute are the same
+institution — and with neither naming a department, the same-entity rule then merges a
+company into its research arm. One extra token is a variant (`St Elizabeth Hospital` /
+`St Elizabeth Community Hospital`, +1, which the rule must catch); four is a different
+organisation. The Jaro-Winkler arm separates them independently — 0.907 for St Elizabeth,
+0.844 for EMD — so the cap only removes cases the other arm already declined.
+
+**C.5's `acronym` and `cross_slot` nomination rules are unit-tested only.** They are gated to
+blocks with more than `SIG_PARTITION_THRESHOLD` (12) signatures, and no block in any stratum
+run so far has exceeded that: the largest block in the 200-row stress batch holds 4
+signatures. The rules are exercised by `tests/test_dedup_v2_name2.py` against constructed
+units; no end-to-end run has yet fired either of them. The same two similarity functions DO
+run end-to-end, ungated, as `evidence` lines in the prompt (C.3), which is where their
+behaviour on real data is observable.
+
+---
+
 ## Appendix — fastest diagnostic route for a wrong cluster
 
 Given a `/api/dedup/file` output workbook:

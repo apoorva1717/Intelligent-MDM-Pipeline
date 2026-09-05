@@ -1837,3 +1837,101 @@ their cited rows with their cited values (§7). The merge-back gap is **ten** de
 are **stale assertions, not defects**: `11_DELTA.md`'s judgement on `test_name_slot_parity` is refuted
 by `d4fc469`'s deliberate, documented revert (§9). All five orchestration changes are **NOT LANDED**
 (§10). No file outside `docs/thesis/12_RATIONALE.md` was modified. Stop.
+
+---
+
+# Pass 13 — Phase 2 clustering v2 (flagged): recorded rationale
+
+Appended during the v2 change (`DEDUP_V2_BLOCKING` / `DEDUP_V2_NAME2` /
+`DEDUP_V2_ID_CONFLICT`). Entries are recorded as they are decided; the full delta is
+`docs/13_CLUSTERING_DOSSIER.md` § v2 (flagged).
+
+**The entity definition.** Stated once, in full, because every rule below is a consequence of
+it:
+
+> The **institution** is the legal entity that would be invoiced.
+> An **entity** is *(institution, delivery point, department-if-any)*.
+> Logistics, admin, alias, overflow and contact text is **not** a department.
+> A shared ROR identifies the **family**, not the entity.
+> **Review** means a contradiction or an admitted uncertainty — never "we did not look".
+
+Each clause earns its place against a failure in the 200-row stress batch.
+
+*The institution is the legal entity that would be invoiced.* It is what separates `Utwmc LLC`
+from The University of Texas Southwestern Medical Center, and `Covia Corp` from `Covia
+Holdings LLC` — the first pair are two legal entities and the second is one written two ways.
+Without a definition the question "same institution?" has no answer to be right or wrong
+about.
+
+*An entity is (institution, delivery point, department-if-any).* The delivery point is the
+door, not the building and not the suite: `Building` is bound as a hint and reaches neither
+blocking nor the signature key (`api/routes.py`), because two records in one building are not
+thereby one entity and two in different buildings at one street address are not thereby two.
+
+*Logistics, admin, alias, overflow and contact text is not a department* (`dedup/name_slots.py`).
+A record whose Name 2 reads "Central Receiving" names no department, and the deterministic
+asymmetry rule — which forbids a departmental record from sharing an entity with a bare one —
+was being applied correctly to a false premise. The rule was never the defect; the premise was.
+
+*A shared ROR identifies the family, not the entity.* EMD Serono, Inc. and EMD Serono Research
+and Development Institute, Inc. carry one ROR and are two companies. So the registry id links
+and does not merge, and where it disagrees with the model the pair goes to a human rather than
+either source silently winning.
+
+*Review means a contradiction or an admitted uncertainty.* v1 routed 10 rows to review, 5 of
+them by exploding a single entity into singletons — which is not a question, it is a shrug
+recorded as one. v2 routes 17: nine where deterministic evidence and the model disagree, six
+where a cluster rests on an address nobody can verify, two where two registry ids conflict.
+Every one of them is a sentence a steward can act on.
+
+**Why a two-word department is not read as a person.** Mistaking a department for a person
+destroys a distinction; the reverse only fails to merge. "Fairchild Science" has the shape of
+a first and last name and is a Stanford building's department: read as a contact its
+department empties and the record merges into the two bare "Stanford University" rows at the
+same door. The contact rule therefore requires a separator as evidence — "Emanuela Zacco -
+LCA Core" qualifies, a bare two-word value never does — and requires the person-shaped head
+to share no token with the record's own Name 1, which is what a unit does and a contact does
+not (`dedup/name_slots.py::_is_contact`).
+
+**The rebuilt name is selected from the block, never composed.** When two slots hold pieces
+of one institution's name (`institution_split`), the institution written is the full spelling
+another record in the block already states — not the two fragments concatenated. A composed
+name ("EMD Serono Research Institute, Inc. Research and Development Institute") is a third
+spelling that no record states and no registry holds, and it matches nothing. Both original
+slot values are kept as **hints**, not aliases: a fragment of a split name is not another
+name for the whole institution, and filing it as an alias let "EMD Serono, Inc." — half of the
+institute's name, and separately the entire name of a different company at the same address —
+be matched against that company, merging the company into its own research arm.
+
+**United States Gypsum Company vs USG Corporation, Inc. — acronym + legal-form evidence,
+model merges; address-less, so cluster routes to review.** The pair briefly sat in the
+review-link table on the strength of a p2-dedup-v7 hesitation that turned out to be an
+artefact of one prompt sentence; with that sentence reverted the model merges it under both
+v6 and v8 with consistent reasoning, and the expectation went back to MUST_MERGE. Neither row
+names a usable delivery point, so the cluster routes to review by the address-less rule — the
+same shape as Lee Memorial Health System.
+
+**Utwmc LLC vs UT Southwestern Medical Center — acronym evidence, different legal-entity
+form; steward decision by design.** The acronym rule fires (UTSM/UTWMC, JW 0.83) and the
+model declines the merge because an LLC is a real corporate distinction. Both are right. The
+pair is therefore a **link for review**: a shared Link ID, `Routing = manual_review`, and no
+Cluster ID. It was moved out of MUST_MERGE for that reason — the expectation, not the
+behaviour, was wrong. This is the third outcome the output needed: before it, a pair that is
+one organisation and two records had to be reported either as a duplicate (overstating) or as
+unique (losing the finding).
+
+**Link ID is computed independently of the merge outcome, and across blocks.** Deriving it
+from the clustering would make it say nothing the Cluster ID does not already say, and the
+pairs worth linking are exactly the ones that did NOT merge. Two signatures share a Link ID
+when a registry id is shared, or when a deterministic `evidence` line fires and the model
+called the institutions the same or was uncertain. An institution family is not a property of
+one delivery point, so the id spans blocks: HGST at Great Oaks Pkwy and HGST at Yerba Buena Rd
+are one organisation.
+
+**Review is for disagreement, not for relationship.** `Routing = manual_review` is set when a
+deterministic `evidence` line or a shared registry id says one organisation and the model says
+"different" — a conflict between two sources that both have standing, which is the one thing a
+steward must adjudicate — or when the model itself says "uncertain". Same institution,
+different department, model agreeing (Stanford/Fairchild, Army/Devcom, Merck/MRL) is a Link ID
+and `unique`: nothing is in doubt, and sending it to a human would bury the four real
+questions in this batch under dozens of statements of the obvious.

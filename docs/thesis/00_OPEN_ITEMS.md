@@ -636,3 +636,23 @@ defence never implemented). Each of those six is closed by deleting or wiring co
 a test, and each currently supports a documentation claim that the code does not.
 
 **Stop.**
+
+---
+
+## Added in Pass 13 (Phase 2 clustering v2)
+
+**192 · Phase 1: `ror:verified` accepted for one-token name "Scripps" (04v7hvq31) — verifier needs a
+minimum-token or disambiguation rule for multi-entity brands.** At 9060 Activity Rd, San Diego,
+record `13335883` (Name 1 `Scripps`) carries ROR `04v7hvq31` with provenance `ror:verified`,
+while `13336451` (`Scripps Research Institute`) at the same delivery point carries
+`02dxx6824`, also `ror:verified`. A one-token Name 1 is a brand, not an organisation —
+"Scripps" covers Scripps Health, Scripps Research and Scripps Clinic — so a resolver picking
+one member of that family is choosing rather than resolving, and marking the choice verified
+removes the only signal that would have said so. Surfaced by Phase 2 change D, which now
+routes the pair to review with `id conflict: ROR 04v7hvq31 vs 02dxx6824`; the provenance note
+that would have named the cause stays silent because the column claims both ids were verified.
+
+*Evidence that would settle it:* a rule in the ROR verifier requiring either a minimum
+distinctive-token count on the input name or an explicit disambiguation step when the
+candidate registry entry is one of several sharing that name, plus a re-run of the two
+records.
