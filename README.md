@@ -2365,6 +2365,83 @@ The report is **segmented into three blocks**, because a single "issues remainin
 | **Expected to persist** | G6 | No automated path exists to supply the value. These are *supposed* to survive to the enriched file and be routed to a steward; their persistence is correct behaviour, not a pipeline failure. Excluded from the reduction %. |
 | **Verification** | G7 | Raised by successful enrichment. Counting it would inflate the post-pipeline total in proportion to how well enrichment performed — inverting the meaning of the delta. Reported separately, never in any reduction figure. |
 
+### POST /api/preprocess/consolidate and /api/preprocess/consolidate/file
+
+**Row grain → customer grain.** The SAP customer extract arrives at *row* grain: one row per customer per company-code / sales-area assignment, so a single customer occupies 1 to 68 rows. Every master-data field (`Name 1-4`, `Street 1-4`, `City`, `Postal Code`, `Region`, `Country/Region Key`, `Account group`, `Created On/By`) is byte-identical across a customer's rows; only the sales-area fields vary.
+
+The scorer needs two **customer-level** columns the extract does not carry — `Company_Code_Consolidated` and `Sales_Org_Consolidated` — because `derived_counts` turns them into `Company_Code_Count`, `Sales_Org_Count`, `score_CompanyCodeCount` and `score_CombinedPresence`. They used to be produced by filtering the extract down to one arbitrary row per customer, which keeps **one** of a customer's company codes. Measured over 21,201 customers: 8,789 hold more than one company code, and 1,725 lose their company code entirely because the surviving row was a sales-area row with a blank company code.
+
+**This is a column-append, not a collapse.** Rows in == rows out, in the same order. No row is dropped, merged, reordered or otherwise altered; two strings are computed per customer and written onto **every** row of that customer. Collapsing the extract to one row per customer is a separate downstream concern and is deliberately not done here.
+
+- **Grouping key** — `Customer`, trimmed, leading zeros stripped, so `0013119338` and `13119338` are one customer. Used for grouping only: the `Customer` cell itself is never rewritten.
+- **Value set** — the distinct non-blank values of `Company Code` / `Sales Organization` across the group, each trimmed. A value on six rows appears once; blanks are dropped rather than emitted as empty positions, so a 7-row group with one sales org yields `2401`, not `,,2401,,,,`.
+- **Ordering** — ascending and deterministic: numeric codes sort numerically, non-numeric sort lexicographically after them. Same input yields byte-identical output.
+- **The two lists are independent.** They are computed separately and routinely differ in length; nothing is positionally aligned between them — the *n*th company code does not pair with the *n*th sales org.
+- **Empty group** — `""`. Never `None`, never `"None"`, never `"[]"`. (In XLSX that is a blank cell: the format has no empty-string cell.)
+- **Idempotent** — if the columns already exist they are recomputed and overwritten in place, so a second run over a processed file is a no-op. A stale consolidation is worse than a recomputed one.
+
+**Identical columns, two transports** (the pattern `/api/dedup/score` and `/api/dedup/score/file` already establish), so a caller can move between them without remapping:
+
+- **Input columns read** (both) — `Customer`, `Company Code`, `Sales Organization`. **Nothing else is read.** The snake_case aliases `customer`, `company_code`, `sales_organization` are accepted, consistent with `populate_by_name` elsewhere.
+- **Output columns written** (both) — `Company_Code_Consolidated` and `Sales_Org_Consolidated`, exactly these two. `Company_Code_Count` / `Sales_Org_Count` are **not** emitted here: they are derived by the scorer from these strings, and writing them in both places would create two sources of truth for the same number.
+- **Summary** (both) — `rows_in`, `rows_out` (equal by construction), `customers`, `customers_with_no_company_code`, `customers_with_multiple_company_codes`, `customers_with_no_sales_org`, `customers_with_multiple_sales_orgs`, `max_rows_per_customer`, `errors`, `warnings`. The JSON endpoint returns it in the body; the file endpoint logs it.
+- **Error policy** — matching the scorer's permissive stance: a blank or missing `Customer` is an **error** counted in `summary.errors`, and the row is passed through unchanged with both columns empty. Never a 500, never a dropped row. A missing `Company Code` or `Sales Organization` **column** is a **warning**, not an error; that consolidated column is written empty for every row. (The file endpoint does 400 on a sheet with no `Customer` column at all — that is a wrong upload, not a dirty row.)
+
+The JSON endpoint takes `{"rows": [...]}` and returns the same rows plus a `summary`. The file endpoint takes multipart `file` (`.xlsx`/`.xlsm`) and an optional `?sheet=` (default: the first worksheet), edits the workbook **in place** with openpyxl — every other sheet and every original column survive untouched — and returns the workbook bytes.
+
+```bash
+curl -X POST "http://localhost:8000/api/preprocess/consolidate/file?sheet=Data" \
+  -F "file=@extract.xlsx" -o extract_consolidated.xlsx
+```
+
+**Worked JSON example.** Pass the *whole* row — every key is echoed back and only the three input columns are read. Header matching ignores case, spacing and punctuation. This example is pinned to the real transform by `tests/test_preprocess_consolidate.py::TestOpenAPIExamples` and is the same one Swagger serves.
+
+```jsonc
+// POST /api/preprocess/consolidate
+{
+  "rows": [
+    {"Customer": "0013119338", "Name 1": "Contra Costa County", "Company Code": "1140", "Sales Organization": ""},
+    {"Customer": "13119338",   "Name 1": "Contra Costa County", "Company Code": "1207", "Sales Organization": ""},
+    {"Customer": "13119338",   "Name 1": "Contra Costa County", "Company Code": "1240", "Sales Organization": "2401"}
+  ]
+}
+```
+
+```jsonc
+// 200 OK — three rows in, three rows out
+{
+  "rows": [
+    {"Customer": "0013119338", "Name 1": "Contra Costa County", "Company Code": "1140", "Sales Organization": "",
+     "Company_Code_Consolidated": "1140,1207,1240", "Sales_Org_Consolidated": "2401"},
+    {"Customer": "13119338",   "Name 1": "Contra Costa County", "Company Code": "1207", "Sales Organization": "",
+     "Company_Code_Consolidated": "1140,1207,1240", "Sales_Org_Consolidated": "2401"},
+    {"Customer": "13119338",   "Name 1": "Contra Costa County", "Company Code": "1240", "Sales Organization": "2401",
+     "Company_Code_Consolidated": "1140,1207,1240", "Sales_Org_Consolidated": "2401"}
+  ],
+  "summary": {
+    "rows_in": 3, "rows_out": 3, "customers": 1,
+    "customers_with_no_company_code": 0, "customers_with_multiple_company_codes": 1,
+    "customers_with_no_sales_org": 0, "customers_with_multiple_sales_orgs": 0,
+    "max_rows_per_customer": 3, "errors": 0,
+    "warnings": ["Batch-boundary risk: customer(s) 13119338 sit at the first/last row of this request, ..."]
+  }
+}
+```
+
+Four things that example demonstrates: `0013119338` and `13119338` are **one** customer; all three company codes land on **every** row; the two blank sales orgs are **dropped**, so the sales-org list has one entry and not three; and `Name 1` — a column this stage never reads — comes back untouched.
+
+#### The delimiter, and the downstream contract
+
+The delimiter is **`,`**, defined once as `CONSOLIDATED_DELIMITER` in `dedup/consolidate.py` and used by every writer. `split_consolidated` (`dedup/scoring.py`), which turns these cells back into counts, used to split on `;` **only** — a comma-delimited value would have counted as **1** and silently flattened `score_CompanyCodeCount` and `score_CombinedPresence` across the whole run. It now splits on **both** `,` and `;`, stripping each part and dropping empties. The widening is purely additive: every existing semicolon-delimited extract keeps its current count (`"1140;1207"` → 2, `"1140,1207"` → 2, `"1140, 1207 ,,"` → 2). Reversing the delimiter decision means changing the constant and nothing else.
+
+#### The batching invariant
+
+> **Consolidation is only correct when every row of a customer is in the same request.** If ADF splits a customer's rows across two `ForEach` offsets, each batch produces a partial list and **both are wrong, silently**.
+
+- The **file endpoint processes the whole workbook** and is therefore always safe. **Preprocess runs once over the complete extract, before any batching.** This is the supported production path.
+- The **JSON endpoint cannot verify completeness from inside a single request.** It emits a warning naming the customers at the first and last row positions of the batch — the only places a split would show. That is a *heuristic, not a guarantee*, and it is documented as such in the endpoint's docstring.
+- There is deliberately **no cross-request state** to work around this. The fix for a split customer is ordering in ADF, not memory in the service.
+
 ### POST /api/dedup/cluster-block
 
 **Phase 2** deduplication adjudicator. Accepts JSON candidate rows grouped into address blocks and returns cluster assignments (JSON in / JSON out). This is documented in depth in [Phase 2 — Deduplication Adjudicator](#phase-2--deduplication-adjudicator).
@@ -2648,6 +2725,8 @@ enrichment_api/
 │   └── middleware.py             # Request logging, timing, error handling
 │
 ├── dedup/                        # Phase 2: deduplication adjudicator + election
+│   ├── consolidate.py            # Preprocess: row grain -> customer grain (company codes, sales orgs)
+│   ├── consolidate_xlsx.py       # XLSX in-place consolidation writeback (openpyxl)
 │   ├── models.py                 # Pydantic schemas: DedupRow/Request/ResultRow/Summary/Response
 │   ├── signatures.py             # STEP A: normalization, block derivation, signature collapsing
 │   ├── prompts.py                # System + Mode A/B prompts, PROMPT_VERSION
@@ -2896,6 +2975,14 @@ Deterministic, pure (no LLM/network) nomination of the residue pairs Mode A/B ne
 ### `dedup/cluster_key.py` — Stable Cluster Id
 
 A tiny, dependency-free module (so `dedup.scoring` can import it without the LLM stack). `cluster_hash` returns `c_` + first 12 hex of sha256 over the sorted member `row_id`s — the same membership yields the same id across runs, machines, and input orderings; the scorer re-derives it to detect a *partial* cluster (members split across score calls).
+
+### `dedup/consolidate.py` — Row Grain → Customer Grain (Preprocess)
+
+The transform behind `POST /api/preprocess/consolidate`. Groups input rows by `Customer` (trimmed, leading zeros stripped — grouping only, the cell is never rewritten), collects the distinct non-blank `Company Code` / `Sales Organization` values per group, and writes both ascending, delimiter-joined strings onto **every** row of the group. A column-append: rows in == rows out, order preserved, originals untouched, and a re-run overwrites in place rather than appending. Owns `CONSOLIDATED_DELIMITER` (`,`) — the single constant `split_consolidated` in `dedup/scoring.py` is widened to read. The `Consolidation` accumulator is shared by both transports so JSON and XLSX cannot drift. Permissive like the scorer: a blank `Customer` is counted in `summary.errors` and its row passes through with both columns empty, never a raise.
+
+### `dedup/consolidate_xlsx.py` — Consolidation Workbook I/O
+
+`consolidate_workbook` appends the two consolidated columns to one sheet of an uploaded workbook **in place** with openpyxl (never round-trips through pandas, so every other sheet and every original column survive). Reuses `_ensure_column` / `_header_columns` from `scoring_xlsx` verbatim — the column this stage appends is the column that stage looks for. Two passes: fold every data row into the per-customer value sets, then write both strings onto every row. A row is skipped only when *every* cell in it is blank.
 
 ### `dedup/scoring.py` — Golden-Record Election (Pass 3)
 
@@ -3351,6 +3438,8 @@ In production, the enrichment API is called by Azure Data Factory (ADF) as part 
 ```
 SAP Source  →  DATAshaper Stored Procedure (extract batch)
                          ↓
+            POST /api/preprocess/consolidate/file     (Preprocess — ONCE, whole extract)
+                         ↓
             ADF Web Activity: POST /enrich            (Phase 1)
                          ↓
             Enrichment API processes batch
@@ -3367,6 +3456,8 @@ SAP Source  →  DATAshaper Stored Procedure (extract batch)
                          ↓
             DATAshaper writes back cluster_id + routing per row
 ```
+
+Preprocess runs **first and exactly once, over the complete extract, before any batching**. The extract is at row grain, and consolidating company codes and sales orgs is only correct when every row of a customer is in the same call — a customer split across two `ForEach` offsets yields two partial lists and both are silently wrong. The file endpoint sees the whole workbook and is therefore always safe; the JSON endpoint can only warn heuristically (see [the batching invariant](#the-batching-invariant)). Neither the extract's row count nor any existing column changes: two customer-level columns are appended.
 
 Phase 2 runs **after** Phase 1 and the address gates: enrichment first canonicalizes each record's names, DATAshaper then groups records by shared address, and the dedup adjudicator decides which of the same-address records are true duplicates. The orchestrator handles the file ↔ JSON conversion on both sides; the dedup endpoint is JSON in / JSON out.
 
@@ -3538,7 +3629,18 @@ RETURN EnrichmentResponse (JSON)
 
 ## Changelog
 
-### Domain witnesses, trigger parity and cross-source name normalisation (newest)
+### Preprocess — company codes and sales orgs consolidated to customer grain (newest)
+
+A new, additive stage in front of everything else. Nothing in enrichment, issue detection, clustering, scoring or election changes behaviour; the untouched test suite passing unmodified is the proof.
+
+- **The defect.** The SAP extract is at *row* grain — one row per customer per company-code / sales-area assignment, 1 to 68 rows per customer. The scorer's `Company_Code_Consolidated` / `Sales_Org_Consolidated` columns were being produced by filtering that down to one arbitrary row per customer, which keeps **one** of the customer's company codes. Over 21,201 customers, 8,789 hold more than one and **1,725 lose their company code entirely**, because the surviving row was a sales-area row with a blank company code. `Company_Code_Count`, `Sales_Org_Count`, `score_CompanyCodeCount` and `score_CombinedPresence` are all derived from those two columns.
+- **New endpoint, two transports** — `POST /api/preprocess/consolidate` (JSON) and `/api/preprocess/consolidate/file` (XLSX), identical column names, following the `/api/dedup/score` pattern. A **column-append, not a collapse**: rows in == rows out, same order, no row dropped, merged or altered; the two consolidated strings are written onto every row of a customer. Grouping is on `Customer` with leading zeros stripped (`0013119338` and `13119338` are one customer) and the cell itself is never rewritten. Distinct values only, blanks dropped rather than emitted as empty positions, deterministic ascending order, empty group → `""`, and a re-run recomputes and overwrites in place. See [the endpoint section](#post-apipreprocessconsolidate-and-apipreprocessconsolidatefile).
+- **`split_consolidated` now reads both `,` and `;`.** The new writer joins on `,` (`CONSOLIDATED_DELIMITER`, one constant); the scorer's splitter knew only `;`, so a comma-delimited cell would have counted as **1** and silently flattened `score_CompanyCodeCount` and `score_CombinedPresence` across the whole run. The widening is additive — every existing semicolon-delimited extract keeps its exact current count. **This is the half of the change that makes the other half safe.**
+- **The batching invariant is a documented constraint, not a fixed bug.** Consolidation is only correct when every row of a customer is in the same request. The file endpoint sees the whole workbook and is always safe — **preprocess runs once over the complete extract, before any batching**. The JSON endpoint cannot verify completeness from inside one request and emits a heuristic warning naming the customers at the batch's first and last row positions. There is deliberately no cross-request state: the fix for a split customer is ordering in ADF.
+- **Verified on `dedup_STRESS_200_v1-verified_sapgrain.xlsx`** (839 rows, 183 customers, 839 rows out). Customer 13119338 (Contra Costa County, 7 rows) → `1140,1207,1240,1505,1506,1507,1569` and `2401`; customer 13118369 (Merck & Co Inc, 14 rows) → 11 company codes and 7 sales orgs on all 14 rows, which through `split_consolidated` give `Company_Code_Count = 11`, `Sales_Org_Count = 7` and earn `score_CombinedPresence`.
+- **New:** `dedup/consolidate.py`, `dedup/consolidate_xlsx.py`, `tests/test_preprocess_consolidate.py` (46).
+
+### Domain witnesses, trigger parity and cross-source name normalisation
 
 The final calibration before evaluation code freeze. Three fixes, all of them expressed as rules of an existing comparator rather than as cases; none of them moves a threshold. Measured on the 99-row S2 evaluation stratum, both runs warm-cache and zero network calls: **flag instances 46 → 35**, flagged records 41 → 31, records carrying a domain 65 → 77, and 14 of 99 rows changed. Full before/after in [`calibration_findings.md`](calibration_findings.md).
 

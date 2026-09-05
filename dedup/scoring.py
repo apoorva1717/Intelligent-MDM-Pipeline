@@ -22,6 +22,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple, Union
@@ -166,10 +167,10 @@ class ScoringRow(BaseModel):
     customer_status: Optional[str] = Field(default=None, alias="CustomerStatus")
     account_group: Optional[str] = Field(default=None, alias="Account group")
     company_code_consolidated: Optional[str] = Field(
-        default=None, alias="Company_Code_Consolidated"  # ";"-delimited
+        default=None, alias="Company_Code_Consolidated"  # "," or ";"-delimited
     )
     sales_org_consolidated: Optional[str] = Field(
-        default=None, alias="Sales_Org_Consolidated"  # ";"-delimited
+        default=None, alias="Sales_Org_Consolidated"  # "," or ";"-delimited
     )
     # Salesforce ids as 8 flat scalar columns (no list/object on the wire).
     # Only non-empty ids count toward Salesforce_Instance_Count.
@@ -696,10 +697,18 @@ def _clean_str(value: Optional[str]) -> Optional[str]:
 
 
 def split_consolidated(value: Optional[str]) -> List[str]:
-    """Non-empty parts of a ";"-delimited cell ("1003;1017;" -> 2 parts)."""
+    """Non-empty parts of a ","- or ";"-delimited cell ("1003;1017;" -> 2).
+
+    BOTH delimiters are accepted. The preprocess stage that produces these
+    cells joins on ``dedup.consolidate.CONSOLIDATED_DELIMITER`` (","), while
+    every historic extract uses ";" — a splitter that knew only one of them
+    would count a whole comma-joined list as a single value and silently
+    flatten score_CompanyCodeCount and score_CombinedPresence across the run.
+    Widening is purely additive: a semicolon-delimited cell keeps its count.
+    """
     if value is None:
         return []
-    return [part.strip() for part in str(value).split(";") if part.strip()]
+    return [part.strip() for part in re.split(r"[,;]", str(value)) if part.strip()]
 
 
 def derived_counts(row: ScoringRow) -> Tuple[int, int, int]:

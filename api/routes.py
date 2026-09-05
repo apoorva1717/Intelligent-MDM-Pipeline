@@ -8,7 +8,7 @@ import time
 from collections import Counter
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, ValidationError
 
@@ -27,6 +27,14 @@ from api.models import (
 from api.output_columns import RESPONSE_COLUMNS
 from config import Settings, get_settings
 from dedup.adjudicator import cluster_blocks
+from dedup.consolidate import (
+    EXAMPLE_REQUEST as CONSOLIDATE_EXAMPLE_REQUEST,
+    EXAMPLE_RESPONSE as CONSOLIDATE_EXAMPLE_RESPONSE,
+    ConsolidateRequest,
+    ConsolidateResponse,
+    consolidate_rows,
+)
+from dedup.consolidate_xlsx import ConsolidateFileError, consolidate_workbook
 from dedup.llm import DedupLLM
 from dedup.flags import v2_blocking, v2_id_conflict, v2_name2
 from dedup.models import DedupRequest, DedupResponse, DedupRow
@@ -1018,6 +1026,134 @@ async def compare_file_issues(
         headers={
             "Content-Disposition": 'attachment; filename="issue_reduction_report.xlsx"'
         },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Preprocess — row grain -> customer grain (runs BEFORE clustering/scoring)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/api/preprocess/consolidate",
+    response_model=ConsolidateResponse,
+    # The example is also on the models, but Swagger UI renders a media-type
+    # example unconditionally — and an endpoint whose body is a list of
+    # free-form dicts is exactly the one a caller cannot guess from the schema.
+    responses={
+        200: {
+            "content": {
+                "application/json": {"example": CONSOLIDATE_EXAMPLE_RESPONSE}
+            }
+        }
+    },
+)
+async def preprocess_consolidate(
+    request: ConsolidateRequest = Body(..., openapi_examples={
+        "one_customer_three_rows": {
+            "summary": "One customer over three row-grain rows",
+            "description": (
+                "Shows the whole contract in three rows: '0013119338' and "
+                "'13119338' group as ONE customer; all three company codes "
+                "land on EVERY row; the two blank sales orgs are dropped "
+                "rather than padded, so the sales-org list has one entry, not "
+                "three; and 'Name 1' — a column this stage never reads — is "
+                "echoed back untouched."
+            ),
+            "value": CONSOLIDATE_EXAMPLE_REQUEST,
+        },
+    }),
+) -> ConsolidateResponse:
+    """Consolidate company codes and sales orgs to customer grain (JSON).
+
+    The SAP extract is at ROW grain — one row per customer per company-code /
+    sales-area assignment. This appends the two CUSTOMER-level columns the
+    scorer needs, ``Company_Code_Consolidated`` and ``Sales_Org_Consolidated``,
+    onto every row of each customer. Rows in == rows out, same order, no row
+    dropped, merged or otherwise altered; only ``Customer``, ``Company Code``
+    and ``Sales Organization`` are read (snake_case aliases accepted).
+
+    BATCHING INVARIANT: consolidation is only correct when EVERY row of a
+    customer is in the same request. This endpoint cannot verify that from
+    inside one request, so it emits a HEURISTIC warning naming the customers
+    at the first and last row positions — the only places a split would show.
+    That is a warning, not a guarantee: prefer
+    POST /api/preprocess/consolidate/file, which always sees the whole file.
+
+    A blank Customer is an error counted in ``summary.errors``; the row is
+    still returned, unchanged, with both columns empty. Never a 500.
+    """
+    request_start = time.perf_counter()
+    logger.info("Consolidate request received: %d rows", len(request.rows))
+
+    rows, summary = consolidate_rows(request.rows, warn_batch_boundary=True)
+    for warning in summary.warnings:
+        logger.warning("consolidate request: %s", warning)
+
+    logger.info(
+        "consolidate_request",
+        extra={
+            "summary": summary.model_dump(),
+            "total_latency_ms": int((time.perf_counter() - request_start) * 1000),
+        },
+    )
+    return ConsolidateResponse(rows=rows, summary=summary)
+
+
+@router.post("/api/preprocess/consolidate/file")
+async def preprocess_consolidate_file(
+    file: UploadFile = File(..., description="SAP row-grain extract (.xlsx/.xlsm)"),
+    sheet: Optional[str] = Query(
+        default=None,
+        description="Worksheet to consolidate. Defaults to the first worksheet.",
+    ),
+) -> StreamingResponse:
+    """Same consolidation as /api/preprocess/consolidate, XLSX in / XLSX out.
+
+    The workbook is edited IN PLACE with openpyxl: every other sheet and every
+    original column survive untouched, and the two consolidated columns are
+    located or appended by header name (so a re-run overwrites rather than
+    duplicating them). Identical column names to the JSON transport.
+
+    This endpoint processes the WHOLE workbook and is therefore always safe
+    with respect to the batching invariant — run it once over the complete
+    extract, before any batching.
+    """
+    request_start = time.perf_counter()
+    filename = file.filename or ""
+    if not filename.lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded file must be an .xlsx (or .xlsm) workbook.",
+        )
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    try:
+        output_bytes, summary = consolidate_workbook(contents, sheet)
+    except ConsolidateFileError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    logger.info(
+        "consolidate_request",
+        extra={
+            "summary": summary.model_dump(),
+            # "filename" is a reserved LogRecord attribute — use upload_name.
+            "upload_name": filename,
+            "total_latency_ms": int((time.perf_counter() - request_start) * 1000),
+        },
+    )
+
+    stem = filename.rsplit("/", 1)[-1].rsplit(".", 1)[0] or "records"
+    out_name = f"{stem}_consolidated.xlsx"
+    return StreamingResponse(
+        io.BytesIO(output_bytes),
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
     )
 
 
