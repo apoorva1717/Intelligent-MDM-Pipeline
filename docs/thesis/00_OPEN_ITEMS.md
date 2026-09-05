@@ -656,3 +656,78 @@ that would have named the cause stays silent because the column claims both ids 
 distinctive-token count on the input name or an explicit disambiguation step when the
 candidate registry entry is one of several sharing that name, plus a re-run of the two
 records.
+
+---
+
+## Added in Pass 14 (Phase 2 scoring)
+
+Every item below was surfaced by the Pass 14 scoring change and deliberately **not** acted on.
+Evidence file throughout: `US_Qlic report data_2026-07-30.xlsx` (22,224 rows, 20,025 distinct
+customers, US, extracted 2026-07-30).
+
+**P2-22 · `sleeping_customer` separates nothing in the US extract, and retiring Bernd's `3-4` /
+`>5` tiers needs his confirmation for non-US extracts.** The column holds exactly one distinct
+value across all 22,224 rows — `No` — so the criterion contributes a flat +15 to every record
+and orders nothing. The band table now carries `No: 15` and `Yes: 0` only; the `3-4` (5 pts)
+and `>5` (0 pts) tiers Bernd described (BerndScoring1 19:56-20:21) are gone. That is a model
+change, and a non-US extract that still emits `3-4` would now score it 0 **and** raise an
+`"unrecognized"` warning. *Evidence that would settle it:* Bernd confirming the criterion is
+two-valued group-wide, or a non-US extract showing the banded values in use.
+
+**P2-23 · `Company_Code_Consolidated`, `Sales_Org_Consolidated` and the eight `SF_ID_*` slots
+have no source column in the click report.** Three of the eleven criteria —
+`company_code_count`, `combined_presence_bonus`, `salesforce_instance_count` — therefore score
+0 on all 22,224 rows, which is 40 of the 200 available points plus the per-instance term. This
+is structural, not a binding defect: the columns do not exist in the extract. Company-code
+consolidation is implemented (`dedup/consolidate.py`, landed in `6cf4639`) but its output is not
+present in this report, and the Salesforce extract has not been delivered. *Evidence that would
+settle it:* an extract carrying the consolidated columns, or the SF id delivery.
+
+**P2-24 · `Customer No.` is zero-padded to ten characters in the click report and eight
+unpadded in the SAP exports, so binding the header does not make the join work.** The report
+carries `'0013012902'`; `CA_EXPORT.xlsx` and its siblings carry `'13017225'`. The header now
+binds (Pass 14 §5) but the *values* still will not join across the two sources. This must be
+fixed upstream, not in the scorer: `row_id` feeds `golden_record_id`, which is a content hash,
+and normalising it inside the scorer would silently rewrite every existing identifier.
+*Evidence that would settle it:* an upstream normalisation decision, applied before enrichment,
+plus a re-key of any already-issued golden record ids.
+
+**P2-25 · The click report is not one row per customer.** 22,224 rows carry 20,025 distinct
+`Customer No.` values; 1,783 customer numbers appear more than once (the grain is one row per
+sales-org / company-code combination). `elect_golden_records` raises `DuplicateRowIdError` on a
+repeated `row_id` by design — a repeat means a broken upstream join and scoring it would
+double-elect — so **the raw report cannot be scored through `/api/dedup/score/file` as
+delivered**. It must pass the customer-grain consolidation endpoint first. *Evidence that would
+settle it:* the report run through consolidation, at which point P2-23's columns would also be
+populated.
+
+**P2-26 · 124 rows carry a partner order count with no partner date.** `Sales Order Partner
+Total Count` is non-null on 15,493 rows, `Sales Order Partner Last Used` on 15,369. The G1
+recency gate denies count points to any row with no year, so those 124 rows score 0 on
+`sales_order_partner_count` while carrying real volume. The gate is correct — a count without a
+year cannot be shown to be recent — but the asymmetry is an upstream data question.
+*Evidence that would settle it:* whether the missing date is a report defect or a genuine
+partner-order-without-date state in SAP.
+
+**P2-27 · `CustomerStatus` shows 4 blocked while 930 rows carry a deletion flag.**
+`CustomerStatus` is `Active` on 22,220 rows and `Blocked` on 4. Separately, `Central Deletion
+Flag` is `X` on 930 rows. The scorer reads only `CustomerStatus`, so 926 flagged-for-deletion
+records score the full `active: 10` and stay fully eligible to win their cluster. Whether a
+deletion flag should feed `customer_status`, gate eligibility, or raise an issue is undecided.
+*Evidence that would settle it:* Bernd's reading of the deletion flag against `CustomerStatus`.
+
+**P2-28 · `docs/BerndScoring1.txt`, `docs/BerndScoring2.pdf` and
+`docs/thesis/14_SCORING_DOSSIER.md` are cited as the authoritative sources for the scoring
+model but are not in the repository.** Pass 14 verified every falsifiable claim attributed to
+them against live data instead (and found two that did not hold — see `11_DELTA.md` §14.2 and
+the note on `test_absence_is_not_activity` below), but the transcript timestamps quoted
+throughout `12_RATIONALE.md` §14 cannot be checked from the repo. *Evidence that would settle
+it:* committing the two transcripts and the dossier.
+
+**P2-29 · The dossier's account of `test_absence_is_not_activity` does not match the test.**
+The change task states that `tests/test_scoring.py:208` pins `equipment_count=0 → 5`. It does
+not — it asserts only that an absent `customer_status` and `sleeping_band` score 0. The
+`0 → 5` pins were the `(0, 5)` parameter cases of `test_sales_order_count`,
+`test_partner_count` and `test_equipment_count`. All four tests were updated in Pass 14 and the
+NULL-encoding evidence is cited in `test_absence_is_not_activity`'s docstring as instructed,
+but any other document deriving from the same dossier line is wrong in the same way.

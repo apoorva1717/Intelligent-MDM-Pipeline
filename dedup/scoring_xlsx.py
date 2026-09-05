@@ -30,27 +30,37 @@ WEIGHTS_SHEET_NAME = "Weights"
 ISSUES_SHEET_NAME = "Issues"
 ISSUES_COLUMNS = ("row_id", "cluster_id", "issue_type", "detail")
 
-# Input column header -> ScoringRow field (matched via _norm, so case /
-# whitespace / punctuation variants of these headers still resolve).
-INPUT_HEADERS: Dict[str, str] = {
-    "Customer": "row_id",
-    "Account group": "account_group",  # note the space in the column name
-    "Sales_Order_Last_Used": "last_order_year",
+# ScoringRow field -> the accepted spellings of its input column header, in
+# preference order (matched via _norm, so case / whitespace / punctuation
+# variants of each still resolve; the FIRST spelling present in the sheet
+# wins). Two fields carry a second spelling because the click report names
+# them differently and _norm's tolerance is not wide enough to bridge the
+# gap — "Customer Account Group" normalises to "customeraccountgroup", not
+# "accountgroup", and "Customer No." to "customerno", not "customer". Every
+# other scoring header in that report already binds on the first spelling.
+INPUT_HEADERS: Dict[str, Tuple[str, ...]] = {
+    "row_id": ("Customer", "Customer No."),
+    # note the space in the column name
+    "account_group": ("Account group", "Customer Account Group"),
+    "last_order_year": ("Sales_Order_Last_Used",),
     # G1: despite the "_Total_" header, this is interpreted as the count of
     # sales orders WITHIN the last-used year (Bernd's year-priority rule). The
     # count only differentiates records sharing the most-recent year in a
     # cluster. OPEN ITEM P2-21: confirm the click-report column layout actually
     # supplies a within-year count here (not a lifetime total) before go-live.
-    "Sales_Order_Total_Count": "orders_in_last_used_year",
-    "Sales_Order_Partner_Last_Used": "partner_last_order_year",
+    "orders_in_last_used_year": ("Sales_Order_Total_Count",),
+    "partner_last_order_year": ("Sales_Order_Partner_Last_Used",),
     # G1: within-year partner count (same P2-21 caveat as above).
-    "Sales_Order_Partner_Total_Count": "partner_orders_in_last_used_year",
-    "Equipment_Total_Count": "equipment_count",
-    "SleepingCustomer": "sleeping_band",
-    "CustomerStatus": "customer_status",
-    "Company_Code_Consolidated": "company_code_consolidated",
-    "Sales_Org_Consolidated": "sales_org_consolidated",
+    "partner_orders_in_last_used_year": ("Sales_Order_Partner_Total_Count",),
+    "equipment_count": ("Equipment_Total_Count",),
+    "sleeping_band": ("SleepingCustomer",),
+    "customer_status": ("CustomerStatus",),
+    "company_code_consolidated": ("Company_Code_Consolidated",),
+    "sales_org_consolidated": ("Sales_Org_Consolidated",),
 }
+
+# Every accepted spelling of the Customer column, for locating the data sheet.
+ROW_ID_HEADERS: Tuple[str, ...] = INPUT_HEADERS["row_id"]
 
 # The 8 Salesforce id slots, in order.
 SF_ID_HEADERS: List[str] = [
@@ -113,9 +123,10 @@ def _parse_weights_sheet(ws, expected: dict) -> Tuple[Optional[dict], Optional[s
 
 def _find_data_sheet(wb):
     """First sheet whose header row carries a Customer column."""
+    wanted = {_norm(h) for h in ROW_ID_HEADERS}
     for ws in wb.worksheets:
         headers = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
-        if any(_norm(h) == "customer" for h in headers if h is not None):
+        if any(_norm(h) in wanted for h in headers if h is not None):
             return ws
     raise ScoringFileError("No sheet with a 'Customer' header column found.")
 
@@ -212,9 +223,12 @@ def score_workbook(contents: bytes) -> Tuple[bytes, ScoringSummary]:
             request_warnings.append(reason)
             logger.warning("scoring file: %s", reason)
 
+    # First spelling actually present in the sheet wins; None if none is.
     input_cols = {
-        field: columns.get(_norm(header))
-        for header, field in INPUT_HEADERS.items()
+        field: next(
+            (columns[k] for k in map(_norm, headers) if k in columns), None
+        )
+        for field, headers in INPUT_HEADERS.items()
     }
     if input_cols["row_id"] is None:
         raise ScoringFileError("The data sheet has no 'Customer' column.")
@@ -277,6 +291,10 @@ def score_workbook(contents: bytes) -> Tuple[bytes, ScoringSummary]:
         _ensure_column(ws, columns, h) for h in ELECTION_COLUMNS
     )
     weights_ver_col = _ensure_column(ws, columns, "scored_with_weights_version")
+    # Additive, appended last: the anchor the relative *_last_used ladders were
+    # scored against, so a proposal and a later approval can be checked for
+    # ladder drift the same way the weights fingerprint checks weights drift.
+    ref_year_col = _ensure_column(ws, columns, "scored_with_reference_year")
 
     for ws_row, row, result in zip(row_indices, rows, results):
         for key, col in breakdown_cols.items():
@@ -301,6 +319,8 @@ def score_workbook(contents: bytes) -> Tuple[bytes, ScoringSummary]:
         ws.cell(row=ws_row, column=approval_col, value=result.approval_status)
         ws.cell(row=ws_row, column=weights_ver_col,
                 value=result.scored_with_weights_version)
+        ws.cell(row=ws_row, column=ref_year_col,
+                value=result.scored_with_reference_year)
 
     # Second sheet: the potential-inconsistency list (Bernd's feedback loop).
     # Rebuilt fresh each run — never round-tripped through pandas — so the

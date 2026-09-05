@@ -1935,3 +1935,90 @@ steward must adjudicate — or when the model itself says "uncertain". Same inst
 different department, model agreeing (Stanford/Fairchild, Army/Devcom, Merck/MRL) is a Link ID
 and `unique`: nothing is in doubt, and sending it to a human would bury the four real
 questions in this batch under dozens of statements of the obvious.
+
+---
+
+## Added in Pass 14 — Phase 2 scoring: why these six bands moved
+
+`11_DELTA.md` §14 records *what* changed and the measured effect. This records *why*, and
+marks the two places where the decision departs from Bernd's literal words.
+
+### 14(a) · The count and equipment bands start at 1, because the source encodes "none" as NULL
+
+**The deviation, stated plainly.** Bernd said "0 to 3 is 5%" (BerndScoring1 19:24). The bands
+now start at 1. This also reverses a documented decision: `test_absence_is_not_activity`
+previously pinned `equipment_count=0 → 5`, and the dossier described the resulting asymmetry as
+intentional.
+
+**Why the data overrides the transcript here.** The click report never writes a zero. Across
+all 22,224 rows of `US_Qlic report data_2026-07-30.xlsx` the minimum value is **1** in all
+three columns — `Sales Order Total Count` (min 1, max 4,478, 8,042 non-null),
+`Sales Order Partner Total Count` (min 1, max 13,389, 15,493 non-null) and
+`Equipment Total Count` (min 1, max 1,945, 4,208 non-null) — with **zero occurrences of a
+literal 0** in any of them. "None" is encoded as NULL.
+
+Under the old bands the two encodings of the same fact scored differently: a blank scored 0
+while a literal `0` scored 5. Nothing in the source distinguishes them, so the five points were
+awarded on a spelling. Starting the bands at 1 makes the first band mean *"has activity"*,
+which is the only thing the data can actually support. Bernd's "0 to 3" describes a range whose
+lower endpoint his own report cannot produce; the change preserves his intent (a low-activity
+tier worth 5) and drops an endpoint that only ever fired on dirt.
+
+**What this does not settle.** Whether these counts are lifetime totals or within-year counts
+is a different question and still open — P2-21. If they turn out to be lifetime totals the
+tiers need recalibrating regardless of where they start.
+
+### 14(b) · `sleeping_customer` becomes two-valued, and `Yes` scores a *known* zero
+
+Retiring the `3-4` and `>5` tiers (BerndScoring1 19:56-20:21) is a model change, not a bug fix,
+and it is recorded as such in `00_OPEN_ITEMS.md` (P2-22) pending Bernd's confirmation for
+non-US extracts.
+
+The design point worth recording is the zero. `Yes` carries an **explicit** `0` band rather
+than being left to fall through unmatched, because `_match_label_band` (`dedup/scoring.py:769`)
+appends an `"unrecognized"` warning for any value with no band. A known value scoring a known
+zero is not an anomaly, and must be as quiet as `blocked: 0` and the old `>5: 0` were. The
+warning channel is reserved for values the table has never heard of; diluting it with routine
+zeros is how a warning column stops being read. `test_known_zero_bands_do_not_warn` pins this.
+
+### 14(c) · `MLIEF` → `LIEF`, and why `account_group`'s silence is deliberate
+
+`LIEF` occurs 1,023 times in `CA_EXPORT.xlsx`, 662 in `FL_EXPORT.xlsx` and 284 in
+`TX_EXPORT.xlsx` (also 271 MA, 235 NJ, 171 OH, 89 MI). `MLIEF` occurs **nowhere in any file in
+the project**. Bernd spelled it "M-L-I-E-F" (BerndScoring1 22:25) — the same class of
+transcription slip as DRID/DRIT, which live SAP already settled in favour of `DRIT`.
+`_match_label_band` splits a label on `/` and tests every alternative, so `"0005/LIEF/MLIEF"`
+keeps `MLIEF` covering a hypothetical non-US extract at no cost.
+
+**`account_group` is the one label field with `warn_unknown=False`** (`dedup/scoring.py:907`),
+so it is also the one field where a miss is completely silent — which is exactly how a whole
+column can fail on its name alone and never say so. That silence is kept, and it is deliberate:
+per Bernd, "give only the values to the ones we already have defined" (BerndScoring2 9:15),
+i.e. `DBRU`/`Dios` and anything else parked are *expected* zeros, not anomalies. The cost of
+that decision is that the header-binding defect below produced no diagnostic at all.
+
+### 14(d) · Why the ladders became relative rather than being re-instantiated
+
+Bernd described the rule relatively — "sales order last year, last two years, last three years"
+(BerndScoring1 15:00) — and only then instantiated it as 2026/2025/2024/2023. The instantiation
+was recorded and the description was not, so the table encoded a snapshot of the date it was
+written. Re-instantiating it for 2027 would work and would have to be redone every January, by
+someone who remembered; the failure mode if nobody does is not an error but a silent, uniform
+zero on 90 of the 200 available points. Banding on the offset from a reference year encodes the
+rule Bernd actually stated, and the reference year is stamped onto every scored row
+(`scored_with_reference_year`) so the anchor a score was computed under is never in question.
+
+The one place this could go quietly wrong is the ordering comparisons: `_cluster_year_maxima`,
+the G1 recency gate and tie-break step 2 all compare years, and an offset inverts every one of
+them. The offset is therefore computed inside the two ladder lookups only, and
+`test_tiebreak_still_orders_on_the_absolute_year` fails if it ever leaks.
+
+### 14(e) · Why a date is a year in two columns and dirt in every other
+
+`_coerce_int` takes an explicit `allow_date` flag, passed `True` only for the two `*_last_used`
+fields. The alternative — extracting `.year` from any date, anywhere — is smaller code and the
+wrong behaviour: the count columns are plain integers, so a date landing in
+`Equipment_Total_Count` is a broken upstream join, and silently reading it as ~2026 would hit
+the `>15` band and award 30 points. Trading a silent zero for a silent thirty is not a fix. The
+extraction logic lives entirely in `_coerce_int`; the call sites choose only whether a date is
+*meaningful* for that field, which is a property of the column, not of the coercion.

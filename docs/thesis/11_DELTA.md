@@ -892,3 +892,146 @@ stratum containing a block above the threshold. The same two similarity function
 ungated as `evidence` lines in the prompt, so their behaviour on real data is observable.
 
 **U-3 · Phase 1 marked a one-token brand match `ror:verified`.** See `00_OPEN_ITEMS.md`.
+
+---
+
+## Added in Pass 14 (Phase 2 scoring — dates, bands, bindings)
+
+Scope: `dedup/scoring.py`, `dedup/scoring_xlsx.py`, `dedup/weights.json`, `tests/test_scoring.py`.
+Clustering, enrichment, adjudication, routing and issue detection are untouched; the rest of the
+suite passing unmodified is the proof (13 pre-existing failures before and after, the same 13).
+
+### 14.1 · `weights_version` transition
+
+One commit, therefore exactly one fingerprint transition:
+
+| | fingerprint |
+|---|---|
+| before | `0a52a681bbff` |
+| after | `3147cac47910` |
+
+Six band labels moved. Every previously-valid caller-supplied weights table — the `Weights`
+worksheet of every existing workbook and any inline `weights` payload — is now stale, and
+`coerce_weights` (`dedup/scoring.py:627`) rejects a stale table **wholesale** with
+`"Weights sheet ignored: missing (criterion, band) pair (<criterion>, <band>); using
+dedup/weights.json"` rather than half-applying it. This is observable in the wild: scoring
+`LEI_enrichment_dedup_testdata_100_scoring (1)_enriched_dedup.xlsx`, whose `Weights` sheet
+still carries the old labels, now emits exactly that warning and falls back to `weights.json`.
+
+| criterion | before | after | why |
+|---|---|---|---|
+| `sales_order_last_used` | `"2026"/"2025"/"2024"/"2023"` | `"0"/"1"/"2"/"3"` | ladder is now banded on the offset from the election's reference year |
+| `sales_order_partner_last_used` | `"2026"/"2025"/"2024"/"2023"` | `"0"/"1"/"2"/"3"` | as above |
+| `sales_order_count` | `"0-5"` | `"1-5"` | the report encodes "none" as NULL, never as 0 |
+| `sales_order_partner_count` | `"0-5"` | `"1-5"` | as above |
+| `equipment_count` | `"0-3"` | `"1-3"` | as above |
+| `sleeping_customer` | `"No"/"3-4"/">5"` | `"No"/"Yes"` | two-value criterion; `Yes` scores a *known* zero, so it does not warn |
+| `account_group` | `"0005/MLIEF"` | `"0005/LIEF/MLIEF"` | `LIEF` is the live spelling; `MLIEF` kept at no cost |
+
+### 14.2 · What the primary fix actually repaired
+
+`Sales Order Last Used` and `Sales Order Partner Last Used` arrive from the click report as
+`datetime` objects, not integer years. The dossier records this as a silent zero. Measured
+against `US_Qlic report data_2026-07-30.xlsx` (22,224 rows, 20,025 distinct customers) it was
+**worse than silent** on the file route, in two stages before `_coerce_int` was ever reached:
+
+1. `_find_data_sheet` (`dedup/scoring_xlsx.py:114`) raised
+   `ScoringFileError: No sheet with a 'Customer' header column found.` — the report spells the
+   column `Customer No.`, which `_norm`s to `customerno`, not `customer`. The endpoint refused
+   the file outright.
+2. Bypassing that, the `Scalar` union (`dedup/scoring.py:61`) had no `date`/`datetime` member,
+   so **15,369 of 22,224 rows raised `ValidationError`** — every row carrying a partner date.
+   Only 6,855 rows were scoreable at all.
+
+The silent-zero path the dossier describes is real but is the *string* case: after a CSV
+round-trip the cell is `"2026-07-28"`, which passes the union, fails `int(float(text))`, and
+becomes `None` plus a warning that `exclude=True` (`dedup/scoring.py:306`) keeps out of the
+workbook, the JSON body and the summary.
+
+Per-criterion, over all 22,224 rows, counting rows that score **non-zero**:
+
+| criterion | before | after |
+|---|---|---|
+| `sales_order_last_used` | 0 | 8,038 |
+| `sales_order_count` | 0 | 8,042 |
+| `sales_order_partner_last_used` | 0 | 15,356 |
+| `sales_order_partner_count` | 0 | 15,369 |
+| `equipment_count` | 556 | 4,208 |
+| `sleeping_customer` | 6,855 | 22,224 |
+| `customer_status` | 6,851 | 22,220 |
+| `account_group` | 0 | 22,224 |
+| `company_code_count` | 0 | 0 |
+| `combined_presence_bonus` | 0 | 0 |
+| `salesforce_instance_count` | 0 | 0 |
+
+Eight of eleven criteria scored zero on every row before; three do now, and all three are
+structural — the click report carries no `Company_Code_Consolidated`, `Sales_Org_Consolidated`
+or `SF_ID_*` column at all. (The dossier says "nine of eleven"; the measured figure is eight,
+because `equipment_count` was non-zero on 556 rows.)
+
+The ladder distributions match the values predicted from the report exactly — sales
+2026→20 on 3,415 rows, 2025→15 on 2,590, 2024→10 on 1,267, 2023→5 on 766, 2022→0 on 4;
+partner 8,029 / 4,263 / 1,822 / 1,242 / 13. The four and thirteen rows at 2022 are the
+difference between the 8,042 / 15,369 rows carrying a date and the 8,038 / 15,356 scoring
+non-zero on the ladder.
+
+`score_final` over the 22,224 rows: min 25, p25 45, median 70, p75 90, max 165, mean 75.36.
+
+### 14.3 · The relative ladder is a no-op today and a cliff-avoidance tomorrow
+
+Scored in 2026 the offset ladder is arithmetically identical to the absolute one, which is why
+the A/B below shows no ladder movement. Its whole value is dated: under the absolute table
+every record in the system would have scored 0 on both ladders from 1 January 2027 without a
+line of code changing. `current_year` is resolved **once per election**
+(`elect_golden_records`, `dedup/scoring.py:1066`), never at import — the Function App runs warm,
+and a module-level `date.today().year` would go stale on an instance alive across New Year and
+score one batch under two ladders — and never per row.
+
+The offset is computed inside the two ladder lookups and nowhere else. `last_order_year` stays
+an absolute year for `_cluster_year_maxima`, the G1 gate and tie-break step 2, all of which
+compare years and would invert under an offset; `test_tiebreak_still_orders_on_the_absolute_year`
+pins that.
+
+### 14.4 · Golden-record A/B
+
+Scored before and after on the two clustered workbooks that carry `Routing` + `Cluster ID` and
+the full CRM column set:
+
+| workbook | rows | clusters | `score_final` moved | **elected golden record changed** |
+|---|---|---|---|---|
+| `dedup_STRESS_200_v1_scoring-ready_sf_enriched_dedup.xlsx` | 183 | 42 | 10 | **0** |
+| `LEI_enrichment_dedup_testdata_100_scoring (1)_enriched_dedup.xlsx` | 100 | 20 | 25 | **0** |
+
+Score movement, attributed per criterion:
+
+| workbook | criterion | change | rows |
+|---|---|---|---|
+| STRESS_200 | `score_SleepingCustomer` | 5 → 0 | 6 |
+| STRESS_200 | `score_AccountGroup` | 0 → **5** | 4 |
+| LEI_100 | `score_SleepingCustomer` | 5 → 0 | 15 |
+| LEI_100 | `score_EquipmentCount` | 5 → 0 | 6 |
+| LEI_100 | `score_SalesOrderCount` | 5 → 0 | 3 |
+| LEI_100 | `score_SalesOrderPartnerCount` | 5 → 0 | 1 |
+
+The `score_AccountGroup` 0 → 5 rows are the `LIEF` fix (§4) firing on real fixture data. The
+`5 → 0` rows are the retired `3-4` sleeping tier and the literal-`0` count/equipment cells that
+no longer earn the first band. **No election flipped on either workbook**, so this change has no
+before/after golden-record evidence to contribute to the evaluation chapter — the scores move,
+the decisions do not.
+
+### 14.5 · Determinism
+
+`docProps/core.xml` carries openpyxl's wall-clock document date, so whole-file bytes differ
+between two runs that cross a second boundary — **identically before and after this change**.
+Excluding that one part, three runs across forced second boundaries produce byte-identical
+output on both trees. Scoring the click report three times produces a byte-identical
+per-criterion and per-score artefact (`md5 5a8d20ee0592a0946dc622b44b96199a`).
+
+### 14.6 · Additive output column
+
+`scored_with_reference_year` is appended last on the row output
+(`dedup/scoring.py:301`) and on the workbook writeback (`dedup/scoring_xlsx.py`), beside
+`scored_with_weights_version`. Because the ladders are now relative, the same weights table
+scores differently either side of New Year; the anchor is stamped so a proposal and a later
+approval can be checked for **ladder** drift the way the fingerprint already checks **weights**
+drift. No column is renamed or dropped.

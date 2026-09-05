@@ -18,6 +18,7 @@ enrichment; those records never reach dedup.
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import logging
@@ -51,7 +52,13 @@ DEFAULT_CONFIDENCE_MERGE_THRESHOLD = 0.95
 # Raw cell/JSON value for numeric-ish fields. Typed permissively so one dirty
 # value in a real extract can never 422 the whole request; coercion (and the
 # warning for unrecognised values) happens in the scorer, not the model.
-Scalar = Union[int, float, str, None]
+#
+# date/datetime are members because openpyxl hands the two *_last_used columns
+# back as real datetimes (the click report stores them as dates, not as integer
+# years). Without them the union rejected the cell outright and the file route
+# raised a ValidationError before the scorer ever saw the value; the scorer
+# decides per field whether a date is meaningful (_coerce_int(allow_date=...)).
+Scalar = Union[int, float, str, datetime.datetime, datetime.date, None]
 
 # score_breakdown key -> flat output column header (the exact name the file
 # endpoint writes). Single source of truth shared by the JSON model (which
@@ -103,8 +110,18 @@ class ScoringRow(BaseModel):
     # matches /api/dedup/score/file exactly.
     model_config = ConfigDict(populate_by_name=True)
 
+    # "Customer No." is the click report's spelling of the same column; the
+    # file route matches it through _norm, the JSON route needs it spelled out.
+    # NOTE the values differ in FORM between sources (the click report
+    # zero-pads to ten characters, the SAP exports carry eight unpadded) —
+    # binding the header does NOT make that join work, and row_id is
+    # deliberately NOT normalised here: it feeds golden_record_id, a content
+    # hash. See 00_OPEN_ITEMS.md P2-24.
     row_id: str = Field(
-        ..., alias="Customer", description="SAP Customer / BP number, join key."
+        ...,
+        validation_alias=AliasChoices("Customer", "Customer No.", "row_id"),
+        serialization_alias="Customer",
+        description="SAP Customer / BP number, join key.",
     )
     cluster_id: Optional[str] = Field(
         default=None, alias="Cluster ID",
@@ -161,11 +178,18 @@ class ScoringRow(BaseModel):
         serialization_alias="Sales_Order_Partner_Total_Count",
     )
     equipment_count: Scalar = Field(default=None, alias="Equipment_Total_Count")
-    # expected "No" | "3-4" | ">5"
+    # expected "No" | "Yes" (both carry an explicit band in weights.json)
     sleeping_band: Optional[str] = Field(default=None, alias="SleepingCustomer")
     # expected "active" | "blocked"
     customer_status: Optional[str] = Field(default=None, alias="CustomerStatus")
-    account_group: Optional[str] = Field(default=None, alias="Account group")
+    # "Customer Account Group" is the click report's spelling.
+    account_group: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "Account group", "Customer Account Group", "account_group"
+        ),
+        serialization_alias="Account group",
+    )
     company_code_consolidated: Optional[str] = Field(
         default=None, alias="Company_Code_Consolidated"  # "," or ";"-delimited
     )
@@ -299,6 +323,12 @@ class ScoringResultRow(BaseModel):
     # 12-hex fingerprint of the weights the row was scored with — detects score
     # drift if weights were retuned between a proposal and its approval.
     scored_with_weights_version: Optional[str] = None
+    # The reference year the two *_last_used ladders were anchored to. The
+    # ladders are relative (offset-banded), so the same weights table scores
+    # differently either side of New Year; this stamps the anchor so a proposal
+    # and a later approval can be checked for LADDER drift the same way
+    # scored_with_weights_version checks for weights drift.
+    scored_with_reference_year: Optional[int] = None
     # Internal only: the per-criterion points. Flattened into the score_*
     # columns below for output (so excluded here); still read by the file
     # writeback and internal callers. Optional so a /score output (which has the
@@ -665,16 +695,54 @@ def coerce_weights(
 # Coercion helpers — permissive, never guess, never raise
 # ---------------------------------------------------------------------------
 
-def _coerce_int(value: Scalar, field_name: str, warnings: List[str]) -> Optional[int]:
+def _iso_year(text: str) -> Optional[int]:
+    """Year of an ISO-ish date string ("2026-07-28", "2026-07-28 00:00:00").
+
+    Only the leading four characters are read, and only when they parse as a
+    plausible year (1900-2200) followed by a date separator or nothing. A CSV
+    round-trip of a real date column lands here; "1234abc" does not.
+    """
+    head = text[:4]
+    if not head.isdigit():
+        return None
+    if len(text) > 4 and text[4] not in "-/. ":
+        return None
+    year = int(head)
+    return year if 1900 <= year <= 2200 else None
+
+
+def _coerce_int(
+    value: Scalar,
+    field_name: str,
+    warnings: List[str],
+    *,
+    allow_date: bool = False,
+) -> Optional[int]:
     """Coerce a raw cell/JSON value to int.
 
     Excel numerics arrive as floats (2026.0). Blank or non-numeric values
     become None (0 points); an actually-present unparseable value also gets
     a warning. Never raises.
+
+    ``allow_date`` opts a field into date-to-year extraction: the two
+    *_last_used columns arrive from the click report as real ``datetime``
+    objects (and as ISO-ish strings after a CSV round-trip), and without this
+    they coerced to None — silently zeroing four of the eleven criteria (both
+    ladders directly, both count rules through the G1 gate). It is OFF by
+    default on purpose: the count columns are plain integers, so a date
+    landing in e.g. ``Equipment_Total_Count`` is dirt and must keep warning
+    rather than quietly scoring as a year.
     """
     if value is None:
         return None
     if isinstance(value, bool):  # bool is an int subclass; a bool here is dirt
+        warnings.append(f"{field_name} {value!r} not numeric -> 0")
+        return None
+    # datetime.datetime is a subclass of datetime.date; neither is an int.
+    # Checked BEFORE the int/float branch, and after the bool guard above.
+    if isinstance(value, (datetime.datetime, datetime.date)):
+        if allow_date:
+            return value.year
         warnings.append(f"{field_name} {value!r} not numeric -> 0")
         return None
     if isinstance(value, (int, float)):
@@ -685,8 +753,21 @@ def _coerce_int(value: Scalar, field_name: str, warnings: List[str]) -> Optional
     try:
         return int(float(text))
     except ValueError:
-        warnings.append(f"{field_name} {text!r} not numeric -> 0")
-        return None
+        pass
+    if allow_date and (year := _iso_year(text)) is not None:
+        return year
+    warnings.append(f"{field_name} {text!r} not numeric -> 0")
+    return None
+
+
+def _year_offset(year: Optional[int], current_year: int) -> Optional[int]:
+    """Offset of ``year`` behind ``current_year`` (0 = this year, 1 = last).
+
+    The two *_last_used ladders are banded on this, never on the absolute
+    year — see ``score_row``. A future-dated order yields a negative offset,
+    matches no band, and scores 0.
+    """
+    return None if year is None else current_year - year
 
 
 def _clean_str(value: Optional[str]) -> Optional[str]:
@@ -824,6 +905,8 @@ def score_row(
     weights: dict,
     cluster_max_year: Optional[int] = None,
     cluster_max_partner_year: Optional[int] = None,
+    *,
+    current_year: int,
 ) -> Tuple[Dict[str, int], List[str]]:
     """Per-criterion points + warnings for one row.
 
@@ -837,16 +920,31 @@ def score_row(
     ``cluster_max_partner_year`` = None for context-free scoring (singletons /
     unique rows, where the row is trivially its own maximum). Every other
     criterion is unconditional.
+
+    ``current_year`` anchors the two *_last_used ladders, which are banded on
+    the OFFSET from it (0 = this year, 1 = last year, ...) rather than on
+    absolute years — Bernd described the rule relatively ("last year, last two
+    years, last three years") and hard-coded years would silently read zero
+    from the next 1 January. It is keyword-only and REQUIRED: resolving it from
+    the clock here would re-read the date per row, so callers thread one value
+    resolved once per election (see ``elect_golden_records``).
+
+    The offset is computed ONLY inside the two ladder lookups. ``last_year``
+    stays an absolute year everywhere else — the G1 gate, the cluster maxima
+    and the tie-break all compare years, and an offset would invert them.
     """
     warnings: List[str] = []
     breakdown: Dict[str, int] = {}
 
-    last_year = _coerce_int(row.last_order_year, "last_order_year", warnings)
+    last_year = _coerce_int(
+        row.last_order_year, "last_order_year", warnings, allow_date=True
+    )
     order_count = _coerce_int(
         row.orders_in_last_used_year, "orders_in_last_used_year", warnings
     )
     partner_year = _coerce_int(
-        row.partner_last_order_year, "partner_last_order_year", warnings
+        row.partner_last_order_year, "partner_last_order_year", warnings,
+        allow_date=True,
     )
     partner_count = _coerce_int(
         row.partner_orders_in_last_used_year,
@@ -855,8 +953,9 @@ def score_row(
     equipment = _coerce_int(row.equipment_count, "equipment_count", warnings)
     company_codes, sales_orgs, sf_instances = derived_counts(row)
 
+    # Banded on the offset from the election's reference year, not the year.
     breakdown["sales_order_last_used"] = _match_numeric_band(
-        last_year, weights["sales_order_last_used"]
+        _year_offset(last_year, current_year), weights["sales_order_last_used"]
     )
     # G1: count only "adds something" when this row owns the cluster's most
     # recent year — otherwise an older, higher-volume record could out-score a
@@ -877,7 +976,8 @@ def score_row(
                 f"the cluster's most recent ({cluster_max_year})"
             )
     breakdown["sales_order_partner_last_used"] = _match_numeric_band(
-        partner_year, weights["sales_order_partner_last_used"]
+        _year_offset(partner_year, current_year),
+        weights["sales_order_partner_last_used"],
     )
     # UNCONFIRMED: partner count tiers mirror sales order count. CONFIRM w/ Bernd.
     # G1: mirror the recency-dominance gate on the partner pair.
@@ -976,14 +1076,20 @@ class _Scored:
         weights: dict,
         cluster_max_year: Optional[int] = None,
         cluster_max_partner_year: Optional[int] = None,
+        *,
+        current_year: int,
     ):
         self.row = row
         self.breakdown, self.warnings = score_row(
-            row, weights, cluster_max_year, cluster_max_partner_year
+            row, weights, cluster_max_year, cluster_max_partner_year,
+            current_year=current_year,
         )
         self.total = sum(self.breakdown.values())
         silent: List[str] = []  # coercion warnings already captured by score_row
-        self.last_year = _coerce_int(row.last_order_year, "last_order_year", silent)
+        # ABSOLUTE year — this feeds the tie-break, which orders by recency.
+        self.last_year = _coerce_int(
+            row.last_order_year, "last_order_year", silent, allow_date=True
+        )
         self.equipment = _coerce_int(row.equipment_count, "equipment_count", silent)
         self.company_codes = derived_counts(row)[0]
 
@@ -994,15 +1100,18 @@ def _cluster_year_maxima(
     """(max last_order_year, max partner_last_order_year) over a cluster's rows,
     ignoring None. Both None when no member carries the respective year."""
     silent: List[str] = []
+    # ABSOLUTE years — the G1 gate compares a row's year against these.
     years = [
         y for y in (
-            _coerce_int(m.last_order_year, "last_order_year", silent)
+            _coerce_int(m.last_order_year, "last_order_year", silent,
+                        allow_date=True)
             for m in members
         ) if y is not None
     ]
     partner_years = [
         y for y in (
-            _coerce_int(m.partner_last_order_year, "partner_last_order_year", silent)
+            _coerce_int(m.partner_last_order_year, "partner_last_order_year",
+                        silent, allow_date=True)
             for m in members
         ) if y is not None
     ]
@@ -1064,6 +1173,12 @@ def elect_golden_records(
         weights = load_weights()
     threshold = _resolve_confidence_threshold(confidence_threshold)
     wv = weights_version(weights)
+    # The reference year for both *_last_used ladders, resolved ONCE per
+    # election. Never at import (the Function App runs warm — a module-level
+    # value would go stale on an instance alive across New Year and score one
+    # batch under two ladders) and never per row (a batch straddling midnight
+    # on 31 December would band its first and last rows differently).
+    current_year = datetime.date.today().year
 
     duplicates = sorted(
         rid for rid, n in Counter(r.row_id for r in rows).items() if n > 1
@@ -1086,7 +1201,8 @@ def elect_golden_records(
     }
 
     scored = [
-        _Scored(row, weights, *cluster_maxima.get(row.cluster_id, (None, None)))
+        _Scored(row, weights, *cluster_maxima.get(row.cluster_id, (None, None)),
+                current_year=current_year)
         for row in rows
     ]
 
@@ -1146,12 +1262,12 @@ def elect_golden_records(
                 else "unique"
             )
             # A lone row is its own proposed winner.
-            result = _build_result(s, lone_status, s.row.row_id, wv)
+            result = _build_result(s, lone_status, s.row.row_id, wv, current_year)
         else:
             status = (
                 "manual_review" if cluster_id in manual_review_clusters else "proposed"
             )
-            result = _build_result(s, status, winner_id, wv)
+            result = _build_result(s, status, winner_id, wv, current_year)
         if cluster_id in partial_clusters:
             result.warnings = [
                 *result.warnings,
@@ -1162,7 +1278,8 @@ def elect_golden_records(
 
 
 def _build_result(
-    s: "_Scored", election_status: str, winner_id: str, wv: Optional[str] = None
+    s: "_Scored", election_status: str, winner_id: str, wv: Optional[str] = None,
+    ref_year: Optional[int] = None,
 ) -> ScoringResultRow:
     """Assemble one result row with the golden + approval lifecycle fields.
 
@@ -1189,6 +1306,7 @@ def _build_result(
             is_golden_record=True, golden_record_id=row_id,
             proposed_golden_id=None, election_status="unique",
             approval_status=None, scored_with_weights_version=wv,
+            scored_with_reference_year=ref_year,
             score_breakdown=s.breakdown, warnings=s.warnings,
         )
     is_winner = row_id == winner_id
@@ -1202,6 +1320,7 @@ def _build_result(
         proposed_golden_id=winner_id,
         election_status=election_status,  # "proposed" | "manual_review"
         approval_status="proposed", scored_with_weights_version=wv,
+        scored_with_reference_year=ref_year,
         score_breakdown=s.breakdown, warnings=s.warnings,
     )
 

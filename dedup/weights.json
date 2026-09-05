@@ -1,37 +1,36 @@
 {
-  "_comment": "Golden-record scoring weights. Editable reference table — the scorer never hardcodes points. Band labels: 'a-b' inclusive range, '>n' strictly greater, 'n+' greater-or-equal, bare number exact, 'X/Y' either literal (case-insensitive). Values with no matching band score 0. UNCONFIRMED (verify with Bernd): combined_presence_bonus value, sales_order_partner_count tiers, account_group DRIT (transcript said DRID; live SAP shows DRIT).",
+  "_comment": "Golden-record scoring weights. Editable reference table — the scorer never hardcodes points. Band labels: 'a-b' inclusive range, '>n' strictly greater, 'n+' greater-or-equal, bare number exact, 'X/Y' either literal (case-insensitive). Values with no matching band score 0. The two *_last_used ladders are banded on the OFFSET from the election's reference year (0 = this year, 1 = last year, ...), not on absolute years — a negative offset (future-dated order) matches nothing and scores 0. The three count ladders start at 1, not 0: the source report encodes 'none' as NULL and never as a literal 0, so the first band means 'has activity'. UNCONFIRMED (verify with Bernd): combined_presence_bonus value, sales_order_partner_count tiers, account_group DRIT (transcript said DRID; live SAP shows DRIT).",
   "sales_order_last_used": {
-    "2026": 20,
-    "2025": 15,
-    "2024": 10,
-    "2023": 5
+    "0": 20,
+    "1": 15,
+    "2": 10,
+    "3": 5
   },
   "sales_order_count": {
-    "0-5": 5,
+    "1-5": 5,
     "6-10": 15,
     ">10": 25
   },
   "sales_order_partner_last_used": {
-    "2026": 20,
-    "2025": 15,
-    "2024": 10,
-    "2023": 5
+    "0": 20,
+    "1": 15,
+    "2": 10,
+    "3": 5
   },
   "sales_order_partner_count": {
-    "0-5": 5,
+    "1-5": 5,
     "6-10": 15,
     ">10": 25
   },
   "equipment_count": {
-    "0-3": 5,
+    "1-3": 5,
     "4-8": 12,
     "9-15": 20,
     ">15": 30
   },
   "sleeping_customer": {
     "No": 15,
-    "3-4": 5,
-    ">5": 0
+    "Yes": 0
   },
   "customer_status": {
     "active": 10,
@@ -42,7 +41,7 @@
     "0002/SHIP2": 15,
     "0003": 10,
     "0004": 10,
-    "0005/MLIEF": 5
+    "0005/LIEF/MLIEF": 5
   },
   "company_code_count": {
     "1": 5,

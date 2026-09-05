@@ -13,6 +13,7 @@ UNCONFIRMED values flagged in the model (verify with Bernd before go-live):
 
 from __future__ import annotations
 
+import datetime
 import io
 import json
 import os
@@ -34,6 +35,7 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key-for-mocks")
 from dedup.scoring import (
     DuplicateRowIdError,
     ScoringRow,
+    coerce_weights,
     derived_counts,
     detect_issues,
     elect_golden_records,
@@ -48,14 +50,32 @@ from dedup.scoring_xlsx import (
 
 WEIGHTS = load_weights()
 
+# The two *_last_used ladders are banded on the OFFSET from the election's
+# reference year, not on absolute years, so every year literal in this file is
+# expressed relative to that anchor. elect_golden_records / score_workbook
+# resolve the anchor from the clock, so the tests must too: a hard-coded 2026
+# would start failing on 1 January 2027 — the very drift the relative ladder
+# exists to prevent.
+THIS_YEAR = datetime.date.today().year
+Y0 = THIS_YEAR      # this year          -> offset 0 -> 20 pts
+Y1 = THIS_YEAR - 1  # last year          -> offset 1 -> 15 pts
+Y2 = THIS_YEAR - 2  # two years back     -> offset 2 -> 10 pts
+Y3 = THIS_YEAR - 3  # three years back   -> offset 3 -> 5 pts
+Y4 = THIS_YEAR - 4  # off the ladder     -> 0 pts
+Y5 = THIS_YEAR - 5
+Y6 = THIS_YEAR - 6
 
-def _score(field_values: dict) -> tuple[dict, list]:
+
+def _score(field_values: dict, *, current_year: int = None) -> tuple[dict, list]:
     row = ScoringRow(row_id="1", **field_values)
-    return score_row(row, WEIGHTS)
+    return score_row(
+        row, WEIGHTS,
+        current_year=THIS_YEAR if current_year is None else current_year,
+    )
 
 
-def _points(field_values: dict, criterion: str) -> int:
-    breakdown, _ = _score(field_values)
+def _points(field_values: dict, criterion: str, *, current_year: int = None) -> int:
+    breakdown, _ = _score(field_values, current_year=current_year)
     return breakdown[criterion]
 
 
@@ -69,25 +89,28 @@ def _by_row(results):
 
 class TestBands:
     @pytest.mark.parametrize("year,expected", [
-        (2026, 20), (2025, 15), (2024, 10), (2023, 5),
-        (2022, 0), (2021, 0), (None, 0),
+        (Y0, 20), (Y1, 15), (Y2, 10), (Y3, 5),
+        (Y4, 0), (Y5, 0), (None, 0),
     ])
     def test_sales_order_last_used(self, year, expected):
         assert _points({"last_order_year": year}, "sales_order_last_used") == expected
 
+    # §2: the band starts at 1, not 0 — the click report encodes "none" as
+    # NULL and never as a literal 0 (min value is 1 in all 22,224 rows), so a
+    # literal 0 is not "has activity" and must not score the first tier.
     @pytest.mark.parametrize("count,expected", [
-        (0, 5), (5, 5), (6, 15), (10, 15), (11, 25), (100, 25), (None, 0),
+        (0, 0), (1, 5), (5, 5), (6, 15), (10, 15), (11, 25), (100, 25), (None, 0),
     ])
     def test_sales_order_count(self, count, expected):
         # G1: count points are only AWARDED when the row owns its (here trivial,
         # context-free) most-recent year, so a year must be present for the band
         # mapping to apply. The band VALUES themselves are unchanged.
         assert _points(
-            {"last_order_year": 2026, "order_count": count}, "sales_order_count"
+            {"last_order_year": Y0, "order_count": count}, "sales_order_count"
         ) == expected
 
     @pytest.mark.parametrize("year,expected", [
-        (2026, 20), (2025, 15), (2024, 10), (2023, 5), (2020, 0), (None, 0),
+        (Y0, 20), (Y1, 15), (Y2, 10), (Y3, 5), (Y6, 0), (None, 0),
     ])
     def test_partner_last_used(self, year, expected):
         assert _points(
@@ -96,24 +119,28 @@ class TestBands:
 
     # UNCONFIRMED: partner count tiers mirror sales_order_count. CONFIRM w/ Bernd.
     @pytest.mark.parametrize("count,expected", [
-        (0, 5), (5, 5), (6, 15), (10, 15), (11, 25), (None, 0),
+        (0, 0), (1, 5), (5, 5), (6, 15), (10, 15), (11, 25), (None, 0),
     ])
     def test_partner_count(self, count, expected):
         # G1: partner count mirrors the recency gate — a partner year must be
         # present for the (unchanged) band values to apply.
         assert _points(
-            {"partner_last_order_year": 2026, "partner_order_count": count},
+            {"partner_last_order_year": Y0, "partner_order_count": count},
             "sales_order_partner_count",
         ) == expected
 
+    # §2: same NULL-encoding evidence as the two count ladders above.
     @pytest.mark.parametrize("count,expected", [
-        (0, 5), (3, 5), (4, 12), (8, 12), (9, 20), (15, 20), (16, 30), (None, 0),
+        (0, 0), (1, 5), (3, 5), (4, 12), (8, 12), (9, 20), (15, 20), (16, 30),
+        (None, 0),
     ])
     def test_equipment_count(self, count, expected):
         assert _points({"equipment_count": count}, "equipment_count") == expected
 
+    # §3: two explicit values. "Yes" scores a KNOWN zero (no warning), the
+    # same way blocked: 0 does — see test_known_zero_bands_do_not_warn.
     @pytest.mark.parametrize("band,expected", [
-        ("No", 15), ("3-4", 5), (">5", 0), (None, 0),
+        ("No", 15), ("Yes", 0), (None, 0),
     ])
     def test_sleeping_bands(self, band, expected):
         assert _points({"sleeping_band": band}, "sleeping_customer") == expected
@@ -126,7 +153,7 @@ class TestBands:
 
     @pytest.mark.parametrize("group,expected", [
         ("DRIT", 20), ("0002", 15), ("SHIP2", 15), ("0003", 10), ("0004", 10),
-        ("0005", 5), ("MLIEF", 5),
+        ("0005", 5), ("LIEF", 5), ("MLIEF", 5),
         ("DBRU", 0),  # parked -> 0 (explicit anything-else band)
         ("XXXX", 0), (None, 0),
     ])
@@ -178,13 +205,29 @@ class TestCoercion:
         assert set(breakdown) == set(BREAKDOWN_COLUMNS)
 
     def test_unrecognized_enums_warn_not_422(self):
+        # "Yes" is now a KNOWN sleeping band (§3), so the unrecognised case
+        # needs a genuinely unknown value.
         breakdown, warnings = _score({
-            "sleeping_band": "Yes", "customer_status": "n/a",
+            "sleeping_band": "dormant", "customer_status": "n/a",
         })
         assert breakdown["sleeping_customer"] == 0
         assert breakdown["customer_status"] == 0
-        assert any("sleeping_band 'Yes' unrecognized" in w for w in warnings)
+        assert any("sleeping_band 'dormant' unrecognized" in w for w in warnings)
         assert any("customer_status 'n/a' unrecognized" in w for w in warnings)
+
+    def test_known_zero_bands_do_not_warn(self):
+        """§3: a known value scoring a known zero is as clean as an absent one.
+
+        sleeping_band "Yes" and customer_status "blocked" both carry an
+        explicit 0 band, so neither may produce an "unrecognized" warning —
+        that channel is reserved for values the table has never heard of.
+        """
+        breakdown, warnings = _score({
+            "sleeping_band": "Yes", "customer_status": "blocked",
+        })
+        assert breakdown["sleeping_customer"] == 0
+        assert breakdown["customer_status"] == 0
+        assert warnings == []
 
     @pytest.mark.parametrize("status", [" Active ", "ACTIVE", "active"])
     def test_status_whitespace_case_variants(self, status):
@@ -195,8 +238,8 @@ class TestCoercion:
         assert _points({"sleeping_band": band}, "sleeping_customer") == 15
 
     def test_excel_float_hits_year_band(self):
-        assert _points({"last_order_year": 2026.0}, "sales_order_last_used") == 20
-        assert _points({"last_order_year": "2026.0"}, "sales_order_last_used") == 20
+        assert _points({"last_order_year": float(Y0)}, "sales_order_last_used") == 20
+        assert _points({"last_order_year": f"{Y0}.0"}, "sales_order_last_used") == 20
 
     def test_non_numeric_scores_zero_with_warning(self):
         # G1: field renamed order_count -> orders_in_last_used_year (old name
@@ -206,10 +249,28 @@ class TestCoercion:
         assert any("orders_in_last_used_year" in w for w in warnings)
 
     def test_absence_is_not_activity(self):
-        # Absent status / sleeping never default into a scoring band.
+        """Absence never defaults into a scoring band — and neither does a
+        literal 0.
+
+        The count/equipment half of this used to be the opposite decision: the
+        bands started at 0, so a literal ``equipment_count=0`` scored the first
+        tier (5) while a blank scored 0. The click report settles it — it
+        encodes "none" as NULL, never as 0: across all 22,224 rows of
+        ``US_Qlic report data_2026-07-30.xlsx`` the minimum value is 1 in
+        Sales Order Total Count, Sales Order Partner Total Count AND Equipment
+        Total Count, with zero occurrences of a literal 0. So the two
+        encodings of the same fact ("no equipment") were scoring differently.
+        The bands now start at 1 and mean "has activity", which is what the
+        data can actually support. This is a deliberate deviation from Bernd's
+        literal "0 to 3 is 5%" (BerndScoring1 19:24) — see 12_RATIONALE.md.
+        """
         breakdown, _ = _score({})
         assert breakdown["customer_status"] == 0
         assert breakdown["sleeping_customer"] == 0
+        assert breakdown["equipment_count"] == 0
+        # A literal 0 now scores the same as absence; 1 opens the first band.
+        assert _points({"equipment_count": 0}, "equipment_count") == 0
+        assert _points({"equipment_count": 1}, "equipment_count") == 5
 
 
 # ---------------------------------------------------------------------------
@@ -246,8 +307,8 @@ def _cluster_row(row_id, cluster_id="C1", **kw):
 class TestElection:
     def test_highest_score_wins(self):
         results = elect_golden_records([
-            _cluster_row("1", last_order_year=2026, order_count=20),   # 20+25
-            _cluster_row("2", last_order_year=2023),                   # 5
+            _cluster_row("1", last_order_year=Y0, order_count=20),   # 20+25
+            _cluster_row("2", last_order_year=Y3),                   # 5
         ], WEIGHTS)
         by = _by_row(results)
         assert by["1"].is_golden_record is True
@@ -276,7 +337,7 @@ class TestElection:
     def test_blocked_scores_zero_but_can_win(self):
         results = elect_golden_records([
             _cluster_row("1", customer_status="blocked",
-                         last_order_year=2026, order_count=20),
+                         last_order_year=Y0, order_count=20),
             _cluster_row("2", customer_status="active"),
         ], WEIGHTS)
         by = _by_row(results)
@@ -286,7 +347,7 @@ class TestElection:
 
     def test_all_blocked_cluster_manual_review(self):
         results = elect_golden_records([
-            _cluster_row("1", customer_status="blocked", last_order_year=2026),
+            _cluster_row("1", customer_status="blocked", last_order_year=Y0),
             _cluster_row("2", customer_status="BLOCKED "),
         ], WEIGHTS)
         by = _by_row(results)
@@ -298,7 +359,7 @@ class TestElection:
         """Q2: a merge below the confidence threshold keeps its membership but
         enters election as manual_review — a human confirms before a block."""
         results = elect_golden_records([
-            _cluster_row("1", confidence=0.90, last_order_year=2026, order_count=20),
+            _cluster_row("1", confidence=0.90, last_order_year=Y0, order_count=20),
             _cluster_row("2", confidence=0.90),
         ], WEIGHTS, confidence_threshold=0.95)
         by = _by_row(results)
@@ -313,7 +374,7 @@ class TestElection:
     def test_confident_merge_stays_proposed(self):
         """A merge at/above threshold is a normal proposal."""
         results = elect_golden_records([
-            _cluster_row("1", confidence=0.97, last_order_year=2026, order_count=20),
+            _cluster_row("1", confidence=0.97, last_order_year=Y0, order_count=20),
             _cluster_row("2", confidence=0.96),
         ], WEIGHTS, confidence_threshold=0.95)
         by = _by_row(results)
@@ -324,7 +385,7 @@ class TestElection:
         """Per-cluster confidence is the LOWEST member's — one low-confidence
         join demotes the merge even if others are confident."""
         results = elect_golden_records([
-            _cluster_row("1", confidence=0.99, last_order_year=2026),
+            _cluster_row("1", confidence=0.99, last_order_year=Y0),
             _cluster_row("2", confidence=0.80),  # dragged the merge down
         ], WEIGHTS, confidence_threshold=0.95)
         assert all(r.election_status == "manual_review" for r in results)
@@ -333,7 +394,7 @@ class TestElection:
         """A deterministic identical-collapse (no LLM merge → confidence None)
         is fully trusted: it elects as proposed, never gated."""
         results = elect_golden_records([
-            _cluster_row("1", confidence=None, last_order_year=2026),
+            _cluster_row("1", confidence=None, last_order_year=Y0),
             _cluster_row("2", confidence=None),
         ], WEIGHTS, confidence_threshold=0.95)
         assert all(r.election_status == "proposed" for r in results)
@@ -342,7 +403,7 @@ class TestElection:
         """The threshold is env-overridable without re-running the LLM."""
         monkeypatch.setenv("CONFIDENCE_MERGE_THRESHOLD", "0.85")
         results = elect_golden_records([
-            _cluster_row("1", confidence=0.90, last_order_year=2026),
+            _cluster_row("1", confidence=0.90, last_order_year=Y0),
             _cluster_row("2", confidence=0.90),
         ], WEIGHTS)  # 0.90 >= 0.85 → proposed
         assert all(r.election_status == "proposed" for r in results)
@@ -353,11 +414,11 @@ class TestElection:
         ever propagates uncertainty, never upgrades it."""
         results = elect_golden_records([
             # A confident cluster…
-            _cluster_row("1", cluster_id="C1", confidence=0.99, last_order_year=2026),
+            _cluster_row("1", cluster_id="C1", confidence=0.99, last_order_year=Y0),
             _cluster_row("2", cluster_id="C1", confidence=0.99),
             # …and a lone row clustering could not resolve.
             ScoringRow(row_id="9", cluster_id=None, routing="manual_review",
-                       last_order_year=2026, order_count=20),
+                       last_order_year=Y0, order_count=20),
         ], WEIGHTS, confidence_threshold=0.95)
         by = _by_row(results)
         assert by["1"].election_status == "proposed"   # neighbours unaffected
@@ -369,7 +430,7 @@ class TestElection:
         high confidence and with no blocked members."""
         results = elect_golden_records([
             _cluster_row("1", cluster_id="C1", confidence=0.99,
-                         routing="manual_review", last_order_year=2026),
+                         routing="manual_review", last_order_year=Y0),
             _cluster_row("2", cluster_id="C1", confidence=0.99, routing="cluster"),
         ], WEIGHTS, confidence_threshold=0.95)
         by = _by_row(results)
@@ -397,7 +458,7 @@ class TestElection:
         """Q5: cluster rows get approval_status='proposed' and a
         proposed_golden_id; unique rows get neither (nothing to approve)."""
         results = elect_golden_records([
-            _cluster_row("1", cluster_id="C1", last_order_year=2026, order_count=20),
+            _cluster_row("1", cluster_id="C1", last_order_year=Y0, order_count=20),
             _cluster_row("2", cluster_id="C1"),
             ScoringRow(row_id="9", cluster_id=None),
         ], WEIGHTS)
@@ -417,7 +478,7 @@ class TestElection:
         from dedup.scoring import apply_approval, ClusterNotFoundError
         results = elect_golden_records([
             _cluster_row("1", cluster_id="C1", customer_status="blocked",
-                         last_order_year=2026),
+                         last_order_year=Y0),
             _cluster_row("2", cluster_id="C1", customer_status="blocked"),
         ], WEIGHTS)  # all-blocked → manual_review
         approved, updated = apply_approval(results, "C1", "approved")
@@ -447,10 +508,10 @@ class TestElection:
     # row_id (numeric when all ids in the cluster parse as ints).
 
     def test_tiebreak_recent_year_wins_on_equal_score(self):
-        # 2021 and 2022 both score 0 -> equal total, more recent year wins.
+        # Y5 and Y4 both score 0 -> equal total, more recent year wins.
         rows = [
-            _cluster_row("1", last_order_year=2021),
-            _cluster_row("2", last_order_year=2022),
+            _cluster_row("1", last_order_year=Y5),
+            _cluster_row("2", last_order_year=Y4),
         ]
         by = _by_row(elect_golden_records(rows, WEIGHTS))
         assert by["2"].is_golden_record is True
@@ -459,8 +520,8 @@ class TestElection:
         # 4 and 8 sit in the same 12-point band -> equal score and year,
         # higher raw equipment_count wins.
         rows = [
-            _cluster_row("1", last_order_year=2022, equipment_count=4),
-            _cluster_row("2", last_order_year=2022, equipment_count=8),
+            _cluster_row("1", last_order_year=Y4, equipment_count=4),
+            _cluster_row("2", last_order_year=Y4, equipment_count=8),
         ]
         by = _by_row(elect_golden_records(rows, WEIGHTS))
         assert by["2"].is_golden_record is True
@@ -481,16 +542,16 @@ class TestElection:
         # Everything equal -> lowest row_id compared NUMERICALLY
         # ("3" < "20" as ints even though "20" < "3" lexically).
         rows = [
-            _cluster_row("20", last_order_year=2026, equipment_count=2),
-            _cluster_row("3", last_order_year=2026, equipment_count=2),
+            _cluster_row("20", last_order_year=Y0, equipment_count=2),
+            _cluster_row("3", last_order_year=Y0, equipment_count=2),
         ]
         by = _by_row(elect_golden_records(rows, WEIGHTS))
         assert by["3"].is_golden_record is True
 
     def test_tiebreak_lexical_when_non_numeric_ids(self):
         rows = [
-            _cluster_row("BP-10", last_order_year=2026),
-            _cluster_row("BP-2", last_order_year=2026),
+            _cluster_row("BP-10", last_order_year=Y0),
+            _cluster_row("BP-2", last_order_year=Y0),
         ]
         by = _by_row(elect_golden_records(rows, WEIGHTS))
         # "BP-10" < "BP-2" lexically.
@@ -499,13 +560,13 @@ class TestElection:
     def test_winner_invariant_under_shuffle(self):
         rows = [
             _cluster_row(str(i), cluster_id="C1",
-                         last_order_year=2023 + (i % 4),
+                         last_order_year=Y3 + (i % 4),
                          order_count=i, equipment_count=i % 7)
             for i in range(1, 12)
         ] + [
             ScoringRow(row_id=str(i)) for i in range(100, 105)
         ] + [
-            _cluster_row(str(i), cluster_id="C2", last_order_year=2026)
+            _cluster_row(str(i), cluster_id="C2", last_order_year=Y0)
             for i in range(200, 204)
         ]
         baseline = {
@@ -524,7 +585,7 @@ class TestElection:
 
     def test_table_invariant(self):
         rows = [
-            _cluster_row("1", last_order_year=2026),
+            _cluster_row("1", last_order_year=Y0),
             _cluster_row("2"),
             _cluster_row("3", cluster_id="C2", equipment_count=20),
             _cluster_row("4", cluster_id="C2"),
@@ -543,7 +604,7 @@ class TestElection:
 
     def test_score_equals_breakdown_sum(self):
         results = elect_golden_records([
-            _cluster_row("1", last_order_year=2026, order_count=12,
+            _cluster_row("1", last_order_year=Y0, order_count=12,
                          sleeping_band="No", customer_status="active",
                          account_group="DRIT",
                          company_code_consolidated="1;2;3",
@@ -573,16 +634,16 @@ class TestIssues:
     def test_detect_issues_covers_each_type(self):
         rows = [
             # cA: low-confidence merge (0.90 < 0.95); r1 has a score, r2 doesn't.
-            _cluster_row("1", cluster_id="cA", confidence=0.90, last_order_year=2026),
+            _cluster_row("1", cluster_id="cA", confidence=0.90, last_order_year=Y0),
             _cluster_row("2", cluster_id="cA", confidence=0.90),
             # cB: all blocked + zero scores → all_blocked + empty_payload + tie.
             _cluster_row("3", cluster_id="cB", customer_status="blocked"),
             _cluster_row("4", cluster_id="cB", customer_status="blocked"),
             # cC: a deterministic identity-split reasoning → verdict_contradiction.
-            _cluster_row("5", cluster_id="cC", last_order_year=2026,
+            _cluster_row("5", cluster_id="cC", last_order_year=Y0,
                          reasoning="Split: different non-empty ROR ids (a, b) "
                                    "indicate different entities."),
-            _cluster_row("6", cluster_id="cC", last_order_year=2023),
+            _cluster_row("6", cluster_id="cC", last_order_year=Y3),
         ]
         results = elect_golden_records(rows, WEIGHTS, confidence_threshold=0.95)
         issues = detect_issues(rows, results, confidence_threshold=0.95)
@@ -614,8 +675,8 @@ class TestIssues:
 
     def test_no_issues_on_clean_confident_cluster(self):
         rows = [
-            _cluster_row("1", cluster_id="cA", confidence=0.99, last_order_year=2026),
-            _cluster_row("2", cluster_id="cA", confidence=0.99, last_order_year=2023),
+            _cluster_row("1", cluster_id="cA", confidence=0.99, last_order_year=Y0),
+            _cluster_row("2", cluster_id="cA", confidence=0.99, last_order_year=Y3),
         ]
         results = elect_golden_records(rows, WEIGHTS, confidence_threshold=0.95)
         assert detect_issues(rows, results, confidence_threshold=0.95) == []
@@ -651,7 +712,7 @@ class TestScoreEndpoint:
         """Q5: score a cluster, then approve it — approval_status flips to
         approved and the proposed winner is promoted into the golden fields."""
         scored = await client.post("/api/dedup/score", json={"rows": [
-            {"row_id": "1", "cluster_id": "C1", "last_order_year": 2026,
+            {"row_id": "1", "cluster_id": "C1", "last_order_year": Y0,
              "customer_status": "blocked"},
             {"row_id": "2", "cluster_id": "C1", "customer_status": "blocked"},
         ]})
@@ -677,7 +738,7 @@ class TestScoreEndpoint:
         """Q7: the JSON score endpoint returns an issues list."""
         resp = await client.post("/api/dedup/score", json={"rows": [
             {"row_id": "1", "cluster_id": "C1", "confidence": 0.80,
-             "last_order_year": 2026},
+             "last_order_year": Y0},
             {"row_id": "2", "cluster_id": "C1", "confidence": 0.80},
         ]})
         assert resp.status_code == 200
@@ -701,7 +762,7 @@ class TestScoreEndpoint:
         resp = await client.post("/api/dedup/score", json={"rows": [
             {"row_id": "1", "cluster_id": "C1", "sleeping_band": "Yes",
              "customer_status": "parked", "last_order_year": "n/a"},
-            {"row_id": "2", "cluster_id": "C1", "last_order_year": 2026.0},
+            {"row_id": "2", "cluster_id": "C1", "last_order_year": float(Y0)},
         ]})
         assert resp.status_code == 200
         data = resp.json()
@@ -714,7 +775,7 @@ class TestScoreEndpoint:
     @pytest.mark.asyncio
     async def test_summary_counts(self, client):
         resp = await client.post("/api/dedup/score", json={"rows": [
-            {"row_id": "1", "cluster_id": "C1", "last_order_year": 2026},
+            {"row_id": "1", "cluster_id": "C1", "last_order_year": Y0},
             {"row_id": "2", "cluster_id": "C1"},
             {"row_id": "3"},
             {"row_id": "4", "cluster_id": "C2", "customer_status": "blocked"},
@@ -827,7 +888,7 @@ class TestScoreWorkbook:
         proposed_golden_id, and approval_status is 'proposed'."""
         original = _build_workbook([
             _data_row("1", cluster="A1", routing="cluster", status="blocked",
-                      year=2026),
+                      year=Y0),
             _data_row("2", cluster="A1", routing="cluster", status="blocked"),
             _data_row("3"),  # unique
         ])
@@ -854,7 +915,7 @@ class TestScoreWorkbook:
         sheet and original columns survive."""
         original = _build_workbook([
             _data_row("1", cluster="A1", routing="cluster", status="blocked",
-                      year=2026),
+                      year=Y0),
             _data_row("2", cluster="A1", routing="cluster", status="blocked"),
             _data_row("3"),
         ])
@@ -871,10 +932,10 @@ class TestScoreWorkbook:
 
     def test_round_trip_preserves_weights_sheet_and_45_columns(self):
         original = _build_workbook([
-            _data_row("72000001", cluster="A1", routing="cluster", year=2026,
+            _data_row("72000001", cluster="A1", routing="cluster", year=Y0,
                       orders=12, sleeping="No", status="active", codes="1001",
                       orgs="2001"),
-            _data_row("72000002", cluster="A1", routing="cluster", year=2023),
+            _data_row("72000002", cluster="A1", routing="cluster", year=Y3),
             _data_row("72000003"),
         ])
         output, summary = score_workbook(original)
@@ -927,7 +988,7 @@ class TestScoreWorkbook:
         # scoring falls back to dedup/weights.json, and the summary warns.
         broken = [r for r in _weights_sheet_rows() if r[1] != "6-10"]
         original = _build_workbook(
-            [_data_row("1", year=2026)], weights_rows=broken
+            [_data_row("1", year=Y0)], weights_rows=broken
         )
         output, summary = score_workbook(original)
         assert any("Weights sheet ignored" in w for w in summary.warnings)
@@ -937,11 +998,11 @@ class TestScoreWorkbook:
 
     def test_weights_sheet_override_applies_wholesale(self):
         retuned = [
-            (c, b, (40 if (c, b) == ("sales_order_last_used", "2026") else p), n)
+            (c, b, (40 if (c, b) == ("sales_order_last_used", "0") else p), n)
             for c, b, p, n in _weights_sheet_rows()
         ]
         output, summary = score_workbook(
-            _build_workbook([_data_row("1", year=2026)], weights_rows=retuned)
+            _build_workbook([_data_row("1", year=Y0)], weights_rows=retuned)
         )
         assert summary.warnings == []
         ws = load_workbook(io.BytesIO(output))["Sheet1"]
@@ -950,9 +1011,9 @@ class TestScoreWorkbook:
 
     def test_blank_customer_skipped_and_counted(self):
         rows = [
-            _data_row("1", year=2026),
-            _data_row(None, year=2024),  # blank Customer -> summary.errors
-            _data_row("2", year=2023),
+            _data_row("1", year=Y0),
+            _data_row(None, year=Y2),  # blank Customer -> summary.errors
+            _data_row("2", year=Y3),
         ]
         output, summary = score_workbook(_build_workbook(rows))
         assert summary.errors == 1
@@ -962,15 +1023,15 @@ class TestScoreWorkbook:
         # The skipped row's score cells stay empty; others are filled
         # (year band + the helper's default DRIT account group = 20).
         col = headers.index("score_final") + 1
-        assert ws.cell(row=2, column=col).value == 40   # 2026 (20) + DRIT (20)
+        assert ws.cell(row=2, column=col).value == 40   # Y0 (20) + DRIT (20)
         assert ws.cell(row=3, column=col).value is None
-        assert ws.cell(row=4, column=col).value == 25   # 2023 (5) + DRIT (20)
+        assert ws.cell(row=4, column=col).value == 25   # Y3 (5) + DRIT (20)
 
     def test_manual_review_routing_keeps_cluster_membership(self):
         # Adjudicator semantics: manual_review means membership certain,
         # only a merge was uncertain -> expected_cluster is used.
         rows = [
-            _data_row("1", cluster="M1", routing="manual_review", year=2026),
+            _data_row("1", cluster="M1", routing="manual_review", year=Y0),
             _data_row("2", cluster="M1", routing="manual_review"),
         ]
         _, summary = score_workbook(_build_workbook(rows))
@@ -989,9 +1050,9 @@ class TestScoreWorkbook:
         wb = Workbook()
         ws = wb.active
         ws.append(["Customer", "Sales_Order_Last_Used", "Routing", "Cluster ID"])
-        ws.append(["1", 2026, "cluster", 3])
-        ws.append(["2", 2023, "cluster", 3])
-        ws.append(["3", 2025, "unique", None])
+        ws.append(["1", Y0, "cluster", 3])
+        ws.append(["2", Y3, "cluster", 3])
+        ws.append(["3", Y1, "unique", None])
         buffer = io.BytesIO()
         wb.save(buffer)
 
@@ -1022,7 +1083,7 @@ class TestScoreWorkbook:
     @pytest.mark.asyncio
     async def test_file_endpoint_end_to_end(self, client):
         contents = _build_workbook([
-            _data_row("1", cluster="A1", routing="cluster", year=2026),
+            _data_row("1", cluster="A1", routing="cluster", year=Y0),
             _data_row("2", cluster="A1", routing="cluster"),
         ])
         resp = await client.post(
@@ -1064,11 +1125,11 @@ class TestPipelineFieldPreservation:
         # stage clusters them deterministically (no LLM merge needed, so the
         # conservative mock is fine). The third row is unique.
         rows = [
-            _data_row("72000001", name="Acme Labs GmbH", year=2026, orders=12,
+            _data_row("72000001", name="Acme Labs GmbH", year=Y0, orders=12,
                       sleeping="No", status="active", codes="1001;1002",
                       orgs="2001"),
-            _data_row("72000002", name="Acme Labs GmbH", year=2023),
-            _data_row("72000003", name="Zeta Institut", year=2025),
+            _data_row("72000002", name="Acme Labs GmbH", year=Y3),
+            _data_row("72000003", name="Zeta Institut", year=Y1),
         ]
         contents = _build_workbook(rows)
 
@@ -1088,7 +1149,7 @@ class TestPipelineFieldPreservation:
                        "SF_ID_Biosystems", "SF_ID_8"):
             assert header in h1, f"enrichment dropped {header}"
         col1 = {h: i + 1 for i, h in enumerate(h1)}
-        assert str(ws1.cell(2, col1["Sales_Order_Last_Used"]).value) == "2026"
+        assert str(ws1.cell(2, col1["Sales_Order_Last_Used"]).value) == str(Y0)
         assert ws1.cell(2, col1["SleepingCustomer"]).value == "No"
 
         # Stage 2 — dedup echoes every column, appends Routing/Cluster ID,
@@ -1152,8 +1213,8 @@ class TestEdgeCases:
         """Non-numeric row_ids exercise the lexical tie-break; a cluster mixing
         numeric and non-numeric ids must not raise."""
         rows = [
-            _cluster_row("DE-0001", cluster_id="C1", last_order_year=2026),
-            _cluster_row("100", cluster_id="C1", last_order_year=2026),  # tie on score
+            _cluster_row("DE-0001", cluster_id="C1", last_order_year=Y0),
+            _cluster_row("100", cluster_id="C1", last_order_year=Y0),  # tie on score
         ]
         results = elect_golden_records(rows, WEIGHTS)  # must not raise
         winners = [r for r in results if r.is_golden_record]
@@ -1165,7 +1226,7 @@ class TestEdgeCases:
         """Same cluster, different weights → possibly different winner, and a
         different scored_with_weights_version stamped on every row."""
         rows = [
-            _cluster_row("1", cluster_id="C1", last_order_year=2026),
+            _cluster_row("1", cluster_id="C1", last_order_year=Y0),
             _cluster_row("2", cluster_id="C1", equipment_count=50),
         ]
         w_year = json.loads(json.dumps(WEIGHTS))
@@ -1199,7 +1260,7 @@ class TestEdgeCases:
 
         # Both members submitted → hash matches → no partial warning.
         full = elect_golden_records([
-            _cluster_row("1", cluster_id=cid, last_order_year=2026),
+            _cluster_row("1", cluster_id=cid, last_order_year=Y0),
             _cluster_row("2", cluster_id=cid),
         ], WEIGHTS)
         assert not any("partial_cluster" in w for r in full for w in r.warnings)
@@ -1208,7 +1269,7 @@ class TestEdgeCases:
         """A plain id like 'C1' is not a content hash and must never trip the
         partial-cluster check."""
         results = elect_golden_records([
-            _cluster_row("1", cluster_id="C1", last_order_year=2026),
+            _cluster_row("1", cluster_id="C1", last_order_year=Y0),
             _cluster_row("2", cluster_id="C1"),
         ], WEIGHTS)
         assert not any("partial_cluster" in w for r in results for w in r.warnings)
@@ -1217,8 +1278,8 @@ class TestEdgeCases:
         """Scoring the same workbook twice yields identical scoring/election
         column values (determinism end to end)."""
         wb = _build_workbook([
-            _data_row("1", cluster="A1", routing="cluster", year=2026, orders=12),
-            _data_row("2", cluster="A1", routing="cluster", year=2023),
+            _data_row("1", cluster="A1", routing="cluster", year=Y0, orders=12),
+            _data_row("2", cluster="A1", routing="cluster", year=Y3),
             _data_row("3"),
         ])
         out1, _ = score_workbook(wb)
@@ -1230,7 +1291,7 @@ class TestEdgeCases:
         assert vals1 == vals2
 
     def test_scored_with_weights_version_written_to_file(self):
-        output, _ = score_workbook(_build_workbook([_data_row("1", year=2026)]))
+        output, _ = score_workbook(_build_workbook([_data_row("1", year=Y0)]))
         ws = load_workbook(io.BytesIO(output))["Sheet1"]
         headers = [c.value for c in ws[1]]
         assert "scored_with_weights_version" in headers
@@ -1249,10 +1310,10 @@ class TestG1CountRecency:
         return b["sales_order_last_used"] + b["sales_order_count"]
 
     def test_bernd_example_2026_three_orders_beats_older_record_with_25(self):
-        # Bernd's verbatim example: 2019+25 vs 2026+3 → the 2026 record is golden.
+        # Bernd's verbatim example: 2019+25 vs Y0+3 → the Y0 record is golden.
         results = elect_golden_records([
             _cluster_row("A", cluster_id="C1", last_order_year=2019, order_count=25),
-            _cluster_row("B", cluster_id="C1", last_order_year=2026, order_count=3),
+            _cluster_row("B", cluster_id="C1", last_order_year=Y0, order_count=3),
         ], WEIGHTS)
         by = _by_row(results)
         assert by["B"].is_golden_record is True
@@ -1261,10 +1322,10 @@ class TestG1CountRecency:
         assert by["B"].score_breakdown["sales_order_count"] == 5   # 3 -> band 0-5
 
     def test_discovered_failure_2023_12_beaten_by_2026_3(self):
-        # The exact regression: flat-additive gave 2023+12=30 > 2026+3=25.
+        # The exact regression: flat-additive gave Y3+12=30 > Y0+3=25.
         results = elect_golden_records([
-            _cluster_row("A", cluster_id="C1", last_order_year=2023, order_count=12),
-            _cluster_row("B", cluster_id="C1", last_order_year=2026, order_count=3),
+            _cluster_row("A", cluster_id="C1", last_order_year=Y3, order_count=12),
+            _cluster_row("B", cluster_id="C1", last_order_year=Y0, order_count=3),
         ], WEIGHTS)
         by = _by_row(results)
         assert by["B"].is_golden_record is True
@@ -1273,8 +1334,8 @@ class TestG1CountRecency:
     def test_same_year_count_differentiates(self):
         # Count only "adds something" WITHIN the same year.
         results = elect_golden_records([
-            _cluster_row("A", cluster_id="C1", last_order_year=2026, order_count=3),
-            _cluster_row("B", cluster_id="C1", last_order_year=2026, order_count=12),
+            _cluster_row("A", cluster_id="C1", last_order_year=Y0, order_count=3),
+            _cluster_row("B", cluster_id="C1", last_order_year=Y0, order_count=12),
         ], WEIGHTS)
         by = _by_row(results)
         assert by["A"].score_breakdown["sales_order_count"] == 5
@@ -1287,7 +1348,7 @@ class TestG1CountRecency:
         results = elect_golden_records([
             _cluster_row("A", cluster_id="C1", partner_last_order_year=2019,
                          partner_order_count=25),
-            _cluster_row("B", cluster_id="C1", partner_last_order_year=2026,
+            _cluster_row("B", cluster_id="C1", partner_last_order_year=Y0,
                          partner_order_count=3),
         ], WEIGHTS)
         by = _by_row(results)
@@ -1297,9 +1358,9 @@ class TestG1CountRecency:
 
     def test_partner_discovered_failure(self):
         results = elect_golden_records([
-            _cluster_row("A", cluster_id="C1", partner_last_order_year=2023,
+            _cluster_row("A", cluster_id="C1", partner_last_order_year=Y3,
                          partner_order_count=12),
-            _cluster_row("B", cluster_id="C1", partner_last_order_year=2026,
+            _cluster_row("B", cluster_id="C1", partner_last_order_year=Y0,
                          partner_order_count=3),
         ], WEIGHTS)
         by = _by_row(results)
@@ -1308,9 +1369,9 @@ class TestG1CountRecency:
 
     def test_partner_same_year_differentiates(self):
         results = elect_golden_records([
-            _cluster_row("A", cluster_id="C1", partner_last_order_year=2026,
+            _cluster_row("A", cluster_id="C1", partner_last_order_year=Y0,
                          partner_order_count=3),
-            _cluster_row("B", cluster_id="C1", partner_last_order_year=2026,
+            _cluster_row("B", cluster_id="C1", partner_last_order_year=Y0,
                          partner_order_count=12),
         ], WEIGHTS)
         by = _by_row(results)
@@ -1321,7 +1382,7 @@ class TestG1CountRecency:
 
     def test_singleton_receives_count_points(self):
         (r,) = elect_golden_records([
-            ScoringRow(row_id="1", cluster_id=None, last_order_year=2023,
+            ScoringRow(row_id="1", cluster_id=None, last_order_year=Y3,
                        order_count=12),
         ], WEIGHTS)
         assert r.election_status == "unique"
@@ -1358,8 +1419,8 @@ class TestG1CountRecency:
 
     def test_max_year_record_with_none_count_still_wins_on_recency(self):
         results = elect_golden_records([
-            _cluster_row("A", cluster_id="C1", last_order_year=2026),          # max, no count
-            _cluster_row("B", cluster_id="C1", last_order_year=2023, order_count=25),
+            _cluster_row("A", cluster_id="C1", last_order_year=Y0),          # max, no count
+            _cluster_row("B", cluster_id="C1", last_order_year=Y3, order_count=25),
         ], WEIGHTS)
         by = _by_row(results)
         assert by["A"].is_golden_record is True
@@ -1369,8 +1430,8 @@ class TestG1CountRecency:
 
     def test_suppression_emits_issue(self):
         rows = [
-            _cluster_row("A", cluster_id="C1", last_order_year=2023, order_count=12),
-            _cluster_row("B", cluster_id="C1", last_order_year=2026, order_count=3),
+            _cluster_row("A", cluster_id="C1", last_order_year=Y3, order_count=12),
+            _cluster_row("B", cluster_id="C1", last_order_year=Y0, order_count=3),
         ]
         results = elect_golden_records(rows, WEIGHTS)
         issues = detect_issues(rows, results)
@@ -1383,9 +1444,9 @@ class TestG1CountRecency:
         """Within any cluster, ordering by the sales-order component (recency +
         awarded count) never contradicts ordering by last_order_year: a strictly
         more recent year yields a strictly greater component (years drawn from
-        the strictly-decreasing tier range 2023-2026)."""
+        the strictly-decreasing tier range Y3-Y0)."""
         rng = random.Random(20260723)
-        YEARS = [2023, 2024, 2025, 2026]
+        YEARS = [Y3, Y2, Y1, Y0]
         for _ in range(300):
             n = rng.randint(2, 5)
             spec = [(str(i), rng.choice(YEARS), rng.randint(0, 30)) for i in range(n)]
@@ -1401,7 +1462,7 @@ class TestG1CountRecency:
 
     def test_partner_component_never_contradicts_recency(self):
         rng = random.Random(7770723)
-        YEARS = [2023, 2024, 2025, 2026]
+        YEARS = [Y3, Y2, Y1, Y0]
         for _ in range(300):
             n = rng.randint(2, 5)
             spec = [(str(i), rng.choice(YEARS), rng.randint(0, 30)) for i in range(n)]
@@ -1416,3 +1477,279 @@ class TestG1CountRecency:
                 for b in year:
                     if year[a] > year[b]:
                         assert comp[a] > comp[b], (spec, comp)
+
+
+# ---------------------------------------------------------------------------
+# Dates, the relative ladder, and the header bindings the click report needs
+# ---------------------------------------------------------------------------
+
+class TestDateCoercion:
+    """The two *_last_used columns arrive from the click report as real dates.
+
+    `US_Qlic report data_2026-07-30.xlsx` stores both as datetimes, never as
+    integer years. Before the fix the Scalar union rejected the cell outright
+    (15,369 of 22,224 rows raised ValidationError) and the ISO-string form
+    coerced to None — zeroing both ladders directly and both COUNT rules
+    through the G1 gate, i.e. 90 of the 200 available points on every record.
+    """
+
+    @pytest.mark.parametrize("value", [
+        datetime.datetime(2026, 7, 28, 0, 0),
+        datetime.date(2026, 7, 28),
+        "2026-07-28",
+        "2026-07-28 00:00:00",
+        "2026/07/28",
+        2026,
+        "2026",
+    ])
+    def test_year_is_extracted_from_a_date(self, value):
+        assert _points(
+            {"last_order_year": value}, "sales_order_last_used", current_year=2026
+        ) == 20
+        assert _points(
+            {"partner_last_order_year": value},
+            "sales_order_partner_last_used", current_year=2026,
+        ) == 20
+
+    def test_a_date_does_not_raise_at_the_model_boundary(self):
+        # Scalar must ACCEPT a date: the file route builds ScoringRow straight
+        # from openpyxl cell values, so a rejection here 500s the whole batch.
+        row = ScoringRow(row_id="1", last_order_year=datetime.datetime(2026, 7, 28))
+        assert isinstance(row.last_order_year, datetime.datetime)
+
+    def test_a_date_unblocks_the_g1_count_gate(self):
+        # The count rules are gated on the row having a year at all, so a
+        # date that coerced to None took the counts down with it.
+        breakdown, warnings = _score(
+            {"last_order_year": datetime.datetime(2026, 3, 1), "order_count": 7,
+             "partner_last_order_year": datetime.datetime(2026, 3, 1),
+             "partner_order_count": 7},
+            current_year=2026,
+        )
+        assert breakdown["sales_order_count"] == 15
+        assert breakdown["sales_order_partner_count"] == 15
+        assert warnings == []
+
+    @pytest.mark.parametrize("value", [
+        datetime.datetime(2026, 7, 28), datetime.date(2026, 7, 28), "2026-07-28",
+    ])
+    def test_a_date_in_a_count_column_is_still_dirt(self, value):
+        """A date is only meaningful in the two *_last_used columns.
+
+        The count columns are plain integers, so a date landing in one is a
+        broken upstream join, not a year — it must keep scoring 0 WITH a
+        warning rather than quietly scoring as ~2026 (which would hit the
+        top equipment band and silently award 30 points).
+        """
+        breakdown, warnings = _score({"equipment_count": value})
+        assert breakdown["equipment_count"] == 0
+        assert any("equipment_count" in w for w in warnings)
+
+    @pytest.mark.parametrize("text", ["lots", "n/a", "1234-56-78", "0007-01-01"])
+    def test_non_dates_keep_todays_behaviour(self, text):
+        breakdown, warnings = _score({"last_order_year": text})
+        assert breakdown["sales_order_last_used"] == 0
+        assert any("last_order_year" in w for w in warnings)
+
+
+class TestRelativeLadder:
+    """Both *_last_used ladders are banded on the OFFSET from a reference year.
+
+    Bernd described the rule relatively — "sales order last year, last two
+    years, last three years" (BerndScoring1 15:00) — and only then instantiated
+    it as 2026/2025/2024/2023. Hard-coded years would make the whole model read
+    zero from 1 January 2027.
+    """
+
+    @pytest.mark.parametrize("offset,expected", [
+        (0, 20), (1, 15), (2, 10), (3, 5), (4, 0), (10, 0),
+    ])
+    @pytest.mark.parametrize("reference", [2026, 2027, 2031, 2100])
+    def test_ladder_follows_the_reference_year(self, offset, expected, reference):
+        assert _points(
+            {"last_order_year": reference - offset},
+            "sales_order_last_used", current_year=reference,
+        ) == expected
+        assert _points(
+            {"partner_last_order_year": reference - offset},
+            "sales_order_partner_last_used", current_year=reference,
+        ) == expected
+
+    def test_the_same_year_ages_out_of_the_ladder(self):
+        """The regression the relative ladder exists to prevent: a fixed 2026
+        scored 20 forever under absolute bands, and 0 for everything from
+        1 January 2027 under a table that was never retuned."""
+        assert _points({"last_order_year": 2026}, "sales_order_last_used",
+                       current_year=2026) == 20
+        assert _points({"last_order_year": 2026}, "sales_order_last_used",
+                       current_year=2029) == 5
+        assert _points({"last_order_year": 2026}, "sales_order_last_used",
+                       current_year=2030) == 0
+
+    @pytest.mark.parametrize("ahead", [1, 2, 5])
+    def test_a_future_dated_order_scores_zero(self, ahead):
+        # A negative offset matches no band. It must not wrap onto a tier.
+        assert _points({"last_order_year": 2026 + ahead}, "sales_order_last_used",
+                       current_year=2026) == 0
+
+    def test_reference_year_is_resolved_once_per_election(self):
+        # Every row of one election carries the same anchor — a per-row clock
+        # read would let a batch straddling midnight on 31 December band its
+        # first and last rows differently.
+        results = elect_golden_records(
+            [_cluster_row(str(i), last_order_year=Y0) for i in range(5)], WEIGHTS
+        )
+        assert {r.scored_with_reference_year for r in results} == {THIS_YEAR}
+
+    def test_reference_year_is_stamped_on_every_row(self):
+        results = elect_golden_records([
+            _cluster_row("1", cluster_id="C1", last_order_year=Y0),
+            _cluster_row("2", cluster_id="C1", last_order_year=Y3),
+            _cluster_row("3"),  # unique
+        ], WEIGHTS)
+        for r in results:
+            assert r.scored_with_reference_year == THIS_YEAR
+
+    def test_reference_year_written_to_file(self):
+        output, _ = score_workbook(_build_workbook([_data_row("1", year=Y0)]))
+        ws = load_workbook(io.BytesIO(output))["Sheet1"]
+        headers = [c.value for c in ws[1]]
+        assert "scored_with_reference_year" in headers
+        col = headers.index("scored_with_reference_year") + 1
+        assert ws.cell(row=2, column=col).value == THIS_YEAR
+
+    def test_tiebreak_still_orders_on_the_absolute_year(self):
+        """The offset must exist ONLY inside the two ladder lookups.
+
+        The tie-break orders by most-recent year; if it saw an offset the
+        comparison would invert and the OLDEST record would win a tie.
+        """
+        rows = [
+            _cluster_row("1", cluster_id="C1", last_order_year=Y4),
+            _cluster_row("2", cluster_id="C1", last_order_year=Y5),
+        ]
+        by = _by_row(elect_golden_records(rows, WEIGHTS))
+        # Both score 0 on the ladder (off the end), so the tie-break decides:
+        # the more recent year must win.
+        assert by["1"].is_golden_record is True
+        assert by["2"].is_golden_record is False
+
+
+class TestClickReportHeaders:
+    """The click report spells two scoring headers differently, and _norm's
+    tolerance (lowercase + strip non-alphanumerics) is not wide enough:
+    "Customer Account Group" -> "customeraccountgroup" != "accountgroup", and
+    "Customer No." -> "customerno" != "customer"."""
+
+    @pytest.mark.parametrize("key", ["Customer", "Customer No.", "row_id"])
+    def test_json_route_binds_every_customer_spelling(self, key):
+        assert ScoringRow.model_validate({key: "0013012902"}).row_id == "0013012902"
+
+    @pytest.mark.parametrize(
+        "key", ["Account group", "Customer Account Group", "account_group"]
+    )
+    def test_json_route_binds_every_account_group_spelling(self, key):
+        row = ScoringRow.model_validate({"row_id": "1", key: "DRIT"})
+        assert row.account_group == "DRIT"
+
+    def test_file_route_scores_the_click_report_spellings(self):
+        """All nine scoring columns bind off the click report's own headers,
+        and account_group alone is worth 20 points a record."""
+        wb = Workbook()
+        ws = wb.active
+        ws.append([
+            "Customer No.", "Customer Account Group", "Sales Order Last Used",
+            "Sales Order Total Count", "Sales Order Partner Last Used",
+            "Sales Order Partner Total Count", "Equipment Total Count",
+            "SleepingCustomer", "CustomerStatus",
+        ])
+        ws.append([
+            "0013012902", "DRIT", datetime.datetime(THIS_YEAR, 7, 28), 7,
+            datetime.datetime(THIS_YEAR, 7, 28), 7, 5, "No", "Active",
+        ])
+        buffer = io.BytesIO()
+        wb.save(buffer)
+
+        output, summary = score_workbook(buffer.getvalue())
+        ws_out = load_workbook(io.BytesIO(output)).worksheets[0]
+        headers = [c.value for c in ws_out[1]]
+
+        def cell(h):
+            return ws_out.cell(row=2, column=headers.index(h) + 1).value
+
+        # The click report's own headers survive; nothing is renamed.
+        assert "Customer No." in headers and "Customer Account Group" in headers
+        assert cell("Customer No.") == "0013012902"
+        assert cell("score_AccountGroup") == 20        # was 0 — bound on name
+        assert cell("score_SalesOrderLastUsed") == 20  # was 0 — date not a year
+        assert cell("score_SalesOrderCount") == 15
+        assert cell("score_SalesOrderPartnerLastUsed") == 20
+        assert cell("score_SalesOrderPartnerCount") == 15
+        assert cell("score_EquipmentCount") == 12
+        assert cell("score_SleepingCustomer") == 15
+        assert cell("score_CustomerStatus") == 10
+        # 20 group + 20 ladder + 15 count + 20 partner + 15 partner count
+        # + 12 equipment + 15 sleeping + 10 status
+        assert cell("score_final") == 127
+        assert summary.errors == 0
+
+
+class TestStaleWeightsTable:
+    """§6: six band labels changed, so every previously-valid weights table is
+    now stale. coerce_weights rejects a stale table WHOLESALE — a half-applied
+    retune is worse than none — and says which pair it missed."""
+
+    @pytest.mark.parametrize("criterion,stale_band,new_band", [
+        ("sales_order_last_used", "2026", "0"),
+        ("sales_order_partner_last_used", "2026", "0"),
+        ("sales_order_count", "0-5", "1-5"),
+        ("sales_order_partner_count", "0-5", "1-5"),
+        ("equipment_count", "0-3", "1-3"),
+        ("sleeping_customer", ">5", "Yes"),
+    ])
+    def test_each_changed_label_rejects_a_stale_table(
+        self, criterion, stale_band, new_band
+    ):
+        stale = {c: dict(b) for c, b in WEIGHTS.items()}
+        stale[criterion] = {
+            (stale_band if k == new_band else k): v
+            for k, v in stale[criterion].items()
+        }
+        weights, reason = coerce_weights(stale, WEIGHTS, source="Weights sheet")
+        assert weights is None
+        assert reason == (
+            f"Weights sheet ignored: missing (criterion, band) pair "
+            f"({criterion!r}, {new_band!r}); using dedup/weights.json"
+        )
+
+    def test_a_stale_weights_sheet_is_ignored_wholesale_not_merged(self):
+        # The whole point: the retuned points on the OTHER criteria must not
+        # leak in. A stale sheet falls all the way back to weights.json.
+        stale_rows = [("Criterion", "Band", "Points", "Note")]
+        for criterion, bands in WEIGHTS.items():
+            for band, points in bands.items():
+                if (criterion, band) == ("equipment_count", "1-3"):
+                    band = "0-3"                      # the stale label
+                if criterion == "account_group":
+                    points = 99                       # a retune that must NOT apply
+                stale_rows.append((criterion, band, points, None))
+
+        output, summary = score_workbook(_build_workbook(
+            [_data_row("1", year=Y0, group="DRIT")], weights_rows=stale_rows
+        ))
+        assert any(
+            w == "Weights sheet ignored: missing (criterion, band) pair "
+                 "('equipment_count', '1-3'); using dedup/weights.json"
+            for w in summary.warnings
+        )
+        ws = load_workbook(io.BytesIO(output))["Sheet1"]
+        headers = [c.value for c in ws[1]]
+        # weights.json's DRIT = 20, NOT the sheet's 99.
+        assert ws.cell(
+            row=2, column=headers.index("score_AccountGroup") + 1
+        ).value == 20
+
+    def test_the_current_table_is_accepted(self):
+        weights, reason = coerce_weights(WEIGHTS, WEIGHTS)
+        assert reason is None
+        assert weights == WEIGHTS

@@ -663,5 +663,11 @@ class TestAcceptanceGate:
             Sales_Org_Consolidated=merck[index[SO_OUT]],
         )
         assert derived_counts(scoring_row)[:2] == (11, 7)
-        breakdown, _ = score_row(scoring_row, load_weights())
+        # current_year anchors the two *_last_used ladders only; this row
+        # carries neither, and combined_presence_bonus is year-independent, so
+        # the value is immaterial here — it is required to keep any caller from
+        # silently scoring both ladders zero.
+        breakdown, _ = score_row(
+            scoring_row, load_weights(), current_year=2026
+        )
         assert breakdown["combined_presence_bonus"] > 0
