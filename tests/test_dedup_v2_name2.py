@@ -666,3 +666,94 @@ def test_the_link_id_column_is_written_with_the_flags_on(flags_on, fixture) -> N
     header_row = [cell.value for cell in workbook.active[1]]
     assert header_row.index("Link ID") == header_row.index("Cluster ID") + 1
     assert "Link ID" in [cell.value for cell in workbook["Dedup Debug"][1]]
+
+
+# ---------------------------------------------------------------------------
+# Making a run identifiable
+# ---------------------------------------------------------------------------
+
+def _run_sheet(fixture, llm_cls) -> dict[str, str]:
+    import io
+
+    import openpyxl
+
+    from api.routes import _build_dedup_xlsx, _rows_to_dedup_rows
+    from config import Settings
+    from dedup.adjudicator import cluster_blocks
+    from tests.dedup_v2_support import fixture_row_dicts
+
+    row_dicts = fixture_row_dicts(fixture)
+    rows = _rows_to_dedup_rows(row_dicts)
+    response = asyncio.run(
+        cluster_blocks(rows, llm_cls(fixture), settings=Settings())
+    )
+    workbook = openpyxl.load_workbook(io.BytesIO(
+        _build_dedup_xlsx(fixture["input_columns"], row_dicts, rows, response)
+    ))
+    sheet = workbook["Run"]
+    return {row[0].value: row[1].value for row in sheet.iter_rows(min_row=2)}
+
+
+def test_the_run_sheet_says_which_configuration_produced_the_workbook(
+    flags_on, fixture,
+) -> None:
+    """A workbook with no provenance is one nobody can place.
+
+    Two runs can differ in every cluster and look identical on the front sheet,
+    and the only tell that the flags were unset was a missing column — which is
+    precisely how a v1 run gets mistaken for a v2 one.
+    """
+    run = _run_sheet(fixture, SpecOracleLLM)
+    assert run["DEDUP_V2_BLOCKING"] == "true"
+    assert run["DEDUP_V2_NAME2"] == "true"
+    assert run["DEDUP_V2_ID_CONFLICT"] == "true"
+    assert run["dedup_v2_active"] == "true"
+    assert run["prompt_version"] == PROMPT_VERSION_V2
+    assert run["fixture_cache"] == "off"
+    assert run["rows_in"] == "200"
+
+
+def test_the_run_sheet_reports_a_v1_run_as_a_v1_run(
+    monkeypatch: pytest.MonkeyPatch, fixture,
+) -> None:
+    from tests.dedup_v2_support import V1ReplayLLM
+
+    for flag in V2_FLAGS:
+        monkeypatch.setenv(flag, "false")
+    run = _run_sheet(fixture, V1ReplayLLM)
+    assert run["dedup_v2_active"] == "false"
+    assert run["prompt_version"] == PROMPT_VERSION
+
+
+def test_the_run_sheet_does_not_disturb_the_data_sheets(
+    monkeypatch: pytest.MonkeyPatch, fixture,
+) -> None:
+    """Additive means additive: v1's two sheets keep their exact shape."""
+    import io
+
+    import openpyxl
+
+    from api.routes import (
+        _DEDUP_DEBUG_COLUMNS, _DEDUP_RESULT_COLUMNS, _build_dedup_xlsx,
+        _rows_to_dedup_rows,
+    )
+    from config import Settings
+    from dedup.adjudicator import cluster_blocks
+    from tests.dedup_v2_support import V1ReplayLLM, fixture_row_dicts
+
+    for flag in V2_FLAGS:
+        monkeypatch.setenv(flag, "false")
+    row_dicts = fixture_row_dicts(fixture)
+    rows = _rows_to_dedup_rows(row_dicts)
+    response = asyncio.run(
+        cluster_blocks(rows, V1ReplayLLM(fixture), settings=Settings())
+    )
+    workbook = openpyxl.load_workbook(io.BytesIO(
+        _build_dedup_xlsx(fixture["input_columns"], row_dicts, rows, response)
+    ))
+    assert workbook.sheetnames == ["Sheet", "Dedup Debug", "Run"]
+    main = [cell.value for cell in workbook["Sheet"][1]]
+    assert main[-len(_DEDUP_RESULT_COLUMNS):] == _DEDUP_RESULT_COLUMNS
+    assert "Link ID" not in main
+    assert [c.value for c in workbook["Dedup Debug"][1]] == _DEDUP_DEBUG_COLUMNS
+    assert workbook["Sheet"].max_row == 201

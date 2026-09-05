@@ -28,7 +28,9 @@ from api.output_columns import RESPONSE_COLUMNS
 from config import Settings, get_settings
 from dedup.adjudicator import cluster_blocks
 from dedup.llm import DedupLLM
+from dedup.flags import v2_blocking, v2_id_conflict, v2_name2
 from dedup.models import DedupRequest, DedupResponse, DedupRow
+from dedup.prompts import prompt_version
 from dedup.scoring import (
     ApprovalRequest,
     ApprovalResponse,
@@ -1155,6 +1157,45 @@ _DEDUP_DEBUG_COLUMNS_V2 = [
     "row_id", "Cluster ID", "Link ID", "Block ID", "Signature ID",
 ]
 
+#: Written to every dedup workbook, v1 and v2 alike.
+_DEDUP_RUN_SHEET = "Run"
+
+
+def _dedup_run_metadata(response: DedupResponse) -> list[tuple[str, str]]:
+    """What produced this workbook.
+
+    Until now the output carried no record of the configuration behind it: no
+    prompt version, no flag values, no model, no cache mode. Two workbooks
+    could differ in every cluster and look identical in provenance, and the
+    only way to tell a v1 run from a v2 one was to notice a missing column —
+    which is exactly how a run with the flags unset gets mistaken for a run
+    with them set.
+
+    Read off the response rather than off the environment where it can be, so
+    the sheet reports what the run DID rather than what the process was
+    configured to do afterwards.
+    """
+    from dedup.cache import current_mode
+    from dedup.flags import BLOCKING, ID_CONFLICT, NAME2, v2_any
+
+    first = response.rows[0] if response.rows else None
+    return [
+        ("prompt_version", first.prompt_version if first else prompt_version()),
+        ("model", first.model if first else ""),
+        ("model_version", first.model_version if first else ""),
+        (BLOCKING, str(v2_blocking()).lower()),
+        (NAME2, str(v2_name2()).lower()),
+        (ID_CONFLICT, str(v2_id_conflict()).lower()),
+        ("dedup_v2_active", str(v2_any()).lower()),
+        ("fixture_cache", current_mode()),
+        ("rows_in", str(response.summary.rows_in)),
+        ("blocks", str(response.summary.blocks)),
+        ("llm_calls", str(response.summary.llm_calls)),
+        ("rows_clustered", str(response.summary.rows_clustered)),
+        ("rows_unique", str(response.summary.rows_unique)),
+        ("rows_manual_review", str(response.summary.rows_manual_review)),
+    ]
+
 
 def _build_dedup_xlsx(
     headers: list[str],
@@ -1190,6 +1231,13 @@ def _build_dedup_xlsx(
 
     debug_ws = wb.create_sheet(_DEDUP_DEBUG_SHEET)
     debug_ws.append(debug_columns)
+
+    # Additive in both directions: v1's data sheets are untouched, and a v1
+    # workbook gains the same sheet saying so.
+    run_ws = wb.create_sheet(_DEDUP_RUN_SHEET)
+    run_ws.append(["setting", "value"])
+    for setting, value in _dedup_run_metadata(response):
+        run_ws.append([setting, value])
 
     for row_dict, parsed in zip(row_dicts, rows):
         values = [row_dict.get(header, "") for header in headers]
@@ -1300,12 +1348,25 @@ async def dedup_file(
 
     stem = filename.rsplit("/", 1)[-1].rsplit(".", 1)[0] or "records"
     out_name = f"{stem}_dedup.xlsx"
+
+    # The same facts as the "Run" sheet, on the response itself, so a caller
+    # piping the body to a file can tell which configuration produced it
+    # without opening the workbook.
+    run = dict(_dedup_run_metadata(response))
     return StreamingResponse(
         io.BytesIO(output_bytes),
         media_type=(
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ),
-        headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{out_name}"',
+            "X-Dedup-Prompt-Version": run["prompt_version"],
+            "X-Dedup-Model": run["model"],
+            "X-Dedup-V2-Blocking": run["DEDUP_V2_BLOCKING"],
+            "X-Dedup-V2-Name2": run["DEDUP_V2_NAME2"],
+            "X-Dedup-V2-Id-Conflict": run["DEDUP_V2_ID_CONFLICT"],
+            "X-Dedup-Fixture-Cache": run["fixture_cache"],
+        },
     )
 
 

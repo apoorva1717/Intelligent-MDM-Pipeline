@@ -167,6 +167,18 @@ class CachedDedupLLM:
             await close()
 
 
+def current_mode() -> str:
+    """``"off"``, ``"record"`` or ``"replay"`` — what the cache is doing now.
+
+    Reported in the output workbook. A run served from a recording and a run
+    that called the deployment are different experiments, and a reader holding
+    only the workbook otherwise has no way to tell them apart.
+    """
+    if not os.getenv(CACHE_DIR_ENV, "").strip():
+        return "off"
+    return os.getenv(CACHE_MODE_ENV, "record").strip().lower() or "record"
+
+
 def wrap_if_enabled(llm: Any) -> Any:
     """``llm``, wrapped in the cache when one is configured; else unchanged."""
     cache_dir = os.getenv(CACHE_DIR_ENV, "").strip()
