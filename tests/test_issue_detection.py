@@ -13,6 +13,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from api.models import EnrichmentRecord
+from enrichment.dept_block import classify
+from utils.text_utils import _ADMIN_UNIT_PHRASES, _ADMIN_UNIT_TERMS
 from enrichment.issue_detection import (
     EMITTED_CODES,
     ISSUE_CATALOGUE,
@@ -59,33 +61,34 @@ def test_catalogue_declares_41_entries():
 
 
 def test_status_counts_match_catalogue_v2():
-    """33 live, 7 withdrawn, 1 unlisted, and nothing left marked ``ndd``.
+    """32 live, 8 withdrawn, 1 unlisted, and nothing left marked ``ndd``.
 
     Catalogue v2 declared 34 live. The three added since are the flag-derived
     codes — G6-RESOLVE-001, G7-CONFIRM-001, G8-VERIFY-001 — which report the
-    pipeline's own review flags rather than record content; five entries were
+    pipeline's own review flags rather than record content; six entries were
     withdrawn on 2026-09-06, which is where the rest of the difference is.
     """
     from collections import Counter
 
     counts = Counter(entry.status for entry in ISSUE_CATALOGUE.values())
-    assert counts == {"live": 33, "withdrawn": 7, "unlisted": 1}
+    assert counts == {"live": 32, "withdrawn": 8, "unlisted": 1}
 
 
 def test_withdrawn_codes_are_declared_but_never_emitted():
     """Withdrawn entries stay declared for the audit trail — retaining them
     records that they existed and why — but nothing may emit them.
 
-    The first two are struck through in Catalogue v2. The other five were
+    The first two are struck through in Catalogue v2. The other six were
     withdrawn on 2026-09-06: a rule no deterministic detector can express, one
     that fired on nothing in 500 records, two required-field rules over fields
-    outside master-data scope, and a routing code now carried by group
-    membership.
+    outside master-data scope, a routing code now carried by group membership,
+    and one whose true hits were outweighed by false positives it had no source
+    to rule out.
     """
     for code in (
         "G2-CONTACT-008", "G2-CONTACT-009",
-        "G1-ADDR-009", "G4-ADDR-025", "G2-VAL-003", "G2-VAL-006",
-        "G7-VERIFY-001",
+        "G1-ADDR-009", "G4-ADDR-008", "G4-ADDR-025", "G2-VAL-003",
+        "G2-VAL-006", "G7-VERIFY-001",
     ):
         assert ISSUE_CATALOGUE[code].status == "withdrawn"
         assert ISSUE_CATALOGUE[code].reason
@@ -140,8 +143,8 @@ def test_origin_breakdown_of_live_quality_codes():
         and e.group in QUALITY_GROUPS
         and e.code not in flag_derived
     ]
-    assert len(live_quality) == 30
-    assert Counter(e.origin for e in live_quality) == {"DS": 9, "API": 19, "BOTH": 2}
+    assert len(live_quality) == 29
+    assert Counter(e.origin for e in live_quality) == {"DS": 8, "API": 18, "BOTH": 3}
 
 
 def test_reduction_groups_exclude_g6_g7_and_g8():
@@ -375,6 +378,55 @@ def test_g2_name_012_research_institution_missing_department():
     assert "G2-NAME-012" in detect_issues(rec)
 
 
+def test_g2_name_012_fires_when_name_2_holds_only_an_admin_desk():
+    """An occupied Name 2 is not the same as a department. "Central Receiving"
+    is a loading dock: the record is exactly as short of a department as one
+    with Name 2 blank, and a blank test reports nothing about it."""
+    rec = _record(**{
+        "Name 1": "University of Texas Medical Branch",
+        "Name 2": "Central Receiving",
+    })
+    assert "G2-NAME-012" in detect_issues(rec)
+
+
+def test_g2_name_012_blank_name_2_still_fires():
+    rec = _record(**{"Name 1": "Michigan Tech University", "Name 2": ""})
+    assert "G2-NAME-012" in detect_issues(rec)
+
+
+@pytest.mark.parametrize("desk", sorted(_ADMIN_UNIT_TERMS | _ADMIN_UNIT_PHRASES))
+def test_g2_name_012_fires_for_every_desk_in_dept_blocks_admin_lexicon(desk):
+    """Read from ``dept_block``'s own vocabulary rather than restated here, so
+    the rule cannot drift from the lexicon it delegates to: a term added or
+    removed there changes this test's parameters on the next run."""
+    assert classify(desk) == "admin", desk
+    rec = _record(**{"Name 1": "Florida State University", "Name 2": desk})
+    assert "G2-NAME-012" in detect_issues(rec)
+
+
+def test_g2_name_012_does_not_fire_on_a_real_department():
+    rec = _record(**{
+        "Name 1": "University of Florida", "Name 2": "Department of Chemistry",
+    })
+    assert "G2-NAME-012" not in detect_issues(rec)
+
+
+def test_g2_name_012_leaves_a_granular_unit_to_g2_name_009():
+    """"Smith Lab" is a real named unit below department level. It classifies
+    as ``granular``, which is G2-NAME-009's business and not this code's."""
+    rec = _record(**{"Name 1": "University of Florida", "Name 2": "Smith Lab"})
+    issues = detect_issues(rec)
+    assert "G2-NAME-012" not in issues
+    assert "G2-NAME-009" in issues
+
+
+def test_g2_name_012_does_not_fire_on_an_admin_desk_at_a_non_research_org():
+    """The research gate is unchanged: a company's Accounts Payable desk is
+    normal and reports nothing."""
+    rec = _record(**{"Name 1": "Acme Corp", "Name 2": "Accounts Payable"})
+    assert "G2-NAME-012" not in detect_issues(rec)
+
+
 def test_g2_name_009_lab_without_department():
     rec = _record(**{"Name 1": "University of Florida", "Name 2": "Smith Lab"})
     assert "G2-NAME-009" in detect_issues(rec)
@@ -506,10 +558,6 @@ def test_g4_name_015_name_overflow_beyond_140():
     assert "G4-NAME-015" in detect_issues(rec)
 
 
-def test_g4_addr_008_bare_sublocation_marker():
-    assert "G4-ADDR-008" in detect_issues(_record(**{"Street 2": "Ste"}))
-
-
 def test_g4_addr_026_postal_format_invalid():
     rec = _record(**{"Postal Code": "ABC123", "Country/Region Key": "US"})
     assert "G4-ADDR-026" in detect_issues(rec)
@@ -546,8 +594,25 @@ def test_g5_name_001_org_not_official():
 
 
 def test_g5_name_002_unit_not_official():
-    rec = _record(**{"Name 1": "University of Florida", "Name 3": "Dept of Chem"})
+    rec = _record(**{"Name 1": "University of Florida", "Name 3": "Sch of Med"})
     assert "G5-NAME-002" in detect_issues(rec)
+
+
+def test_g5_name_002_exempts_the_accepted_unit_forms():
+    """Dept, Div and Inst are accepted SAP forms for a unit name, so they are
+    dropped from the lexicon the unit slots are matched against."""
+    for name3 in ("Dept of Chemistry", "Div of Cardiology", "Inst for Advanced Study"):
+        rec = _record(**{"Name 1": "University of Florida", "Name 3": name3})
+        assert "G5-NAME-002" not in detect_issues(rec), name3
+
+
+def test_g5_name_001_exempts_inst_and_nothing_else():
+    """Name 1 has its own, smaller exemption. "Inst" heads an organisation, so
+    it is an official org form; "Dept" and "Div" name a part of one and stay
+    abbreviations when they sit in Name 1."""
+    assert "G5-NAME-001" not in detect_issues(_record(**{"Name 1": "Inst of Technology"}))
+    for name1 in ("Dept of Chemistry", "Div of Cardiology", "Univ of Florida"):
+        assert "G5-NAME-001" in detect_issues(_record(**{"Name 1": name1})), name1
 
 
 # ---------------------------------------------------------------------------
@@ -758,15 +823,16 @@ def test_ds_only_codes_are_suppressed_for_a_datashaper_facing_feed():
 
 
 def test_the_ds_only_live_codes_are_catalogue_v2s_less_the_withdrawn():
-    """Catalogue v2's eleven, minus G2-VAL-003 and G2-VAL-006."""
+    """Catalogue v2's eleven, minus G2-VAL-003 and G2-VAL-006, and minus
+    G2-NAME-012 — which became BOTH when its trigger grew an API-side arm
+    (``dept_block.classify``) that no native DS rule expresses."""
     ds_only = sorted(
         code for code, e in ISSUE_CATALOGUE.items()
         if e.origin == "DS" and e.status == "live" and e.group in QUALITY_GROUPS
     )
     assert ds_only == [
-        "G1-ADDR-001", "G2-NAME-012", "G2-VAL-001", "G2-VAL-002",
-        "G2-VAL-004", "G2-VAL-007", "G2-VAL-008", "G4-ADDR-026",
-        "G4-ADDR-027",
+        "G1-ADDR-001", "G2-VAL-001", "G2-VAL-002", "G2-VAL-004",
+        "G2-VAL-007", "G2-VAL-008", "G4-ADDR-026", "G4-ADDR-027",
     ]
 
 

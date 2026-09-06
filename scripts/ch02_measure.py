@@ -62,12 +62,14 @@ from enrichment.address_processing import (  # noqa: E402
     _looks_like_street,
 )
 from enrichment.issue_detection import (  # noqa: E402
-    _ABBREV_TOKEN_RE,
     _NAME_CONTINUATION_RE,
+    _NONCANON_TOKENS_ORG,
+    _NONCANON_TOKENS_UNIT,
     _ORG_IN_STREET_RE,
     _POSTAL_FORMATS,
     _REQUIRED_FIELD_CODES,
     _SAP_NAME_LIMIT,
+    _is_non_canonical_name,
     _norm,
     _street_signature,
     ISSUE_CATALOGUE,
@@ -343,12 +345,18 @@ def locate(record: EnrichmentRecord, present: set[str] | None) -> dict[str, set[
 
     # --- G5 ---------------------------------------------------------------
     # G5-NAME-001 (:474-475)
-    if record.name_1 and _ABBREV_TOKEN_RE.search(record.name_1):
+    # Name 1 reads its own reduced lexicon ("Inst" is an accepted org form);
+    # the default full set would over-report here.
+    if record.name_1 and _is_non_canonical_name(record.name_1, _NONCANON_TOKENS_ORG):
         add("G5-NAME-001", "name_1")
     # G5-NAME-002 (:478-481)
-    for f in ("name_2", "name_3", "name_4"):
+    # The unit slots read the reduced lexicon (Dept / Div / Inst are accepted
+    # unit forms), and they run to Name 5, not Name 4 — mirror both, or the
+    # fidelity self-check below fails on the first record with a department
+    # abbreviation or a Name 5.
+    for f in DEPT_FIELDS:
         v = _val(record, f)
-        if v and _ABBREV_TOKEN_RE.search(v):
+        if v and _is_non_canonical_name(v, _NONCANON_TOKENS_UNIT):
             add("G5-NAME-002", f)
             break
 

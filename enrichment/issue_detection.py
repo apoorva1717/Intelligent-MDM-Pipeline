@@ -32,22 +32,22 @@ and ``reason``. Two consequences worth stating outright:
 Counts — all derived from the source below, never asserted
 ----------------------------------------------------------
 * **41 declared** catalogue entries.
-* **33 live** — emitted by this detector. 31 of them are quality issues
+* **32 live** — emitted by this detector. 30 of them are quality issues
   (G1-G6) and two are verification codes (G7, G8).
 * **1 unlisted** — ``G3-ADDR-012``, emitted here but absent from Catalogue v2,
   left unchanged pending a human decision.
-* **34 deterministically emitted** = the 33 live plus the unlisted one; this is
+* **33 deterministically emitted** = the 32 live plus the unlisted one; this is
   ``EMITTED_CODES``.
-* **7 withdrawn** — ``G2-CONTACT-008`` and ``G2-CONTACT-009``, struck through
-  in Catalogue v2, plus the five withdrawn on 2026-09-06: ``G1-ADDR-009``,
-  ``G4-ADDR-025``, ``G2-VAL-003``, ``G2-VAL-006`` and ``G7-VERIFY-001``. All
-  are declared here for the audit trail and never emitted; each carries its
-  ``reason``.
+* **8 withdrawn** — ``G2-CONTACT-008`` and ``G2-CONTACT-009``, struck through
+  in Catalogue v2, plus the six withdrawn on 2026-09-06: ``G1-ADDR-009``,
+  ``G4-ADDR-008``, ``G4-ADDR-025``, ``G2-VAL-003``, ``G2-VAL-006`` and
+  ``G7-VERIFY-001``. All are declared here for the audit trail and never
+  emitted; each carries its ``reason``.
 * **0 not deterministically detectable** — ``G1-ADDR-009`` held this status
   until it was withdrawn, and no entry carries it now.
 
-Origin breakdown of the 30 live quality codes derived from record CONTENT:
-9 DS-only, 19 API-only, 2 BOTH. ``G6-RESOLVE-001`` is a live quality code too
+Origin breakdown of the 29 live quality codes derived from record CONTENT:
+8 DS-only, 18 API-only, 3 BOTH. ``G6-RESOLVE-001`` is a live quality code too
 and is outside that census: it post-dates v2 and is derived from enrichment
 output, not from content.
 
@@ -63,7 +63,7 @@ DATAshaper-facing feed that must not duplicate a native DS rule.
 These figures are asserted against the source by
 ``tests/test_issue_detection.py::test_docstring_counts_match_the_catalogue``, so
 adding or retiring a code fails the suite until this docstring is updated. How
-many of the 34 actually fire on any given batch is a property of that data, not
+many of the 33 actually fire on any given batch is a property of that data, not
 of the rule set.
 
 Several G1-NAME / G2-NAME / G5 rules are inherently semantic; here they are
@@ -94,6 +94,7 @@ import logging
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Literal
 
 from pydantic import AliasChoices
@@ -116,7 +117,6 @@ from enrichment.preprocess import (
     has_multiple_contacts,
 )
 from enrichment.address_processing import (
-    _BARE_MARKER_RE,
     _PO_BOX_RE,
     _STREET_TYPE_WORD_RE,
     _SUITE_PATTERNS,
@@ -131,6 +131,10 @@ from enrichment.confidence import (
     ProvenanceGrammarError,
     parse as _parse_provenance,
 )
+# Pure string classifier — no I/O, no LLM — so the module's determinism
+# constraint holds. dept_block does not import this module, so the edge is
+# one-way and adds no cycle.
+from enrichment.dept_block import classify
 from utils.name_slots import ADJACENT_RECORD_NAME_PAIRS, RECORD_NAME_FIELDS
 from utils.text_utils import (
     country_to_iso_code,
@@ -266,7 +270,15 @@ ISSUE_CATALOGUE: dict[str, IssueDefinition] = dict([
     # wide as of the five-name-slot change, so the slot-agnostic wording is kept
     # here and the divergence is reported for a Notion correction.
     _d("G4-NAME-015", "G4", "Name Overflow Beyond the Name Block", "Name 4", True, "API"),
-    _d("G4-ADDR-008", "G4", "Bare Sub-location Marker Without Value", "Street 2", False, "API"),
+    _d(
+        "G4-ADDR-008", "G4", "Bare Sub-location Marker Without Value", "Street 2", False, "API",
+        status="withdrawn",
+        reason=(
+            "a bare marker cannot be separated from a named building "
+            "('810 R L Smith Bldg') without a building-name source; false "
+            "positives on campus addresses outweigh the true hits"
+        ),
+    ),
     _d(
         "G4-ADDR-025", "G4", "Sub-location Overflow Beyond Street 5", "Street 5", False, "API",
         status="withdrawn",
@@ -292,7 +304,12 @@ ISSUE_CATALOGUE: dict[str, IssueDefinition] = dict([
         status="withdrawn",
         reason="99% populated, no defect class",
     ),
-    _d("G2-NAME-012", "G6", "Research Institution Missing Department", "Name 2", False, "DS"),
+    _d(
+        "G2-NAME-012", "G6",
+        "Research Institution Missing Department "
+        "(Name 2 blank or holds only an administrative desk)",
+        "Name 2", False, "BOTH",
+    ),
     # The one G6 code derived from enrichment OUTPUT rather than from record
     # content: the pipeline ran, could not resolve the record, and said so in
     # `Flag Codes`. It is in G6 because that is what those three flags mean —
@@ -486,12 +503,52 @@ _NAME_CONTINUATION_RE = re.compile(
 # The clipped organisational words (Hosp, Grp, Fla, Uni) each have a witness in
 # the demo corpus: "BRIGHAM & WOMENS HOSP" (40000014), "Cardinal Research GRP"
 # (41000008), "MAYO CLINIC FLA" (40000008), "UNI STUTTGART" (42000001).
-_ABBREV_TOKEN_RE = re.compile(
-    r"\b(?:Univ|Uni|Dept|Dep|Div|Inst|Natl|Nat'l|Intl|Int'l|Assoc|Assn|Ctr|"
-    r"Lab|Labs|Tech|Sch|Mgmt|Engrg|Eng|Sci|Med|Svcs|Svc|Co|"
-    r"Corp|Inc|Ltd|Mfg|Hosp|Grp|Fla)\b\.?",
-    re.IGNORECASE,
-)
+#
+# The lexicon is a set, not a hand-written alternation, because no two slots
+# read quite the same one: ``Dept``, ``Div`` and ``Inst`` are accepted SAP forms
+# for a *unit* name, so "Dept of Chemistry" in Name 2 is already official and
+# must not raise G5-NAME-002, while Name 1 accepts only ``Inst``. The set below
+# is the union neither slot uses directly — see ``_NONCANON_TOKENS_ORG`` and
+# ``_NONCANON_TOKENS_UNIT``. One tokeniser serves both: the regex is derived
+# from whichever set is passed, so case-insensitivity and the optional trailing
+# period ("Dept", "dept", "Dept.") are defined in exactly one place.
+_NONCANON_TOKENS = frozenset({
+    "univ", "uni", "dept", "dep", "div", "inst", "natl", "nat'l", "intl",
+    "int'l", "assoc", "assn", "ctr", "lab", "labs", "tech", "sch", "mgmt",
+    "engrg", "eng", "sci", "med", "svcs", "svc", "co", "corp", "inc", "ltd",
+    "mfg", "hosp", "grp", "fla",
+})
+
+# Accepted forms, per slot. Each set is removed from the lexicon its slot is
+# matched against and from nothing else — "Dep" stays in both, because it is a
+# clipping of "Dept" and not a form SAP writes, and the word-boundary anchor
+# keeps it from matching inside "Dept" anyway.
+#
+# The two sets differ because the slots mean different things. A unit name is
+# officially written "Dept of Chemistry", "Div of Cardiology" or "Inst for
+# Advanced Study", so all three are exempt below Name 1. An organisation name
+# takes only "Inst" — "Inst" heads an organisation in its own right ("Inst of
+# Technology"), while "Dept" and "Div" name a part of one and remain
+# abbreviations of "Department" / "Division" when they sit in Name 1.
+_UNIT_EXEMPT_TOKENS = frozenset({"dept", "div", "inst"})
+_ORG_EXEMPT_TOKENS = frozenset({"inst"})
+_NONCANON_TOKENS_UNIT = _NONCANON_TOKENS - _UNIT_EXEMPT_TOKENS
+_NONCANON_TOKENS_ORG = _NONCANON_TOKENS - _ORG_EXEMPT_TOKENS
+
+
+@lru_cache(maxsize=None)
+def _abbrev_token_re(tokens: frozenset[str]) -> re.Pattern[str]:
+    """The abbreviation-token regex over *tokens*, built once per set."""
+    alternation = "|".join(re.escape(t) for t in sorted(tokens))
+    return re.compile(rf"\b(?:{alternation})\b\.?", re.IGNORECASE)
+
+
+# The full-set regex. No slot is matched against it any more — Name 1 reads
+# ``_NONCANON_TOKENS_ORG`` and Name 2-5 ``_NONCANON_TOKENS_UNIT`` — but it is
+# kept named because the rule bodies in ``docs/15_ISSUES_DOSSIER.md`` refer to
+# it and it is the union the two slot sets are derived from. Callers go through
+# ``_is_non_canonical_name``, which picks the set for the slot.
+_ABBREV_TOKEN_RE = _abbrev_token_re(_NONCANON_TOKENS)
 
 # A dotted acronym — two or more single letters separated by periods, with or
 # without a trailing one ("U.C.L.A", "U.S.A."). The token regex above cannot
@@ -501,12 +558,20 @@ _ABBREV_TOKEN_RE = re.compile(
 _DOTTED_ACRONYM_RE = re.compile(r"\b[A-Za-z](?:\.[A-Za-z]){1,}\.?(?![A-Za-z])")
 
 
-def _is_non_canonical_name(value: str | None) -> bool:
+def _is_non_canonical_name(
+    value: str | None, tokens: frozenset[str] = _NONCANON_TOKENS,
+) -> bool:
     """True when *value* carries a mark of a non-official name form: an
-    abbreviation token or a dotted acronym."""
+    abbreviation token from *tokens* or a dotted acronym.
+
+    The dotted-acronym check does not vary with *tokens*: "U.C.L.A" is no more
+    an official unit name than it is an official organisation name.
+    """
     if not value:
         return False
-    return bool(_ABBREV_TOKEN_RE.search(value) or _DOTTED_ACRONYM_RE.search(value))
+    return bool(
+        _abbrev_token_re(tokens).search(value) or _DOTTED_ACRONYM_RE.search(value)
+    )
 
 # Company/organisation words that, when sitting in a Street field with no
 # street-type word, signal an org name in the address (heuristic for
@@ -859,8 +924,9 @@ def _detect_missing(
     dept_values = _names(record)[1:]
 
     # G2-NAME-012 — university / research institute (Name 1) with **Name 2**
-    # blank. Gated on the narrower university-or-research signal so clinical
-    # orgs (hospitals, clinics, medical centres) — which routinely have no
+    # carrying no department: blank, or holding only an administrative desk.
+    # Gated on the narrower university-or-research signal so clinical orgs
+    # (hospitals, clinics, medical centres) — which routinely have no
     # department — are not flagged.
     #
     # Name 2 alone, per the catalogue definition, and not "no department
@@ -870,12 +936,27 @@ def _detect_missing(
     # record a steward most needs to see. The misplacement is a separate fact
     # reported by its own code (G1-NAME-004, "Empty field in between populated
     # name fields"); letting it mask this one loses the report that Name 2 —
-    # the slot SAP and every downstream consumer reads a department from — is
-    # empty. The two codes fire together on such a record, which is correct:
-    # they state two different things about it.
+    # the slot SAP and every downstream consumer reads a department from — has
+    # no department in it. The two codes fire together on such a record, which
+    # is correct: they state two different things about it.
+    #
+    # Blank is not the only way to have no department. "Central Receiving" in
+    # Name 2 of "University of Texas Medical Branch" is a loading dock, not a
+    # unit: the slot is occupied, so a blank test reports nothing, while the
+    # record is exactly as short of a department as one with Name 2 empty.
+    # ``classify`` is the pipeline's own answer to what a department-block
+    # value names, so the rule asks it rather than restating an admin lexicon
+    # that would drift from ``dept_block``'s.
+    #
+    # Only ``empty`` and ``admin`` fire. ``granular`` ("Smith Lab") is a real
+    # named unit sitting below department level and is G2-NAME-009's business,
+    # not this code's; ``identifies_nothing`` ("Central Warehouse") names no
+    # unit but is not a desk either, and is left out deliberately rather than
+    # by oversight — widening to it is a separate decision with its own
+    # false-positive profile.
     if (
         looks_like_university_or_research_institute(record.name_1)
-        and is_blank(record.name_2)
+        and classify(record.name_2 or "") in ("empty", "admin")
     ):
         found.add("G2-NAME-012")
 
@@ -976,12 +1057,6 @@ def _detect_format(record: EnrichmentRecord, found: set[str]) -> None:
     if combined > _SAP_NAME_LIMIT:
         found.add("G4-NAME-015")
 
-    # G4-ADDR-008 — a bare sub-location marker ("Ste", "Floor") with no value.
-    for st in _streets(record):
-        if st and _BARE_MARKER_RE.search(st):
-            found.add("G4-ADDR-008")
-            break
-
     # G4-ADDR-026 — postal code present but does not match its country format.
     if not is_blank(record.postal_code):
         iso = country_to_iso_code(record.country_region_key)
@@ -1006,12 +1081,17 @@ def _detect_naming(record: EnrichmentRecord, found: set[str]) -> None:
     # Field attribution is by slot and nothing else: an abbreviation in Name 1
     # is -001, one in Name 2..N is -002, and a record carrying one only below
     # Name 1 ("ADAMS AIR" / "HYDRAULICS INC") raises -002 alone.
-    if _is_non_canonical_name(record.name_1):
+    # "Inst" is exempt here too — it heads an organisation in its own right
+    # ("Inst of Technology") — but "Dept" and "Div" are not: in Name 1 they are
+    # still abbreviations of a word the official form spells out.
+    if _is_non_canonical_name(record.name_1, _NONCANON_TOKENS_ORG):
         found.add("G5-NAME-001")
 
     # G5-NAME-002 — a unit-level name (Name 2..N) abbreviated / non-canonical.
+    # Dept / Div / Inst are accepted unit forms and are exempt here — see
+    # ``_UNIT_EXEMPT_TOKENS``. Dept and Div still raise -001 in Name 1.
     for nm in _names(record)[1:]:
-        if _is_non_canonical_name(nm):
+        if _is_non_canonical_name(nm, _NONCANON_TOKENS_UNIT):
             found.add("G5-NAME-002")
             break
 

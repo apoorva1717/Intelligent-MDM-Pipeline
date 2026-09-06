@@ -124,7 +124,10 @@
     },
     {
       "code": "G2-NAME-012",
-      "positive": {"Name 1": "Florida State University", "Name 2": ""},
+      "positive": {
+        "Name 1": "University of Texas Medical Branch",
+        "Name 2": "Central Receiving"
+      },
       "negative": {
         "Name 1": "Florida State University",
         "Name 2": "Department of Physics"
@@ -191,11 +194,6 @@
       "negative": {"Name 1": "Acme Corporation", "Name 2": "Engineering Department"}
     },
     {
-      "code": "G4-ADDR-008",
-      "positive": {"Street 2": "Ste"},
-      "negative": {"Street 2": "Ste 390"}
-    },
-    {
       "code": "G4-ADDR-026",
       "positive": {"Postal Code": "ABC123", "Country/Region Key": "US"},
       "negative": {"Postal Code": "33607", "Country/Region Key": "US"}
@@ -212,8 +210,8 @@
     },
     {
       "code": "G5-NAME-002",
-      "positive": {"Name 1": "University of Florida", "Name 3": "Dept of Chem"},
-      "negative": {"Name 1": "University of Florida", "Name 2": "Department of Chemistry"}
+      "positive": {"Name 1": "University of Florida", "Name 2": "Sch of Medicine"},
+      "negative": {"Name 1": "University of Florida", "Name 2": "Dept of Chemistry"}
     },
     {
       "code": "G6-RESOLVE-001",
