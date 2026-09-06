@@ -47,3 +47,14 @@ class TestFragmentDedup:
     def test_dup_detector_no_false_positive(self):
         r = _pp(street1="RESEARCH BLVD", house_number="4200")
         assert _duplicates_existing_street("500 Oak Ave", r, "4200") is False
+
+
+def test_directional_spellings_dedupe_as_one_street():
+    """``_STREET_TYPE_NORM`` gained the directionals for G3-ADDR-012; UC 9's
+    dedupe reads the same map, so "South Main St" now duplicates a Street 1 of
+    "S MAIN ST" the way "Street"/"St" already did."""
+    from enrichment.preprocess import _norm_street_key
+    assert _norm_street_key("301 South Main St") == _norm_street_key("301 S Main St")
+    assert _norm_street_key("NE Center Boulevard") == _norm_street_key("ne center blvd")
+    # Opposite directions stay apart.
+    assert _norm_street_key("301 S Main St") != _norm_street_key("301 N Main St")

@@ -226,6 +226,38 @@ def test_g1_cross_001_address_in_name():
     assert "G1-CROSS-001" in detect_issues(_record(**{"Name 2": "10901 Roosevelt Blvd N"}))
 
 
+@pytest.mark.parametrize("fields", [
+    # Dash form — what preprocessing strips via split_site_suffix.
+    {"Name 2": "UCSD Moores Cancer Center - La Jolla, CA"},
+    # Comma form — two commas and a state code.
+    {"Name 2": "Bruker BioSpin, Billerica, MA"},
+    # Bare state+zip tail.
+    {"Name 1": "Thermo Fisher Scientific San Jose CA 95134"},
+])
+def test_g1_cross_001_fires_on_a_trailing_site_qualifier(fields):
+    """A site qualifier is address content in a name field. _extract_addresses
+    looks for a street and finds none, but the pipeline recognises the shape
+    and strips it (preprocess.py:2405), so the detector must report it."""
+    assert "G1-CROSS-001" in detect_issues(_record(**fields))
+
+
+@pytest.mark.parametrize("fields", [
+    # A place with no state code is part of the name.
+    {"Name 1": "University of California, San Diego"},
+    {"Name 1": "Boston Children's Hospital"},
+    {"Name 2": "Department of Chemistry"},
+    # The trap: "St. Louis" is in the university's own name, and there is no
+    # state code after it.
+    {"Name 1": "Washington University in St. Louis"},
+    # One comma never reaches the region test — "PA" here is a professional
+    # association, which is the false positive split_site_suffix guards.
+    {"Name 1": "Jones, PA"},
+    {"Name 1": "Smith, Miller & Jones, LLP"},
+])
+def test_g1_cross_001_does_not_fire_without_a_state_code(fields):
+    assert "G1-CROSS-001" not in detect_issues(_record(**fields))
+
+
 def test_g1_cross_002_org_in_street():
     assert "G1-CROSS-002" in detect_issues(_record(**{"Street 1": "AGILENT TECHNOLOGIES"}))
 
@@ -236,6 +268,38 @@ def test_g1_cross_002_university_centre_not_flagged():
     for value in ("University Centre", "University Center", "University Ctr",
                   "University Ctre", "University Cntr", "UNIVERSITY CENT"):
         assert "G1-CROSS-002" not in detect_issues(_record(**{"Street 1": value})), value
+
+
+@pytest.mark.parametrize("fields", [
+    # Mid-field — the shape the prefix anchor missed. UC 7 Pattern A finds this
+    # clause and routes "Christina Boske" out to Contact.
+    {"Name 2": "Accounts Payable - ATTN: Christina Boske"},
+    {"Name 3": "Receiving, attn J. Doe"},
+    # Prefix forms — unchanged.
+    {"Name 2": "ATTN: Christina Boske"},
+    {"Name 2": "c/o Jane Smith"},
+])
+def test_g1_cross_003_finds_the_attn_clause_anywhere_in_the_field(fields):
+    assert "G1-CROSS-003" in detect_issues(_record(**fields))
+
+
+@pytest.mark.parametrize("name2", [
+    # The trap. The literal UC 7 Pattern A regex (_ATTN_RE) DOES fire here,
+    # because it spells out "attention" as an alternative; the shared marker
+    # does not. See the Step Q report.
+    "Attention to Detail Labs",
+    "Accounts Payable",
+])
+def test_g1_cross_003_does_not_fire_on_an_ordinary_name(name2):
+    assert "G1-CROSS-003" not in detect_issues(_record(**{"Name 2": name2}))
+
+
+@pytest.mark.parametrize("value", ["307 BOATNER RD", "40 CATTNER Blvd", "9 PATTON DR"])
+def test_g1_cross_003_marker_boundaries_survive_being_unanchored(value):
+    """Unanchoring is only safe because ``_CO_ATTN_MARKER`` carries ``\b`` on
+    both sides. Unbounded, ``att?n+`` matches the "ATN" inside "BOATNER" —
+    the defect that comment documents (preprocess.py:1143-1152)."""
+    assert "G1-CROSS-003" not in detect_issues(_record(**{"Street 1": value}))
 
 
 def test_g1_cross_003_email_in_name():
@@ -571,6 +635,146 @@ def test_g3_addr_012_not_raised_for_distinct_streets():
 def test_g3_addr_013_two_distinct_streets():
     rec = _record(**{"Street 1": "123 Main St", "Street 2": "250 Central Ave"})
     assert "G3-ADDR-013" in detect_issues(rec)
+
+
+def test_g3_addr_013_folds_the_house_number_into_street_1():
+    """SAP splits "140 Commonwealth Ave" across House Number and Street 1, so
+    Street 1 alone carries no number and does not read as a street. The record
+    holds two genuinely different addresses and reported neither."""
+    rec = _record(**{
+        "House Number": "140",
+        "Street 1": "COMMONWEALTH AVE",
+        "Street 2": "129 Lake Street 250",
+    })
+    issues = detect_issues(rec)
+    assert "G3-ADDR-013" in issues
+    assert "G3-ADDR-012" not in issues
+
+
+def test_g3_addr_013_needs_a_house_number_to_fold():
+    """With House Number blank, Street 1 is a street NAME and nothing more —
+    one address on the record, not two."""
+    rec = _record(**{
+        "House Number": "",
+        "Street 1": "COMMONWEALTH AVE",
+        "Street 2": "129 Lake Street 250",
+    })
+    assert "G3-ADDR-013" not in detect_issues(rec)
+
+
+def test_g3_addr_013_a_sub_location_is_not_a_second_address():
+    rec = _record(**{
+        "House Number": "140",
+        "Street 1": "COMMONWEALTH AVE",
+        "Street 2": "Suite 250",
+    })
+    assert "G3-ADDR-013" not in detect_issues(rec)
+
+
+def test_g3_addr_012_and_013_are_mutually_exclusive_on_a_folded_pair():
+    """Both read the same ``_street_signature``: slots it cannot tell apart are
+    one address (-012), slots it can are two (-013). Never both."""
+    for fields in (
+        {"House Number": "500", "Street 1": "Innovation Blvd",
+         "Street 2": "500 Innovation Blvd"},
+        {"House Number": "140", "Street 1": "COMMONWEALTH AVE",
+         "Street 2": "129 Lake Street 250"},
+        {"Street 1": "500 Innovation Blvd", "Street 2": "500 Innovation Blvd"},
+    ):
+        issues = detect_issues(_record(**fields))
+        assert not ({"G3-ADDR-012", "G3-ADDR-013"} <= set(issues)), fields
+
+
+def test_fold_house_number_leaves_a_line_that_has_its_own_number():
+    """A line carrying a digit is complete; prepending would invent an address
+    neither field states. Same condition ``_street_signature`` applies."""
+    from enrichment.issue_detection import _fold_house_number
+    assert _fold_house_number("COMMONWEALTH AVE", "140") == "140 COMMONWEALTH AVE"
+    assert _fold_house_number("500 Innovation Blvd", "500") == "500 Innovation Blvd"
+    assert _fold_house_number("COMMONWEALTH AVE 250", "140") == "COMMONWEALTH AVE 250"
+    assert _fold_house_number("COMMONWEALTH AVE", "") == "COMMONWEALTH AVE"
+    assert _fold_house_number("COMMONWEALTH AVE", None) == "COMMONWEALTH AVE"
+    assert _fold_house_number(None, "140") is None
+
+
+def test_g3_addr_012_directional_spellings_are_one_address():
+    """"S Main St" + House Number "301" and "301 South Main St" are one
+    address. Raw-token comparison called them two ("s" != "south") and -013
+    reported a second address that is not there."""
+    rec = _record(**{
+        "House Number": "301",
+        "Street 1": "S Main St",
+        "Street 2": "301 South Main St",
+    })
+    issues = detect_issues(rec)
+    assert "G3-ADDR-012" in issues
+    assert "G3-ADDR-013" not in issues
+
+
+def test_g3_addr_013_opposite_directionals_are_two_addresses():
+    """The canonicalisation folds spellings together, not directions: S and N
+    are different places and stay different signatures."""
+    rec = _record(**{
+        "House Number": "301",
+        "Street 1": "S Main St",
+        "Street 2": "301 N Main St",
+    })
+    issues = detect_issues(rec)
+    assert "G3-ADDR-013" in issues
+    assert "G3-ADDR-012" not in issues
+
+
+def test_g3_addr_012_street_type_spellings_are_one_address():
+    rec = _record(**{
+        "House Number": "500",
+        "Street 1": "Innovation Blvd",
+        "Street 2": "500 Innovation Boulevard",
+    })
+    issues = detect_issues(rec)
+    assert "G3-ADDR-012" in issues
+    assert "G3-ADDR-013" not in issues
+
+
+@pytest.mark.parametrize("a,b", [
+    ("Main St", "Main Street"),
+    ("Main Ave", "Main Avenue"),
+    ("S Main St", "South Main Street"),
+    ("NE Center Blvd", "Northeast Center Boulevard"),
+])
+def test_street_signature_folds_spelling_variants(a, b):
+    from enrichment.issue_detection import _street_signature
+    assert _street_signature(a) == _street_signature(b), (a, b)
+
+
+@pytest.mark.parametrize("a,b", [
+    ("S Main St", "N Main St"),
+    ("NE Center Blvd", "SW Center Blvd"),
+])
+def test_street_signature_keeps_opposite_directions_apart(a, b):
+    from enrichment.issue_detection import _street_signature
+    assert _street_signature(a) != _street_signature(b), (a, b)
+
+
+def test_street_signature_keeps_a_mixed_letter_digit_token_whole():
+    """The tokeniser this replaced shredded "72B20" into "72", "b" and "20",
+    putting two numbers into the digit set that the address does not contain."""
+    from enrichment.issue_detection import _street_signature
+    nums, words = _street_signature("72B20 520 I St")
+    assert nums == frozenset({"520"})
+    assert "72b20" in words
+
+
+@pytest.mark.parametrize("hn", ["809-C", "45A"])
+def test_house_number_fold_reads_digits_not_the_street_key(hn):
+    """An alphanumeric House Number contributes its digits and no word — the
+    fold never goes through ``_norm_street_key``, so -012 and -013 keep
+    comparing the same signature."""
+    from enrichment.issue_detection import _street_signature
+    nums, words = _street_signature("COMMONWEALTH AVE", hn)
+    assert words == ("ave", "commonwealth")
+    assert nums == frozenset({hn.split("-")[0].rstrip("A")}) or nums == frozenset(
+        {"".join(c for c in hn if c.isdigit())}
+    )
 
 
 def test_g3_addr_014_po_box_and_street_both_present():

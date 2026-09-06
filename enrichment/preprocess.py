@@ -434,11 +434,24 @@ _ADDRESS_PATTERNS = [
 ]
 
 
+#: Long form -> the abbreviation, for comparing two spellings of one address.
+#:
+#: Directionals are here for the same reason the street types are: "S Main St"
+#: and "301 South Main St" are one address, and comparing raw tokens reported
+#: them as two ("s" != "south"). The map is long -> short throughout, so the
+#: abbreviated spellings pass through untouched.
+#:
+#: A directional is also a word that starts a real name ("North Star Blvd" ->
+#: "n star blvd"). That is harmless for a comparison, where both sides are
+#: normalised the same way, and this map is only ever used for comparison —
+#: never to rewrite a value the pipeline ships.
 _STREET_TYPE_NORM = {
     "boulevard": "blvd", "avenue": "ave", "street": "st", "road": "rd",
     "drive": "dr", "lane": "ln", "parkway": "pkwy", "highway": "hwy",
     "court": "ct", "place": "pl", "terrace": "ter", "circle": "cir",
     "square": "sq", "suite": "ste",
+    "north": "n", "south": "s", "east": "e", "west": "w",
+    "northeast": "ne", "northwest": "nw", "southeast": "se", "southwest": "sw",
 }
 
 

@@ -105,8 +105,10 @@ logger = logging.getLogger(__name__)
 
 # Reused deterministic detectors from the enrichment pipeline.
 from enrichment.preprocess import (
-    _CO_ATTN_PREFIX_RE,
+    _CO_ATTN_MARKER,
     _EMAIL_RE,
+    _norm_street_key,
+    _STATE_ZIP_RE,
     _PHONE_RE,
     _URL_RE,
     _extract_addresses,
@@ -135,6 +137,10 @@ from enrichment.confidence import (
 # constraint holds. dept_block does not import this module, so the edge is
 # one-way and adds no cycle.
 from enrichment.dept_block import classify
+# The site-qualifier splitter preprocessing uses to take "- La Jolla, CA" off a
+# name field (preprocess.py:2405), and the region vocabulary it validates
+# against. Both pure; locality imports nothing from here.
+from enrichment.locality import _REGION_SPELLINGS, split_site_suffix
 from utils.name_slots import ADJACENT_RECORD_NAME_PAIRS, RECORD_NAME_FIELDS
 from utils.text_utils import (
     country_to_iso_code,
@@ -522,6 +528,62 @@ def _ends_on_connector(value: str) -> bool:
     return bool(_NAME_HEAD_CONNECTOR_RE.search(text))
 
 
+# The COMMA form of the site qualifier: "Bruker BioSpin, Billerica, MA".
+# ``locality._SITE_SUFFIX_RE`` covers the spaced-dash form only, and widening it
+# would change what preprocessing STRIPS off a name — a pipeline change. This is
+# detection-only, so the shape lives here; the region vocabulary does not, and
+# is locality's own ``_REGION_SPELLINGS``.
+#
+# TWO commas are required, which is what makes the extra evidence
+# ``split_site_suffix`` demands unnecessary here. Its one-separator form has to
+# rule out "Jones, PA" — a professional association, not Pennsylvania — by
+# checking the place against the record's own city/region. Both "Jones, PA" and
+# "University of California, San Diego" carry a single comma and never reach the
+# region test at all.
+_SITE_SUFFIX_COMMA_RE = re.compile(
+    r"^.+?,\s*"
+    r"(?P<city>[A-Za-z][A-Za-z.'’-]*(?:\s+[A-Za-z][A-Za-z.'’-]*)*)"
+    r"\s*,\s*(?P<region>[A-Za-z][A-Za-z ]*?)\s*\.?$",
+)
+
+
+def _has_site_qualifier(value: str | None) -> bool:
+    """True when *value* ends in a place the address block should be carrying.
+
+    Three shapes, none of which ``_extract_addresses`` recognises because none
+    is a street: the dash form the pipeline already strips ("- La Jolla, CA"),
+    its comma form ("Bruker BioSpin, Billerica, MA"), and a bare state+zip tail
+    ("San Jose CA 95134").
+
+    A place with no state code is not one of them: "University of California,
+    San Diego" is the university's name.
+    """
+    if not value:
+        return False
+    text = value.strip()
+    if split_site_suffix(text):
+        return True
+    m = _SITE_SUFFIX_COMMA_RE.match(text)
+    if m and m.group("region").strip(" .").lower() in _REGION_SPELLINGS:
+        return True
+    return bool(_STATE_ZIP_RE.search(text))
+
+
+# The c/o | ATTN marker ANYWHERE in the field, not only at its start.
+#
+# ``_CO_ATTN_PREFIX_RE`` is the same marker anchored with ``^\s*``, and the
+# anchor is why "Accounts Payable - ATTN: Christina Boske" reported nothing —
+# UC 7 Pattern A finds that clause mid-field (preprocess.py:2159-2168) and
+# routes the contact out of it, so the detector was silent about a value the
+# pipeline acts on.
+#
+# The marker STRING is ``preprocess._CO_ATTN_MARKER`` — one definition, shared,
+# no second vocabulary. Its ``\b`` on both sides is load-bearing and is why
+# this can be unanchored at all: unbounded, ``att?n+`` matches the "ATN" inside
+# "BOATNER RD" and the "ATTN" inside "CATTNER Blvd".
+_CO_ATTN_ANYWHERE_RE = re.compile(_CO_ATTN_MARKER, re.IGNORECASE)
+
+
 def _is_contact_content(value: str | None) -> bool:
     """True when *value* is contact information rather than name content.
 
@@ -536,7 +598,7 @@ def _is_contact_content(value: str | None) -> bool:
         _EMAIL_RE.search(value)
         or _PHONE_RE.search(value)
         or _URL_RE.search(value)
-        or _CO_ATTN_PREFIX_RE.search(value)
+        or _CO_ATTN_ANYWHERE_RE.search(value)
     )
 
 
@@ -844,6 +906,27 @@ def _norm(value: str | None) -> str:
     return re.sub(r"\s+", " ", value.strip().lower()) if value else ""
 
 
+def _fold_house_number(street: str | None, house_number: str | None) -> str | None:
+    """Street 1 with its House Number put back in front of it.
+
+    SAP splits "140 Commonwealth Ave" into House Number "140" and Street 1
+    "COMMONWEALTH AVE". Any rule that asks "is this a street?" has to see the
+    number, because ``_looks_like_street`` requires one — so read from this,
+    not from the raw slot.
+
+    The condition is ``_street_signature``'s: fold only when the line carries
+    no digit of its own. A line that already has a number is complete, and
+    prepending to it would invent an address neither field states. Streets 2-5
+    are never folded — SAP has no house-number field for them.
+    """
+    if not street or not street.strip():
+        return street
+    if re.search(r"\d", street):
+        return street
+    hn = (house_number or "").strip()
+    return f"{hn} {street.strip()}" if hn else street
+
+
 def _street_signature(
     value: str | None, house_number: str | None = None,
 ) -> tuple[frozenset[str], tuple[str, ...]] | None:
@@ -857,7 +940,16 @@ def _street_signature(
     """
     if not value or not value.strip():
         return None
-    tokens = re.findall(r"[a-z]+|\d+", value.lower())
+    # ``_norm_street_key`` is the pipeline's own comparison key (UC 9's dedupe
+    # reads the same one): lowercased, punctuation dropped, street-type and
+    # directional words canonicalised. Reusing it is what makes "S Main St" and
+    # "South Main St" one address here as well.
+    #
+    # It also keeps a mixed letter-digit token whole. The tokeniser this
+    # replaced shredded "72B20" into "72", "b" and "20" and put two invented
+    # numbers into the digit set; a unit code is one token and is now compared
+    # as one.
+    tokens = _norm_street_key(value).split()
     if not tokens:
         return None
     nums = {t for t in tokens if t.isdigit()}
@@ -877,9 +969,17 @@ def _detect_wrong_field(record: EnrichmentRecord, found: set[str]) -> None:
     names = _names(record)
     streets = _streets(record)
 
-    # G1-CROSS-001 — address content (street / sub-location / PO box) in a Name.
+    # G1-CROSS-001 — address content in a Name: a street / sub-location / PO
+    # box, or a trailing site qualifier.
+    #
+    # ``_extract_addresses`` has no pattern for a site qualifier, because it
+    # looks for a street and "- La Jolla, CA" is not one. The pipeline removes
+    # that shape by a different route — ``split_site_suffix`` at
+    # preprocess.py:2405, which also raises ``_ev_name_site_conflict`` — so the
+    # detector was silent on a class of misplaced content the pipeline both
+    # recognises and acts on.
     for nm in names:
-        if nm and _extract_addresses(nm)[0]:
+        if nm and (_extract_addresses(nm)[0] or _has_site_qualifier(nm)):
             found.add("G1-CROSS-001")
             break
 
@@ -1162,10 +1262,29 @@ def _detect_duplicate(record: EnrichmentRecord, found: set[str]) -> None:
         found.add("G3-ADDR-012")
 
     # G3-ADDR-013 — two distinct real street addresses across street slots.
-    real_streets = [
-        _norm(st) for st in streets if _looks_like_street(st)
-    ]
-    if len(set(real_streets)) >= 2:
+    #
+    # Street 1 is tested folded, for the same reason -012 folds: with the number
+    # in the House Number field, "COMMONWEALTH AVE" alone does not read as a
+    # street at all, so a record holding two genuinely different addresses
+    # reported neither.
+    #
+    # Distinctness is ``_street_signature`` — -012's own helper, called on the
+    # RAW slot plus the house number exactly as -012 calls it. Two slots the
+    # signature cannot tell apart are the same address (-012's business); only
+    # slots it CAN tell apart are two addresses (this code's). Sharing the one
+    # comparison is what keeps the pair mutually exclusive; comparing folded
+    # text here instead would drift the moment a house number carried a letter
+    # ("809-C" tokenises to an extra word the -012 signature does not have).
+    address_sigs = []
+    for idx, st in enumerate(streets):
+        house_number = record.house_number if idx == 0 else None
+        candidate = _fold_house_number(st, house_number) if idx == 0 else st
+        if not _looks_like_street(candidate):
+            continue
+        sig = _street_signature(st, house_number)
+        if sig is not None:
+            address_sigs.append(sig)
+    if len(set(address_sigs)) >= 2:
         found.add("G3-ADDR-013")
 
     # G3-ADDR-014 — a PO Box and a real street both present on the record.
