@@ -327,7 +327,7 @@ class TestTheTwoCodesThatWereMappedToNothing:
         row addressed in Pine Brook, NJ. No automated path can say which
         location the record is FOR — one is a site someone typed into a name
         column, the other is where the mail goes — which is exactly the
-        `G6-RESOLVE-001` case."""
+        `G3-NAME-006` case."""
         result = _init_result(EnrichmentRecord(
             record_id="13348125", country="US", name1="Veracyte Inc",
             city="Pine Brook", region="NJ",
@@ -347,7 +347,7 @@ class TestTheTwoCodesThatWereMappedToNothing:
 
         assert flags.NAME_STATES_ANOTHER_SITE in out["flag_codes"]
         assert out["flagged_fields"] == ["address"]
-        assert "G6-RESOLVE-001" in _issues(out)
+        assert "G3-NAME-006" in _issues(out)
 
 
 # ---------------------------------------------------------------------------
@@ -383,7 +383,13 @@ class TestEveryFlagCodeIsAccountedFor:
             flags.SOURCE_CONFLICT,
         }
 
-    def test_the_three_catalogue_codes_are_the_whole_image(self):
+    def test_the_six_catalogue_codes_are_the_whole_image(self):
+        """The image was one bucket per kind of doubt until 2026-09-06, when
+        the "could not resolve" bucket was dissolved and its four flags were
+        pointed at the code for the defect each actually names. Three of those
+        codes have a content detector as well; `G3-NAME-006` is reachable
+        only from here."""
         assert set(FLAG_CODE_ISSUES.values()) == {
-            "G6-RESOLVE-001", "G6-CONFIRM-001", "G7-UNCHANGED-001",
+            "G1-NAME-013", "G3-CONTACT-007", "G3-CONTACT-010", "G3-NAME-006",
+            "G6-CONFIRM-001", "G7-UNCHANGED-001",
         }

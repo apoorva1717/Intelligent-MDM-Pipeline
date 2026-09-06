@@ -55,23 +55,22 @@ def _record(**fields) -> EnrichmentRecord:
 # Catalogue integrity
 # ---------------------------------------------------------------------------
 
-def test_catalogue_declares_41_entries():
-    assert len(ISSUE_CATALOGUE) == 41
+def test_catalogue_declares_43_entries():
+    assert len(ISSUE_CATALOGUE) == 43
 
 
 def test_status_counts_match_catalogue_v2():
-    """31 live, 9 withdrawn, 1 unlisted, and nothing left marked ``ndd``.
+    """34 live, 9 withdrawn, nothing unlisted, nothing left marked ``ndd``.
 
-    Catalogue v2 declared 34 live. Three flag-derived codes were added since —
-    G6-RESOLVE-001, G6-CONFIRM-001, G7-UNCHANGED-001 — which report the pipeline's
-    own review flags rather than record content; seven entries were withdrawn
-    on 2026-09-06 (G6-RESOLVE-001 among them, its group dissolved), which is
-    where the rest of the difference is.
+    Catalogue v2 declared 34 live and the figure is 34 again by a different
+    route: two flag-derived codes added (G6-CONFIRM-001, G7-UNCHANGED-001),
+    two codes added on 2026-09-06 (G3-NAME-006, G3-CONTACT-010), G3-ADDR-012
+    resolved from unlisted to live, and seven entries withdrawn that day.
     """
     from collections import Counter
 
     counts = Counter(entry.status for entry in ISSUE_CATALOGUE.values())
-    assert counts == {"live": 31, "withdrawn": 9, "unlisted": 1}
+    assert counts == {"live": 34, "withdrawn": 9}
 
 
 def test_withdrawn_codes_are_declared_but_never_emitted():
@@ -135,26 +134,26 @@ def test_mandatory_maps_to_datashaper_severity():
 
 def test_origin_breakdown_of_live_quality_codes():
     """Catalogue v2 recorded 11 DS-only / 21 API-only / 2 BOTH over its 34 live
-    G1-G6 codes. Three of those are now withdrawn — G1-ADDR-009 and
-    G4-ADDR-025 (API), G2-VAL-003 and G2-VAL-006 (DS), less G1-ADDR-009 which
-    was already ``ndd`` and outside the live count — leaving 9 / 19 / 2 over 30.
-    The gap against v2 is the withdrawal, and must stay visible.
+    G1-G6 codes. The gap against v2 is the 2026-09-06 rework and must stay
+    visible: four withdrawals off the live count, two codes added, and three
+    codes moved from API to BOTH when a ``Flag Codes`` path was mapped onto a
+    detector that already existed.
 
     The census is over the codes derived from record CONTENT, which is what v2
-    counted. G6-RESOLVE-001 is a live quality code too, and is excluded here
-    because including it would blur that comparison.
+    counted. The exclusion is ``raised="enriched"`` — a code with no content
+    path at all — and not "has a flag mapping": G1-NAME-013 and
+    G3-CONTACT-007 are reached both ways and are content codes in this census.
     """
     from collections import Counter
 
-    flag_derived = set(FLAG_CODE_ISSUES.values())
     live_quality = [
         e for e in ISSUE_CATALOGUE.values()
         if e.status == "live"
         and e.group in QUALITY_GROUPS
-        and e.code not in flag_derived
+        and e.raised != "enriched"
     ]
-    assert len(live_quality) == 29
-    assert Counter(e.origin for e in live_quality) == {"DS": 8, "API": 18, "BOTH": 3}
+    assert len(live_quality) == 31
+    assert Counter(e.origin for e in live_quality) == {"DS": 8, "API": 17, "BOTH": 6}
 
 
 def test_the_group_constants_are_labels_not_metric_rules():
@@ -1240,25 +1239,54 @@ def test_the_three_doubts_are_three_different_queues():
         _record(),
         flag_codes=["opaque-code", "domain-unverified", "person-unresolved"],
     )
-    assert codes == ["G6-RESOLVE-001", "G6-CONFIRM-001", "G7-UNCHANGED-001"]
+    assert codes == ["G1-NAME-013", "G6-CONFIRM-001", "G7-UNCHANGED-001"]
 
 
 def test_several_flags_mapping_to_one_issue_raise_it_once():
+    """Five flags name one thing to do — confirm a value the pipeline wrote."""
     codes = detect_issues(
         _record(),
-        flag_codes=["opaque-code", "email-conflict", "multiple-contacts"],
+        flag_codes=[
+            "domain-unverified", "unverified-inference", "dept-via-lab",
+            "dept-via-contact", "relocated-unverified",
+        ],
     )
-    assert codes == ["G6-RESOLVE-001"]
+    assert codes == ["G6-CONFIRM-001"]
+
+
+def test_a_code_reached_by_both_paths_is_reported_once():
+    """G1-NAME-013, G3-CONTACT-007 and G3-CONTACT-010 each have a content
+    detector *and* a flag that maps onto them. A record that trips both routes
+    has one defect, not two, and ``detect_issues`` accumulates into a set."""
+    rec = _record(**{
+        "Name 2": "E004120188",                     # opaque code, by content
+        "Contact": "Dr. Jane Smith; Prof. Bob Lee",  # two contacts, by content
+        "Email": "a@acme.com; b@acme.com",           # two emails, by content
+    })
+    flagged = detect_issues(
+        rec, flag_codes=["opaque-code", "multiple-contacts", "email-conflict"],
+    )
+    for code in ("G1-NAME-013", "G3-CONTACT-007", "G3-CONTACT-010"):
+        assert flagged.count(code) == 1
+        # ...and each route reaches it on its own.
+        assert code in detect_issues(rec)
+    assert set(detect_issues(
+        _record(), flag_codes=["opaque-code", "multiple-contacts", "email-conflict"],
+    )) == {"G1-NAME-013", "G3-CONTACT-007", "G3-CONTACT-010"}
 
 
 def test_flag_derived_codes_absent_from_a_raw_input_audit():
     """The same rule G7-VERIFY-001 follows, for the same reason: these report
-    what enrichment concluded, and a raw file carries no Flag Codes column."""
+    what enrichment concluded, and a raw file carries no Flag Codes column.
+
+    Only the ``raised="enriched"`` codes are checked. The others a flag can
+    raise have a content path as well, and are *expected* on this record.
+    """
     dirty = _record(**{
         "Name 1": "E004120188", "Name 2": "10901 Roosevelt Blvd N",
         "Contact": "Dr. Jane Smith; Prof. Bob Lee",
     })
-    for code in ("G6-RESOLVE-001", "G6-CONFIRM-001", "G7-UNCHANGED-001"):
+    for code in ("G3-NAME-006", "G6-CONFIRM-001", "G7-UNCHANGED-001"):
         assert code not in detect_issues(dirty)
         assert code not in detect_issues(dirty, flag_codes=None)
     # An enriched record the pipeline flagged nothing on is not the same state

@@ -185,6 +185,11 @@
       "negative": {"Contact": "Dr. Jane Smith"}
     },
     {
+      "code": "G3-CONTACT-010",
+      "positive": {"Email": "orders@acme.com; ap@acme.com"},
+      "negative": {"Email": "orders@acme.com"}
+    },
+    {
       "code": "G4-NAME-015",
       "positive": {
         "Name 1": "The Board of Trustees of the Leland Stanford Junior University",
@@ -214,8 +219,8 @@
       "negative": {"Name 1": "University of Florida", "Name 2": "Dept of Chemistry"}
     },
     {
-      "code": "G6-RESOLVE-001",
-      "positive": {"_flag_codes": ["opaque-code"]},
+      "code": "G3-NAME-006",
+      "positive": {"_flag_codes": ["name-states-another-site"]},
       "negative": {"_flag_codes": ["overflow"]}
     },
     {

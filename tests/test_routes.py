@@ -709,13 +709,14 @@ class TestRoutes:
         ws = load_workbook(io.BytesIO(resp.content)).active
         cells = [([c.value for c in row][-1] or "") for row in ws.iter_rows(min_row=2)]
 
-        assert "G6-RESOLVE-001" in cells[0]
+        # R1's two flags name two different defects and both are reported.
+        assert "G1-NAME-013" in cells[0]
+        assert "G3-CONTACT-010" in cells[0]
         assert "G6-CONFIRM-001" in cells[1]
         assert "G7-UNCHANGED-001" in cells[2]
-        # Two flags mapping to one code say it once, and a row the pipeline
-        # flagged nothing on carries none of them.
-        assert cells[0].count("G6-RESOLVE-001") == 1
-        for code in ("G6-RESOLVE-001", "G6-CONFIRM-001", "G7-UNCHANGED-001"):
+        # A row the pipeline flagged nothing on carries none of them.
+        for code in ("G1-NAME-013", "G3-CONTACT-010", "G6-CONFIRM-001",
+                     "G7-UNCHANGED-001"):
             assert code not in cells[3]
 
     @pytest.mark.asyncio

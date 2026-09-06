@@ -45,16 +45,14 @@ as today's G7.
 
 Counts — all derived from the source below, never asserted
 ----------------------------------------------------------
-* **41 declared** catalogue entries.
-* **31 live** — 29 of them are quality issues (G1-G5) and two are verification
+* **43 declared** catalogue entries.
+* **34 live** — 32 of them are quality issues (G1-G5) and two are verification
   codes (G6, G7).
-* **1 unlisted** — ``G3-ADDR-012``, emitted here but absent from Catalogue v2,
-  left unchanged pending a human decision.
-* **33 deterministically emitted** — every code with a real emission site.
-  That is the 31 live plus the unlisted one (together ``EMITTED_CODES``, 32),
-  plus ``G6-RESOLVE-001``: it is withdrawn but ``FLAG_CODE_ISSUES`` still
-  routes four flags onto it until its members are re-homed. The gap is
-  deliberate and temporary.
+* **0 unlisted** — ``G3-ADDR-012`` held this status while its absence from the
+  Catalogue v2 G3 table was open; it was resolved live on 2026-09-06.
+* **34 deterministically emitted** — every code with a real emission site.
+  Identical to ``EMITTED_CODES`` (live + unlisted): nothing withdrawn is
+  reachable and nothing live is unreachable.
 * **9 withdrawn** — ``G2-CONTACT-008`` and ``G2-CONTACT-009``, struck through
   in Catalogue v2, plus the seven withdrawn on 2026-09-06: ``G1-ADDR-009``,
   ``G4-ADDR-008``, ``G4-ADDR-025``, ``G2-VAL-003``, ``G2-VAL-006``,
@@ -63,14 +61,23 @@ Counts — all derived from the source below, never asserted
 * **0 not deterministically detectable** — ``G1-ADDR-009`` held this status
   until it was withdrawn, and no entry carries it now.
 
-Origin breakdown of the 29 live quality codes derived from record CONTENT:
-8 DS-only, 18 API-only, 3 BOTH.
+Origin breakdown of the 31 live quality codes derived from record CONTENT:
+8 DS-only, 17 API-only, 6 BOTH. The BOTH count grew on 2026-09-06: three codes
+that had only a content detector gained a ``Flag Codes`` path as well.
 
-Two live codes are derived from enrichment OUTPUT and can never fire on a raw
-input file — ``G6-CONFIRM-001`` and ``G7-UNCHANGED-001`` from ``Flag Codes``
-through ``FLAG_CODE_ISSUES``. Everything else is computed from the
+Three live codes are derived from enrichment OUTPUT and can never fire on a raw
+input file (``raised="enriched"``) — ``G3-NAME-006``, ``G6-CONFIRM-001`` and
+``G7-UNCHANGED-001``, all through ``Flag Codes`` and ``FLAG_CODE_ISSUES``.
+Everything else is computed from the
 record, which is what lets the same rule set run over a raw file and an
 enriched one and makes the count delta meaningful.
+
+Four codes are ``raised="both"``: ``G1-NAME-013``, ``G3-CONTACT-007``,
+``G3-CONTACT-010`` and ``G4-NAME-015``. The first three have a content detector
+*and* a flag in ``FLAG_CODE_ISSUES`` that maps onto them; ``G4-NAME-015``'s
+second path is ``overflow``, still in ``UNMAPPED_FLAG_CODES``.
+``detect_issues`` accumulates into a set, so a record that trips both paths
+reports the code once.
 ``detect_issues`` emits every origin by default — including DS-only codes — for
 the reason documented on that function; pass ``origins=("API", "BOTH")`` for a
 DATAshaper-facing feed that must not duplicate a native DS rule.
@@ -78,7 +85,7 @@ DATAshaper-facing feed that must not duplicate a native DS rule.
 These figures are asserted against the source by
 ``tests/test_issue_detection.py::test_docstring_counts_match_the_catalogue``, so
 adding or retiring a code fails the suite until this docstring is updated. How
-many of the 33 actually fire on any given batch is a property of that data, not
+many of the 34 actually fire on any given batch is a property of that data, not
 of the rule set.
 
 Several G1-NAME / G2-NAME / G5 rules are inherently semantic; here they are
@@ -268,7 +275,7 @@ ISSUE_CATALOGUE: dict[str, IssueDefinition] = dict([
         "G1-NAME-004", "G1", "Empty field in between populated name fields",
         "Name 2", False, "API", "raw", "rule",
     ),
-    _d("G1-NAME-013", "G1", "SAP Internal Code in Name Field", "Name 2", False, "API", "both", "steward"),
+    _d("G1-NAME-013", "G1", "SAP Internal Code in Name Field", "Name 2", False, "BOTH", "both", "steward"),
     _d(
         "G1-ADDR-009", "G1", "Unclassified Residual in Address", "Street 2", False, "API",
         status="withdrawn",
@@ -312,24 +319,28 @@ ISSUE_CATALOGUE: dict[str, IssueDefinition] = dict([
     # -- G3 — Duplicate or Conflicting Data --------------------------------
     _d("G3-NAME-003", "G3", "DBA Pattern in Name Field", "Name 1", False, "BOTH", "raw", "rule"),
     _d("G3-NAME-005", "G3", "Duplicate Name Across Fields", "Name 2", False, "API", "raw", "rule"),
+    # No detector in this module: the conflict is between the name and an
+    # address the pipeline resolved, which is not visible in the raw record.
+    # It arrives through `FLAG_CODE_ISSUES` from `name-states-another-site`.
+    _d(
+        "G3-NAME-006", "G3", "Site Qualifier in Name Conflicts With Address",
+        "Name 1", False, "API", "enriched", "steward",
+    ),
     _d("G3-ADDR-005", "G3", "Multiple PO Boxes on Record", "PO Box", False, "API", "raw", "steward"),
     _d(
         "G3-ADDR-012", "G3", "Duplicate Street Across Fields", "Street", False, "API",
         "raw", "rule",
-        status="unlisted",
-        reason=(
-            "Implemented and emitting here, but absent from the Catalogue v2 G3 table. "
-            "Either it was withdrawn and this detector should stop emitting it, or v2 "
-            "omits it and Notion needs the row added. Left emitting, unchanged, "
-            "pending that decision — see docs/thesis/00_OPEN_ITEMS.md."
-        ),
     ),
     _d(
         "G3-ADDR-013", "G3", "Two Distinct Street Addresses on Record",
         "Street", False, "API", "raw", "steward",
     ),
     _d("G3-ADDR-014", "G3", "PO Box and Street Both Present", "PO Box", False, "BOTH", "raw", "steward"),
-    _d("G3-CONTACT-007", "G3", "Multiple Contacts on Record", "Name 2", False, "API", "both", "steward"),
+    _d("G3-CONTACT-007", "G3", "Multiple Contacts on Record", "Name 2", False, "BOTH", "both", "steward"),
+    _d(
+        "G3-CONTACT-010", "G3", "Multiple Email Addresses on Record",
+        "Email", False, "BOTH", "both", "steward",
+    ),
     # -- G4 — Invalid Format or Length -------------------------------------
     # v2 names this "Name Overflow Beyond Name 4". The name block is five slots
     # wide as of the five-name-slot change, so the slot-agnostic wording is kept
@@ -1354,6 +1365,26 @@ def _detect_duplicate(record: EnrichmentRecord, found: set[str]) -> None:
     if has_multiple_contacts(record.contact):
         found.add("G3-CONTACT-007")
 
+    # G3-CONTACT-010 — two or more distinct email addresses on the record,
+    # wherever they sit. Email lands in the name and street slots as often as
+    # in its own column (that misplacement is G1-CROSS-003's business, not
+    # this rule's), so all three are read and the addresses pooled.
+    #
+    # Deliberately independent of G3-CONTACT-007: two people in one Contact
+    # field and two addresses with nothing to choose between them are
+    # different defects with different remedies, and a record can carry
+    # either without the other. Distinctness is case-folded — SAP round-trips
+    # upper-case one row and not the next, and one address in two spellings
+    # is one address.
+    emails = {
+        match.lower()
+        for value in [record.email, *_names(record), *_streets(record)]
+        if value
+        for match in _EMAIL_RE.findall(value)
+    }
+    if len(emails) >= 2:
+        found.add("G3-CONTACT-010")
+
 
 # ---------------------------------------------------------------------------
 # G4 — Invalid Format or Length
@@ -1493,11 +1524,18 @@ FLAG_CODE_ISSUES: dict[str, str] = {
     # Nothing the pipeline can do resolves these — a name column holding an
     # internal code, two email addresses both of which are the record's own,
     # two people in one Contact field, a record that states two places and
-    # cannot say which one it is for.
-    "opaque-code": "G6-RESOLVE-001",
-    "email-conflict": "G6-RESOLVE-001",
-    "multiple-contacts": "G6-RESOLVE-001",
-    "name-states-another-site": "G6-RESOLVE-001",
+    # cannot say which one it is for. Each now names the code for the defect
+    # itself rather than a shared "could not resolve" bucket: the group that
+    # held that bucket was dissolved, and "which defect" is what a reviewer
+    # needed from the code anyway.
+    #
+    # Three of the four have a content detector as well, so the same defect
+    # can arrive by two routes on one record. `detect_issues` accumulates
+    # into a set, so it is reported once.
+    "opaque-code": "G1-NAME-013",
+    "multiple-contacts": "G3-CONTACT-007",
+    "email-conflict": "G3-CONTACT-010",
+    "name-states-another-site": "G3-NAME-006",
     # A value was written; nothing independent backs it. `relocated-unverified`
     # belongs here for the same reason as the rest: preprocessing MOVED the
     # value into the slot it ships in, which is a write, and no registry, page
@@ -1583,13 +1621,17 @@ def provenance_is_low(value: object) -> bool:
 def _detect_enrichment_flags(
     found: set[str], flag_codes: Iterable[str] | None,
 ) -> None:
-    """G6-CONFIRM-001 / G7-UNCHANGED-001 — the catalogue codes
-    derived from the pipeline's own review flags.
+    """The catalogue codes reachable from the pipeline's own review flags.
 
-    These cannot be computed from record content: they report what enrichment
-    concluded about a record it has already processed. ``flag_codes`` is
-    ``None`` for a raw audit (the file has no such column) and none of the
-    three can be raised there.
+    Six of them, through :data:`FLAG_CODE_ISSUES`. Three — ``G3-NAME-006``,
+    ``G6-CONFIRM-001``, ``G7-UNCHANGED-001`` — cannot be computed from record
+    content at all and arrive only here; the other three (``G1-NAME-013``,
+    ``G3-CONTACT-007``, ``G3-CONTACT-010``) have a content detector as well
+    and this is a second route to the same defect. ``found`` is a set, so a
+    record reached both ways carries the code once.
+
+    ``flag_codes`` is ``None`` for a raw audit (the file has no such column)
+    and nothing can be raised from here on one.
 
     A flag this table does not map raises nothing. The pipeline's vocabulary
     is larger than the reviewer-facing catalogue — ``overflow`` and
@@ -1633,11 +1675,11 @@ def detect_issues(
     now. The parameter stays because the API still passes it and because the
     column remains the natural place for a future rule to read that state.
 
-    *flag_codes* carries the enriched record's ``Flag Codes`` and drives
-    ``G6-RESOLVE-001``, ``G6-CONFIRM-001`` and ``G7-UNCHANGED-001`` through
-    :data:`FLAG_CODE_ISSUES`. Leave it ``None`` (the default) when auditing
-    raw input: a raw file carries no such column and none of the three can be
-    raised from record content. The caller supplies
+    *flag_codes* carries the enriched record's ``Flag Codes`` and drives six
+    codes through :data:`FLAG_CODE_ISSUES` (see
+    :func:`_detect_enrichment_flags`). Leave it ``None`` (the default) when
+    auditing raw input: a raw file carries no such column, and the three that
+    have no content detector cannot be raised any other way. The caller supplies
     ``low-confidence-unchanged`` itself, from the provenance columns — the
     token was retired and the state it named now lives there (see
     :func:`provenance_is_low`).
