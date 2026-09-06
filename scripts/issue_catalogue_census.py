@@ -132,9 +132,8 @@ _GROUP_NAMES = {
     "G3": "Duplicate or Conflicting Data",
     "G4": "Invalid Format or Length",
     "G5": "Non-Standard Naming",
-    "G6": "Not Resolvable by Enrichment",
-    "G7": "Verification Required",
-    "G8": "Enrichment Unresolved",
+    "G6": "Enriched — Confirm",
+    "G7": "Left Unchanged — Verify",
 }
 
 

@@ -21,7 +21,6 @@ from enrichment.issue_detection import (
     DERIVED_LOW_FLAG_CODE,
     FLAG_CODE_ISSUES,
     QUALITY_GROUPS,
-    REDUCIBLE_GROUPS,
     VERIFICATION_GROUPS,
     provenance_is_low,
     split_flag_codes,
@@ -61,17 +60,18 @@ def test_catalogue_declares_41_entries():
 
 
 def test_status_counts_match_catalogue_v2():
-    """32 live, 8 withdrawn, 1 unlisted, and nothing left marked ``ndd``.
+    """31 live, 9 withdrawn, 1 unlisted, and nothing left marked ``ndd``.
 
-    Catalogue v2 declared 34 live. The three added since are the flag-derived
-    codes — G6-RESOLVE-001, G7-CONFIRM-001, G8-VERIFY-001 — which report the
-    pipeline's own review flags rather than record content; six entries were
-    withdrawn on 2026-09-06, which is where the rest of the difference is.
+    Catalogue v2 declared 34 live. Three flag-derived codes were added since —
+    G6-RESOLVE-001, G6-CONFIRM-001, G7-UNCHANGED-001 — which report the pipeline's
+    own review flags rather than record content; seven entries were withdrawn
+    on 2026-09-06 (G6-RESOLVE-001 among them, its group dissolved), which is
+    where the rest of the difference is.
     """
     from collections import Counter
 
     counts = Counter(entry.status for entry in ISSUE_CATALOGUE.values())
-    assert counts == {"live": 32, "withdrawn": 8, "unlisted": 1}
+    assert counts == {"live": 31, "withdrawn": 9, "unlisted": 1}
 
 
 def test_withdrawn_codes_are_declared_but_never_emitted():
@@ -96,11 +96,21 @@ def test_withdrawn_codes_are_declared_but_never_emitted():
 
 
 def test_group_is_an_attribute_not_a_prefix():
-    """G6 is a regrouping: four codes keep their original G2- identifiers, so
-    slicing the prefix gives the wrong group."""
-    for code in ("G2-VAL-001", "G2-VAL-003", "G2-VAL-006", "G2-NAME-012"):
+    """The old G6 was a regrouping: codes kept their original G2- identifiers,
+    so slicing the prefix gives the wrong group.
+
+    The 2026-09-06 renumber dissolved that group and returned its two live
+    members to G2, so only its withdrawn members still carry the mismatch.
+    The invariant is unchanged — read the attribute, never the prefix — and
+    these two are what still exercises it.
+    """
+    for code in ("G2-VAL-003", "G2-VAL-006"):
         assert issue_group(code) == "G6"
         assert code.split("-")[0] == "G2"
+    # The two that came back to G2 now agree with their prefix, by accident
+    # rather than by rule.
+    for code in ("G2-VAL-001", "G2-NAME-012"):
+        assert issue_group(code) == "G2"
 
 
 def test_every_entry_has_a_valid_group_origin_and_status():
@@ -147,12 +157,63 @@ def test_origin_breakdown_of_live_quality_codes():
     assert Counter(e.origin for e in live_quality) == {"DS": 8, "API": 18, "BOTH": 3}
 
 
-def test_reduction_groups_exclude_g6_g7_and_g8():
-    assert "G6" not in REDUCIBLE_GROUPS
-    assert "G7" not in REDUCIBLE_GROUPS
-    assert "G8" not in REDUCIBLE_GROUPS
-    assert set(REDUCIBLE_GROUPS) == {"G1", "G2", "G3", "G4", "G5"}
-    assert set(VERIFICATION_GROUPS) == {"G7", "G8"}
+def test_the_group_constants_are_labels_not_metric_rules():
+    """They name the catalogue's shape for the census and the docstring.
+
+    Nothing in the comparison report keys off them any more — ``segment()``
+    reads ``remedy`` and ``raised``. ``REDUCIBLE_GROUPS`` and
+    ``PERSISTENT_GROUP``, which did key off the group, were deleted with the
+    2026-09-06 rework and must not come back.
+    """
+    import enrichment.issue_detection as module
+
+    assert set(QUALITY_GROUPS) == {"G1", "G2", "G3", "G4", "G5"}
+    assert set(VERIFICATION_GROUPS) == {"G6", "G7"}
+    assert not hasattr(module, "REDUCIBLE_GROUPS")
+    assert not hasattr(module, "PERSISTENT_GROUP")
+
+
+# The reference table this rework was specified against. Written out rather
+# than derived so a change to a code's remedy has to be made here too, in
+# front of a reader, instead of quietly moving a code in or out of the
+# headline percentage.
+REDUCTION_METRIC_CODES = {
+    "G1-CROSS-001", "G1-CROSS-002", "G1-CROSS-003",
+    "G1-ADDR-001", "G1-ADDR-003", "G1-ADDR-004", "G1-ADDR-006", "G1-ADDR-011",
+    "G1-NAME-001", "G1-NAME-004",
+    "G2-VAL-007", "G2-VAL-008", "G2-NAME-009",
+    "G3-NAME-003", "G3-NAME-005", "G3-ADDR-012",
+    "G4-ADDR-027",
+    "G5-NAME-001", "G5-NAME-002",
+}
+
+
+def test_every_emittable_entry_declares_raised_and_remedy():
+    """A code that can fire must say what file it fires on and who fixes it.
+
+    ``segment()`` in the comparison report reads exactly these two, so a code
+    missing either would fall through to whichever branch its ``None`` happens
+    not to match — silently landing in the reduction metric. Withdrawn entries
+    are the deliberate exception: they never fire, and giving them a value
+    would enrol them in a set they cannot contribute to.
+    """
+    for code in EMITTED_CODES:
+        entry = ISSUE_CATALOGUE[code]
+        assert entry.raised in ("raw", "enriched", "both"), code
+        assert entry.remedy in ("rule", "enrichment", "steward"), code
+    for entry in ISSUE_CATALOGUE.values():
+        if entry.status == "withdrawn":
+            assert entry.raised is None and entry.remedy is None, entry.code
+
+
+def test_reduction_metric_set_is_the_reference_table():
+    """The codes the headline percentage is computed over."""
+    actual = {
+        code for code, entry in ISSUE_CATALOGUE.items()
+        if entry.remedy in ("rule", "enrichment")
+    }
+    assert actual == REDUCTION_METRIC_CODES
+    assert len(actual) == 19
 
 
 def test_docstring_counts_match_the_catalogue():
@@ -550,8 +611,8 @@ def test_missing_department_without_contact_raises_only_name_012():
 
 def test_g2_contact_009_withdrawn_even_when_its_old_gate_is_satisfied():
     """The exact record that used to raise it: research org, no department,
-    exactly one contact. Withdrawn in Catalogue v2, so only G2-NAME-012 —
-    now a G6 code — reports the missing department."""
+    exactly one contact. Withdrawn in Catalogue v2, so only G2-NAME-012
+    reports the missing department."""
     rec = _record(**{
         "Name 1": "Florida State University", "Name 2": "",
         "Contact": "Dr. Emily Carter",
@@ -560,7 +621,7 @@ def test_g2_contact_009_withdrawn_even_when_its_old_gate_is_satisfied():
     assert "G2-CONTACT-009" not in issues
     assert "G2-CONTACT-008" not in issues
     assert "G2-NAME-012" in issues
-    assert issue_group("G2-NAME-012") == "G6"
+    assert issue_group("G2-NAME-012") == "G2"
 
 
 def test_missing_department_codes_not_raised_for_non_research_company():
@@ -1151,15 +1212,16 @@ def test_flag_for_review_cell_spellings(cell, expected):
     assert flag_for_review_is_set(cell) is expected
 
 
-def test_g7_is_not_a_quality_group():
-    """It must never be swept into a quality-issue total by group iteration."""
-    assert issue_group("G7-VERIFY-001") == "G7"
-    assert "G7" not in QUALITY_GROUPS
-    assert "G7" not in REDUCIBLE_GROUPS
+def test_the_verification_groups_are_not_quality_groups():
+    """Neither may be swept into a quality-issue total by group iteration."""
+    assert issue_group("G6-CONFIRM-001") == "G6"
+    assert issue_group("G7-UNCHANGED-001") == "G7"
+    for group in ("G6", "G7"):
+        assert group not in QUALITY_GROUPS
 
 
 # ---------------------------------------------------------------------------
-# G6-RESOLVE-001 / G7-CONFIRM-001 / G8-VERIFY-001 — the flag-derived codes
+# G6-RESOLVE-001 / G6-CONFIRM-001 / G7-UNCHANGED-001 — the flag-derived codes
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("flag,issue", sorted(FLAG_CODE_ISSUES.items()))
@@ -1178,7 +1240,7 @@ def test_the_three_doubts_are_three_different_queues():
         _record(),
         flag_codes=["opaque-code", "domain-unverified", "person-unresolved"],
     )
-    assert codes == ["G6-RESOLVE-001", "G7-CONFIRM-001", "G8-VERIFY-001"]
+    assert codes == ["G6-RESOLVE-001", "G6-CONFIRM-001", "G7-UNCHANGED-001"]
 
 
 def test_several_flags_mapping_to_one_issue_raise_it_once():
@@ -1196,7 +1258,7 @@ def test_flag_derived_codes_absent_from_a_raw_input_audit():
         "Name 1": "E004120188", "Name 2": "10901 Roosevelt Blvd N",
         "Contact": "Dr. Jane Smith; Prof. Bob Lee",
     })
-    for code in ("G6-RESOLVE-001", "G7-CONFIRM-001", "G8-VERIFY-001"):
+    for code in ("G6-RESOLVE-001", "G6-CONFIRM-001", "G7-UNCHANGED-001"):
         assert code not in detect_issues(dirty)
         assert code not in detect_issues(dirty, flag_codes=None)
     # An enriched record the pipeline flagged nothing on is not the same state
@@ -1242,17 +1304,19 @@ def test_g8_covers_the_retired_low_confidence_token():
     provenance columns. The caller supplies the token from there; the mapping
     must still honour it or G8 goes dark for the largest population it
     describes."""
-    assert FLAG_CODE_ISSUES[DERIVED_LOW_FLAG_CODE] == "G8-VERIFY-001"
-    assert "G8-VERIFY-001" in detect_issues(
+    assert FLAG_CODE_ISSUES[DERIVED_LOW_FLAG_CODE] == "G7-UNCHANGED-001"
+    assert "G7-UNCHANGED-001" in detect_issues(
         _record(), flag_codes=[DERIVED_LOW_FLAG_CODE],
     )
 
 
 def test_flag_derived_codes_are_not_in_the_reduction_metric():
-    """G6 is expected to persist; G7 and G8 are reported separately. None of
-    the three may move the before/after percentage."""
-    for code in ("G6-RESOLVE-001", "G7-CONFIRM-001", "G8-VERIFY-001"):
-        assert issue_group(code) not in REDUCIBLE_GROUPS
+    """Both are raised BY enrichment and reported separately; neither may move
+    the before/after percentage."""
+    for code in ("G6-CONFIRM-001", "G7-UNCHANGED-001"):
+        assert code not in REDUCTION_METRIC_CODES
+        assert ISSUE_CATALOGUE[code].remedy == "steward"
+        assert ISSUE_CATALOGUE[code].raised == "enriched"
 
 
 # ---------------------------------------------------------------------------

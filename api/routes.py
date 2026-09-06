@@ -56,9 +56,6 @@ from dedup.scoring import (
 from dedup.scoring_xlsx import ScoringFileError, score_workbook
 from enrichment.issue_detection import (
     ISSUE_CATALOGUE,
-    PERSISTENT_GROUP,
-    REDUCIBLE_GROUPS,
-    VERIFICATION_GROUPS,
     detect_issues,
     flag_for_review_is_set,
     provenance_is_low,
@@ -243,14 +240,14 @@ def _flag_codes(
     ``None`` and ``[]`` carry the same distinction as in :func:`_flag_for_review`:
     ``None`` means "no enrichment output here, the flag-derived codes cannot
     apply", ``[]`` means "enrichment ran and flagged nothing". Both suppress
-    G6-RESOLVE-001 / G7-CONFIRM-001 / G8-VERIFY-001; only ``None`` says the
+    G6-CONFIRM-001 / G7-UNCHANGED-001; only ``None`` says the
     question was never asked.
 
     ``low-confidence-unchanged`` is added from the provenance columns as well
     as read from ``Flag Codes``. The pipeline emits the token again, so a
     current export names it; an export taken while it was withdrawn has the
     state in ``Name 1 / Name 2 Provenance`` and nowhere else, and reading only
-    ``Flag Codes`` would leave G8-VERIFY-001 dark for the largest population
+    ``Flag Codes`` would leave G7-UNCHANGED-001 dark for the largest population
     it exists to describe — the rows the pipeline left exactly as supplied.
     Both paths reach the same code, and the ``not in`` check is what keeps a
     row that carries it twice from saying so.
@@ -606,11 +603,25 @@ def _build_comparison_xlsx(
     only_after = [rid for rid in after_map if rid not in before_map]
 
     def segment(code: str) -> str:
-        """Which of the three report blocks *code* belongs to."""
-        group = ISSUE_CATALOGUE[code].group
-        if group in VERIFICATION_GROUPS:
+        """Which of the three report blocks *code* belongs to.
+
+        Decided from ``raised`` and ``remedy``, never from the group. The
+        group says what kind of defect a code is; these two say what a
+        before/after comparison should do with it, and reading the first to
+        answer the second is what put a rule-fixable code and a
+        steward-only one in the same bucket because both start with "G2".
+
+        The order matters and the two tests do not overlap: no code with a
+        ``rule`` or ``enrichment`` remedy is ``raised="enriched"``, so taking
+        the verification test first cannot pull anything out of the reduction
+        metric.
+        """
+        entry = ISSUE_CATALOGUE[code]
+        if entry.raised == "enriched":
+            # Absent before and present after is the normal case for these:
+            # the raw file could not have carried them.
             return "Verification"
-        if group == PERSISTENT_GROUP:
+        if entry.remedy == "steward":
             return "Expected to persist"
         return "Reduced"
 
@@ -665,11 +676,11 @@ def _build_comparison_xlsx(
     summary.append(["Records only in enriched", len(only_after)])
     summary.append([])
 
-    # --- Block 1: the reduction metric (G1-G5 only) ---
+    # --- Block 1: the reduction metric (remedy = rule or enrichment) ---
     # Labels are block-prefixed and unique across the sheet: three blocks each
     # carrying a bare "Issues before" would be ambiguous to a reader and would
     # collide for anything reading the sheet as label -> value pairs.
-    summary.append([f"Reduced — {', '.join(REDUCIBLE_GROUPS)} (the reduction metric)"])
+    summary.append(["Reduced — remedy is a rule or the pipeline (the reduction metric)"])
     summary.append(["Reduced: issues before", reduced_before])
     summary.append(["Reduced: issues after", reduced_after])
     summary.append(["Reduced: issues resolved", seg_resolved["Reduced"]])
@@ -678,9 +689,9 @@ def _build_comparison_xlsx(
     summary.append(["Reduction %", round(pct, 1)])
     summary.append([])
 
-    # --- Block 2: G6, where persistence is the correct outcome ---
+    # --- Block 2: remedy = steward, where persistence is the correct outcome ---
     summary.append([
-        f"Expected to persist — {PERSISTENT_GROUP} (Not Resolvable by Enrichment)"
+        "Expected to persist — remedy is a data steward"
     ])
     summary.append([
         "These codes have no automated remediation path. They are routed to a "
@@ -699,16 +710,17 @@ def _build_comparison_xlsx(
     ])
     summary.append([])
 
-    # --- Block 3: G7, never part of any reduction figure ---
+    # --- Block 3: raised only after enrichment, never part of any reduction figure ---
     summary.append([
-        f"Verification — {', '.join(VERIFICATION_GROUPS)} (reported separately)"
+        "Verification — raised only after enrichment (reported separately)"
     ])
     summary.append([
         "Raised BY enrichment so DATAshaper can assign the record to a "
-        "steward — G7 to confirm a value the pipeline wrote, G8 where it "
-        "could not establish one. Not quality issues and never counted in "
-        "the reduction metric; see the Flag Reason column for the "
-        "per-record trigger."
+        "steward — G6 to confirm a value the pipeline wrote, G7 where it "
+        "could not establish one. A raw file cannot carry them, so absent "
+        "before and present after is normal rather than a regression. Not "
+        "quality issues and never counted in the reduction metric; see the "
+        "Flag Reason column for the per-record trigger."
     ])
     summary.append(["Verification: records requiring verification", seg_after["Verification"]])
     summary.append([])

@@ -219,12 +219,12 @@
       "negative": {"_flag_codes": ["overflow"]}
     },
     {
-      "code": "G7-CONFIRM-001",
+      "code": "G6-CONFIRM-001",
       "positive": {"_flag_codes": ["domain-unverified"]},
       "negative": {"_flag_codes": []}
     },
     {
-      "code": "G8-VERIFY-001",
+      "code": "G7-UNCHANGED-001",
       "positive": {"_flag_codes": ["person-unresolved"]},
       "negative": {"_flag_codes": null}
     }

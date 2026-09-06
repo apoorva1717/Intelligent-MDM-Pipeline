@@ -1249,7 +1249,7 @@ class TestTheFlagVocabularyIsClosed:
             # DERIVED, not raised: `low-confidence-unchanged` says exactly
             # what `input:low` on the field says, and `render` emits it from
             # the provenance-derived list and from nothing else. It is in the
-            # vocabulary because the issue catalogue's `G8-VERIFY-001` is
+            # vocabulary because the issue catalogue's `G7-UNCHANGED-001` is
             # defined over the vocabulary and a consumer reading `Flag Codes`
             # cannot see a confidence column it was not given; a tier that
             # tries to raise it still fails. See

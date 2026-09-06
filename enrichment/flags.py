@@ -103,7 +103,7 @@ NO_MATCH = "no-match"
 #: migration also withdrew the TOKEN, on the ground that the column already
 #: stated the fact — but a consumer reading `flag_codes` cannot see a
 #: confidence column it was not given, and the issue catalogue's
-#: `G8-VERIFY-001` is defined over this vocabulary. So the token is emitted
+#: `G7-UNCHANGED-001` is defined over this vocabulary. So the token is emitted
 #: again while the rule that produced the drift stays closed: a tier that
 #: passes this code in `scopes` still gets a `ValueError`, because a marker a
 #: tier remembers to leave and a fact derived from the write history are

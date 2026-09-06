@@ -2,7 +2,7 @@
 
 Two vocabularies, one record. ``flag_codes`` says what the pipeline is unsure
 of and which column it concerns; the catalogue's ``G6-RESOLVE-001`` /
-``G7-CONFIRM-001`` / ``G8-VERIFY-001`` say what a DATAshaper reviewer is being
+``G6-CONFIRM-001`` / ``G7-UNCHANGED-001`` say what a DATAshaper reviewer is being
 asked to DO about it — supply a value nothing can resolve, confirm a value the
 pipeline wrote, establish one it could not. ``FLAG_CODE_ISSUES`` is the join,
 and it is only as good as the tokens the pipeline actually emits: a doubt that
@@ -112,7 +112,7 @@ def _input_retained(name1: str, **fields: Any) -> dict:
 # ---------------------------------------------------------------------------
 
 class TestTheDerivedLowReachesTheCatalogue:
-    """`low-confidence-unchanged` -> `G8-VERIFY-001`, through `Flag Codes`.
+    """`low-confidence-unchanged` -> `G7-UNCHANGED-001`, through `Flag Codes`.
 
     The audit could already reach these rows by reading `input:low` off the
     provenance columns, and still does — that is what an export taken while
@@ -129,7 +129,7 @@ class TestTheDerivedLowReachesTheCatalogue:
         assert flags.LOW_CONFIDENCE_UNCHANGED in out["flag_codes"]
         assert out["flag_low_confidence"] == ["name1"]
         assert out["flag_for_review"] is True
-        assert "G8-VERIFY-001" in _issues(out)
+        assert "G7-UNCHANGED-001" in _issues(out)
 
     def test_the_clause_a_reviewer_reads_is_unchanged(self):
         """The prose was always rendered — the code is what was missing — so
@@ -144,7 +144,7 @@ class TestTheDerivedLowReachesTheCatalogue:
 
     def test_batch_consensus_withdraws_both(self):
         """The pass replaces `name1_enriched`, which falsifies the statement
-        the code makes about it, so the code goes and `G8-VERIFY-001` goes
+        the code makes about it, so the code goes and `G7-UNCHANGED-001` goes
         with it. The withdrawal is `flags.retract`'s and needed no change: it
         re-derives the low from the record's regenerated provenance, and the
         code is rendered from the low."""
@@ -170,7 +170,7 @@ class TestTheDerivedLowReachesTheCatalogue:
             ),
         ]
         assert flags.LOW_CONFIDENCE_UNCHANGED in rows[1].flag_codes
-        assert "G8-VERIFY-001" in _issues(rows[1])
+        assert "G7-UNCHANGED-001" in _issues(rows[1])
 
         apply_batch_consensus(rows)
 
@@ -178,7 +178,7 @@ class TestTheDerivedLowReachesTheCatalogue:
         assert rows[1].flag_codes == []
         assert rows[1].flag_low_confidence == []
         assert rows[1].flag_for_review is False
-        assert "G8-VERIFY-001" not in _issues(rows[1])
+        assert "G7-UNCHANGED-001" not in _issues(rows[1])
 
     @staticmethod
     def _registry_name_with_department(name2: str) -> dict:
@@ -215,7 +215,7 @@ class TestTheDerivedLowReachesTheCatalogue:
         assert out["name2_provenance"] == "input:low"
         assert flags.LOW_CONFIDENCE_UNCHANGED not in out["flag_codes"]
         assert out["flag_low_confidence"] == []
-        assert "G8-VERIFY-001" not in _issues(out)
+        assert "G7-UNCHANGED-001" not in _issues(out)
 
     def test_the_same_slot_holding_a_real_unit_does_carry_both(self):
         """The control. Identical fixture, identical `input:low` provenance —
@@ -226,7 +226,7 @@ class TestTheDerivedLowReachesTheCatalogue:
         assert out["name2_provenance"] == "input:low"
         assert flags.LOW_CONFIDENCE_UNCHANGED in out["flag_codes"]
         assert out["flag_low_confidence"] == ["name2"]
-        assert "G8-VERIFY-001" in _issues(out)
+        assert "G7-UNCHANGED-001" in _issues(out)
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +234,7 @@ class TestTheDerivedLowReachesTheCatalogue:
 # ---------------------------------------------------------------------------
 
 class TestTheContactDerivedDepartment:
-    """`dept-via-contact` -> `G7-CONFIRM-001`, saying the same sentence.
+    """`dept-via-contact` -> `G6-CONFIRM-001`, saying the same sentence.
 
     Tier 2A's `2A_population` reads the department off the affiliation of the
     person in the Contact column, on a record that stated no department of its
@@ -266,7 +266,7 @@ class TestTheContactDerivedDepartment:
         assert flags.DEPT_VIA_CONTACT in out["flag_codes"]
         assert flags.DEPT_VIA_LAB not in out["flag_codes"]
         assert out["flagged_fields"] == ["name2"]
-        assert "G7-CONFIRM-001" in _issues(out)
+        assert "G6-CONFIRM-001" in _issues(out)
 
     def test_the_reason_is_the_string_it_always_was(self):
         """Character-for-character what `_DETAILED_REASONS[DEPT_VIA_LAB]`
@@ -301,7 +301,7 @@ class TestTheTwoCodesThatWereMappedToNothing:
 
     def test_a_relocated_slot_asks_for_confirmation(self):
         """Preprocessing MOVED the value into the slot it ships in. That is a
-        write nothing vouched for, which is what `G7-CONFIRM-001` is: confirm
+        write nothing vouched for, which is what `G6-CONFIRM-001` is: confirm
         a value the pipeline wrote."""
         result = _init_result(EnrichmentRecord(
             record_id="R1", country="US", name1="Harbor-UCLA Medical Center",
@@ -320,7 +320,7 @@ class TestTheTwoCodesThatWereMappedToNothing:
         out = finalise(result, time.monotonic())
 
         assert flags.RELOCATED_UNVERIFIED in out["flag_codes"]
-        assert "G7-CONFIRM-001" in _issues(out)
+        assert "G6-CONFIRM-001" in _issues(out)
 
     def test_a_record_that_states_two_places_asks_a_human(self):
         """Record 13348125: "Veracyte, Inc. - South San Francisco, CA" on a
@@ -385,5 +385,5 @@ class TestEveryFlagCodeIsAccountedFor:
 
     def test_the_three_catalogue_codes_are_the_whole_image(self):
         assert set(FLAG_CODE_ISSUES.values()) == {
-            "G6-RESOLVE-001", "G7-CONFIRM-001", "G8-VERIFY-001",
+            "G6-RESOLVE-001", "G6-CONFIRM-001", "G7-UNCHANGED-001",
         }

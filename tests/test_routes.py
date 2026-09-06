@@ -710,12 +710,12 @@ class TestRoutes:
         cells = [([c.value for c in row][-1] or "") for row in ws.iter_rows(min_row=2)]
 
         assert "G6-RESOLVE-001" in cells[0]
-        assert "G7-CONFIRM-001" in cells[1]
-        assert "G8-VERIFY-001" in cells[2]
+        assert "G6-CONFIRM-001" in cells[1]
+        assert "G7-UNCHANGED-001" in cells[2]
         # Two flags mapping to one code say it once, and a row the pipeline
         # flagged nothing on carries none of them.
         assert cells[0].count("G6-RESOLVE-001") == 1
-        for code in ("G6-RESOLVE-001", "G7-CONFIRM-001", "G8-VERIFY-001"):
+        for code in ("G6-RESOLVE-001", "G6-CONFIRM-001", "G7-UNCHANGED-001"):
             assert code not in cells[3]
 
     @pytest.mark.asyncio
@@ -733,8 +733,8 @@ class TestRoutes:
         assert resp.status_code == 200
         ws = load_workbook(io.BytesIO(resp.content)).active
         cells = [([c.value for c in row][-1] or "") for row in ws.iter_rows(min_row=2)]
-        assert "G8-VERIFY-001" in cells[0]
-        assert "G8-VERIFY-001" not in cells[1]
+        assert "G7-UNCHANGED-001" in cells[0]
+        assert "G7-UNCHANGED-001" not in cells[1]
 
     @pytest.mark.asyncio
     async def test_raw_input_never_gets_a_flag_derived_code(self, client):
@@ -748,28 +748,37 @@ class TestRoutes:
         assert resp.status_code == 200
         ws = load_workbook(io.BytesIO(resp.content)).active
         issues = ([c.value for c in ws[2]][-1] or "")
-        for code in ("G6-RESOLVE-001", "G7-CONFIRM-001", "G8-VERIFY-001"):
+        for code in ("G6-RESOLVE-001", "G6-CONFIRM-001", "G7-UNCHANGED-001"):
             assert code not in issues
 
     @pytest.mark.asyncio
-    async def test_issues_compare_segments_g6_and_g7_out_of_the_metric(self, client):
-        """G6 codes that survive enrichment are expected persistence, not
-        unreduced defects, and a G7 raised by the enrichment must not inflate
-        the post-pipeline total. Neither may touch the reduction figures."""
-        # Before: a G1 defect (address in a name) plus two G6 codes that no
-        # automated path can fix (Tax Jurisdiction, Language).
+    async def test_issues_compare_segments_on_remedy_and_raised(self, client):
+        """The three blocks are decided per code, from `remedy` and `raised`.
+
+        One record carrying one of each: a rule-fixable defect that the
+        pipeline resolved (G1-CROSS-001, remedy=rule) is the only thing the
+        percentage sees; a steward-only defect that survives (G2-VAL-001,
+        remedy=steward) is expected persistence, not an unreduced defect;
+        and a code the raw file could not have carried (G6-CONFIRM-001,
+        raised=enriched) is absent before and present after, which is normal
+        rather than a regression.
+
+        G2-VAL-001 is the case the old group rule got wrong: it sits in G2
+        beside G2-VAL-007, which a rule does fix, so no group membership
+        could put one in the metric and keep the other out.
+        """
+        # Before: Name 2 holds an address (G1-CROSS-001, rule) and Name 1 is
+        # blank (G2-VAL-001, steward).
         original = self._xlsx_bytes(
-            ["Customer", "Name 1", "Name 2", "Tax Jurisdiction", "Language Key",
-             "Country/Region Key"],
-            ["R1", "Acme Corp", "10901 Roosevelt Blvd N", "", "", "US"],
+            ["Customer", "Name 1", "Name 2", "Country/Region Key"],
+            ["R1", "", "10901 Roosevelt Blvd N", "US"],
         )
-        # After: the G1 defect is fixed, both G6 codes still there (correctly),
-        # and the record is flagged for steward verification.
+        # After: the address is out of the name block, Name 1 is still blank
+        # (nothing automated supplies it), and enrichment wrote a website it
+        # could not corroborate.
         enriched = self._xlsx_bytes(
-            ["record_id", "Name 1", "Name 2", "Tax Jurisdiction", "Language Key",
-             "Country/Region Key", "Flag for Review", "Flag Reason"],
-            ["R1", "Acme Corporation", "Sales Department", "", "", "US",
-             "TRUE", "domain-unverified"],
+            ["record_id", "Name 1", "Name 2", "Country/Region Key", "Flag Codes"],
+            ["R1", "", "Sales Department", "US", "domain-unverified"],
         )
         resp = await client.post(
             "/issues/compare",
@@ -782,17 +791,16 @@ class TestRoutes:
         wb = load_workbook(io.BytesIO(resp.content))
         summary = self._summary(wb["Summary"])
 
-        # The reduction block sees only the G1 defect: 1 before, 0 after, 100%.
+        # The reduction block sees only the rule-fixable defect.
         assert summary["Reduced: issues before"] == 1
         assert summary["Reduced: issues after"] == 0
         assert summary["Reduction %"] == 100.0
-        # G7 fired, and did not enter the reduction block.
+        # The steward-only defect persisted, and is reported as such.
+        assert summary["Expected to persist: issues before"] == 1
+        assert summary["Expected to persist: issues after"] == 1
+        assert summary["Expected to persist: persisted as expected"] == 1
+        # The enrichment-raised code did not enter either figure above.
         assert summary["Verification: records requiring verification"] == 1
-        # Both G6 codes persisted, and are reported as such rather than as
-        # unreduced defects.
-        assert summary["Expected to persist: issues before"] == 2
-        assert summary["Expected to persist: issues after"] == 2
-        assert summary["Expected to persist: persisted as expected"] == 2
 
         rows = {
             row[0]: row
@@ -801,9 +809,12 @@ class TestRoutes:
             )
             if row and isinstance(row[0], str) and row[0].startswith("G")
         }
-        assert rows["G2-VAL-003"][2:4] == ["G6", "Expected to persist"]
-        assert rows["G7-VERIFY-001"][2:4] == ["G7", "Verification"]
-        assert rows["G1-CROSS-001"][2:4] == ["G1", "Reduced"]
+        assert rows["G1-CROSS-001"][3] == "Reduced"
+        assert rows["G2-VAL-001"][3] == "Expected to persist"
+        assert rows["G6-CONFIRM-001"][3] == "Verification"
+        # G2-VAL-001 and G1-CROSS-001 land in different blocks; the group
+        # column shows they are not separated by group.
+        assert rows["G2-VAL-001"][2] == "G2"
 
     @pytest.mark.asyncio
     async def test_issues_compare_rejects_non_xlsx(self, client):
