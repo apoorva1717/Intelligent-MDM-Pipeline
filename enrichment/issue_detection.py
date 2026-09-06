@@ -476,11 +476,120 @@ def _validate_required_field_mapping() -> list[str]:
 
 _REQUIRED_FIELD_MAPPING_PROBLEMS = _validate_required_field_mapping()
 
-# Continuation connectors that suggest Name 2 carries on from Name 1 as one
-# org name (heuristic for G1-NAME-001).
-_NAME_CONTINUATION_RE = re.compile(
-    r"^\s*(?:and|&|of|for|the|de|der|und|et)\b|^\s*[a-z]",
+# Continuation connectors that suggest one name has been split across two
+# adjacent slots (heuristic for G1-NAME-001). One list, read by both arms of
+# ``_overflow_slots`` — a connector that opens a tail is the same connector
+# that dangles off a head, and two lists would drift.
+#
+# Word connectors keep their ``\b`` so "Andover" is not read as "and". The
+# symbols must NOT have one: ``&\b`` requires a word character immediately
+# after the ampersand, so "& Materials Science" — the normal spacing — never
+# matched and the branch was dead for every real value.
+_NAME_CONNECTOR_WORDS: tuple[str, ...] = (
+    "and", "of", "for", "the", "de", "der", "und", "et",
 )
+_NAME_CONNECTOR_SYMBOLS: tuple[str, ...] = ("&", "-")
+
+_CONNECTOR_WORD_ALT = "|".join(_NAME_CONNECTOR_WORDS)
+_CONNECTOR_SYMBOL_ALT = "|".join(re.escape(c) for c in _NAME_CONNECTOR_SYMBOLS)
+
+# The TAIL arm: the lower slot opens on a connector, or on a lowercase word.
+# Deliberately case-SENSITIVE — the ``[a-z]`` branch is a case test and
+# ``re.IGNORECASE`` would make it match every value.
+_NAME_CONTINUATION_RE = re.compile(
+    rf"^\s*(?:{_CONNECTOR_WORD_ALT})\b"
+    rf"|^\s*(?:{_CONNECTOR_SYMBOL_ALT})"
+    rf"|^\s*[a-z]",
+)
+
+# The HEAD arm: the upper slot ends on a dangling connector. Case-insensitive,
+# because SAP name blocks are routinely upper-cased ("… EMERGENCY ROOM AND").
+_NAME_HEAD_CONNECTOR_RE = re.compile(
+    rf"(?:\b(?:{_CONNECTOR_WORD_ALT})\b|(?:{_CONNECTOR_SYMBOL_ALT}))\s*$",
+    re.IGNORECASE,
+)
+
+
+def _ends_on_connector(value: str) -> bool:
+    """True when *value* trails off on a connector and is therefore unfinished.
+
+    Trailing whitespace and one trailing period are dropped first: "College of."
+    is the same dangling head as "College of".
+    """
+    text = value.rstrip()
+    if text.endswith("."):
+        text = text[:-1].rstrip()
+    return bool(_NAME_HEAD_CONNECTOR_RE.search(text))
+
+
+def _is_contact_content(value: str | None) -> bool:
+    """True when *value* is contact information rather than name content.
+
+    Exactly the predicate G1-CROSS-003 reports on, factored out so the two
+    rules cannot answer the question differently: the four patterns are
+    ``enrichment.preprocess``'s, already imported here for that rule, and this
+    is the only place they are combined.
+    """
+    if not value:
+        return False
+    return bool(
+        _EMAIL_RE.search(value)
+        or _PHONE_RE.search(value)
+        or _URL_RE.search(value)
+        or _CO_ATTN_PREFIX_RE.search(value)
+    )
+
+
+def _overflow_slots(record: EnrichmentRecord) -> set[str]:
+    """Record-field names of every name slot that is one half of a split value.
+
+    Both slots must be populated, and then EITHER end of the seam can betray
+    the split:
+
+    *tail arm* — the lower slot opens on a connector or a lowercase word, and
+    the upper carries no legal suffix that would have closed the entity.
+
+    *head arm* — the upper slot trails off on a connector ("Dept of Chemical
+    Engineering &"). This one needs no legal-suffix guard: a value ending on a
+    dangling connector is unfinished by construction, and a suffix earlier in
+    the string does not close it ("Acme Corp &" / "Sons" is still one name).
+
+    The head arm exists because it is the shape the data actually has. The tail
+    arm alone reads only the lower slot, so a head that ends mid-phrase went
+    unreported whenever its continuation happened to start with a capital —
+    "Dept of Chemical Engineering &" / "Materials Science" scored nothing.
+
+    BOTH members of a qualifying pair are returned, because neither half is a
+    whole name: the head is a value with its tail cut off and the tail is a
+    fragment. Callers that judge the *form* of a slot's contents (G5) have
+    nothing meaningful to say about either one, and skip both.
+
+    Pure: reads the record and returns a set. G1-NAME-001 fires iff the set is
+    non-empty, which is the same condition it tested before this was extracted.
+    """
+    slots: set[str] = set()
+    for upper, lower in ADJACENT_RECORD_NAME_PAIRS:
+        upper_val = getattr(record, upper, None)
+        lower_val = getattr(record, lower, None)
+        if is_blank(upper_val) or is_blank(lower_val):
+            continue
+        # A tail that is contact information is not a continuation of the name
+        # above it. "accountspayable@calstatela.edu" opens lowercase and so
+        # satisfied the ``[a-z]`` branch, but an email is not the second half
+        # of an organisation name — it is contact content in a name field,
+        # which is G1-CROSS-003 and is already reported there. The head arm is
+        # unaffected: if the upper slot trails off on a connector, the pair is
+        # a split value regardless of what landed in the slot below.
+        tail_arm = (
+            not _has_legal_suffix(upper_val or "")
+            and not _is_contact_content(lower_val)
+            and _NAME_CONTINUATION_RE.search(lower_val or "")
+        )
+        head_arm = _ends_on_connector(upper_val or "")
+        if tail_arm or head_arm:
+            slots.add(upper)
+            slots.add(lower)
+    return slots
 
 # Common abbreviation tokens marking a non-canonical org / unit name
 # (heuristic for G5). Anchored on word boundaries to avoid matching inside
@@ -668,6 +777,21 @@ _MAIL_CODE_MARKER_RE = re.compile(
 )
 
 
+def _sublocation_values(value: str) -> set[str]:
+    """Upper-cased values that a sub-location marker in *value* claims.
+
+    "Rm. EC2614" -> ``{"EC2614"}``. Reuses ``_SUITE_PATTERNS`` — the pipeline's
+    own marker table, already imported here for G1-ADDR-003 — so a marker
+    recognised there is recognised here, with no second vocabulary to drift.
+    """
+    claimed: set[str] = set()
+    for pattern, _target in _SUITE_PATTERNS:
+        for m in pattern.finditer(value):
+            if m.lastindex:
+                claimed.add(m.group(1).strip().upper())
+    return claimed
+
+
 def _has_mail_code(value: str) -> bool:
     """True when *value* carries a mail-stop / mail-code marker **with a value
     attached**."""
@@ -776,14 +900,7 @@ def _detect_wrong_field(record: EnrichmentRecord, found: set[str]) -> None:
     # G1-CROSS-003 — contact info (email / phone / URL / c-o-ATTN / person) in a
     # Name or Street field.
     for field in names + streets:
-        if not field:
-            continue
-        if (
-            _EMAIL_RE.search(field)
-            or _PHONE_RE.search(field)
-            or _URL_RE.search(field)
-            or _CO_ATTN_PREFIX_RE.search(field)
-        ):
+        if _is_contact_content(field):
             found.add("G1-CROSS-003")
             break
     else:
@@ -816,10 +933,31 @@ def _detect_wrong_field(record: EnrichmentRecord, found: set[str]) -> None:
             break
 
     # G1-ADDR-006 — mail/drop code inside a Street field.
-    for st in streets:
-        if st and (
-            _extract_mail_code(st, allow_bare=True)[1] or _has_mail_code(st)
-        ):
+    #
+    # Two conditions on the BARE form ([A-Z]{2,4}\d{1,4}), neither of which
+    # applies to a value carrying its own marker:
+    #
+    #   * ``allow_bare`` follows the pipeline. ``address_processing`` permits
+    #     the bare form only in street_2..5 (:1183), because in Street 1 an
+    #     all-caps letters-then-digits token is far more likely to be part of
+    #     the street line than a mail code. A raw-side count that fired on
+    #     Street 1 was reporting a value the pipeline would never extract.
+    #   * A token already claimed by a sub-location marker is that marker's
+    #     value, not a mail code. "Rm. EC2614" is a room; the bare pattern sees
+    #     "EC2614" and never looks left at the "Rm." that names it.
+    #
+    # Explicit forms ("MAIL CODE: X", the [A-Z]\d-\d{4} complex form) and any
+    # value behind a mail-stop marker are unaffected — they say what they are.
+    for idx, st in enumerate(streets):
+        if not st:
+            continue
+        if _extract_mail_code(st, allow_bare=False)[1] or _has_mail_code(st):
+            found.add("G1-ADDR-006")
+            break
+        if idx == 0:                       # Street 1: bare form not extracted
+            continue
+        bare = _extract_mail_code(st, allow_bare=True)[1]
+        if bare and bare.strip().upper() not in _sublocation_values(st):
             found.add("G1-ADDR-006")
             break
 
@@ -834,18 +972,10 @@ def _detect_wrong_field(record: EnrichmentRecord, found: set[str]) -> None:
     # word AND the upper has no legal suffix that would close the entity.
     # (True rule is LLM-only.) Checked at every slot boundary: the SAP field
     # split can drop a continuation anywhere in the block, not only after
-    # Name 1.
-    for upper, lower in ADJACENT_RECORD_NAME_PAIRS:
-        upper_val = getattr(record, upper, None)
-        lower_val = getattr(record, lower, None)
-        if (
-            not is_blank(upper_val)
-            and not is_blank(lower_val)
-            and not _has_legal_suffix(upper_val or "")
-            and _NAME_CONTINUATION_RE.search(lower_val or "")
-        ):
-            found.add("G1-NAME-001")
-            break
+    # Name 1. The pair test lives in ``_overflow_slots`` because G5 needs to
+    # know WHICH slots are halves, not merely whether any pair exists.
+    if _overflow_slots(record):
+        found.add("G1-NAME-001")
 
     # G1-NAME-004 — "Empty field in between populated name fields". A blank
     # slot is only a *gap* when something populated sits both above and below
@@ -1084,13 +1214,33 @@ def _detect_naming(record: EnrichmentRecord, found: set[str]) -> None:
     # "Inst" is exempt here too — it heads an organisation in its own right
     # ("Inst of Technology") — but "Dept" and "Div" are not: in Name 1 they are
     # still abbreviations of a word the official form spells out.
-    if _is_non_canonical_name(record.name_1, _NONCANON_TOKENS_ORG):
+    #
+    # A slot that G1-NAME-001 has identified as one half of a split value is
+    # not judged at all. "Sch of Chemical Engineering &" is not a name in a
+    # non-official form; it is half of a name, and the question G5 asks — is
+    # this the official spelling of the thing? — has no answer for a fragment.
+    # The overflow is already reported, by G1-NAME-001, which is the code that
+    # describes what is actually wrong with the record.
+    #
+    # The detector does NOT join the halves and judge the result: reassembly is
+    # the pipeline's job (UC 0), and a raw-side detector that simulated the fix
+    # would stop measuring the raw file. Once the pipeline has rejoined them,
+    # the enriched-side run sees one populated slot with no overflow pair and
+    # judges its form normally — which is where an abbreviation in the joined
+    # text is meant to surface.
+    overflow = _overflow_slots(record)
+
+    if "name_1" not in overflow and _is_non_canonical_name(
+        record.name_1, _NONCANON_TOKENS_ORG
+    ):
         found.add("G5-NAME-001")
 
     # G5-NAME-002 — a unit-level name (Name 2..N) abbreviated / non-canonical.
     # Dept / Div / Inst are accepted unit forms and are exempt here — see
     # ``_UNIT_EXEMPT_TOKENS``. Dept and Div still raise -001 in Name 1.
-    for nm in _names(record)[1:]:
+    for field, nm in zip(RECORD_NAME_FIELDS[1:], _names(record)[1:]):
+        if field in overflow:
+            continue
         if _is_non_canonical_name(nm, _NONCANON_TOKENS_UNIT):
             found.add("G5-NAME-002")
             break

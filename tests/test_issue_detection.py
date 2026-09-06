@@ -259,6 +259,44 @@ def test_g1_addr_006_mail_code_in_street():
     assert "G1-ADDR-006" in detect_issues(_record(**{"Street 2": "MAIL CODE: SVC1039"}))
 
 
+@pytest.mark.parametrize("street2", ["Rm. EC2614", "Suite EC2614"])
+def test_g1_addr_006_does_not_fire_on_a_markers_own_value(street2):
+    """The bare-code pattern sees "EC2614" and never looks left at the "Rm."
+    that names it. The token is the sub-location's value, and G1-ADDR-003
+    already reports it."""
+    issues = detect_issues(_record(**{"Street 2": street2}))
+    assert "G1-ADDR-003" in issues
+    assert "G1-ADDR-006" not in issues
+
+
+@pytest.mark.parametrize("street2", ["EC2614", "SVC1039"])
+def test_g1_addr_006_still_fires_on_a_genuinely_bare_code(street2):
+    assert "G1-ADDR-006" in detect_issues(_record(**{"Street 2": street2}))
+
+
+def test_g1_addr_006_and_003_both_fire_when_both_are_present():
+    """Two different things in one slot: a room, and a mail stop behind its own
+    marker. Neither suppresses the other."""
+    issues = detect_issues(_record(**{"Street 2": "Rm 200, MS K-12"}))
+    assert "G1-ADDR-003" in issues
+    assert "G1-ADDR-006" in issues
+
+
+def test_g1_addr_006_bare_form_is_street_2_and_below_only():
+    """``allow_bare`` follows the pipeline (address_processing:1183): a bare
+    token in Street 1 is never extracted, so reporting it overstated the raw
+    count against a value the pipeline would leave alone."""
+    assert "G1-ADDR-006" not in detect_issues(_record(**{"Street 1": "SVC1039 MAIN ST"}))
+    assert "G1-ADDR-006" in detect_issues(_record(**{"Street 2": "SVC1039 MAIN ST"}))
+
+
+def test_g1_addr_006_explicit_form_fires_in_street_1():
+    """The slot restriction is on the bare form only. A value that says what it
+    is carries its own marker and is reported wherever it sits."""
+    assert "G1-ADDR-006" in detect_issues(_record(**{"Street 1": "MAIL CODE: SVC1039"}))
+    assert "G1-ADDR-006" in detect_issues(_record(**{"Street 1": "500 Tech Dr MS-4"}))
+
+
 def test_g1_addr_011_department_label_in_street():
     assert "G1-ADDR-011" in detect_issues(_record(**{"Street 2": "Receiving Department"}))
 
@@ -591,6 +629,221 @@ def test_g4_addr_025_is_withdrawn_and_never_fires():
 
 def test_g5_name_001_org_not_official():
     assert "G5-NAME-001" in detect_issues(_record(**{"Name 1": "Univ of Florida"}))
+
+
+def test_g1_name_001_fires_iff_overflow_slots_is_non_empty():
+    """The extraction must not have moved the boundary. ``_overflow_slots``
+    scans every adjacent pair and G1-NAME-001 fires exactly when it finds one,
+    which is the condition the inline loop tested."""
+    from enrichment.issue_detection import _overflow_slots
+    cases = [
+        {"Name 1": "University of Florida"},
+        {"Name 1": "Univ of Florida", "Name 2": "and Materials Science"},
+        {"Name 1": "Coastal Holdings Inc", "Name 2": "and Marine"},   # legal suffix closes it
+        {"Name 1": "University of Florida", "Name 2": "Sch of Chemical Engineering &",
+         "Name 3": "and Materials Science"},
+        {"Name 1": "University of Florida", "Name 2": "Department of Chemistry"},
+        # Head arm.
+        {"Name 1": "University of Florida", "Name 2": "Dept of Chemical Engineering &",
+         "Name 3": "Materials Science"},
+        {"Name 1": "Univ of Florida College of", "Name 2": "Engineering"},
+        {"Name 1": "Orlando Health Emergency Room and", "Name 2": "Medical Pavilion"},
+        # Tail arm, previously dead.
+        {"Name 1": "University of Florida", "Name 2": "Dept of Chemical Engineering",
+         "Name 3": "& Materials Science"},
+        # Neither arm.
+        {"Name 1": "University of Florida", "Name 2": "Dept of Chemical Engineering",
+         "Name 3": "Materials Science"},
+        {"Name 1": "Andover Medical Center", "Name 2": "Radiology"},
+        {"Name 1": "Bruker BioSpin", "Name 2": ""},
+    ]
+    for fields in cases:
+        rec = _record(**fields)
+        assert ("G1-NAME-001" in detect_issues(rec)) == bool(_overflow_slots(rec)), fields
+
+
+def test_overflow_slots_returns_both_halves_of_the_pair():
+    from enrichment.issue_detection import _overflow_slots
+    rec = _record(**{
+        "Name 1": "University of Florida",
+        "Name 2": "Sch of Chemical Engineering &",
+        "Name 3": "and Materials Science",
+    })
+    assert _overflow_slots(rec) == {"name_2", "name_3"}
+
+
+@pytest.mark.parametrize("fields", [
+    # Head arm — the upper slot trails off on a connector. The tail starts with
+    # a capital in every one of these, which is why the tail arm alone missed
+    # them.
+    {"Name 2": "Dept of Chemical Engineering &", "Name 3": "Materials Science"},
+    {"Name 1": "Univ of Florida College of", "Name 2": "Engineering"},
+    {"Name 1": "Orlando Health Emergency Room and", "Name 2": "Medical Pavilion"},
+    # A trailing period does not close a dangling connector.
+    {"Name 1": "Univ of Florida College of.", "Name 2": "Engineering"},
+    # Upper-cased block: the head arm is case-insensitive.
+    {"Name 1": "ORLANDO HEALTH EMERGENCY ROOM AND", "Name 2": "MEDICAL PAVILION"},
+    # A legal suffix does not close a value that ends mid-phrase.
+    {"Name 1": "Acme Corp &", "Name 2": "Sons"},
+    # Tail arm on a bare ampersand — dead until the \b was removed from the
+    # symbol branch.
+    {"Name 2": "Dept of Chemical Engineering", "Name 3": "& Materials Science"},
+])
+def test_g1_name_001_fires_on_a_seam_at_either_end(fields):
+    assert "G1-NAME-001" in detect_issues(_record(**fields))
+
+
+@pytest.mark.parametrize("fields", [
+    # No connector at either end.
+    {"Name 2": "Dept of Chemical Engineering", "Name 3": "Materials Science"},
+    # "Andover" must not be read as "and" — the word connectors keep their \b.
+    {"Name 1": "Andover Medical Center", "Name 2": "Radiology"},
+    # A pair needs two populated slots.
+    {"Name 1": "Bruker BioSpin", "Name 2": ""},
+    # Words that merely CONTAIN a connector.
+    {"Name 1": "Cabinet Systems Group", "Name 2": "Fabrication"},
+    {"Name 1": "Theodore Roosevelt Institute", "Name 2": "Neurology"},
+])
+def test_g1_name_001_does_not_fire_without_a_seam(fields):
+    assert "G1-NAME-001" not in detect_issues(_record(**fields))
+
+
+@pytest.mark.parametrize("name2", [
+    "accountspayable@calstatela.edu",   # opens lowercase — the [a-z] branch
+    "ap-einvoice@uthscsa.edu",
+    "c/o Jane Smith",
+    "attn: Accounts Payable",
+    "www.calstate.edu",
+    "tel 555 123 4567",
+])
+def test_g1_name_001_does_not_read_contact_content_as_a_continuation(name2):
+    """An email in Name 2 opens lowercase, which satisfied the tail arm's
+    ``[a-z]`` branch. It is not the second half of an organisation name — it
+    is contact content in a name field, which G1-CROSS-003 already reports."""
+    rec = _record(**{"Name 1": "California State University LA", "Name 2": name2})
+    issues = detect_issues(rec)
+    assert "G1-NAME-001" not in issues
+    assert "G1-CROSS-003" in issues
+
+
+def test_g1_name_001_tail_arm_still_fires_on_a_real_continuation():
+    rec = _record(**{
+        "Name 1": "Orlando Health Emergency Room", "Name 2": "and Medical Pavilion",
+    })
+    assert "G1-NAME-001" in detect_issues(_record(**{
+        "Name 1": "Orlando Health Emergency Room", "Name 2": "and Medical Pavilion",
+    }))
+    assert "G1-CROSS-003" not in detect_issues(rec)
+
+
+def test_the_contact_exclusion_is_tail_arm_only():
+    """The head arm is unaffected: if the upper slot trails off on a connector
+    the pair is a split value regardless of what landed in the slot below."""
+    rec = _record(**{"Name 1": "Coastal Marine Inc &", "Name 2": "c/o Jane Smith"})
+    issues = detect_issues(rec)
+    assert "G1-NAME-001" in issues
+    assert "G1-CROSS-003" in issues
+
+
+def test_g1_cross_003_and_the_tail_arm_ask_the_same_question():
+    """Both read ``_is_contact_content``, so a value cannot be contact content
+    for one rule and name content for the other."""
+    from enrichment.issue_detection import _is_contact_content
+    for value in ("jane@acme.com", "c/o Jane Smith", "ATTN: AP", "www.acme.com"):
+        rec = _record(**{"Name 1": "Coastal Marine Inc", "Name 2": value})
+        assert _is_contact_content(value), value
+        assert "G1-CROSS-003" in detect_issues(rec), value
+        assert "G1-NAME-001" not in detect_issues(rec), value
+
+
+def test_g5_does_not_judge_a_head_arm_half_value():
+    """Step J's suppression applies to both arms. These are the shapes that
+    motivated it: the head trails off, so neither half is a whole name."""
+    rec = _record(**{
+        "Name 1": "University of Florida",
+        "Name 2": "Dept of Chemical Engineering &",
+        "Name 3": "Materials Science",
+    })
+    issues = detect_issues(rec)
+    assert "G1-NAME-001" in issues
+    assert "G5-NAME-002" not in issues
+
+    rec = _record(**{
+        "Name 1": "University of Florida",
+        "Name 2": "Sch of Chemical Engineering &",
+        "Name 3": "Materials Science",
+    })
+    issues = detect_issues(rec)
+    assert "G1-NAME-001" in issues
+    assert "G5-NAME-002" not in issues
+
+    rec = _record(**{"Name 1": "Univ of Florida College of", "Name 2": "Engineering"})
+    issues = detect_issues(rec)
+    assert "G1-NAME-001" in issues
+    assert "G5-NAME-001" not in issues
+
+
+def test_g5_name_002_does_not_judge_the_form_of_half_a_value():
+    """"Sch of Chemical Engineering &" is not a name in a non-official form,
+    it is half of a name. G1-NAME-001 reports the overflow; G5 has no question
+    to ask of a fragment."""
+    rec = _record(**{
+        "Name 1": "University of Florida",
+        "Name 2": "Sch of Chemical Engineering &",
+        "Name 3": "and Materials Science",
+    })
+    issues = detect_issues(rec)
+    assert "G1-NAME-001" in issues
+    assert "G5-NAME-002" not in issues
+
+
+def test_g5_name_002_judges_the_form_when_there_is_no_overflow():
+    """The same Name 2 with a tail that does not read as a continuation: no
+    pair, so the slot holds a whole value and its form is judged."""
+    rec = _record(**{
+        "Name 1": "University of Florida",
+        "Name 2": "Sch of Chemical Engineering",
+        "Name 3": "Materials Science",
+    })
+    issues = detect_issues(rec)
+    assert "G1-NAME-001" not in issues
+    assert "G5-NAME-002" in issues
+
+
+def test_g5_name_002_judges_the_rejoined_value_on_the_enriched_side():
+    """What the enriched-side run sees after UC 0 has rejoined the halves: one
+    populated slot, no overflow pair, and the abbreviation in the joined text
+    surfaces exactly as it should."""
+    rec = _record(**{
+        "Name 1": "University of Florida",
+        "Name 2": "Sch of Chemical Engineering & Materials Science",
+    })
+    issues = detect_issues(rec)
+    assert "G1-NAME-001" not in issues
+    assert "G5-NAME-002" in issues
+
+
+def test_g5_name_001_does_not_judge_name_1_when_it_is_an_overflow_head():
+    """Name 1 follows the same rule when it is the head of an overflow into
+    Name 2."""
+    rec = _record(**{"Name 1": "Univ of Florida College of", "Name 2": "and Engineering"})
+    issues = detect_issues(rec)
+    assert "G1-NAME-001" in issues
+    assert "G5-NAME-001" not in issues
+
+
+def test_g5_skips_only_the_overflow_slots_not_the_whole_block():
+    """An overflow lower in the block does not silence G5 on a slot that is
+    not part of it: Name 2 is a whole value and is judged."""
+    rec = _record(**{
+        "Name 1": "University of Florida",
+        "Name 2": "Sch of Medicine",
+        "Name 3": "Center for Advanced Study &",
+        "Name 4": "and Applied Research",
+    })
+    issues = detect_issues(rec)
+    assert "G1-NAME-001" in issues
+    assert "G5-NAME-002" in issues
 
 
 def test_g5_name_002_unit_not_official():
