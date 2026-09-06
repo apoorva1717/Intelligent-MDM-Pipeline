@@ -62,8 +62,9 @@ Counts — all derived from the source below, never asserted
   until it was withdrawn, and no entry carries it now.
 
 Origin breakdown of the 31 live quality codes derived from record CONTENT:
-8 DS-only, 17 API-only, 6 BOTH. The BOTH count grew on 2026-09-06: three codes
-that had only a content detector gained a ``Flag Codes`` path as well.
+8 DS-only, 16 API-only, 7 BOTH. The BOTH count grew across the 2026-09-06/07
+rework: four codes that had only a content detector gained a ``Flag Codes``
+path as well.
 
 Three live codes are derived from enrichment OUTPUT and can never fire on a raw
 input file (``raised="enriched"``) — ``G3-NAME-006``, ``G6-CONFIRM-001`` and
@@ -73,11 +74,9 @@ record, which is what lets the same rule set run over a raw file and an
 enriched one and makes the count delta meaningful.
 
 Four codes are ``raised="both"``: ``G1-NAME-013``, ``G3-CONTACT-007``,
-``G3-CONTACT-010`` and ``G4-NAME-015``. The first three have a content detector
-*and* a flag in ``FLAG_CODE_ISSUES`` that maps onto them; ``G4-NAME-015``'s
-second path is ``overflow``, still in ``UNMAPPED_FLAG_CODES``.
-``detect_issues`` accumulates into a set, so a record that trips both paths
-reports the code once.
+``G3-CONTACT-010`` and ``G4-NAME-015``. Each has a content detector *and* a
+flag in ``FLAG_CODE_ISSUES`` that maps onto it. ``detect_issues`` accumulates
+into a set, so a record that trips both paths reports the code once.
 ``detect_issues`` emits every origin by default — including DS-only codes — for
 the reason documented on that function; pass ``origins=("API", "BOTH")`` for a
 DATAshaper-facing feed that must not duplicate a native DS rule.
@@ -345,7 +344,7 @@ ISSUE_CATALOGUE: dict[str, IssueDefinition] = dict([
     # v2 names this "Name Overflow Beyond Name 4". The name block is five slots
     # wide as of the five-name-slot change, so the slot-agnostic wording is kept
     # here and the divergence is reported for a Notion correction.
-    _d("G4-NAME-015", "G4", "Name Overflow Beyond the Name Block", "Name 4", True, "API", "both", "steward"),
+    _d("G4-NAME-015", "G4", "Name Overflow Beyond the Name Block", "Name 4", True, "BOTH", "both", "steward"),
     _d(
         "G4-ADDR-008", "G4", "Bare Sub-location Marker Without Value", "Street 2", False, "API",
         status="withdrawn",
@@ -1504,11 +1503,11 @@ def flag_for_review_is_set(value: object) -> bool:
 #: :func:`provenance_is_low`), because a file exported before that change has
 #: the state in the provenance column and nowhere else.
 #:
-#: Five flag codes map to NOTHING, and each is a decision:
+#: Four flag codes map to NOTHING, and each is a decision:
 #:
-#: * ``overflow`` and ``name3-not-demoted`` are already reported as
-#:   ``G1-NAME-001`` and ``G4-NAME-015`` from the record's own content, so
-#:   raising them again from the flag would count one defect twice;
+#: * ``name3-not-demoted`` is already reported as ``G4-NAME-015`` from the
+#:   record's own content, so raising it again from the flag would count one
+#:   defect twice;
 #: * ``registry-location-mismatch`` is advisory in the pipeline
 #:   (``enrichment.flags.ADVISORY_CODES``) — a registered address differing
 #:   from an operating site is ordinary and asks nobody for anything — and a
@@ -1545,6 +1544,21 @@ FLAG_CODE_ISSUES: dict[str, str] = {
     "dept-via-lab": "G6-CONFIRM-001",
     "dept-via-contact": "G6-CONFIRM-001",
     "relocated-unverified": "G6-CONFIRM-001",
+    # A name that does not fit the block it has to ship in. Both routes to
+    # G4-NAME-015 are real and they test different things:
+    #
+    #   content — the combined name block is longer than the SAP 140-char
+    #             limit, measured on the record as it stands;
+    #   flag    — UC 0 repacked the name block and had to DROP what would not
+    #             fit, or preprocessing found every slot already full. That is
+    #             the post-repack block, which no raw-side rule can see.
+    #
+    # Two paths to one defect, and `detect_issues` accumulates into a set, so
+    # a record that trips both reports the code once. (`overflow` has a second
+    # raise site — a value split across adjacent slots, scoped to that pair —
+    # and that shape is reported from content as G1-NAME-001. One token maps
+    # to one code, and the code it maps to is the one the token is named for.)
+    "overflow": "G4-NAME-015",
     # The pipeline could not establish the value at all.
     "low-confidence-unchanged": "G7-UNCHANGED-001",
     "no-match": "G7-UNCHANGED-001",
@@ -1557,7 +1571,6 @@ FLAG_CODE_ISSUES: dict[str, str] = {
 #: mapped above or named here, and never silently neither. The reasons are in
 #: the comment on :data:`FLAG_CODE_ISSUES`.
 UNMAPPED_FLAG_CODES: frozenset[str] = frozenset({
-    "overflow",
     "name3-not-demoted",
     "registry-location-mismatch",
     "entity-superseded",

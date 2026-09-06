@@ -369,27 +369,34 @@ class TestEveryFlagCodeIsAccountedFor:
         assert set(flags.ALL_CODES) <= mapped | UNMAPPED_FLAG_CODES
         assert not mapped & UNMAPPED_FLAG_CODES
 
-    def test_the_unmapped_five_are_the_declared_five(self):
+    def test_the_unmapped_four_are_the_declared_four(self):
         """Named individually so that dropping one out of the queue is an
         edit to this list and not a side effect. The reasons are on
-        `FLAG_CODE_ISSUES`: two are already reported from record content,
+        `FLAG_CODE_ISSUES`: one is already reported from record content,
         one is advisory in the pipeline, and two ask a business question no
-        catalogue code carries the meaning for."""
+        catalogue code carries the meaning for.
+
+        `overflow` was the fifth until 2026-09-07. It left because the
+        premise had been wrong: it was held out as a duplicate of a content
+        rule, but the flag reports the name block AFTER UC 0 repacked it,
+        which no raw-side rule can see.
+        """
         assert UNMAPPED_FLAG_CODES == {
-            flags.OVERFLOW,
             flags.NAME3_NOT_DEMOTED,
             flags.REGISTRY_LOCATION_MISMATCH,
             flags.ENTITY_SUPERSEDED,
             flags.SOURCE_CONFLICT,
         }
+        assert flags.OVERFLOW not in UNMAPPED_FLAG_CODES
+        assert FLAG_CODE_ISSUES[flags.OVERFLOW] == "G4-NAME-015"
 
-    def test_the_six_catalogue_codes_are_the_whole_image(self):
+    def test_the_seven_catalogue_codes_are_the_whole_image(self):
         """The image was one bucket per kind of doubt until 2026-09-06, when
         the "could not resolve" bucket was dissolved and its four flags were
-        pointed at the code for the defect each actually names. Three of those
-        codes have a content detector as well; `G3-NAME-006` is reachable
-        only from here."""
+        pointed at the code for the defect each actually names; `overflow`
+        joined them on 2026-09-07. Four of the seven have a content detector
+        as well; `G3-NAME-006` is reachable only from here."""
         assert set(FLAG_CODE_ISSUES.values()) == {
             "G1-NAME-013", "G3-CONTACT-007", "G3-CONTACT-010", "G3-NAME-006",
-            "G6-CONFIRM-001", "G7-UNCHANGED-001",
+            "G4-NAME-015", "G6-CONFIRM-001", "G7-UNCHANGED-001",
         }

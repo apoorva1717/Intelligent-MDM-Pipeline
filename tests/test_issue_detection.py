@@ -135,7 +135,7 @@ def test_mandatory_maps_to_datashaper_severity():
 def test_origin_breakdown_of_live_quality_codes():
     """Catalogue v2 recorded 11 DS-only / 21 API-only / 2 BOTH over its 34 live
     G1-G6 codes. The gap against v2 is the 2026-09-06 rework and must stay
-    visible: four withdrawals off the live count, two codes added, and three
+    visible: four withdrawals off the live count, two codes added, and four
     codes moved from API to BOTH when a ``Flag Codes`` path was mapped onto a
     detector that already existed.
 
@@ -153,7 +153,7 @@ def test_origin_breakdown_of_live_quality_codes():
         and e.raised != "enriched"
     ]
     assert len(live_quality) == 31
-    assert Counter(e.origin for e in live_quality) == {"DS": 8, "API": 17, "BOTH": 6}
+    assert Counter(e.origin for e in live_quality) == {"DS": 8, "API": 16, "BOTH": 7}
 
 
 def test_the_group_constants_are_labels_not_metric_rules():
@@ -1296,9 +1296,12 @@ def test_flag_derived_codes_absent_from_a_raw_input_audit():
 
 def test_an_unmapped_flag_code_raises_nothing():
     """The pipeline's vocabulary is larger than the reviewer-facing catalogue.
-    `overflow` is already reported as G1-NAME-001 from the record's own
-    content; reporting it again from the flag would double-count it."""
-    assert detect_issues(_record(), flag_codes=["overflow", "not-a-code"]) == []
+    `name3-not-demoted` is already reported as G4-NAME-015 from the record's
+    own content; reporting it again from the flag would double-count it. A
+    token this module has never been taught raises nothing either."""
+    assert detect_issues(
+        _record(), flag_codes=["name3-not-demoted", "not-a-code"],
+    ) == []
 
 
 @pytest.mark.parametrize("cell,expected", [
