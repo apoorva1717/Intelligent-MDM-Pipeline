@@ -59,24 +59,36 @@ def test_catalogue_declares_41_entries():
 
 
 def test_status_counts_match_catalogue_v2():
-    """37 live, 2 withdrawn, 1 not-deterministically-detectable, 1 unlisted.
+    """33 live, 7 withdrawn, 1 unlisted, and nothing left marked ``ndd``.
 
     Catalogue v2 declared 34 live. The three added since are the flag-derived
     codes — G6-RESOLVE-001, G7-CONFIRM-001, G8-VERIFY-001 — which report the
-    pipeline's own review flags rather than record content.
+    pipeline's own review flags rather than record content; five entries were
+    withdrawn on 2026-09-06, which is where the rest of the difference is.
     """
     from collections import Counter
 
     counts = Counter(entry.status for entry in ISSUE_CATALOGUE.values())
-    assert counts == {"live": 37, "withdrawn": 2, "ndd": 1, "unlisted": 1}
+    assert counts == {"live": 33, "withdrawn": 7, "unlisted": 1}
 
 
 def test_withdrawn_codes_are_declared_but_never_emitted():
-    """Catalogue v2 strikes both through. They stay declared for the audit
-    trail — retaining them marked withdrawn records that they existed and
-    why — but nothing may emit them."""
-    for code in ("G2-CONTACT-008", "G2-CONTACT-009"):
+    """Withdrawn entries stay declared for the audit trail — retaining them
+    records that they existed and why — but nothing may emit them.
+
+    The first two are struck through in Catalogue v2. The other five were
+    withdrawn on 2026-09-06: a rule no deterministic detector can express, one
+    that fired on nothing in 500 records, two required-field rules over fields
+    outside master-data scope, and a routing code now carried by group
+    membership.
+    """
+    for code in (
+        "G2-CONTACT-008", "G2-CONTACT-009",
+        "G1-ADDR-009", "G4-ADDR-025", "G2-VAL-003", "G2-VAL-006",
+        "G7-VERIFY-001",
+    ):
         assert ISSUE_CATALOGUE[code].status == "withdrawn"
+        assert ISSUE_CATALOGUE[code].reason
         assert code not in EMITTED_CODES
 
 
@@ -109,16 +121,15 @@ def test_mandatory_maps_to_datashaper_severity():
 
 
 def test_origin_breakdown_of_live_quality_codes():
-    """Catalogue v2 records 11 DS-only / 21 API-only / 2 BOTH over its 34 live
-    G1-G6 codes. G1-ADDR-009 is API in v2 but ``ndd`` here, so the API figure
-    is 20 against a live set of 33 — the one-code difference *is* the 9g
-    resolution and must stay visible.
+    """Catalogue v2 recorded 11 DS-only / 21 API-only / 2 BOTH over its 34 live
+    G1-G6 codes. Three of those are now withdrawn — G1-ADDR-009 and
+    G4-ADDR-025 (API), G2-VAL-003 and G2-VAL-006 (DS), less G1-ADDR-009 which
+    was already ``ndd`` and outside the live count — leaving 9 / 19 / 2 over 30.
+    The gap against v2 is the withdrawal, and must stay visible.
 
     The census is over the codes derived from record CONTENT, which is what v2
     counted. G6-RESOLVE-001 is a live quality code too, and is excluded here
-    because including it would move this to 34/21 — numerically identical to
-    the v2 figures, which is precisely the signal this test exists to keep
-    visible.
+    because including it would blur that comparison.
     """
     from collections import Counter
 
@@ -129,9 +140,8 @@ def test_origin_breakdown_of_live_quality_codes():
         and e.group in QUALITY_GROUPS
         and e.code not in flag_derived
     ]
-    assert len(live_quality) == 33
-    assert Counter(e.origin for e in live_quality) == {"DS": 11, "API": 20, "BOTH": 2}
-    assert ISSUE_CATALOGUE["G1-ADDR-009"].status == "ndd"
+    assert len(live_quality) == 30
+    assert Counter(e.origin for e in live_quality) == {"DS": 9, "API": 19, "BOTH": 2}
 
 
 def test_reduction_groups_exclude_g6_g7_and_g8():
@@ -298,13 +308,15 @@ def test_g1_name_013_sap_code_in_name():
     assert "G1-NAME-013" in detect_issues(_record(**{"Name 2": "B800000345"}))
 
 
-def test_g1_addr_009_is_not_deterministically_detectable():
-    """Live in Catalogue v2 but marked ``ndd`` here: "unclassifiable" is the
-    complement of every classifier, so no deterministic rule expresses it.
-    The catalogue must carry the reason rather than silently claim coverage."""
+def test_g1_addr_009_is_withdrawn():
+    """Live in Catalogue v2 and marked ``ndd`` here for as long as the entry
+    claimed a rule: "unclassifiable" is the complement of every classifier, so
+    no deterministic rule expresses it and none was ever written. A code that
+    can never fire is not a rule, so it is withdrawn rather than carried as a
+    permanent gap."""
     rec = _record(**{"Street 2": "Loading Dock - East Side"})
     assert "G1-ADDR-009" not in detect_issues(rec)
-    assert ISSUE_CATALOGUE["G1-ADDR-009"].status == "ndd"
+    assert ISSUE_CATALOGUE["G1-ADDR-009"].status == "withdrawn"
     assert ISSUE_CATALOGUE["G1-ADDR-009"].reason
 
 
@@ -315,9 +327,7 @@ def test_g1_addr_009_is_not_deterministically_detectable():
 @pytest.mark.parametrize("field,code", [
     ("Name 1", "G2-VAL-001"),
     ("Postal Code", "G2-VAL-002"),
-    ("Tax Jurisdiction", "G2-VAL-003"),
     ("Region", "G2-VAL-004"),          # baseline record is US
-    ("Language Key", "G2-VAL-006"),
     ("Search Term 1", "G2-VAL-007"),
     ("Country/Region Key", "G2-VAL-008"),
 ])
@@ -513,26 +523,16 @@ def test_g4_addr_027_iso2_country_is_clean():
     assert "G4-ADDR-027" not in detect_issues(_record(**{"Country/Region Key": "US"}))
 
 
-def test_g4_addr_025_sublocation_overflow_beyond_street_5():
-    """Five distinct sub-locations, four slots (Street 2..5) — one over."""
+def test_g4_addr_025_is_withdrawn_and_never_fires():
+    """The record that used to raise it — five distinct sub-locations against
+    the four slots Street 2..5 offers — now raises nothing.
+
+    The rule was withdrawn on the evidence: no record in 500 carried more than
+    four, and the spill a name block genuinely overruns is reported by the
+    `overflow` flag instead."""
     rec = _record(**{
         "Street 2": "Bldg 4 Floor 3 Suite 9 Room 5",
         "Street 3": "Mail Stop 12",
-    })
-    assert "G4-ADDR-025" in detect_issues(rec)
-
-
-def test_g4_addr_025_not_raised_when_sublocations_fit():
-    """Four sub-locations fit Street 2..5 exactly and must not overflow."""
-    rec = _record(**{"Street 2": "Bldg 4 Floor 3 Suite 9 Room 5"})
-    assert "G4-ADDR-025" not in detect_issues(rec)
-
-
-def test_g4_addr_025_repeated_sublocation_counts_once():
-    """The same (kind, value) repeated across slots needs one slot, not two."""
-    rec = _record(**{
-        "Street 2": "Suite 400", "Street 3": "Suite 400", "Street 4": "Suite 400",
-        "Street 5": "Suite 400",
     })
     assert "G4-ADDR-025" not in detect_issues(rec)
 
@@ -593,14 +593,18 @@ def test_multiple_issues_all_reported():
 # G7 — Verification Required (enriched-record path only)
 # ---------------------------------------------------------------------------
 
-def test_g7_fires_when_the_enriched_record_is_flagged():
-    assert "G7-VERIFY-001" in detect_issues(_record(), flag_for_review=True)
+def test_g7_verify_is_withdrawn_and_a_flagged_record_no_longer_raises_it():
+    """``flag_for_review`` is still accepted — the API passes it — but no
+    detector reads it. Routing a record to a steward is carried by group
+    membership now, so the one code the boolean drove is withdrawn."""
+    assert "G7-VERIFY-001" not in detect_issues(_record(), flag_for_review=True)
+    assert ISSUE_CATALOGUE["G7-VERIFY-001"].status == "withdrawn"
 
 
 def test_g7_absent_from_a_raw_input_audit():
-    """G7 is derived from enrichment *output*, not record content. A raw input
-    record has no Flag for Review column, so ``flag_for_review`` is None and
-    the code can never be raised — whatever the record contains."""
+    """G7 was derived from enrichment *output*, not record content. A raw input
+    record has no Flag for Review column, so ``flag_for_review`` is None; since
+    the withdrawal the code cannot be raised on any input at all."""
     dirty = _record(**{
         "Name 1": "", "Name 2": "10901 Roosevelt Blvd N", "Postal Code": "",
         "Street 1": "PO BOX 115350", "Contact": "Dr. Jane Smith; Prof. Bob Lee",
@@ -753,14 +757,15 @@ def test_ds_only_codes_are_suppressed_for_a_datashaper_facing_feed():
     assert all(ISSUE_CATALOGUE[c].origin in ("API", "BOTH") for c in issues)
 
 
-def test_the_eleven_ds_only_live_codes_are_exactly_catalogue_v2s():
+def test_the_ds_only_live_codes_are_catalogue_v2s_less_the_withdrawn():
+    """Catalogue v2's eleven, minus G2-VAL-003 and G2-VAL-006."""
     ds_only = sorted(
         code for code, e in ISSUE_CATALOGUE.items()
         if e.origin == "DS" and e.status == "live" and e.group in QUALITY_GROUPS
     )
     assert ds_only == [
-        "G1-ADDR-001", "G2-NAME-012", "G2-VAL-001", "G2-VAL-002", "G2-VAL-003",
-        "G2-VAL-004", "G2-VAL-006", "G2-VAL-007", "G2-VAL-008", "G4-ADDR-026",
+        "G1-ADDR-001", "G2-NAME-012", "G2-VAL-001", "G2-VAL-002",
+        "G2-VAL-004", "G2-VAL-007", "G2-VAL-008", "G4-ADDR-026",
         "G4-ADDR-027",
     ]
 

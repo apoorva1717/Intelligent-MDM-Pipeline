@@ -22,7 +22,7 @@ carrying ``group``, ``name``, ``field``, ``mandatory``, ``origin``, ``status``
 and ``reason``. Two consequences worth stating outright:
 
 * **The group is an attribute, not a prefix.** Catalogue v2's G6 ("Not
-  Resolvable by Enrichment") is a *regrouping* of four codes that keep their
+  Resolvable by Enrichment") is a *regrouping* of codes that keep their
   original ``G2-`` identifiers, so ``code.split("-")[0]`` is no longer a group.
   Read ``ISSUE_CATALOGUE[code].group`` (or ``issue_group(code)``).
 * **``mandatory`` is the DATAshaper severity.** ``True`` blocks the SAP load
@@ -32,27 +32,28 @@ and ``reason``. Two consequences worth stating outright:
 Counts — all derived from the source below, never asserted
 ----------------------------------------------------------
 * **41 declared** catalogue entries.
-* **37 live** — emitted by this detector. 34 of them are quality issues
-  (G1-G6) and three are verification codes (G7, G8).
+* **33 live** — emitted by this detector. 31 of them are quality issues
+  (G1-G6) and two are verification codes (G7, G8).
 * **1 unlisted** — ``G3-ADDR-012``, emitted here but absent from Catalogue v2,
   left unchanged pending a human decision.
-* **38 deterministically emitted** = the 37 live plus the unlisted one; this is
+* **34 deterministically emitted** = the 33 live plus the unlisted one; this is
   ``EMITTED_CODES``.
-* **2 withdrawn** — ``G2-CONTACT-008``, ``G2-CONTACT-009``. Struck through in
-  Catalogue v2; declared here for the audit trail, never emitted.
-* **1 not deterministically detectable** — ``G1-ADDR-009``. Live in Catalogue v2
-  but no deterministic rule can express it; see the entry's ``reason``.
+* **7 withdrawn** — ``G2-CONTACT-008`` and ``G2-CONTACT-009``, struck through
+  in Catalogue v2, plus the five withdrawn on 2026-09-06: ``G1-ADDR-009``,
+  ``G4-ADDR-025``, ``G2-VAL-003``, ``G2-VAL-006`` and ``G7-VERIFY-001``. All
+  are declared here for the audit trail and never emitted; each carries its
+  ``reason``.
+* **0 not deterministically detectable** — ``G1-ADDR-009`` held this status
+  until it was withdrawn, and no entry carries it now.
 
-Origin breakdown of the 33 live quality codes derived from record CONTENT:
-11 DS-only, 20 API-only, 2 BOTH (Catalogue v2's 21 API figure includes
-``G1-ADDR-009``, which is ``ndd`` here). ``G6-RESOLVE-001`` is the 34th live
-quality code and is outside that census: it post-dates v2 and is derived from
-enrichment output, not from content.
+Origin breakdown of the 30 live quality codes derived from record CONTENT:
+9 DS-only, 19 API-only, 2 BOTH. ``G6-RESOLVE-001`` is a live quality code too
+and is outside that census: it post-dates v2 and is derived from enrichment
+output, not from content.
 
-Four codes are derived from enrichment OUTPUT and can never fire on a raw
-input file — ``G7-VERIFY-001`` from ``Flag for Review``, and
-``G6-RESOLVE-001`` / ``G7-CONFIRM-001`` / ``G8-VERIFY-001`` from ``Flag
-Codes`` through ``FLAG_CODE_ISSUES``. Everything else is computed from the
+Three codes are derived from enrichment OUTPUT and can never fire on a raw
+input file — ``G6-RESOLVE-001`` / ``G7-CONFIRM-001`` / ``G8-VERIFY-001`` from
+``Flag Codes`` through ``FLAG_CODE_ISSUES``. Everything else is computed from the
 record, which is what lets the same rule set run over a raw file and an
 enriched one and makes the count delta meaningful.
 ``detect_issues`` emits every origin by default — including DS-only codes — for
@@ -62,7 +63,7 @@ DATAshaper-facing feed that must not duplicate a native DS rule.
 These figures are asserted against the source by
 ``tests/test_issue_detection.py::test_docstring_counts_match_the_catalogue``, so
 adding or retiring a code fails the suite until this docstring is updated. How
-many of the 35 actually fire on any given batch is a property of that data, not
+many of the 34 actually fire on any given batch is a property of that data, not
 of the rule set.
 
 Several G1-NAME / G2-NAME / G5 rules are inherently semantic; here they are
@@ -76,7 +77,8 @@ Declared limits — G5 misspellings
 form, so G5-NAME-001 is the right code for it, and no regex here will raise it.
 Detecting it means knowing that the string is a corruption of a real name, which
 is recognition against a body of world knowledge, not pattern matching — the
-same reason ``G1-ADDR-009`` is marked ``ndd``. Any deterministic proxy
+same reason ``G1-ADDR-009`` was marked ``ndd`` before it was withdrawn. Any
+deterministic proxy
 (edit-distance to a dictionary, vowel-cluster heuristics, "looks foreign") fires
 on correctly-spelled names and is a false-positive generator. The LLM layer owns
 this class: the enrichment pipeline resolves such a name through ROR/GLEIF and
@@ -120,7 +122,6 @@ from enrichment.address_processing import (
     _SUITE_PATTERNS,
     _UNIVERSITY_CENTRE_RE,
     _extract_mail_code,
-    _extract_sublocations,
     _is_identifier_like,
     _looks_like_department,
     _looks_like_street,
@@ -216,14 +217,8 @@ ISSUE_CATALOGUE: dict[str, IssueDefinition] = dict([
     _d("G1-NAME-013", "G1", "SAP Internal Code in Name Field", "Name 2", False, "API"),
     _d(
         "G1-ADDR-009", "G1", "Unclassified Residual in Address", "Street 2", False, "API",
-        status="ndd",
-        reason=(
-            "\"Unclassifiable\" is defined as the complement of every classifier the "
-            "pipeline runs, so no positive pattern can express it. Any deterministic "
-            "proxy (\"street text matching no known pattern\") fires on ordinary "
-            "unremarkable address lines and is a false-positive generator. The real "
-            "rule needs the LLM residual classifier, which /issues may not call."
-        ),
+        status="withdrawn",
+        reason="ndd, never emitted; residual classifier not called by /issues",
     ),
     # -- G2 — Missing Required Data ----------------------------------------
     _d("G2-VAL-002", "G2", "Postal Code Missing", "Postal Code", True, "DS"),
@@ -272,7 +267,11 @@ ISSUE_CATALOGUE: dict[str, IssueDefinition] = dict([
     # here and the divergence is reported for a Notion correction.
     _d("G4-NAME-015", "G4", "Name Overflow Beyond the Name Block", "Name 4", True, "API"),
     _d("G4-ADDR-008", "G4", "Bare Sub-location Marker Without Value", "Street 2", False, "API"),
-    _d("G4-ADDR-025", "G4", "Sub-location Overflow Beyond Street 5", "Street 5", False, "API"),
+    _d(
+        "G4-ADDR-025", "G4", "Sub-location Overflow Beyond Street 5", "Street 5", False, "API",
+        status="withdrawn",
+        reason=">4 sub-locations, 0/500 observed; `overflow` covers spill",
+    ),
     _d("G4-ADDR-026", "G4", "Postal Code Format Invalid", "Postal Code", False, "DS"),
     _d("G4-ADDR-027", "G4", "Country Code Not ISO 2-letter", "Country", True, "DS"),
     # -- G5 — Non-Standard Naming ------------------------------------------
@@ -283,8 +282,16 @@ ISSUE_CATALOGUE: dict[str, IssueDefinition] = dict([
     # identifiers. Expected to persist from raw to enriched — that persistence
     # is correct behaviour, not a pipeline failure.
     _d("G2-VAL-001", "G6", "Name 1 Missing", "Name 1", True, "DS"),
-    _d("G2-VAL-003", "G6", "Tax Jurisdiction Missing", "Tax Jurisdiction", True, "DS"),
-    _d("G2-VAL-006", "G6", "Language Missing", "Language", True, "DS"),
+    _d(
+        "G2-VAL-003", "G6", "Tax Jurisdiction Missing", "Tax Jurisdiction", True, "DS",
+        status="withdrawn",
+        reason="SAP-derived field, 65% blank, not master-data scope",
+    ),
+    _d(
+        "G2-VAL-006", "G6", "Language Missing", "Language", True, "DS",
+        status="withdrawn",
+        reason="99% populated, no defect class",
+    ),
     _d("G2-NAME-012", "G6", "Research Institution Missing Department", "Name 2", False, "DS"),
     # The one G6 code derived from enrichment OUTPUT rather than from record
     # content: the pipeline ran, could not resolve the record, and said so in
@@ -297,7 +304,12 @@ ISSUE_CATALOGUE: dict[str, IssueDefinition] = dict([
     # Not a quality issue: raised *by* successful enrichment so DATAshaper can
     # route the record to a steward through the Category dropdown. Reported
     # separately and never counted in the before/after reduction metric.
-    _d("G7-VERIFY-001", "G7", "Enriched Record Requires Verification", "Flag for Review", False, "API"),
+    _d(
+        "G7-VERIFY-001", "G7", "Enriched Record Requires Verification",
+        "Flag for Review", False, "API",
+        status="withdrawn",
+        reason="routing now carried by group membership (already decided 2026-09-02)",
+    ),
     # The value the pipeline WROTE, and what backs it. These three flags all
     # mark a value that is present and plausible and that no independent
     # source confirmed — a website nothing tied to the organisation, a name
@@ -355,10 +367,6 @@ def issue_group(code: str) -> str:
 # SAP name-field length limit (the whole name block combined).
 _SAP_NAME_LIMIT = 140
 
-# Street 2..5 — the slots a sub-location can be packed into once Street 1
-# holds the street proper. Anything beyond this overflows (G4-ADDR-025).
-_SUBLOCATION_SLOTS = 4
-
 # Required-field rules (G2-VAL family): EnrichmentRecord field -> issue code.
 # These are gated on column presence (see ``detect_issues``): a "missing"
 # rule fires only when the column exists in the file but is blank. When the
@@ -391,9 +399,7 @@ _SUBLOCATION_SLOTS = 4
 _REQUIRED_FIELD_CODES: list[tuple[str, str, Callable[[EnrichmentRecord], bool] | None]] = [
     ("name_1", "G2-VAL-001", None),
     ("postal_code", "G2-VAL-002", None),
-    ("tax_jurisdiction", "G2-VAL-003", None),
     ("region", "G2-VAL-004", None),
-    ("language_key", "G2-VAL-006", None),
     ("search_term_1", "G2-VAL-007", None),
     ("country_region_key", "G2-VAL-008", None),
 ]
@@ -990,26 +996,6 @@ def _detect_format(record: EnrichmentRecord, found: set[str]) -> None:
         if iso is None or raw.upper() != iso:
             found.add("G4-ADDR-027")
 
-    # G4-ADDR-025 — more sub-locations on the record than Street 2..5 can hold.
-    # Deterministic approximation of "too many sub-locations to fit Street 2-5":
-    # reuse the pipeline's own ``_extract_sublocations`` on every street line
-    # and compare the distinct (kind, value) count against the four slots
-    # available below Street 1. Going through the pipeline extractor rather
-    # than re-walking ``_SUITE_PATTERNS`` matters: it consumes each match as it
-    # goes, so overlapping patterns ("Bldg 4 Floor" matching both the building
-    # and the value-before-marker floor rule) cannot inflate the count.
-    # Counting distinct pairs rather than distinct kinds is what
-    # "sub-locations" means here — two different suites need two slots.
-    sublocations: set[tuple[str, str]] = set()
-    for st in _streets(record):
-        if not st:
-            continue
-        _remaining, extracted, _bare = _extract_sublocations(st)
-        for kind, value in extracted.items():
-            sublocations.add((kind, value.strip().lower()))
-    if len(sublocations) > _SUBLOCATION_SLOTS:
-        found.add("G4-ADDR-025")
-
 
 # ---------------------------------------------------------------------------
 # G5 — Non-Standard Naming
@@ -1031,7 +1017,7 @@ def _detect_naming(record: EnrichmentRecord, found: set[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# G7 — Verification Required (enriched-record path only)
+# `Flag for Review` — read by the API, no longer read by any detector
 # ---------------------------------------------------------------------------
 
 # Spreadsheet spellings of a true "Flag for Review" cell. Everything else —
@@ -1065,8 +1051,7 @@ def flag_for_review_is_set(value: object) -> bool:
 #:
 #: Every code here is derived from enrichment OUTPUT — it is read off the
 #: enriched file's ``Flag Codes`` column, never computed from record content —
-#: so none of the three can fire on a raw input audit. That is the same
-#: constraint ``G7-VERIFY-001`` carries and for the same reason.
+#: so none of the three can fire on a raw input audit.
 #:
 #: Both entries this table once carried for flags the pipeline did not emit
 #: as tokens — ``dept-via-contact`` and ``low-confidence-unchanged`` — are now
@@ -1193,10 +1178,10 @@ def _detect_enrichment_flags(
     """G6-RESOLVE-001 / G7-CONFIRM-001 / G8-VERIFY-001 — the catalogue codes
     derived from the pipeline's own review flags.
 
-    Like ``G7-VERIFY-001``, these cannot be computed from record content: they
-    report what enrichment concluded about a record it has already processed.
-    ``flag_codes`` is ``None`` for a raw audit (the file has no such column)
-    and none of the three can be raised there.
+    These cannot be computed from record content: they report what enrichment
+    concluded about a record it has already processed. ``flag_codes`` is
+    ``None`` for a raw audit (the file has no such column) and none of the
+    three can be raised there.
 
     A flag this table does not map raises nothing. The pipeline's vocabulary
     is larger than the reviewer-facing catalogue — ``overflow`` and
@@ -1208,20 +1193,6 @@ def _detect_enrichment_flags(
         issue = FLAG_CODE_ISSUES.get(code.strip().lower())
         if issue:
             found.add(issue)
-
-
-def _detect_verification(found: set[str], flag_for_review: bool | None) -> None:
-    """G7-VERIFY-001 — the one code derived from enrichment *output*.
-
-    Every other code in the catalogue is derived from record content, so it can
-    be computed on a raw input file and on an enriched file alike. This one
-    cannot: it fires when the pipeline set ``flag_for_review`` on the record it
-    produced, which a raw input record has no way to carry. ``flag_for_review``
-    is therefore ``None`` for a raw audit (no such column) and the code can
-    never be raised there.
-    """
-    if flag_for_review:
-        found.add("G7-VERIFY-001")
 
 
 # ---------------------------------------------------------------------------
@@ -1248,16 +1219,17 @@ def detect_issues(
     When ``None`` (the default) every field is assumed present — i.e. the
     record is audited in isolation.
 
-    *flag_for_review* carries the enriched record's ``Flag for Review`` value
-    and drives ``G7-VERIFY-001``. Leave it ``None`` (the default) when auditing
-    raw input: G7 is raised *by* successful enrichment, never by record
-    content, so a raw audit must never produce it.
+    *flag_for_review* carries the enriched record's ``Flag for Review`` value.
+    No detector reads it: ``G7-VERIFY-001``, the one code it drove, is
+    withdrawn — routing a record to a steward is carried by group membership
+    now. The parameter stays because the API still passes it and because the
+    column remains the natural place for a future rule to read that state.
 
     *flag_codes* carries the enriched record's ``Flag Codes`` and drives
     ``G6-RESOLVE-001``, ``G7-CONFIRM-001`` and ``G8-VERIFY-001`` through
-    :data:`FLAG_CODE_ISSUES`. ``None`` for the same reason and with the same
-    force as *flag_for_review*: a raw input file carries no such column and
-    none of the three can be raised from record content. The caller supplies
+    :data:`FLAG_CODE_ISSUES`. Leave it ``None`` (the default) when auditing
+    raw input: a raw file carries no such column and none of the three can be
+    raised from record content. The caller supplies
     ``low-confidence-unchanged`` itself, from the provenance columns — the
     token was retired and the state it named now lives there (see
     :func:`provenance_is_low`).
@@ -1279,7 +1251,6 @@ def detect_issues(
     _detect_format(record, found)
     _detect_naming(record, found)
     _detect_enrichment_flags(found, flag_codes)
-    _detect_verification(found, flag_for_review)
 
     if origins is not None:
         allowed = set(origins)

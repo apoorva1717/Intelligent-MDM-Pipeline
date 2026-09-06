@@ -187,9 +187,11 @@ def _flag_for_review(row: dict[str, str], headers: list[str]) -> bool | None:
     such column.
 
     ``None`` and ``False`` are not interchangeable here: ``None`` means "this
-    is a raw input file, G7 cannot apply", while ``False`` means "this is an
-    enriched file and the pipeline did not flag this record". Both suppress
-    G7-VERIFY-001, but only ``None`` says the question was never asked.
+    is a raw input file, the question does not apply", while ``False`` means
+    "this is an enriched file and the pipeline did not flag this record".
+    G7-VERIFY-001, the code this used to drive, is withdrawn; the value is
+    still read and still passed to ``detect_issues``, which no longer acts
+    on it.
     """
     for header in headers:
         if _norm_header(header) == _norm_header("Flag for Review"):
@@ -810,55 +812,30 @@ async def enrich_file(
     )
 
 
-# Codes withheld from the ``/issues`` audit column.
-#
-# The three G2- codes are all G6 ("Not Resolvable by Enrichment") despite their
-# identifiers: DS-origin rules that no automated path resolves, so they persist
-# from raw to enriched by design and crowd the column without telling a
-# reviewer anything actionable. G7-VERIFY-001 is not a quality issue at all: it
-# is raised *by* successful enrichment to route a record to a steward, so it
-# does not belong in a column that reads as a defect list.
-#
-# The detector still raises all four, and ``/issues/compare`` still reports
-# them in its "Expected to persist" and "Verification" segments; only the
-# standalone audit column drops them.
-#
-# The four flag-derived codes are NOT withheld, G6-RESOLVE-001 and
-# G7-CONFIRM-001 / G8-VERIFY-001 included. G7-VERIFY-001 is dropped because it
-# says only "this record was flagged" — the boolean is already its own column
-# and repeating it in a defect list tells a reviewer nothing they can act on.
-# These three say WHICH doubt, out of three that ask for different work:
-# supply a value nothing can resolve (G6), confirm a value the pipeline wrote
-# (G7), or establish one it could not (G8). That is a triage instruction, and
-# the column is where a reviewer reads it.
-_ISSUES_SUPPRESSED_CODES: frozenset[str] = frozenset(
-    {"G2-VAL-003", "G2-VAL-006", "G2-NAME-012", "G7-VERIFY-001"}
-)
-
-
 def _audit_rows(
     headers: list[str], row_dicts: list[dict[str, str]]
 ) -> tuple[list[EnrichmentRecord], list[list[str]]]:
     """Validate a parsed sheet and detect the audit issue codes for each row.
 
     The one detection path behind both ``/issues`` and ``/issues/json``: same
-    column-awareness, same ``Flag for Review`` and ``Flag Codes`` handling,
-    same suppression set, so the two representations of the audit cannot drift
-    apart. The validated records come back with the codes because the JSON
-    response keys on ``record.record_id``.
+    column-awareness, same ``Flag for Review`` and ``Flag Codes`` handling, so
+    the two representations of the audit cannot drift apart. The validated
+    records come back with the codes because the JSON response keys on
+    ``record.record_id``.
+
+    Nothing is withheld from the result. A suppression set used to drop four
+    codes from the audit column; every code it hid on the grounds that no
+    automated path resolves it is now withdrawn from the catalogue outright,
+    and the one survivor — G2-NAME-012 — is reported like any other.
     """
     records = _rows_to_records(row_dicts)
     present = _present_fields(headers)
     issues_per_row = [
-        [
-            code
-            for code in detect_issues(
-                record, present,
-                flag_for_review=_flag_for_review(row, headers),
-                flag_codes=_flag_codes(row, headers, record),
-            )
-            if code not in _ISSUES_SUPPRESSED_CODES
-        ]
+        detect_issues(
+            record, present,
+            flag_for_review=_flag_for_review(row, headers),
+            flag_codes=_flag_codes(row, headers, record),
+        )
         for record, row in zip(records, row_dicts)
     ]
     return records, issues_per_row
@@ -919,9 +896,8 @@ async def detect_file_issues(
     Each data row is checked against the deterministic issue-detection rules
     (see ``enrichment.issue_detection``). The uploaded sheet is returned
     unchanged with a single appended ``Issues`` column listing every issue
-    code found on that row (semicolon-separated, codes only), except the codes
-    in ``_ISSUES_SUPPRESSED_CODES``. This is a pure audit: no enrichment, LLM,
-    or external call is made.
+    code found on that row (semicolon-separated, codes only). This is a pure
+    audit: no enrichment, LLM, or external call is made.
     """
     filename = file.filename or ""
     if not filename.lower().endswith((".xlsx", ".xlsm")):
@@ -965,8 +941,8 @@ async def detect_json_issues(request: IssueDetectionRequest) -> IssueDetectionRe
     row carrying the file's columns keyed by header (``"Customer"``,
     ``"Name 1"``, ``"Postal Code"`` …). Returns one ``{record_id, issues}``
     entry per record, in request order, where ``issues`` holds the codes
-    detected for that record minus ``_ISSUES_SUPPRESSED_CODES`` — the same
-    list the file endpoint writes into its ``Issues`` column.
+    detected for that record — the same list the file endpoint writes into
+    its ``Issues`` column.
 
     Detection is column-aware over the union of keys present across the
     request's records, so send every column the row has (including empty

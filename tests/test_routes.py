@@ -472,8 +472,11 @@ class TestRoutes:
         assert "G2-VAL-002" in resp.json()["results"][0]["issues"]
 
     @pytest.mark.asyncio
-    async def test_issues_json_suppresses_the_same_codes_as_the_column(self, client):
-        """The suppressed G6 codes and G7-VERIFY-001 are withheld here too."""
+    async def test_issues_json_withholds_nothing_from_the_column(self, client):
+        """The JSON twin reports exactly what the column reports. The three
+        codes a suppression set used to hide on "no automated path resolves
+        this" grounds are withdrawn outright; G2-NAME-012, which is not,
+        appears here like any other code."""
         resp = await client.post(
             "/issues/json",
             json={
@@ -490,7 +493,7 @@ class TestRoutes:
         )
         assert resp.status_code == 200
         issues = resp.json()["results"][0]["issues"]
-        assert not ({"G2-VAL-003", "G2-VAL-006", "G2-NAME-012", "G7-VERIFY-001"} & set(issues))
+        assert not ({"G2-VAL-003", "G2-VAL-006", "G7-VERIFY-001"} & set(issues))
 
     @pytest.mark.asyncio
     async def test_issues_json_record_without_identifier_gets_empty_id(self, client):
@@ -634,12 +637,11 @@ class TestRoutes:
         assert len(reduced_rows) == summary["Reduced: issues after"]
 
     @pytest.mark.asyncio
-    async def test_issues_suppresses_unresolvable_g6_codes(self, client):
-        """The suppressed G6 codes are withheld from the /issues column even in
-        the conditions that raise them; the sibling required-field codes still
-        fire, so the suppression is targeted rather than a column-gating side
-        effect. Name 1 is a research institution with an empty Name 2, which is
-        what G2-NAME-012 reads."""
+    async def test_issues_reports_the_unresolvable_codes_it_used_to_suppress(self, client):
+        """Two of the three codes the column used to withhold are withdrawn and
+        cannot appear; the third, G2-NAME-012, is reported. Name 1 is a research
+        institution with an empty Name 2, which is what G2-NAME-012 reads, and
+        the sibling required-field codes still fire."""
         data = self._xlsx_bytes(
             ["Customer", "Name 1", "Name 2", "Tax Jurisdiction", "Language Key",
              "Postal Code", "Country/Region Key"],
@@ -649,9 +651,9 @@ class TestRoutes:
         assert resp.status_code == 200
         ws = load_workbook(io.BytesIO(resp.content)).active
         codes = {c.strip() for c in ([c.value for c in ws[2]][-1] or "").split(";")}
-        assert "G2-VAL-003" not in codes
-        assert "G2-VAL-006" not in codes
-        assert "G2-NAME-012" not in codes
+        assert "G2-VAL-003" not in codes  # withdrawn
+        assert "G2-VAL-006" not in codes  # withdrawn
+        assert "G2-NAME-012" in codes
         assert "G2-VAL-002" in codes  # Postal Code blank — still reported
 
     @pytest.mark.asyncio
@@ -671,10 +673,12 @@ class TestRoutes:
         assert "G7-VERIFY-001" not in cell
 
     @pytest.mark.asyncio
-    async def test_issues_suppresses_g7_on_flagged_enriched_rows(self, client):
-        """G7-VERIFY-001 is withheld from the /issues column even for a row the
-        pipeline flagged — the case where the detector does raise it. The
-        detector-level behaviour is pinned in tests/test_issue_detection.py."""
+    async def test_issues_omits_g7_verify_on_flagged_enriched_rows(self, client):
+        """G7-VERIFY-001 is absent from the /issues column for a flagged row.
+        It used to be withheld by a suppression set while the detector still
+        raised it; the code is withdrawn now, so nothing raises it in the first
+        place. The detector-level behaviour is pinned in
+        tests/test_issue_detection.py."""
         data = self._xlsx_bytes(
             ["Customer", "Name 1", "Flag for Review", "Flag Reason"],
             ["R1", "Acme Corporation", "TRUE", "LLM canonical form — verify"],
@@ -690,9 +694,9 @@ class TestRoutes:
 
     @pytest.mark.asyncio
     async def test_issues_column_carries_the_flag_derived_codes(self, client):
-        """The three codes the pipeline's own review flags map onto. Unlike
-        G7-VERIFY-001 they are NOT suppressed: each names which of three
-        different jobs a reviewer has, which is what an Issues column is for."""
+        """The three codes the pipeline's own review flags map onto. Each names
+        which of three different jobs a reviewer has, which is what an Issues
+        column is for."""
         data = self._xlsx_bytes(
             ["Customer", "Name 1", "Flag for Review", "Flag Codes"],
             ["R1", "Acme Corporation", "TRUE", "opaque-code; email-conflict"],
