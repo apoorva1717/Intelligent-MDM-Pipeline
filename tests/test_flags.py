@@ -1370,3 +1370,88 @@ class TestAReviewRequestAlwaysCarriesAReason:
         out = flags.render({code: ["name2"]}, low_confidence=["name1"])
         assert out["flag_for_review"] is True
         assert out["flag_reason"] and ";" in out["flag_reason"]
+
+
+# ---------------------------------------------------------------------------
+# The derived token travels in `flag_codes` (Step F)
+#
+# It used to render its prose and its field scope and then `continue` before
+# `ordered.append`, so a record left exactly as supplied shipped
+# `Flag for Review = True` with an EMPTY `Flag Codes` and a populated
+# `Flag Reason`. `/issues` compensated by re-deriving the state from the
+# provenance columns, asking one question where `render` asks five. The token
+# travelling is what let that second path be deleted.
+# ---------------------------------------------------------------------------
+
+class TestTheDerivedTokenTravelsInFlagCodes:
+
+    @pytest.mark.parametrize("scopes,low", [
+        ({}, ["name1"]),
+        ({}, ["name2"]),
+        ({}, ["name1", "name2"]),
+        ({flags.NO_MATCH: ["name1"]}, []),
+        ({flags.NO_MATCH: ["name1"]}, ["name2"]),
+        ({flags.OPAQUE_CODE: ["name2"]}, ["name1"]),
+        # An advisory code does not queue on its own; a derived low does, and
+        # the row must then name a code for it.
+        *[({a: ["name1"]}, ["name2"]) for a in sorted(flags.ADVISORY_CODES)],
+    ])
+    def test_a_queued_record_always_names_a_non_advisory_code(self, scopes, low):
+        """`Flag for Review = True` with an empty `Flag Codes` is impossible.
+
+        The review flag is derived (`bool(ordered - ADVISORY_CODES) or
+        bool(low)`), and the second arm used to be reachable with nothing in
+        `ordered` at all. It is not any more: a non-empty `low` puts the
+        derived token — which is not advisory — into the same list.
+        """
+        out = flags.render(scopes, low_confidence=low)
+        if out["flag_for_review"]:
+            assert set(out["flag_codes"]) - flags.ADVISORY_CODES, (
+                f"queued with no non-advisory code: {out['flag_codes']}"
+            )
+            assert out["flag_reason"]
+
+    @pytest.mark.parametrize("advisory", sorted(flags.ADVISORY_CODES))
+    def test_an_advisory_code_alone_still_does_not_queue(self, advisory):
+        """The other direction, so the rule above cannot be satisfied by
+        queueing everything."""
+        out = flags.render({advisory: ["name1"]}, low_confidence=[])
+        assert out["flag_for_review"] is False
+
+    def test_a_low_name2_that_is_an_admin_desk_carries_neither(self):
+        """The exemption the pipeline already applies, now visible in the
+        column. "Accounts Payable" is `input:low` because there is no
+        canonical form to establish — not because the pipeline failed to
+        establish one — so it is not a doubt and must not be queued.
+
+        `Department of Anthropology` is the control: identical provenance,
+        identical everything else, and it does carry both.
+        """
+        from enrichment.provenance import registry_evidence
+
+        def _render(name2):
+            result = _init_result(EnrichmentRecord(
+                record_id="ADMIN", country="US", name1="Ohio State University",
+                name2=name2, city="Columbus", region="OH",
+            ))
+            seed(
+                result, registry_evidence("ror", "https://ror.org/00rs6vg23"),
+                name1_enriched="Ohio State University",
+                ror_id="https://ror.org/00rs6vg23",
+            )
+            out = finalise(result, time.monotonic())
+            read = (
+                out.get if callable(getattr(out, "get", None))
+                else (lambda k, d=None: getattr(out, k, d))
+            )
+            return read("flag_codes"), read("flag_for_review"), read("name2_provenance")
+
+        desk_codes, desk_review, desk_prov = _render("Accounts Payable")
+        assert desk_prov == "input:low"
+        assert flags.LOW_CONFIDENCE_UNCHANGED not in desk_codes
+        assert desk_review is False
+
+        dept_codes, dept_review, dept_prov = _render("Department of Anthropology")
+        assert dept_prov == "input:low"
+        assert flags.LOW_CONFIDENCE_UNCHANGED in dept_codes
+        assert dept_review is True

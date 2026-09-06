@@ -720,22 +720,74 @@ class TestRoutes:
             assert code not in cells[3]
 
     @pytest.mark.asyncio
-    async def test_issues_column_reads_the_retired_low_from_provenance(self, client):
-        """`low-confidence-unchanged` cannot appear in Flag Codes — it was
-        retired — so G8 is derived from `input:low` on the name provenance,
-        which is where that state now lives. R2 pins the other direction: a
-        settled name raises nothing."""
+    async def test_issues_column_never_reads_provenance_for_g7(self, client):
+        """G7-UNCHANGED-001 comes from `Flag Codes` and from nothing else.
+
+        `/issues` used to re-derive `low-confidence-unchanged` from
+        `Name 1 / Name 2 Provenance` when the column was empty. That path is
+        deleted. R1 is the case it existed for — an empty column beside an
+        `input:low` name — and it now raises nothing: `render` puts the token
+        in the column, so a row without it is a row the pipeline did not raise
+        the doubt on. R2 carries the token and does raise it.
+        """
         data = self._xlsx_bytes(
             ["Customer", "Name 1", "Flag Codes", "Name 1 Provenance"],
             ["R1", "Acme Corporation", "", "input:low"],
-            ["R2", "Beta Industries", "", "ror:verified"],
+            ["R2", "Beta Industries", "low-confidence-unchanged", "input:low"],
+            ["R3", "Gamma Labs", "", "ror:verified"],
         )
         resp = await client.post("/issues", files=self._xlsx_upload(data))
         assert resp.status_code == 200
         ws = load_workbook(io.BytesIO(resp.content)).active
         cells = [([c.value for c in row][-1] or "") for row in ws.iter_rows(min_row=2)]
-        assert "G7-UNCHANGED-001" in cells[0]
-        assert "G7-UNCHANGED-001" not in cells[1]
+        assert "G7-UNCHANGED-001" not in cells[0]
+        assert "G7-UNCHANGED-001" in cells[1]
+        assert "G7-UNCHANGED-001" not in cells[2]
+
+    @pytest.mark.asyncio
+    async def test_issues_raises_nothing_when_the_flag_codes_column_is_absent(
+        self, client,
+    ):
+        """No column, no flag-derived codes — not even from a provenance
+        column that is present and says `low`."""
+        data = self._xlsx_bytes(
+            ["Customer", "Name 1", "Name 1 Provenance", "Name 2 Provenance"],
+            ["R1", "Acme Corporation", "input:low", "input:low"],
+        )
+        resp = await client.post("/issues", files=self._xlsx_upload(data))
+        assert resp.status_code == 200
+        ws = load_workbook(io.BytesIO(resp.content)).active
+        issues = ([c.value for c in ws[2]][-1] or "")
+        assert "G7-UNCHANGED-001" not in issues
+        assert "G6-CONFIRM-001" not in issues
+
+    def test_the_export_writes_the_derived_token_into_flag_codes(self):
+        """The other half of the same rule: the column `/issues` now trusts
+        has to carry the token. `render` computes it; this is the assertion
+        that it survives the response model and the cell serialiser."""
+        import time
+
+        from api.models import EnrichmentRecord, EnrichmentResult
+        from api.routes import _build_output_xlsx
+        from enrichment.orchestrator import _init_result, finalise
+
+        result = _init_result(EnrichmentRecord(
+            record_id="LOW_1", country="US", name1="Wexner Med Ctr",
+            name2="Radiology", city="Columbus", region="OH",
+        ))
+        out = finalise(result, time.monotonic())
+        record = (
+            out if isinstance(out, EnrichmentResult)
+            else EnrichmentResult.model_validate(dict(out))
+        )
+        assert "low-confidence-unchanged" in record.flag_codes
+
+        ws = load_workbook(io.BytesIO(_build_output_xlsx([record]))).active
+        headers = [c.value for c in ws[1]]
+        row = [c.value for c in ws[2]]
+        codes = row[headers.index("Flag Codes")] or ""
+        assert "low-confidence-unchanged" in codes
+        assert row[headers.index("Flag for Review")] is True
 
     @pytest.mark.asyncio
     async def test_raw_input_never_gets_a_flag_derived_code(self, client):

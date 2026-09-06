@@ -58,11 +58,8 @@ from enrichment.issue_detection import (
     ISSUE_CATALOGUE,
     detect_issues,
     flag_for_review_is_set,
-    provenance_is_low,
     split_flag_codes,
-    DERIVED_LOW_FLAG_CODE,
 )
-from enrichment.flags import name2_needs_no_verification
 from enrichment.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
@@ -196,97 +193,35 @@ def _flag_for_review(row: dict[str, str], headers: list[str]) -> bool | None:
     return None
 
 
-#: The provenance columns that carry the doubt ``low-confidence-unchanged``
-#: used to name as a flag code. Name 1 and Name 2 only — the same two fields
-#: the pipeline derives its own review flag from (``flags.CORE_PROVENANCE_
-#: FIELDS``): the flag asks a human to check a NAME, and a record whose domain
-#: or type could not be settled is not a record with a wrong name in it.
-_CORE_PROVENANCE_HEADERS: tuple[str, ...] = ("Name 1 Provenance", "Name 2 Provenance")
-
-
-def _name2_has_no_canonical_form(record: EnrichmentRecord) -> bool:
-    """Whether this record's Name 2 is a phrase nothing could confirm.
-
-    The pipeline's own exemption, asked of a parsed row instead of a record in
-    flight: an administrative desk ("Accounts Payable", "Central Receiving")
-    or a phrase built only of facility functions ("Central Warehouse") has no
-    institutional spelling for a reviewer to establish, so ``compute_flags``
-    withholds the derived doubt and ships ``input:low`` on the field anyway —
-    the column states what happened, and only the review request is withheld.
-
-    An audit that read the provenance column and stopped there would put the
-    request back, and ask a steward to canonicalise a phrase the pipeline
-    declined to search for. The predicate is
-    :func:`enrichment.flags.name2_needs_no_verification`, the same one the
-    flag uses; it is handed a mapping rather than the model because it reads
-    the enriched-record field names and the address tokens its
-    ``identifies_nothing`` half compares against.
-    """
-    return name2_needs_no_verification({
-        "name2_enriched": record.name2,
-        "city": record.city,
-        "region": record.region,
-        "country_region_key": record.country_region_key,
-    })
-
-
-def _flag_codes(
-    row: dict[str, str],
-    headers: list[str],
-    record: EnrichmentRecord | None = None,
-) -> list[str] | None:
+def _flag_codes(row: dict[str, str], headers: list[str]) -> list[str] | None:
     """The row's enrichment flag codes, or ``None`` when this is a raw file.
 
     ``None`` and ``[]`` carry the same distinction as in :func:`_flag_for_review`:
     ``None`` means "no enrichment output here, the flag-derived codes cannot
     apply", ``[]`` means "enrichment ran and flagged nothing". Both suppress
-    G6-CONFIRM-001 / G7-UNCHANGED-001; only ``None`` says the
-    question was never asked.
+    every code in :data:`FLAG_CODE_ISSUES` that has no content detector; only
+    ``None`` says the question was never asked.
 
-    ``low-confidence-unchanged`` is added from the provenance columns as well
-    as read from ``Flag Codes``. The pipeline emits the token again, so a
-    current export names it; an export taken while it was withdrawn has the
-    state in ``Name 1 / Name 2 Provenance`` and nowhere else, and reading only
-    ``Flag Codes`` would leave G7-UNCHANGED-001 dark for the largest population
-    it exists to describe — the rows the pipeline left exactly as supplied.
-    Both paths reach the same code, and the ``not in`` check is what keeps a
-    row that carries it twice from saying so.
+    **``Flag Codes`` is read as-is, and nothing else is consulted.** There
+    used to be a second path here: when the column was empty or absent, this
+    re-derived ``low-confidence-unchanged`` from ``Name 1 / Name 2
+    Provenance`` reading ``input:low``. It existed because ``render`` computed
+    that token and then dropped it before it reached the column, so an export
+    could carry the state and not the code.
 
-    *record* is the parsed row, and is consulted for one thing: the Name 2
-    exemption the pipeline itself applies (see
-    :func:`_name2_has_no_canonical_form`). Without it the two halves of this
-    function contradict each other — the ``Flag Codes`` half honours the
-    exemption because ``compute_flags`` made it, and the provenance half would
-    re-raise the doubt from a column that is `input:low` precisely because
-    nothing could confirm a phrase that has nothing to confirm.
+    It is gone because the premise is gone — ``render`` puts the token in
+    ``flag_codes`` with every other code — and because the two were never
+    equivalent. ``render`` reaches the doubt through five gates (the admin-desk
+    exemption, whether the value was still as supplied, opaque fields, the
+    Name 1 rules); the re-derivation asked one question, "does this column say
+    ``low``", and so raised the doubt on rows the pipeline had deliberately
+    exempted. An audit reports what the file says. If the column is absent,
+    the flag-derived codes are simply not raised.
     """
-    codes: list[str] | None = None
     for header in headers:
         if _norm_header(header) == _norm_header("Flag Codes"):
-            codes = split_flag_codes(row.get(header))
-            break
-
-    for header in headers:
-        norm = _norm_header(header)
-        if not any(norm == _norm_header(c) for c in _CORE_PROVENANCE_HEADERS):
-            continue
-        if codes is None:
-            codes = []
-        if not provenance_is_low(row.get(header)):
-            continue
-        if (
-            norm == _norm_header("Name 2 Provenance")
-            and record is not None
-            and _name2_has_no_canonical_form(record)
-        ):
-            # The pipeline looked at this slot and decided there was nothing
-            # to ask. Keep looking at the other column rather than stopping:
-            # a Name 1 doubt on the same row still stands.
-            continue
-        if DERIVED_LOW_FLAG_CODE not in codes:
-            codes.append(DERIVED_LOW_FLAG_CODE)
-        break
-    return codes
+            return split_flag_codes(row.get(header))
+    return None
 
 
 def _parse_xlsx(contents: bytes) -> tuple[list[str], list[dict[str, str]]]:
@@ -552,7 +487,7 @@ async def _audit_upload(file: UploadFile) -> dict[str, list[str]]:
             detect_issues(
                 record, present,
                 flag_for_review=_flag_for_review(row, headers),
-                flag_codes=_flag_codes(row, headers, record),
+                flag_codes=_flag_codes(row, headers),
             ),
         )
 
@@ -846,7 +781,7 @@ def _audit_rows(
         detect_issues(
             record, present,
             flag_for_review=_flag_for_review(row, headers),
-            flag_codes=_flag_codes(row, headers, record),
+            flag_codes=_flag_codes(row, headers),
         )
         for record, row in zip(records, row_dicts)
     ]

@@ -1577,10 +1577,6 @@ UNMAPPED_FLAG_CODES: frozenset[str] = frozenset({
     "source-conflict",
 })
 
-#: The derived token an audit re-supplies from the provenance columns when
-#: ``Flag Codes`` does not already carry it.
-DERIVED_LOW_FLAG_CODE = "low-confidence-unchanged"
-
 # `Flag Codes` ships as a semicolon-joined string in XLSX and as a list in
 # JSON; a comma-joined cell is what a hand-edited sheet produces. All three
 # split the same way.

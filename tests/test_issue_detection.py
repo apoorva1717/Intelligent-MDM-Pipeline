@@ -18,7 +18,6 @@ from utils.text_utils import _ADMIN_UNIT_PHRASES, _ADMIN_UNIT_TERMS
 from enrichment.issue_detection import (
     EMITTED_CODES,
     ISSUE_CATALOGUE,
-    DERIVED_LOW_FLAG_CODE,
     FLAG_CODE_ISSUES,
     QUALITY_GROUPS,
     VERIFICATION_GROUPS,
@@ -1329,15 +1328,17 @@ def test_provenance_is_low_reads_the_grammar(scalar, expected):
     assert provenance_is_low(scalar) is expected
 
 
-def test_g8_covers_the_retired_low_confidence_token():
-    """`low-confidence-unchanged` was retired as a flag code — it can never
-    appear in Flag Codes again — and the state it named lives in the
-    provenance columns. The caller supplies the token from there; the mapping
-    must still honour it or G8 goes dark for the largest population it
-    describes."""
-    assert FLAG_CODE_ISSUES[DERIVED_LOW_FLAG_CODE] == "G7-UNCHANGED-001"
+def test_g7_unchanged_comes_from_the_token_in_flag_codes():
+    """`low-confidence-unchanged` is a flag code the pipeline emits, and the
+    mapping is the whole of how G7-UNCHANGED-001 is raised.
+
+    It was withdrawn from the vocabulary once, and while it was gone `/issues`
+    re-derived it from `Name 1 / Name 2 Provenance`. That path is deleted: the
+    token is in `Flag Codes` again, and an audit reports what the file says.
+    """
+    assert FLAG_CODE_ISSUES["low-confidence-unchanged"] == "G7-UNCHANGED-001"
     assert "G7-UNCHANGED-001" in detect_issues(
-        _record(), flag_codes=[DERIVED_LOW_FLAG_CODE],
+        _record(), flag_codes=["low-confidence-unchanged"],
     )
 
 
