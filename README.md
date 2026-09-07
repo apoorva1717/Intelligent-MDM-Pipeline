@@ -1706,7 +1706,7 @@ One case is not derivable and is read from the tier's marker instead: the **depa
 |---|---|---|
 | `no-match` | Every tier failed: no identifier, no domain, no evidence URL, no field changed. Suppressed when any other code applies — it means "nothing to go on at all" | `name1` |
 | `low-confidence-unchanged` | **Derived**, never raised: a core field (Name 1, Name 2) whose provenance confidence is `low` — the pipeline left the value exactly as supplied and could not establish a canonical form. Withheld for a Name 2 that *has* no canonical form (an administrative desk, or a phrase of pure facility functions) — the provenance still says `input:low`, only the review request goes | the `low` core field(s) |
-| `dept-via-lab` | UC 13 fired: Name 2 was a granular unit and the parent department was **inferred from the lab's page**, not read from a stated department | `name2`, `name3` |
+| `dept-via-lab` | UC 13 fired: Name 2 was a granular unit and the parent department was **inferred from the lab's page**, not read from a stated department. A "parent" that is Name 1 again is not a department — it is rejected at the write, so neither the value nor this code ships | `name2`, `name3` |
 | `dept-via-contact` | Tier 2A `2A_population`: the record stated no department and one was read off the **affiliation of the person in Contact**. Reported under `dept-via-lab` until it had a code of its own; the reason prose is unchanged | `name2` |
 | `name3-not-demoted` | UC 13 fired but every slot below Name 2 was already populated, so the lab name could not be moved down | `name2`…`name5` |
 | `person-unresolved` | A person was detected in Name 1 and their affiliation could not be resolved | `name1` |

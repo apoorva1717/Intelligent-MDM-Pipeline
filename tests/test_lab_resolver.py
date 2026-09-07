@@ -174,3 +174,42 @@ class TestLabResolverOrchestrator:
         assert result.name5_enriched == "Third Value"
         assert result.flag_for_review is True
         assert "name3-not-demoted" in result.flag_codes
+
+    @pytest.mark.asyncio
+    async def test_parent_that_is_name1_again_is_rejected(
+        self, orchestrator, options,
+    ):
+        """A "parent department" that just repeats the institution is not a
+        department, and must not be written or flagged.
+
+        Record 13348245: the lab page for "Gene Expression Laboratory" gave
+        back "Salk Institute for Biological Studies" — Name 1. Finalise
+        dropped it (`dept-slot-echoes-name1:dropped`) and the block authority
+        pulled the lab name back up into Name 2, so the record shipped
+        exactly as it arrived — carrying `dept-via-lab` pointing a reviewer
+        at a lab name and an empty Name 3. Rejected at the source instead.
+        """
+        orchestrator._llm_client._mock_lab_parent = (
+            lambda user_prompt, prompt_lower: {
+                "parent_department": "Stanford University",
+                "confidence": "high",
+                "reasoning": "Mock: parent is the institution itself",
+            }
+        )
+        record = EnrichmentRecord(
+            record_id="A15_PARENT_ECHOES_NAME1",
+            name1="Stanford University",
+            name2="Smith Research Program",
+            name3=None,
+            city="Stanford", state="CA", country="US",
+        )
+        response = await orchestrator.enrich_batch([record], options)
+        result = response.results[0]
+
+        # Nothing was demoted, because nothing was promoted over it.
+        assert result.name3_enriched is None
+        assert result.name2_enriched != "Stanford University"
+        assert "dept-via-lab" not in result.flag_codes
+        # Still a granular Name 2 the resolver was asked about — the record
+        # falls through to the later tiers, which is what UC 13 records.
+        assert 13 in result.use_cases_triggered

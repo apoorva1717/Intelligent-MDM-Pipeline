@@ -8675,6 +8675,21 @@ class Orchestrator:
                     cache=cache,
                     settings=self._settings,
                 )
+                # A "parent department" that is just the institution again
+                # is not a department. Finalise already catches it at the far
+                # end — `dept-slot-echoes-name1:dropped` clears the slot and
+                # `dept-block:normalise` pulls the lab name back up into
+                # Name 2 — so the record ships exactly as it arrived. But by
+                # then `_ev_dept_via_lab` is set, and `dept-via-lab` ships
+                # with it, pointing a reviewer at a lab name and an empty
+                # Name 3 (record 13348245, whose "Gene Expression Laboratory"
+                # resolved to "Salk Institute for Biological Studies").
+                # Rejected here instead, where "no parent was found" is still
+                # a state the record can be in.
+                lab_parent_echoes_name1 = _echoes_name1(
+                    lab_res.parent_department,
+                    result["name1_enriched"] or pp_name1,
+                )
                 logger.info({
                     "record_id": record.record_id,
                     "step": "uc13_lab_resolver_result",
@@ -8682,8 +8697,13 @@ class Orchestrator:
                     "parent": lab_res.parent_department,
                     "confidence": lab_res.confidence,
                     "url": lab_res.source_url,
+                    "rejected_echoes_name1": lab_parent_echoes_name1,
                 })
-                if lab_res.success and lab_res.parent_department:
+                if (
+                    lab_res.success
+                    and lab_res.parent_department
+                    and not lab_parent_echoes_name1
+                ):
                     # Demote the original lab name into the first free slot
                     # below Name 2. Name 3 is the natural landing spot, but
                     # when it is occupied the slots below it will do just as
@@ -8740,7 +8760,8 @@ class Orchestrator:
                         result["use_cases_triggered"].append(13)
                     return await self._finalise_and_return(result, start, record, cache)
                 # Granular Name2 detected but no parent could be resolved
-                # (no candidates, or LLM said null). No flag is raised here:
+                # (no candidates, LLM said null, or the parent it named was
+                # Name 1 again). No flag is raised here:
                 # the record falls through to tier 2 canonical / 2A / 2B / 3,
                 # any of which may settle Name 2, and finalisation flags
                 # whatever state it actually ends in.
