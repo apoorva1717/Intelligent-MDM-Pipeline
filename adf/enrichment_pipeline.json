@@ -133,7 +133,7 @@
                             },
                             "userProperties": [],
                             "typeProperties": {
-                                "storedProcedureName": "dbo.usp_merge_legacy_enriched",
+                                "storedProcedureName": "Mapping.usp_merge_legacy_enriched",
                                 "storedProcedureParameters": {
                                     "payload": {
                                         "value": {

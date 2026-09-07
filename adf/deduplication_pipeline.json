@@ -86,7 +86,7 @@
                 },
                 "userProperties": [],
                 "typeProperties": {
-                    "storedProcedureName": "dbo.usp_merge_validation_clusters",
+                    "storedProcedureName": "Mapping.usp_MergeValidationClusters",
                     "storedProcedureParameters": {
                         "payload": {
                             "value": {

@@ -86,7 +86,7 @@
                 },
                 "userProperties": [],
                 "typeProperties": {
-                    "storedProcedureName": "dbo.usp_merge_validation_scores",
+                    "storedProcedureName": "Mapping.usp_MergeValidationScores",
                     "storedProcedureParameters": {
                         "payload": {
                             "value": {

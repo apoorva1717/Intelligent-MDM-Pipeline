@@ -1,31 +1,45 @@
-Generated: 2026-09-07 · Commit: eb924e62686e36020b08b9faff8e88f30172a5e1 · Branch: feature/llm-fixes · Pass: 00
+Generated: 2026-09-07 · Commit: ea6f9d92168d3de949d369ed54a58b5a745a59b7 · Branch: feature/llm-fixes · Pass: 00
 
 # Pass 00 — Inventory and call graph
 
-Tree state at generation: `git status --porcelain` is empty (clean tree, no untracked
-non-ignored files). Tracked file count: 1155 (`git ls-files | wc -l`).
+Tree state at generation: `git status --porcelain` produces no output (clean tree; no
+modified, staged or untracked non-ignored path). `git rev-parse HEAD` is
+`ea6f9d92168d3de949d369ed54a58b5a745a59b7`, branch `feature/llm-fixes`, date `2026-09-07`.
+Tracked file count: 1160 (`git ls-files | wc -l`). Every citation below is read at that
+commit.
 
 ## 0.1 Scope of the file table
 
 The table in §0.2 covers every tracked file whose extension is `.py`, `.json`, `.sql`,
-`.ini`, `.txt`, `.yml`, `.yaml` or `.md`, minus the directories listed in §0.3. Test
+`.ini`, `.txt`, `.yml`, `.yaml` or `.md`, plus the three tracked extensionless dotfiles
+(`.env.example`, `.funcignore`, `.gitignore`), minus the directories listed in §0.3. Test
 modules (`tests/test_*.py`) are excluded here and carried in the test inventory (§0.7)
-instead, where their LOC appears alongside their result. LOC is a physical line count of
-the file at this commit. "Purpose" is the first line of the module docstring, verbatim;
-`—` means the file has no module docstring (data files, config files, prose documents).
-"Last touched" is `git log -1 --format=%ad --date=short -- <path>`.
+instead, where their LOC appears alongside their result. LOC is a physical line count of the
+file at this commit, computed as `len(open(path,"rb").read().splitlines())` — a file whose
+last line carries no terminator is still counted. "Purpose" is the first line of the module
+docstring, verbatim; `—` means the file has no module docstring (data files, config files,
+prose documents). "Last touched" is `git log -1 --format=%ad --date=short -- <path>`.
+
+138 files are tabulated. 1025 are excluded, itemised in §0.3; 138 + 1025 = 1160.
 
 ## 0.2 File table
 
 | path | LOC | purpose (first docstring line, verbatim) | last touched |
 |---|---|---|---|
+| `.env.example` | 258 | — | 2026-08-26 |
+| `.funcignore` | 60 | — | 2026-09-03 |
+| `.gitignore` | 43 | — | 2026-09-04 |
 | `.vscode/extensions.json` | 6 | — | 2026-05-31 |
 | `.vscode/launch.json` | 15 | — | 2026-05-31 |
 | `.vscode/settings.json` | 9 | — | 2026-05-31 |
 | `.vscode/tasks.json` | 27 | — | 2026-05-31 |
 | `README.md` | 3862 | — | 2026-09-07 |
-| `__init__.py` | 1 | — | 2026-04-09 |
-| `api/__init__.py` | 1 | — | 2026-04-09 |
+| `__init__.py` | 0 | — | 2026-04-09 |
+| `adf/deduplication_pipeline.json` | 118 | — | 2026-09-07 |
+| `adf/enrichment_pipeline.json` | 168 | — | 2026-09-07 |
+| `adf/issues_pipeline.json` | 117 | — | 2026-09-07 |
+| `adf/scoring_pipeline.json` | 118 | — | 2026-09-07 |
+| `api/__init__.py` | 0 | — | 2026-04-09 |
 | `api/app.py` | 29 | FastAPI application object — shared by both local and Azure Function entry points. | 2026-08-12 |
 | `api/middleware.py` | 135 | FastAPI middleware for structured JSON logging, request timing, and error handling. | 2026-08-12 |
 | `api/models.py` | 937 | Pydantic v2 request/response models for the enrichment API. | 2026-09-02 |
@@ -53,13 +67,7 @@ the file at this commit. "Purpose" is the first line of the module docstring, ve
 | `dedup/signatures.py` | 380 | STEP A — conservative normalization and signature collapsing (no LLM). | 2026-09-05 |
 | `dedup/weights.json` | 57 | — | 2026-09-05 |
 | `determinism_findings.md` | 642 | — | 2026-08-25 |
-| `docs/13_CLUSTERING_DOSSIER.md` | 1801 | — | 2026-09-05 |
-| `docs/14_SCORING_DOSSIER.md` | 1594 | — | 2026-09-06 |
-| `docs/15_ISSUES_DOSSIER.md` | 1513 | — | 2026-09-07 |
-| `docs/change-task-template.md` | 541 | — | 2026-09-03 |
-| `docs/thesis-doc-prompt-v2.md` | 263 | — | 2026-09-07 |
-| `docs/thesis-doc-prompt.md` | 241 | — | 2026-08-19 |
-| `enrichment/__init__.py` | 1 | — | 2026-04-09 |
+| `enrichment/__init__.py` | 0 | — | 2026-04-09 |
 | `enrichment/address_processing.py` | 1403 | Address Stage 1 — clean, extract, route, cross-check, classify, normalise. | 2026-09-02 |
 | `enrichment/batch_consensus.py` | 694 | Batch consensus pass — one identity per organisation per address (Fix 6). | 2026-09-02 |
 | `enrichment/classifier.py` | 187 | Record classification — the single authority for ``record_type``. | 2026-08-20 |
@@ -99,7 +107,7 @@ the file at this commit. "Purpose" is the first line of the module docstring, ve
 | `function_app.py` | 19 | Azure Function v2 ASGI entry point. | 2026-05-31 |
 | `host.json` | 20 | — | 2026-05-31 |
 | `issues_request.json` | 239 | — | 2026-09-03 |
-| `llm/__init__.py` | 1 | — | 2026-04-09 |
+| `llm/__init__.py` | 0 | — | 2026-04-09 |
 | `llm/openai_client.py` | 497 | Async Azure OpenAI client for LLM calls. | 2026-08-25 |
 | `llm/prompts.py` | 691 | All LLM prompt strings as module-level constants. | 2026-09-01 |
 | `llm/test_connection.py` | 31 | Standalone LLM connection test — run before any other testing. | 2026-04-09 |
@@ -122,19 +130,20 @@ the file at this commit. "Purpose" is the first line of the module docstring, ve
 | `scripts/verify_fixes.py` | 232 | Post-fix verification script — tests all bug fixes independently. | 2026-06-05 |
 | `scripts/wikidata_lane_report.py` | 225 | Build the numbers behind `wikidata_lane_report.md` from two `run_batch.py` runs. | 2026-08-25 |
 | `scripts/wikidata_warm_fixtures.py` | 94 | Record the Wikidata lane's fixtures for a workbook, serially and politely. | 2026-08-25 |
-| `search/__init__.py` | 1 | — | 2026-04-09 |
+| `search/__init__.py` | 0 | — | 2026-04-09 |
 | `search/base.py` | 56 | Abstract search interface for SERP providers. | 2026-08-26 |
 | `search/duckduckgo_client.py` | 62 | DuckDuckGo search client — free fallback when no SerpAPI key. | 2026-08-26 |
 | `search/page_fetcher.py` | 523 | Fetch web pages and extract structured/authoritative elements. | 2026-08-27 |
 | `search/serpapi_client.py` | 84 | SerpAPI search client implementation. | 2026-08-26 |
-| `sql/usp_merge_legacy_enriched.sql` | 1 | — | 2026-08-19 |
-| `sql/usp_merge_validation_clusters.sql` | 1 | — | 2026-08-19 |
-| `sql/usp_merge_validation_scores.sql` | 1 | — | 2026-08-19 |
+| `sql/usp_merge_legacy_enriched.sql` | 1 | — | 2026-09-07 |
+| `sql/usp_merge_legacy_issues.sql` | 1 | — | 2026-09-07 |
+| `sql/usp_merge_validation_clusters.sql` | 1 | — | 2026-09-07 |
+| `sql/usp_merge_validation_scores.sql` | 1 | — | 2026-09-07 |
 | `tests/KNOWN_FAILURES.md` | 41 | — | 2026-09-03 |
-| `tests/__init__.py` | 1 | — | 2026-04-09 |
+| `tests/__init__.py` | 0 | — | 2026-04-09 |
 | `tests/conftest.py` | 256 | Pytest fixtures: mock client injection, JSON fixture loaders, settings overrides. | 2026-08-25 |
 | `tests/dedup_v2_support.py` | 965 | Shared scaffolding for the dedup v2 fixture tests (not a test module). | 2026-09-05 |
-| `tests/mocks/__init__.py` | 1 | — | 2026-04-09 |
+| `tests/mocks/__init__.py` | 0 | — | 2026-04-09 |
 | `tests/mocks/dedup_mock.py` | 69 | Mock dedup adjudicator LLM for offline runs (MOCK_EXTERNAL_CALLS=true). | 2026-06-17 |
 | `tests/mocks/lei_mock.py` | 211 | Mock GLEIF/LEI client for testing and local development without API access. | 2026-08-25 |
 | `tests/mocks/openai_mock.py` | 389 | Mock Azure OpenAI client for testing — returns deterministic JSON responses. | 2026-07-03 |
@@ -148,7 +157,7 @@ the file at this commit. "Purpose" is the first line of the module docstring, ve
 | `tools/run_diff.py` | 401 | Diff two enrichment runs of the same batch. The reproducibility gate. | 2026-08-25 |
 | `tools/shuffle_evidence.py` | 115 | Reverse the order of every candidate list inside a recorded evidence cache. | 2026-08-25 |
 | `unchanged_split_report.md` | 202 | — | 2026-08-23 |
-| `utils/__init__.py` | 1 | — | 2026-04-09 |
+| `utils/__init__.py` | 0 | — | 2026-04-09 |
 | `utils/cache.py` | 886 | The evidence cache: one directory, several namespaces, keyed on the request. | 2026-08-26 |
 | `utils/domain_resolver.py` | 818 | Single write path for the ``domain`` / ``website_url`` fields. | 2026-09-01 |
 | `utils/name_identity.py` | 549 | Three-verdict identity comparison for a proposed canonical name. | 2026-09-01 |
@@ -156,26 +165,30 @@ the file at this commit. "Purpose" is the first line of the module docstring, ve
 | `utils/text_utils.py` | 1893 | Text cleaning, domain extraction, and string normalisation helpers. | 2026-09-03 |
 | `wikidata_lane_report.md` | 273 | — | 2026-08-25 |
 
+The four files in `sql/` are each stored as **one physical line** — 8035, 3472, 3602 and
+6311 bytes with no line terminator anywhere in the file (`file sql/*.sql` reports "with no
+line terminators"). Their LOC of 1 is not a stub: each holds a complete `CREATE PROCEDURE`
+body. Every citation into `sql/` in this documentation set is therefore `:1`; see §0.9
+(⚠-8).
+
 ## 0.3 Excluded directories
 
-| directory | tracked files | why excluded from §0.2 |
+| group | tracked files | why excluded from §0.2 |
 |---|---|---|
-| `tests/fixtures/wikidata/` | 611 | Recorded Wikidata item payloads — evidence data, not code. Committed deliberately per `.gitignore:28–36`. |
-| `tests/fixtures/page_reads/` | 166 | Recorded page-read payloads — evidence data, not code. Committed deliberately per `.gitignore:28–36`. |
-| `tests/fixtures/dedup_v2_llm_cache/` | 37 | Recorded dedup adjudication responses — evidence data, not code. |
-| `tests/fixtures/ror_repro/` | 12 | Recorded ROR reproduction payloads — evidence data, not code. |
-| `docs/thesis/` | 38 | Output location of this documentation set plus its input workbooks and tutorials; describing it here would be self-referential. Pass 07 inventories the workbooks. |
-| `eval/out/` | 17 | Committed evaluation run outputs (`.xlsx` / `.json`) keyed by generating commit. Pass 07 inventories them; Pass 18 computes over them. |
+| `tests/fixtures/**` | 838 | Recorded evidence payloads — Wikidata items (611), page reads (166), dedup adjudication responses (37), ROR reproduction payloads (12) and 12 top-level fixture files. Data, not code. The committed namespaces are committed deliberately per `.gitignore:28–36`. |
 | `tests/test_*.py` | 99 | Carried in §0.7 with LOC, covered module and result. |
-| binary artefacts (`*.xlsx`, `*.pdf`) | — | Not source. Inventoried in Pass 07. |
+| `docs/**` | 41 | 34 files under `docs/thesis/` (the output location of this documentation set, its figures, its input workbooks and the DATAshaper tutorials) and 7 under `docs/` itself (three dossiers, the two pass specifications, a change template, `docs/FLAG_CODES.pdf`). Describing them here would be self-referential; Pass 07 inventories the workbooks. |
+| `eval/out/**` | 17 | Committed evaluation run outputs (`.xlsx` / `.json`) keyed by generating commit. Pass 07 inventories them; Pass 18 computes over them. |
+| `data/eval/**` | 16 | Evaluation workbooks. Pass 07 inventories them; Pass 18 computes over them. |
+| root binaries (`*.xlsx`, `*.pdf`) | 14 | Not source: `Domain_DeptDomain_SearchTerm_Logic.pdf`, `Website_Trace_Findings.pdf`, and 12 workbooks. Inventoried in Pass 07. |
 | `logs/`, `handoff/`, `.claude/`, `.pytest_cache/`, `.env` | 0 | Untracked and git-ignored (`git status --porcelain --ignored`). Not part of the commit. |
 
-`.gitignore:37–40` also ignores four evidence-cache namespaces that are **not** committed
-by default — `tests/fixtures/serp/`, `tests/fixtures/registry/`, `tests/fixtures/fetch/`,
+`.gitignore:37–40` also ignores four evidence-cache namespaces that are **not** committed by
+default — `tests/fixtures/serp/`, `tests/fixtures/registry/`, `tests/fixtures/fetch/`,
 `tests/fixtures/llm/`. ⚠ UNVERIFIED — the frozen evaluation set behind
 `determinism_findings.md` was measured against those four namespaces populated
 (`.gitignore:33–36`), and they are absent from this commit; a re-run of that measurement at
-this commit re-gathers rather than replays them.
+this commit re-gathers rather than replays them. See §0.9 (⚠-9).
 
 ## 0.4 Entry points
 
@@ -183,11 +196,15 @@ this commit re-gathers rather than replays them.
 
 | kind | file:line | detail |
 |---|---|---|
-| ASGI app object | `api/app.py:20` | `FastAPI(title="SAP Customer Master Data Enrichment API", version="1.0.0")`; middleware `RequestLoggingMiddleware` at `api/app.py:28`; router mounted at `api/app.py:29`. |
-| Local dev (uvicorn) | `main.py:3`, `main.py:6–9` | `uvicorn.run("api.app:app", host="0.0.0.0", port=8000, reload=True)`. |
-| Azure Function binding | `function_app.py:11–18` | `func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)` (`function_app.py:11`); one catch-all HTTP trigger `@azure_app.route(route="{*route}")` (`function_app.py:14`) delegating to the same FastAPI app through `AsgiMiddleware(fastapi_app).handle_async` (`function_app.py:18`). There is exactly one Function binding; every HTTP route below is served through it. |
+| ASGI app object | `api/app.py:17` | `FastAPI(title="SAP Customer Master Data Enrichment API", version="1.0.0")`; middleware `RequestLoggingMiddleware` added at `api/app.py:28`; router mounted at `api/app.py:29`. |
+| Local dev (uvicorn) | `main.py:3`, `main.py:5–8` | `uvicorn.run("api.app:app", host="0.0.0.0", port=8000, reload=True)` (`main.py:8`). |
+| Azure Function binding | `function_app.py:12–19` | `func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)` (`function_app.py:12`); one catch-all HTTP trigger `@azure_app.route(route="{*route}")` (`function_app.py:15`) delegating to the same FastAPI app through `AsgiMiddleware(fastapi_app).handle_async` (`function_app.py:19`). There is exactly one Function binding; every HTTP route below is served through it. |
 
-The Function App's declared auth level is `ANONYMOUS` (`function_app.py:11`), which
+`host.json:12` sets `"routePrefix": ""`, so the Function App serves the FastAPI paths
+without the default `/api` prefix; the four paths that begin `/api/` do so because the route
+decorator declares it, not because the host adds it.
+
+The Function App's declared auth level is `ANONYMOUS` (`function_app.py:12`), which
 contradicts the auth claim in the `/api/dedup/cluster-block` docstring — see §0.9 (⚠-1).
 
 ### 0.4.2 HTTP routes
@@ -214,7 +231,8 @@ All routes are declared on one `APIRouter` (`api/routes.py:67`). "Handler" is th
 | GET | `/diag/dedup-llm` | — | `dict` | `api/routes.py:1607` | `diag_dedup_llm` `api/routes.py:1608` |
 | GET | `/tiers` | — | `TierConfigResponse` (`api/models.py:883`) | `api/routes.py:1646` | `get_tier_config` `api/routes.py:1647` |
 
-Presence of the six routes the pass specification names as expected minima:
+Sixteen routes: 13 POST, 3 GET. Presence of the six routes the pass specification names as
+expected minima:
 
 | expected route | present | evidence |
 |---|---|---|
@@ -235,6 +253,7 @@ the module imports `argparse`; the rest read positional `sys.argv` or take no ar
 | `eval/dedup_eval.py` | no | Offline evaluation harness for Phase 2 dedup + golden-record election. |
 | `eval/name_eval.py` | yes | Name-block evaluation against the solved reference (§5). |
 | `llm/test_connection.py` | no | Standalone LLM connection test — run before any other testing. |
+| `main.py` | no | Local development entry point — runs FastAPI via uvicorn. |
 | `scripts/ch02_measure.py` | no | Chapter 2 (Problem Description) frequency measurements. |
 | `scripts/debug_ucsf.py` | no | Debug harness: run ONE record (UCSF / Sarah Chen) through the |
 | `scripts/fix_reports.py` | yes | Build the per-row tables and the before/after delta for Fixes 2 and 3. |
@@ -253,8 +272,31 @@ the module imports `argparse`; the rest read positional `sys.argv` or take no ar
 | `tools/run_diff.py` | yes | Diff two enrichment runs of the same batch. The reproducibility gate. |
 | `tools/shuffle_evidence.py` | no | Reverse the order of every candidate list inside a recorded evidence cache. |
 
-`scripts/cache_state.py` (`scripts/cache_state.py:1`, 28 LOC) carries a module docstring
-but no `__main__` block and is imported by no module in the repository — see §0.6.
+21 CLI entry points. `scripts/cache_state.py` (`scripts/cache_state.py:1`, 28 LOC) carries a
+module docstring but no `__main__` block and is imported by no module in the repository —
+see §0.6.
+
+### 0.4.4 Which routes have an exported caller
+
+`adf/` holds four exported Azure Data Factory pipeline definitions at this commit. Each one
+is a Lookup → Web activity → stored-procedure chain against one route. The URLs are read
+from the JSON, not from the README.
+
+| pipeline (`name`) | file | route called | merge-back stored procedure |
+|---|---|---|---|
+| Enrichment Pipeline | `adf/enrichment_pipeline.json:1` | `POST https://mdm-pipeline-api.azurewebsites.net/enrich` | `dbo.usp_merge_legacy_enriched` |
+| Issues Pipeline | `adf/issues_pipeline.json:1` | `POST https://mdm-pipeline-api.azurewebsites.net/issues/json` | `dbo.usp_merge_legacy_issues` |
+| Deduplication Pipeline | `adf/deduplication_pipeline.json:1` | `POST https://mdm-pipeline-api.azurewebsites.net/api/dedup/cluster-block` | `dbo.usp_merge_validation_clusters` |
+| Scoring Pipeline | `adf/scoring_pipeline.json:1` | `POST https://mdm-pipeline-api.azurewebsites.net/api/dedup/score` | `dbo.usp_merge_validation_scores` |
+
+All four declare the same two parameters, `chrEntity` and `chrGroupCode`, and the same Web
+activity timeout `0.12:00:00`. Only `adf/enrichment_pipeline.json` wraps its Web activity in
+a `ForEach`; the other three call the route once per pipeline run. The remaining twelve
+routes have no exported caller in this repository. Pass 02 reads these files in full; this
+pass records only which route each one addresses.
+
+The `Issues Pipeline` calls `/issues/json`, not `/issues` — the JSON twin, not the file
+endpoint. Both run the same detection path (§0.5.4).
 
 ## 0.5 Call graphs per entry point
 
@@ -283,21 +325,22 @@ flowchart TD
 Legend:
 
 1. `enrich_records` — `api/routes.py:107`
-2. `_get_orchestrator` — `api/routes.py:69`
-3. `Orchestrator.enrich_batch` — `enrichment/orchestrator.py:4290`
-4. `clear_ror_cache` — called `enrichment/orchestrator.py:4300`, defined `enrichment/tier1_ror.py` (imported `enrichment/orchestrator.py:153`)
+2. `_get_orchestrator` — `api/routes.py:70`, called `api/routes.py:116`
+3. `Orchestrator.enrich_batch` — `enrichment/orchestrator.py:4290`, called `api/routes.py:124`
+4. `clear_ror_cache` — called `enrichment/orchestrator.py:4300`, defined in `enrichment/tier1_ror.py` (imported `enrichment/orchestrator.py:153`)
 5. `clear_lei_cache` — called `enrichment/orchestrator.py:4301`, imported `enrichment/orchestrator.py:147`
 6. `reset_consistency_counters` — called `enrichment/orchestrator.py:4302`, imported `enrichment/orchestrator.py:115`
 7. `Orchestrator._enrich_single` — `enrichment/orchestrator.py:7719`, called under a semaphore at `enrichment/orchestrator.py:4316`
 8. `_init_result` — `enrichment/orchestrator.py:705`, called `enrichment/orchestrator.py:7726` and, on the unhandled-exception path, `enrichment/orchestrator.py:4333`
 9. `normalise_output_fields` — `enrichment/orchestrator.py:2003`, called on the failure path `enrichment/orchestrator.py:4339`
 10. `apply_batch_consensus` — `enrichment/batch_consensus.py:611`, called `enrichment/orchestrator.py:4351`
-11. `Orchestrator._build_summary` — `enrichment/orchestrator.py:9276`
-12. `EnrichmentResponse` — `api/models.py:868`
+11. `Orchestrator._build_summary` — `enrichment/orchestrator.py:9276`, called `enrichment/orchestrator.py:4354`
+12. `EnrichmentResponse` — `api/models.py:868`, returned `enrichment/orchestrator.py:4428`
 
 Concurrency is bounded by `asyncio.Semaphore(options.max_concurrency)`
 (`enrichment/orchestrator.py:4312`); records are gathered with `return_exceptions=True`
-(`enrichment/orchestrator.py:4321`), so one record's exception does not abort the batch.
+(`enrichment/orchestrator.py:4321`), so one record's exception does not abort the batch —
+the record is rebuilt as a `failed` result at `enrichment/orchestrator.py:4335–4342`.
 
 ### 0.5.2 POST /enrich — tier ladder inside `_enrich_single`
 
@@ -315,9 +358,10 @@ flowchart TD
     A --> K[run_tier2_canonical]
     A --> L[run_tier2a]
     L --> M[_apply_tier2a]
-    A --> N[run_tier3]
-    N --> O[_apply_tier3]
-    A --> P[_finalise_and_return]
+    A --> N[run_grounded_resolver]
+    A --> O[run_tier3]
+    O --> P[_apply_tier3]
+    A --> Q[_finalise_and_return]
 ```
 
 Legend:
@@ -335,9 +379,10 @@ Legend:
 11. `run_tier2_canonical` — `enrichment/tier2_canonical.py:179`, called `enrichment/orchestrator.py:8864`, `:9083`
 12. `run_tier2a` — `enrichment/tier2a_contact.py:70`, called `enrichment/orchestrator.py:9041`, `:5278`
 13. `_apply_tier2a` — `enrichment/orchestrator.py:3849`, called `enrichment/orchestrator.py:9104`
-14. `run_tier3` — `enrichment/tier3_llm.py:74`, called `enrichment/orchestrator.py:9174`, `:7048`
-15. `_apply_tier3` — `enrichment/orchestrator.py:3914`, called `enrichment/orchestrator.py:9189`, `:7063`
-16. `Orchestrator._finalise_and_return` — `enrichment/orchestrator.py:7067`
+14. `run_grounded_resolver` — `enrichment/grounded_resolver.py:526`, called `enrichment/orchestrator.py:9141`
+15. `run_tier3` — `enrichment/tier3_llm.py:74`, called `enrichment/orchestrator.py:9174`, `:7048`
+16. `_apply_tier3` — `enrichment/orchestrator.py:3914`, called `enrichment/orchestrator.py:9189`, `:7063`
+17. `Orchestrator._finalise_and_return` — `enrichment/orchestrator.py:7067`
 
 The ladder is an escalation with early exits, not a fan-out: `_finalise_and_return` is
 called from 11 distinct return sites inside `_enrich_single`
@@ -345,6 +390,10 @@ called from 11 distinct return sites inside `_enrich_single`
 `:8761`, `:9110`, `:9261`, `:9271`), and from two sites outside it —
 `_resolve_person_affiliation` (`enrichment/orchestrator.py:5334`) and
 `_return_canonical_short_circuit` (`enrichment/orchestrator.py:5697`).
+
+`enrichment/tier2b_dept.py` declares a fourth Tier 2 lane, `run_tier2b`
+(`enrichment/tier2b_dept.py:48`). It appears in no diagram because it has no call site in
+production code — see §0.6 and §0.9 (⚠-6).
 
 ### 0.5.3 POST /enrich — finalisation
 
@@ -435,6 +484,11 @@ Legend:
 15. `_input_alias_to_field` — `api/routes.py:144`, called `api/routes.py:170`
 16. `_norm_header` — `api/routes.py:133`
 
+`detect_issues` dispatches six detectors in fixed order and returns catalogue order:
+`_detect_wrong_field` (`:1041`), `_detect_missing` (`:1175`), `_detect_duplicate` (`:1282`),
+`_detect_format` (`:1386`), `_detect_naming` (`:1411`), `_detect_enrichment_flags` (`:1623`)
+— `enrichment/issue_detection.py:1700–1705`, result ordered at `:1711`.
+
 `_audit_rows` is documented as the single detection path behind `/issues` and
 `/issues/json` (`api/routes.py:767`). ⚠ `/issues/compare` does not use it: its
 `_audit_upload` helper repeats the four detection calls inline (`api/routes.py:475–490`) —
@@ -477,8 +531,8 @@ Legend:
 10. `_mode_b` — `dedup/adjudicator.py:586`, called `dedup/adjudicator.py:1352`
 11. `_adjudicate_residue` — `dedup/adjudicator.py:814`, called `dedup/adjudicator.py:1357`
 12. `_enforce_address_split` — `dedup/adjudicator.py:367`, called `dedup/adjudicator.py:1368`
-13. `_enforce_identity_split` — `dedup/adjudicator.py:188`, called `dedup/adjudicator.py:1376`
-14. `_reasoning_disowns_membership` — `dedup/adjudicator.py:426`, called `dedup/adjudicator.py:1380`
+13. `_enforce_identity_split` — `dedup/adjudicator.py:188`, called `dedup/adjudicator.py:1375`
+14. `_reasoning_disowns_membership` — `dedup/adjudicator.py:426`, called `dedup/adjudicator.py:1379`
 15. `_institution_links` — `dedup/adjudicator.py:1026`, called `dedup/adjudicator.py:1392` (block-local) and `:1518`, `:1521` (request-level)
 16. `_emit_rows` — `dedup/adjudicator.py:1187`, called `dedup/adjudicator.py:1395`
 17. `_merge_link_maps` — `dedup/adjudicator.py:1120`, called `dedup/adjudicator.py:1523`
@@ -566,8 +620,8 @@ Legend:
 13. `consolidate_values` — `dedup/consolidate.py:106`, called `dedup/consolidate.py:253–254`
 
 Rows in equals rows out and inputs are shallow-copied, not mutated
-(`dedup/consolidate.py:358`, `:360–361`). The batch-boundary warning is a heuristic over the first
-and last row positions only, not a guarantee (`dedup/consolidate.py:365–369`).
+(`dedup/consolidate.py:358`, `:360–361`). The batch-boundary warning is a heuristic over the
+first and last row positions only, not a guarantee (`dedup/consolidate.py:365–369`).
 
 ### 0.5.8 File-upload routes
 
@@ -578,29 +632,39 @@ diagrammed.
 |---|---|---|
 | `/enrich/file` | `Orchestrator.enrich_batch` (§0.5.1) | `api/routes.py:701` |
 | `/issues` | `_audit_rows` (§0.5.4) | `_parse_xlsx` `api/routes.py:227`, `_build_issues_xlsx` `api/routes.py:430` |
-| `/issues/compare` | `_audit_rows` (§0.5.4) | `_audit_upload` `api/routes.py:456`, `_build_comparison_xlsx` `api/routes.py:503` |
+| `/issues/compare` | `detect_issues` via `_audit_upload` (§0.5.4) | `_audit_upload` `api/routes.py:456`, `_build_comparison_xlsx` `api/routes.py:503` |
 | `/api/preprocess/consolidate/file` | `consolidate_rows` (§0.5.7) | `consolidate_workbook` `dedup/consolidate_xlsx.py` (imported `api/routes.py:37`) |
 | `/api/dedup/file` | `cluster_blocks` (§0.5.5) | `api/routes.py:1361` |
 | `/api/dedup/score/file` | `elect_golden_records` (§0.5.6) | `score_workbook` `dedup/scoring_xlsx.py` (imported `api/routes.py:56`) |
+
+Seven call graphs, 109 cited nodes.
 
 ## 0.6 Dead and unreferenced code
 
 Nothing is deleted. Two scans were run over the 206 tracked `.py` files.
 
-**Scan 1 — modules never imported.** Every module outside `tests/test_*.py`, `scripts/`,
-`tools/`, `eval/name_eval.py`, `llm/test_connection.py`, `main.py` and `function_app.py` is
-imported by at least one other module. The excepted files are entry points (§0.4.1, §0.4.3)
-or pytest-collected test modules, which are loaded by the runner rather than by an import.
-One file is neither:
+**Scan 1 — modules never imported by production code.** Every module outside
+`tests/test_*.py`, `scripts/`, `tools/`, `eval/name_eval.py`, `llm/test_connection.py`,
+`main.py` and `function_app.py` is imported by at least one other module. The excepted files
+are entry points (§0.4.1, §0.4.3) or pytest-collected test modules, which the runner loads
+rather than importing. Two files are neither:
 
 | file | LOC | status |
 |---|---|---|
+| `enrichment/tier2b_dept.py` | 264 | Imported by `tests/test_tier2b.py:13` and by nothing else. No production module imports it and `run_tier2b` (`enrichment/tier2b_dept.py:48`) has no call site outside that test. Its prompt constants are still registered (`llm/prompts.py:654–657`) and a telemetry counter still exists for it (`api/models.py:850`, incremented `enrichment/orchestrator.py:9305` only when `r.tier2_mode == "2B"`), but `tier2_mode` is written at exactly one site, `enrichment/orchestrator.py:3854`, from `Tier2AResult.mode`, which is `"2A_population"` or `"2A_verification"` (`enrichment/tier2a_contact.py:90`) and never `"2B"`. See §0.9 (⚠-6). |
 | `scripts/cache_state.py` | 28 | Has a module docstring (`scripts/cache_state.py:1`) but no `if __name__ == "__main__":` block and no importer anywhere in the repository. Unreferenced. |
 
-**Scan 2 — public module-level symbols referenced nowhere.** A symbol counts as
-unreferenced when its name does not appear in any tracked `.py` file other than its own
-definition line. FastAPI route handlers are excluded: they are registered by decorator
-(§0.4.2) and are reachable without a name reference.
+**Scan 2 — public module-level symbols referenced nowhere else.** A symbol counts as
+unreferenced when its name appears in no tracked `.py` file other than the one that defines
+it. 137 of the repository's public module-level `def`/`class` names meet that test. They
+split four ways:
+
+| class | count | note |
+|---|---|---|
+| Registered by decorator | 16 | 15 FastAPI route handlers (§0.4.2) plus `http_app_func` (`function_app.py:16`). Reachable without a name reference. |
+| Used only inside their own defining module | 106 | Module-private in practice, public by name. Live code; not listed. |
+| Referenced only by tests | 6 | `assert_admissible` `enrichment/provenance.py:1262`; `confidence_band` `enrichment/provenance.py:214`; `fixture_handler` `scripts/ror_repro.py:103`; `reset_seed_support` `llm/openai_client.py:122`; `run_tier2b` `enrichment/tier2b_dept.py:48`; `unit_domain_or_path` `enrichment/search_terms.py:301`. |
+| Referenced nowhere at all | 9 | Listed below. |
 
 | symbol | file:line | note |
 |---|---|---|
@@ -614,8 +678,10 @@ definition line. FastAPI route handlers are excluded: they are registered by dec
 | `truncate_text` | `utils/text_utils.py:63` | Public function, no caller and no test. |
 | `safe_enriched_value` | `utils/text_utils.py:124` | Public function, no caller and no test. |
 
-A further 41 public symbols are used only inside their own defining module (module-private
-in practice, public by name). They are live code and are not listed here.
+**Signature discrepancy.** `_process_block` is annotated
+`-> tuple[List[DedupResultRow], BlockStats]` (`dedup/adjudicator.py:1326`) and returns a
+three-element tuple, `out, stats, entities` (`dedup/adjudicator.py:1417`); the caller unpacks
+three (`dedup/adjudicator.py:1496`). The annotation is wrong, not the code. See §0.9 (⚠-5).
 
 ## 0.7 Test inventory
 
@@ -644,7 +710,7 @@ FAILED tests/test_orchestrator.py::TestOrchestrator::test_web_search_fallback_fo
 FAILED tests/test_orchestrator.py::TestOrchestrator::test_web_search_determines_record_type
 FAILED tests/test_orchestrator.py::TestTier2AVerificationMergeLayer::test_low_score_medium_confidence_keeps_record_value
 FAILED tests/test_orchestrator.py::TestTier2AVerificationMergeLayer::test_low_score_high_confidence_overwrites_record_value
-12 failed, 3857 passed, 12 skipped, 1 xfailed, 1 warning in 18.02s
+12 failed, 3857 passed, 12 skipped, 1 xfailed, 1 warning in 16.27s
 ```
 
 The one warning is `NotOpenSSLWarning` from `urllib3` (LibreSSL 2.8.3 under the system
@@ -652,20 +718,22 @@ Python), not a test warning.
 
 ### 0.7.2 Failing test names
 
-| # | test | file |
-|---|---|---|
-| 1 | `test_conflicting_ror_not_merged_verdict_guard` | `tests/test_dedup.py` (assertion at `tests/test_dedup.py:204`) |
-| 2 | `test_conflicting_lei_not_merged_verdict_guard` | `tests/test_dedup.py` (assertion at `tests/test_dedup.py:240`) |
-| 3 | `test_no_signal_pair_not_nominated_reason_empty_ok` | `tests/test_dedup.py` (assertion at `tests/test_dedup.py:528`) |
-| 4 | `test_mode_b_canonical_assignment_produces_correct_clusters` | `tests/test_dedup.py` (assertion at `tests/test_dedup.py:682`) |
-| 5 | `test_route_cluster_block_identical_rows` | `tests/test_dedup.py` (assertion at `tests/test_dedup.py:999`) |
-| 6 | `TestIssueDetectionAppliesToEverySlot::test_department_in_a_lower_slot_is_not_reported_missing` | `tests/test_name_slot_parity.py` |
-| 7 | `TestOrchestrator::test_tier1_full_resolution` | `tests/test_orchestrator.py` |
-| 8 | `TestOrchestrator::test_tier1_to_tier2a_verification` | `tests/test_orchestrator.py` |
-| 9 | `TestOrchestrator::test_web_search_fallback_for_name1` | `tests/test_orchestrator.py` |
-| 10 | `TestOrchestrator::test_web_search_determines_record_type` | `tests/test_orchestrator.py` |
-| 11 | `TestTier2AVerificationMergeLayer::test_low_score_medium_confidence_keeps_record_value` | `tests/test_orchestrator.py` |
-| 12 | `TestTier2AVerificationMergeLayer::test_low_score_high_confidence_overwrites_record_value` | `tests/test_orchestrator.py` |
+Assertion sites are read from the tracebacks of the same run.
+
+| # | test | file | assertion |
+|---|---|---|---|
+| 1 | `test_conflicting_ror_not_merged_verdict_guard` | `tests/test_dedup.py` | `tests/test_dedup.py:204` |
+| 2 | `test_conflicting_lei_not_merged_verdict_guard` | `tests/test_dedup.py` | `tests/test_dedup.py:240` |
+| 3 | `test_no_signal_pair_not_nominated_reason_empty_ok` | `tests/test_dedup.py` | `tests/test_dedup.py:528` |
+| 4 | `test_mode_b_canonical_assignment_produces_correct_clusters` | `tests/test_dedup.py` | `tests/test_dedup.py:682` |
+| 5 | `test_route_cluster_block_identical_rows` | `tests/test_dedup.py` | `tests/test_dedup.py:999` |
+| 6 | `TestIssueDetectionAppliesToEverySlot::test_department_in_a_lower_slot_is_not_reported_missing` | `tests/test_name_slot_parity.py` (def `:172`) | `tests/test_name_slot_parity.py:180` |
+| 7 | `TestOrchestrator::test_tier1_full_resolution` | `tests/test_orchestrator.py` (def `:45`) | `tests/test_orchestrator.py:59` |
+| 8 | `TestOrchestrator::test_tier1_to_tier2a_verification` | `tests/test_orchestrator.py` (def `:81`) | `tests/test_orchestrator.py:104` |
+| 9 | `TestOrchestrator::test_web_search_fallback_for_name1` | `tests/test_orchestrator.py` (def `:355`) | `tests/test_orchestrator.py:369` |
+| 10 | `TestOrchestrator::test_web_search_determines_record_type` | `tests/test_orchestrator.py` (def `:400`) | `tests/test_orchestrator.py:411` |
+| 11 | `TestTier2AVerificationMergeLayer::test_low_score_medium_confidence_keeps_record_value` | `tests/test_orchestrator.py` (def `:521`) | `tests/test_orchestrator.py:529` |
+| 12 | `TestTier2AVerificationMergeLayer::test_low_score_high_confidence_overwrites_record_value` | `tests/test_orchestrator.py` (def `:536`) | `tests/test_orchestrator.py:544` |
 
 ### 0.7.3 Failing set against `tests/KNOWN_FAILURES.md`
 
@@ -698,12 +766,14 @@ in the code at this commit — see §0.9 (⚠-3).
 
 ### 0.7.4 Per-file test inventory
 
-Counts are from a `--junit-xml` run of the same suite (3882 test cases: 3857 passed,
-12 failed, 12 skipped, 1 xfailed). "Covers (module)" lists the project modules the test
-file imports directly; `—` means the file imports no project module at import time (it
-reaches the code through shared scaffolding in `tests/dedup_v2_support.py`). "Purpose" is
-the first line of the module docstring, verbatim — some are the first line of a sentence
-that continues onto the next line.
+Counts are from a `--junit-xml` run of the same suite
+(`python3 -m pytest -q --junit-xml=junit.xml`; 3882 test cases: 3857 passed, 12 failed,
+12 skipped, 1 xfailed), aggregated per module from each `testcase` element's `classname`.
+"Covers (module)" lists the project modules the test file imports directly; `—` means the
+file imports no project module at import time (it reaches the code through shared
+scaffolding in `tests/dedup_v2_support.py`). "Purpose" is the first line of the module
+docstring, verbatim — some are the first line of a sentence that continues onto the next
+line.
 
 | file | LOC | purpose (first docstring line, verbatim) | covers (module) | result |
 |---|---|---|---|---|
@@ -721,14 +791,14 @@ that continues onto the next line.
 | `tests/test_canonical_identity.py` | 164 | Identity guard: canonicalisation must not swap in a different company. | enrichment.company_canonical, utils.text_utils | 43/43 pass |
 | `tests/test_canonicalise_unit_name.py` | 42 | canonicalise_unit_name: reorder real units, but never fabricate a | utils.text_utils | 11/11 pass |
 | `tests/test_classifier.py` | 64 | Tests for record classification — now derived from ROR org types (Bug 1 fix). | enrichment.tier1_ror | 12/12 pass |
-| `tests/test_dedup.py` | 1005 | Tests for the Phase 2 dedup adjudicator (POST /api/dedup/cluster-block). | api.app, dedup.adjudicator, dedup.llm, dedup.models, dedup.signatures | 31/36 pass (**5 FAIL**) |
+| `tests/test_dedup.py` | 1005 | Tests for the Phase 2 dedup adjudicator (POST /api/dedup/cluster-block). | api.app, dedup.adjudicator, dedup.llm, dedup.models, dedup.signatures | 31/36 pass, 5 fail |
 | `tests/test_dedup_eval.py` | 105 | Tests for the offline dedup evaluation harness (eval/dedup_eval.py). | eval.dedup_eval | 5/5 pass |
-| `tests/test_dedup_v2.py` | 369 | The dedup v2 expectations, asserted with all three flags on. | — | 125/131 pass (5 skip, 1 xfail) |
+| `tests/test_dedup_v2.py` | 369 | The dedup v2 expectations, asserted with all three flags on. | — | 125/131 pass, 5 skipped, 1 xfail |
 | `tests/test_dedup_v2_blocking.py` | 488 | Delivery-point blocking — ``DEDUP_V2_BLOCKING`` (change B). | api.routes, config, dedup.address, dedup.adjudicator, dedup.models, dedup.signatures | 57/57 pass |
 | `tests/test_dedup_v2_flags_off.py` | 144 | Flags off, nothing moves: the v2 code path must reproduce v1 exactly. | — | 3/3 pass |
 | `tests/test_dedup_v2_id_conflict.py` | 188 | ROR/LEI conflict routing — ``DEDUP_V2_ID_CONFLICT`` (change D). | dedup.adjudicator, dedup.signatures | 9/9 pass |
 | `tests/test_dedup_v2_name2.py` | 759 | Name-2 slot classification — ``DEDUP_V2_NAME2`` (change C). | api.routes, config, dedup.adjudicator, dedup.candidates, dedup.models, dedup.name_slots, dedup.prompts, dedup.signatures | 51/51 pass |
-| `tests/test_dept_block.py` | 892 | `enrichment.dept_block` — the single authority for Name 2..5. | api.models, enrichment.dept_block, enrichment.orchestrator, enrichment.preprocess, enrichment.provenance, enrichment.tier2_canonical, utils.name_identity, utils.text_utils | 130/132 pass (2 skip) |
+| `tests/test_dept_block.py` | 892 | `enrichment.dept_block` — the single authority for Name 2..5. | api.models, enrichment.dept_block, enrichment.orchestrator, enrichment.preprocess, enrichment.provenance, enrichment.tier2_canonical, utils.name_identity, utils.text_utils | 130/132 pass, 2 skipped |
 | `tests/test_dept_domain_probe.py` | 584 | Department-domain candidate matching, incl. abbreviated subdomains | config, enrichment.orchestrator, search.base, search.page_fetcher, utils.cache | 80/80 pass |
 | `tests/test_determinism.py` | 1951 | Determinism and cross-source consistency — Fixes A, B, C and D. | api.models, config, enrichment, enrichment.company_canonical, enrichment.consistency, enrichment.flags, enrichment.locality, enrichment.orchestrator, enrichment.page_corroborator, enrichment.person_affiliation, enrichment.provenance, enrichment.registry_match, enrichment.tier1_lei, enrichment.tier1_ror, enrichment.tier3_llm, llm, llm.openai_client, llm.prompts, search.base, utils.cache | 90/90 pass |
 | `tests/test_domain_from_website.py` | 134 | The institution ``domain`` is derived from a resolved ``website_url`` when | api.models, config, enrichment.orchestrator, utils.cache | 7/7 pass |
@@ -748,10 +818,10 @@ that continues onto the next line.
 | `tests/test_name_from_street_canonical.py` | 286 | A name fetched out of a street field is normalised, not shipped verbatim. | api.models, enrichment.orchestrator, enrichment.preprocess | 27/27 pass |
 | `tests/test_name_identity_verdicts.py` | 136 | The three-verdict identity comparison (§1b). | utils.name_identity | 32/32 pass |
 | `tests/test_name_repack.py` | 432 | UC 0 — a name split across SAP columns is repaired, not reported. | api.models, config, enrichment.name_repack, enrichment.orchestrator, enrichment.registry_match | 25/25 pass |
-| `tests/test_name_slot_parity.py` | 204 | Every name rule applies to every name slot, not just Name 1 / Name 2. | api.models, api.output_columns, enrichment.flags, enrichment.issue_detection, enrichment.preprocess, utils.name_slots | 18/19 pass (**1 FAIL**) |
+| `tests/test_name_slot_parity.py` | 204 | Every name rule applies to every name slot, not just Name 1 / Name 2. | api.models, api.output_columns, enrichment.flags, enrichment.issue_detection, enrichment.preprocess, utils.name_slots | 18/19 pass, 1 fail |
 | `tests/test_named_building.py` | 198 | Named building in a name field is routed to the Building output. | enrichment.preprocess | 33/33 pass |
 | `tests/test_named_school_not_inverted.py` | 121 | A trailing "School" is the last word of a name, not a unit word. | api.models, enrichment.orchestrator, utils.text_utils | 18/18 pass |
-| `tests/test_orchestrator.py` | 548 | Tests for the enrichment orchestrator — full pipeline end-to-end with mocks. | api.models, config, enrichment.orchestrator | 16/22 pass (**6 FAIL**) |
+| `tests/test_orchestrator.py` | 548 | Tests for the enrichment orchestrator — full pipeline end-to-end with mocks. | api.models, config, enrichment.orchestrator | 16/22 pass, 6 fail |
 | `tests/test_org_in_street.py` | 134 | An organisation name sitting in a street field moves to the name block. | enrichment.preprocess | 26/26 pass |
 | `tests/test_output_casing.py` | 547 | Fix 5: one finalisation normaliser on every exit path. | api.models, config, enrichment.orchestrator, utils.text_utils | 87/87 pass |
 | `tests/test_page_corroborator.py` | 690 | Fix 3: the page-read corroborator. | api.models, config, enrichment.confidence, enrichment.flags, enrichment.orchestrator, enrichment.page_corroborator, enrichment.provenance, llm.prompts, search.page_fetcher, utils.cache | 48/48 pass |
@@ -767,7 +837,7 @@ that continues onto the next line.
 | `tests/test_preprocess_consolidate.py` | 673 | Tests for the row-grain -> customer-grain consolidation stage. | api.app, dedup.consolidate, dedup.consolidate_xlsx, dedup.scoring | 51/51 pass |
 | `tests/test_preprocess_populated_slot.py` | 206 | A slot preprocessing filled from another input field is not a blank slot. | api.models, enrichment.orchestrator, enrichment.preprocess, enrichment.tier3_llm | 10/10 pass |
 | `tests/test_provenance.py` | 806 | Fix 10: per-field provenance and admissibility. | api.models, api.output_columns, config, enrichment.batch_consensus, enrichment.orchestrator, enrichment.provenance, llm, llm.prompts | 57/57 pass |
-| `tests/test_provenance_scheme_b.py` | 739 | Provenance Scheme B — ``source:confidence[+witness]``. | enrichment.confidence, enrichment.flags, enrichment.orchestrator, enrichment.page_corroborator, enrichment.provenance, enrichment.wikidata, llm.prompts | 65/70 pass (5 skip) |
+| `tests/test_provenance_scheme_b.py` | 739 | Provenance Scheme B — ``source:confidence[+witness]``. | enrichment.confidence, enrichment.flags, enrichment.orchestrator, enrichment.page_corroborator, enrichment.provenance, enrichment.wikidata, llm.prompts | 65/70 pass, 5 skipped |
 | `tests/test_record_type_authority.py` | 413 | ``record_type`` has one authority: :mod:`enrichment.classifier`. | api.models, config, enrichment.classifier, enrichment.elf_codes, enrichment.orchestrator, utils.cache | 41/41 pass |
 | `tests/test_registry_alias_incumbent.py` | 213 | A record that already states one of the registry's OWN names keeps it. | api.models, config, enrichment.orchestrator, enrichment.tier1_ror | 14/14 pass |
 | `tests/test_registry_name_authority.py` | 487 | Fix 4: a verified registry match owns the output name. | api.models, config, enrichment.orchestrator, enrichment.tier1_ror, utils.text_utils | 119/119 pass |
@@ -807,44 +877,50 @@ that continues onto the next line.
 | `tests/test_website_resolver.py` | 1477 | Tests for Path A/B/C website resolution. | api.models, config, enrichment.orchestrator, enrichment.provenance, enrichment.registry_match, enrichment.tier1_ror, enrichment.website_resolver, search.base, utils.cache, utils.domain_resolver, utils.name_identity | 93/93 pass |
 | `tests/test_wikidata.py` | 1040 | The Wikidata crosswalk lane. | api.models, config, enrichment.flags, enrichment.orchestrator, enrichment.provenance, enrichment.unchanged_state, enrichment.wikidata, utils.cache | 55/55 pass |
 
-`tests/dedup_v2_support.py` (965 LOC) and `tests/conftest.py` (256 LOC) are collected as
-scaffolding, not as test modules, and contribute no test cases.
-
-## 0.8 Structural absences observed while building this inventory
+## 0.8 Structural observations made while building this inventory
 
 Recorded here as fact; the passes named take them up.
 
 | observation | evidence | taken up by |
 |---|---|---|
-| There is no `adf/` directory and no ADF pipeline JSON anywhere in the tree. `git ls-files` returns no `.json` file outside `dedup/weights.json`, `host.json`, `issues_request.json`, `.vscode/*.json`, `tests/fixtures/*.json` and `eval/out/*.json`. | `git ls-files '*.json'` | Pass 02 |
-| `sql/` contains three procedures, not four: `usp_merge_legacy_enriched.sql`, `usp_merge_validation_clusters.sql`, `usp_merge_validation_scores.sql`. There is no `usp_MergeLegacyIssues` file. | `git ls-files sql/` | Pass 02 |
+| `adf/` holds four exported pipelines — `Enrichment Pipeline`, `Issues Pipeline`, `Deduplication Pipeline`, `Scoring Pipeline` — each parameterised on `chrEntity` and `chrGroupCode` (§0.4.4). | `adf/enrichment_pipeline.json:1`, `adf/issues_pipeline.json:1`, `adf/deduplication_pipeline.json:1`, `adf/scoring_pipeline.json:1` | Pass 02 |
+| No pipeline JSON exists for the consolidation stage, although `README.md:3441` places `POST /api/preprocess/consolidate/file` first in the production sequence, before `/enrich`. | `git ls-files adf/` returns four files, none calling a `/api/preprocess/` URL | Pass 02, Pass 19 |
+| No `Entity_BasicFlow` pipeline JSON exists. The name appears in the repository only in the pass specifications (`docs/thesis-doc-prompt-v2.md:78`, `:270`), never in an exported definition or in code. | `grep -rn 'Entity_BasicFlow' .` | Pass 02, Pass 19 |
+| `sql/` contains all four merge procedures. Each declares schema `[Mapping]` and a PascalCase name: `[Mapping].[usp_MergeLegacyEnriched]`, `[Mapping].[usp_MergeLegacyIssues]`, `[Mapping].[usp_MergeValidationClusters]`, `[Mapping].[usp_MergeValidationScores]`. | `sql/usp_merge_legacy_enriched.sql:1`, `sql/usp_merge_legacy_issues.sql:1`, `sql/usp_merge_validation_clusters.sql:1`, `sql/usp_merge_validation_scores.sql:1` | Pass 02 |
+| The four ADF stored-procedure activities name schema `dbo` and the snake_case form: `dbo.usp_merge_legacy_enriched`, `dbo.usp_merge_legacy_issues`, `dbo.usp_merge_validation_clusters`, `dbo.usp_merge_validation_scores` — neither the schema nor the identifier casing of the `CREATE PROCEDURE` statements in `sql/`. | ADF: `"storedProcedureName"` in each of the four `adf/*.json`; SQL: the `CREATE PROCEDURE` clauses cited in the row above | Pass 02 (⚠-7) |
+| Two of the four procedures declare `DECLARE @db SYSNAME = N'dp_validation'; -- <<< confirm` — an unresolved marker carried in the shipped body. | `sql/usp_merge_validation_clusters.sql:1`, `sql/usp_merge_validation_scores.sql:1` | Pass 02 |
 | `weights.json` is at `dedup/weights.json`, not at the repository root. | `dedup/weights.json` (57 LOC, last touched 2026-09-05) | Pass 04 |
-| `data/eval/` holds twelve workbooks named `S{1..5}_pre.xlsx` / `S{1..5}_post.xlsx` plus `stress_200_pre.xlsx` and `stress_200_scored.xlsx` — not the `demo_S{1..5}_*_issues.xlsx` naming the pass specification anticipates. | `git ls-files data/eval/` | Pass 07 |
-| The clustering/scoring test workbooks named in the pass specification exist under `docs/thesis/`, not `data/eval/`: `docs/thesis/dedup_STRESS_200_v1-verified.xlsx`, `docs/thesis/dedup_STRESS_200_v1_enriched_dedup.xlsx`, `docs/thesis/test-all-100-original_enriched (4).xlsx`. | `git ls-files docs/thesis/` | Pass 07 |
-| Two Excel lock files are tracked: `docs/thesis/~$chemspeed_us_100.xlsx`, `docs/thesis/~$dedup_STRESS_200_v1-verified.xlsx`. | `git ls-files docs/thesis/` | Pass 07 |
-| The superseded `docs/thesis/00_INVENTORY.md` carries header `Generated: 2026-08-16 · Commit: 515cc7c1a84f55f817d63b4f3f094ce47d57f7fd · Branch: diag/website-trace`. The superseded `docs/thesis/11_DELTA.md` carries `Commit: d4fc46938514c9a7d249979c4aa9b4ae4cf3e564 · Branch: main` — that is the Pass 11 baseline. | `docs/thesis/00_INVENTORY.md:1`, `docs/thesis/11_DELTA.md:1` | Pass 11 |
+| `data/eval/` holds sixteen workbooks: `S{1..5}_pre.xlsx` / `S{1..5}_post.xlsx`, `stress_200_pre.xlsx`, `stress_200_scored.xlsx`, `dedup_STRESS_200_v1-verified.xlsx`, `dedup_STRESS_200_v1_enriched_dedup.xlsx`, `test-all-100-original.xlsx`, `test-all-100-original_enriched (4).xlsx`. The last four moved into `data/eval/` from `docs/thesis/` at this commit. | `git ls-files data/eval/`; `git show --stat ea6f9d9` | Pass 07, Pass 18 |
+| Two Excel lock files remain tracked under `docs/thesis/`: `~$chemspeed_us_100.xlsx`, `~$dedup_STRESS_200_v1-verified.xlsx`. | `git ls-files docs/thesis/` | Pass 07 |
+| The superseded `docs/thesis/11_DELTA.md` carries header `Commit: d4fc46938514c9a7d249979c4aa9b4ae4cf3e564 · Branch: main` — that is the Pass 11 baseline. | `docs/thesis/11_DELTA.md:1` | Pass 11 |
+| No Python source file changed between the previous documentation run's commit (`eb924e6`) and this one. `git diff --stat eb924e6..HEAD` lists only `adf/*.json` (new), four `sql/*.sql`, four moved workbooks and three `docs/` files. Every code citation carried by this documentation set therefore addresses the same bytes at both commits. | `git diff --stat eb924e6..HEAD` | Pass 11 |
 
 ## 0.9 Unknowns and discrepancies raised in this pass
 
 | id | severity | statement | code side | other side |
 |---|---|---|---|---|
-| ⚠-1 | medium | The Function App is deployed with anonymous HTTP auth, while a route docstring claims key/function auth. | `function_app.py:11`: `func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)` | `api/routes.py:1337–1339`: "Auth is inherited from the Azure Function App (same key/function-auth pattern as the other endpoints)". |
+| ⚠-1 | medium | The Function App is deployed with anonymous HTTP auth, while a route docstring claims key/function auth. | `function_app.py:12`: `func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)` | `api/routes.py:1337–1339`: "Auth is inherited from the Azure Function App (same key/function-auth pattern as the other endpoints)". |
 | ⚠-2 | low | `_audit_rows` is documented as the one detection path, but `/issues/compare` bypasses it. | `api/routes.py:475–490` repeats `_rows_to_records`, `_present_fields`, `detect_issues`, `_flag_for_review`, `_flag_codes` inline inside `_audit_upload` | `api/routes.py:767`: "The one detection path behind both ``/issues`` and ``/issues/json``" — the docstring names only those two routes, so the claim is narrow, but the duplication is a second detection path in fact. |
 | ⚠-3 | high | The gate that `tests/KNOWN_FAILURES.md` says asserts the failing set does not exist in the code, and the recorded set no longer matches the observed set. | `pytest -q` at this commit: 12 failed, 3857 passed, 12 skipped, 1 xfailed (§0.7.1). No `.py` file references `KNOWN_FAILURES` | `tests/KNOWN_FAILURES.md:3–5`, `:7`: "A gate asserts the failing set is exactly this manifest … 8 failed, 3311 passed, 7 skipped"; `eval/out/RUNS.md:370`: "now pinned in `tests/KNOWN_FAILURES.md`, which every future gate asserts against as a SET". |
 | ⚠-4 | medium | Five `tests/test_dedup.py` failures are outside the recorded manifest and have no recorded explanation anywhere in the repository. | §0.7.2 rows 1–5; assertions at `tests/test_dedup.py:204`, `:240`, `:528`, `:682`, `:999` | `tests/KNOWN_FAILURES.md:41`: "None is a flake — each is a stable assertion failure at every commit tested" — a statement made about a manifest that does not include these five. |
-| ⚠-5 | low | Nine public functions are defined and referenced nowhere, including by tests. | §0.6 scan 2 | — |
-| ⚠-6 | low | `scripts/cache_state.py` is neither imported nor executable as a script. | `scripts/cache_state.py:1` (docstring), no `__main__` block, no importer | — |
-| ⚠-7 | low | Four evidence-cache namespaces the frozen evaluation set depends on are absent from this commit. | `.gitignore:37–40` ignores `tests/fixtures/serp/`, `tests/fixtures/registry/`, `tests/fixtures/fetch/`, `tests/fixtures/llm/`; none is tracked | `.gitignore:33–36`: "the runs behind determinism_findings.md were measured against exactly that". |
-| ⚠-8 | medium | The repository is not pinned to a Python version and the only interpreter present is 3.9.6; no `python` executable exists on PATH. | `python3 -V` → `Python 3.9.6`; `which python` → not found | `requirements.txt` (14 LOC) declares no `python_requires`; there is no `pyproject.toml`, `setup.py`, `.python-version` or `runtime.txt` in `git ls-files`. |
+| ⚠-5 | low | `_process_block`'s return annotation is a 2-tuple and the function returns a 3-tuple. | `dedup/adjudicator.py:1326`: `-> tuple[List[DedupResultRow], BlockStats]`; `dedup/adjudicator.py:1417`: `return out, stats, entities`; unpacked as three at `dedup/adjudicator.py:1496` | — |
+| ⚠-6 | medium | Tier 2B ships as a complete module with tests and a registered prompt, but has no production call site, and its telemetry counter is unreachable. | `run_tier2b` `enrichment/tier2b_dept.py:48` is imported only by `tests/test_tier2b.py:13`. `tier2_mode` is written once, `enrichment/orchestrator.py:3854`, from `Tier2AResult.mode` ∈ {`"2A_population"`, `"2A_verification"`} (`enrichment/tier2a_contact.py:90`). `summary.tier2b_count` (`api/models.py:850`) increments only when `r.tier2_mode == "2B"` (`enrichment/orchestrator.py:9304–9305`) | `enrichment/orchestrator.py:8764–8766` names Tier 2B as a downstream option: "the record falls through to tier 2 canonical / 2A / 2B / 3, any of which may settle Name 2". Tier 2B is not among them at this commit. |
+| ⚠-7 | medium | The ADF stored-procedure activities and the `sql/` procedure definitions disagree on schema and identifier casing, so no exported pipeline names a procedure this repository defines. | `sql/*.sql:1` each declare `CREATE PROCEDURE [Mapping].[usp_Merge…]` | `adf/*.json` each set `"storedProcedureName"` to `dbo.usp_merge_…`. Resolution depends on the deployed database, which this repository does not record. |
+| ⚠-8 | low | The four `sql/` files are each stored as a single physical line with no line terminator, so no statement inside them can be cited by line. | `file sql/*.sql` → "ASCII text, with very long lines, with no line terminators"; byte lengths 8035, 3472, 3602, 6311 | — |
+| ⚠-9 | low | Four evidence-cache namespaces the frozen evaluation set depends on are absent from this commit. | `.gitignore:37–40` ignores `tests/fixtures/serp/`, `tests/fixtures/registry/`, `tests/fixtures/fetch/`, `tests/fixtures/llm/`; none is tracked | `.gitignore:33–36`: "the runs behind determinism_findings.md were measured against exactly that". |
+| ⚠-10 | low | Nine public functions are defined and referenced nowhere, including by tests. | §0.6 scan 2 | — |
+| ⚠-11 | low | `scripts/cache_state.py` is neither imported nor executable as a script. | `scripts/cache_state.py:1` (docstring), no `__main__` block, no importer | — |
+| ⚠-12 | medium | The repository is not pinned to a Python version and the only interpreter present is 3.9.6; no `python` executable exists on PATH. | `python3 -V` → `Python 3.9.6`; `which python` → not found | `requirements.txt` (14 LOC) declares no `python_requires`; there is no `pyproject.toml`, `setup.py`, `.python-version` or `runtime.txt` in `git ls-files`. |
 
-All eight are carried forward to `08_GAPS.md` in Pass 08.
+All twelve are carried forward to `08_GAPS.md` in Pass 08.
 
 ---
 
-**Pass 00 summary.** Inventoried 1155 tracked files (136 source/config/prose files tabulated,
-five directory groups excluded with reasons), 16 HTTP routes on one anonymous-auth Azure
-Function binding plus 20 CLI entry points, seven call graphs with 108 cited nodes, one
-unreferenced module and nine unreferenced public functions, and a 3882-case test suite
-running 12 failed / 3857 passed / 12 skipped / 1 xfailed — a failing set that matches
-`tests/KNOWN_FAILURES.md` on seven of eight entries and adds five undocumented
-`tests/test_dedup.py` failures; eight ⚠ items raised for Pass 08.
+**Pass 00 summary.** Inventoried 1160 tracked files (138 source/config/prose files
+tabulated, 1025 excluded with reasons across seven groups), 16 HTTP routes on one
+anonymous-auth Azure Function binding plus 21 CLI entry points, four exported ADF pipelines
+naming four of those routes, seven call graphs with 109 cited nodes, two unreferenced
+modules and nine unreferenced public functions, and a 3882-case test suite running 12 failed
+/ 3857 passed / 12 skipped / 1 xfailed — a failing set that matches `tests/KNOWN_FAILURES.md`
+on seven of eight entries and adds five undocumented `tests/test_dedup.py` failures; twelve
+⚠ items raised for Pass 08.

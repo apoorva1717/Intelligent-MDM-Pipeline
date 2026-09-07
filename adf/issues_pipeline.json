@@ -86,7 +86,7 @@
                 },
                 "userProperties": [],
                 "typeProperties": {
-                    "storedProcedureName": "dbo.usp_merge_legacy_issues",
+                    "storedProcedureName": "Mapping.usp_MergeLegacyIssues",
                     "storedProcedureParameters": {
                         "payload": {
                             "value": {

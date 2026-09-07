@@ -1,1 +1,81 @@
-  CREATE   PROCEDURE [Mapping].[usp_MergeValidationScores]      @chrEntity    SYSNAME,      @chrGroupCode NVARCHAR(50),      @payload      NVARCHAR(MAX)  AS  BEGIN      SET NOCOUNT ON;        DECLARE @db  SYSNAME = N'dp_validation';   -- <<< confirm      DECLARE @msg NVARCHAR(400);        ------------------------------------------------------------------      -- Guard 1: entity must exist as a schema in the validation database      ------------------------------------------------------------------      DECLARE @schemaExists INT;      DECLARE @schk NVARCHAR(MAX) =          N'SELECT @x = COUNT(*) FROM ' + QUOTENAME(@db) + N'.sys.schemas WHERE name = @e;';      EXEC sp_executesql @schk, N'@e SYSNAME, @x INT OUTPUT', @e = @chrEntity, @x = @schemaExists OUTPUT;        IF @schemaExists = 0      BEGIN          SET @msg = N'Entity schema ' + @chrEntity + N' does not exist in ' + @db + N'.';          THROW 50001, @msg, 1;      END;        ------------------------------------------------------------------      -- Guard 2: group code must be supplied and exist in the entity Validation      ------------------------------------------------------------------      IF NULLIF(LTRIM(RTRIM(@chrGroupCode)), N'') IS NULL      BEGIN          THROW 50002, N'Group code is required.', 1;      END;        -- Group code is scoped by the code prefix: <groupcode>_<source key>      DECLARE @pat NVARCHAR(60) = LTRIM(RTRIM(@chrGroupCode)) + N'\_%';      DECLARE @esc NCHAR(1)     = N'\';      DECLARE @tgt NVARCHAR(300) = QUOTENAME(@db) + N'.' + QUOTENAME(@chrEntity) + N'.Validation';      DECLARE @cnt INT;      DECLARE @chk NVARCHAR(MAX) =          N'SELECT @c = COUNT(*) FROM ' + @tgt + N' WHERE [code] LIKE @pat ESCAPE @esc;';        EXEC sp_executesql @chk, N'@pat NVARCHAR(60), @esc NCHAR(1), @c INT OUTPUT', @pat = @pat, @esc = @esc, @c = @cnt OUTPUT;        IF @cnt = 0      BEGIN          SET @msg = N'Group code ' + @chrGroupCode + N' has no rows in entity ' + @chrEntity + N'.';          THROW 50003, @msg, 1;      END;        ------------------------------------------------------------------      -- Static SQL: parse the /api/dedup/score response      ------------------------------------------------------------------      IF OBJECT_ID(N'tempdb..#src') IS NOT NULL DROP TABLE #src;        SELECT *      INTO #src      FROM OPENJSON(@payload, N'$.rows')      WITH (          Customer                        NVARCHAR(100) N'$."Customer"',          score_final                     FLOAT         N'$.score_final',          Company_Code_Count              INT           N'$.Company_Code_Count',          Sales_Org_Count                 INT           N'$.Sales_Org_Count',          Salesforce_Instance_Count       INT           N'$.Salesforce_Instance_Count',          is_golden_record                BIT           N'$.is_golden_record',          golden_record_id                NVARCHAR(100) N'$.golden_record_id',          proposed_golden_id              NVARCHAR(100) N'$.proposed_golden_id',          election_status                 NVARCHAR(30)  N'$.election_status',          approval_status                 NVARCHAR(30)  N'$.approval_status',          scored_with_weights_version     NVARCHAR(50)  N'$.scored_with_weights_version',          score_SalesOrderLastUsed        FLOAT         N'$.score_SalesOrderLastUsed',          score_SalesOrderCount           FLOAT         N'$.score_SalesOrderCount',          score_SalesOrderPartnerLastUsed FLOAT         N'$.score_SalesOrderPartnerLastUsed',          score_SalesOrderPartnerCount    FLOAT         N'$.score_SalesOrderPartnerCount',          score_EquipmentCount            FLOAT         N'$.score_EquipmentCount',          score_SleepingCustomer          FLOAT         N'$.score_SleepingCustomer',          score_CustomerStatus            FLOAT         N'$.score_CustomerStatus',          score_AccountGroup              FLOAT         N'$.score_AccountGroup',          score_CompanyCodeCount          FLOAT         N'$.score_CompanyCodeCount',          score_CombinedPresence          FLOAT         N'$.score_CombinedPresence',          score_SalesforceInstances       FLOAT         N'$.score_SalesforceInstances'      );        ------------------------------------------------------------------      -- Dynamic SQL: only database and schema are spliced in      ------------------------------------------------------------------      DECLARE @sql NVARCHAR(MAX) = N'      MERGE ' + @tgt + N' AS tgt      USING #src AS src         ON tgt.Customer = src.Customer        AND tgt.[code] LIKE @pat ESCAPE @esc      WHEN MATCHED THEN UPDATE SET          tgt.[score_final]                     = src.score_final,          tgt.[Company_Code_Count]              = src.Company_Code_Count,          tgt.[Sales_Org_Count]                 = src.Sales_Org_Count,          tgt.[Salesforce_Instance_Count]       = src.Salesforce_Instance_Count,          tgt.[is_golden_record]                = src.is_golden_record,          tgt.[golden_record_id]                = src.golden_record_id,          tgt.[proposed_golden_id]              = src.proposed_golden_id,          tgt.[election_status]                 = src.election_status,          tgt.[approval_status]                 = src.approval_status,          tgt.[scored_with_weights_version]     = src.scored_with_weights_version,          tgt.[score_SalesOrderLastUsed]        = src.score_SalesOrderLastUsed,          tgt.[score_SalesOrderCount]           = src.score_SalesOrderCount,          tgt.[score_SalesOrderPartnerLastUsed] = src.score_SalesOrderPartnerLastUsed,          tgt.[score_SalesOrderPartnerCount]    = src.score_SalesOrderPartnerCount,          tgt.[score_EquipmentCount]            = src.score_EquipmentCount,          tgt.[score_SleepingCustomer]          = src.score_SleepingCustomer,          tgt.[score_CustomerStatus]            = src.score_CustomerStatus,          tgt.[score_AccountGroup]              = src.score_AccountGroup,          tgt.[score_CompanyCodeCount]          = src.score_CompanyCodeCount,          tgt.[score_CombinedPresence]          = src.score_CombinedPresence,          tgt.[score_SalesforceInstances]       = src.score_SalesforceInstances;';        EXEC sp_executesql @sql, N'@pat NVARCHAR(60), @esc NCHAR(1)', @pat = @pat, @esc = @esc;        DROP TABLE #src;  END;  
+CREATE PROCEDURE [Mapping].[usp_MergeValidationScores]
+    @chrEntity SYSNAME,
+    @chrGroupCode NVARCHAR(50),
+    @payload NVARCHAR(MAX)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @db SYSNAME = N'dp_validation';  -- <<< confirm
+    DECLARE @msg NVARCHAR(400);
+
+    ------------------------------------------------------------------
+    -- Guard 1: entity must exist as a schema in the validation database
+    ------------------------------------------------------------------
+    DECLARE @schemaExists INT;
+    DECLARE @schk NVARCHAR(MAX) = N'SELECT @x = COUNT(*) FROM ' + QUOTENAME(@db) + N'.sys.schemas WHERE name = @e;';
+    EXEC sp_executesql @schk, N'@e SYSNAME, @x INT OUTPUT', @e = @chrEntity, @x = @schemaExists OUTPUT;
+    IF @schemaExists = 0
+    BEGIN
+        SET @msg = N'Entity schema ' + @chrEntity + N' does not exist in ' + @db + N'.';
+        THROW 50001, @msg, 1;
+    END;
+
+    ------------------------------------------------------------------
+    -- Guard 2: group code must be supplied and exist in the entity Validation
+    ------------------------------------------------------------------
+    IF NULLIF(LTRIM(RTRIM(@chrGroupCode)), N'') IS NULL
+    BEGIN
+        THROW 50002, N'Group code is required.', 1;
+    END;
+    -- Group code is scoped by the code prefix: <groupcode>_<source key>
+    DECLARE @pat NVARCHAR(60) = LTRIM(RTRIM(@chrGroupCode)) + N'\_%';
+    DECLARE @esc NCHAR(1) = N'\';
+    DECLARE @tgt NVARCHAR(300) = QUOTENAME(@db) + N'.' + QUOTENAME(@chrEntity) + N'.Validation';
+    DECLARE @cnt INT;
+    DECLARE @chk NVARCHAR(MAX) = N'SELECT @c = COUNT(*) FROM ' + @tgt + N' WHERE [code] LIKE @pat ESCAPE @esc;';
+    EXEC sp_executesql @chk, N'@pat NVARCHAR(60), @esc NCHAR(1), @c INT OUTPUT', @pat = @pat, @esc = @esc, @c = @cnt OUTPUT;
+    IF @cnt = 0
+    BEGIN
+        SET @msg = N'Group code ' + @chrGroupCode + N' has no rows in entity ' + @chrEntity + N'.';
+        THROW 50003, @msg, 1;
+    END;
+
+    ------------------------------------------------------------------
+    -- Static SQL: parse the /api/dedup/score response
+    ------------------------------------------------------------------
+    IF OBJECT_ID(N'tempdb..#src') IS NOT NULL DROP TABLE #src;
+    SELECT *
+    INTO #src
+    FROM OPENJSON(@payload, N'$.rows')
+    WITH (
+        Customer NVARCHAR(100) N'$."Customer"',
+        score_final FLOAT N'$.score_final',
+        Company_Code_Count INT N'$.Company_Code_Count',
+        Sales_Org_Count INT N'$.Sales_Org_Count',
+        Salesforce_Instance_Count INT N'$.Salesforce_Instance_Count',
+        is_golden_record BIT N'$.is_golden_record',
+        golden_record_id NVARCHAR(100) N'$.golden_record_id',
+        proposed_golden_id NVARCHAR(100) N'$.proposed_golden_id',
+        election_status NVARCHAR(30) N'$.election_status',
+        approval_status NVARCHAR(30) N'$.approval_status',
+        scored_with_weights_version NVARCHAR(50) N'$.scored_with_weights_version',
+        score_SalesOrderLastUsed FLOAT N'$.score_SalesOrderLastUsed',
+        score_SalesOrderCount FLOAT N'$.score_SalesOrderCount',
+        score_SalesOrderPartnerLastUsed FLOAT N'$.score_SalesOrderPartnerLastUsed',
+        score_SalesOrderPartnerCount FLOAT N'$.score_SalesOrderPartnerCount',
+        score_EquipmentCount FLOAT N'$.score_EquipmentCount',
+        score_SleepingCustomer FLOAT N'$.score_SleepingCustomer',
+        score_CustomerStatus FLOAT N'$.score_CustomerStatus',
+        score_AccountGroup FLOAT N'$.score_AccountGroup',
+        score_CompanyCodeCount FLOAT N'$.score_CompanyCodeCount',
+        score_CombinedPresence FLOAT N'$.score_CombinedPresence',
+        score_SalesforceInstances FLOAT N'$.score_SalesforceInstances'
+    );
+
+    ------------------------------------------------------------------
+    -- Dynamic SQL: only database and schema are spliced in
+    ------------------------------------------------------------------
+    DECLARE @sql NVARCHAR(MAX) = N'      MERGE ' + @tgt + N' AS tgt      USING #src AS src         ON tgt.Customer = src.Customer        AND tgt.[code] LIKE @pat ESCAPE @esc      WHEN MATCHED THEN UPDATE SET          tgt.[score_final]                     = src.score_final,          tgt.[Company_Code_Count]              = src.Company_Code_Count,          tgt.[Sales_Org_Count]                 = src.Sales_Org_Count,          tgt.[Salesforce_Instance_Count]       = src.Salesforce_Instance_Count,          tgt.[is_golden_record]                = src.is_golden_record,          tgt.[golden_record_id]                = src.golden_record_id,          tgt.[proposed_golden_id]              = src.proposed_golden_id,          tgt.[election_status]                 = src.election_status,          tgt.[approval_status]                 = src.approval_status,          tgt.[scored_with_weights_version]     = src.scored_with_weights_version,          tgt.[score_SalesOrderLastUsed]        = src.score_SalesOrderLastUsed,          tgt.[score_SalesOrderCount]           = src.score_SalesOrderCount,          tgt.[score_SalesOrderPartnerLastUsed] = src.score_SalesOrderPartnerLastUsed,          tgt.[score_SalesOrderPartnerCount]    = src.score_SalesOrderPartnerCount,          tgt.[score_EquipmentCount]            = src.score_EquipmentCount,          tgt.[score_SleepingCustomer]          = src.score_SleepingCustomer,          tgt.[score_CustomerStatus]            = src.score_CustomerStatus,          tgt.[score_AccountGroup]              = src.score_AccountGroup,          tgt.[score_CompanyCodeCount]          = src.score_CompanyCodeCount,          tgt.[score_CombinedPresence]          = src.score_CombinedPresence,          tgt.[score_SalesforceInstances]       = src.score_SalesforceInstances;';
+    EXEC sp_executesql @sql, N'@pat NVARCHAR(60), @esc NCHAR(1)', @pat = @pat, @esc = @esc;
+    DROP TABLE #src;
+END;
