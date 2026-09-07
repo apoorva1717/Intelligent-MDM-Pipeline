@@ -1,271 +1,202 @@
-Generated: 2026-08-16 · Commit: 515cc7c1a84f55f817d63b4f3f094ce47d57f7fd · Branch: diag/website-trace
+Generated: 2026-09-07 · Commit: eb924e62686e36020b08b9faff8e88f30172a5e1 · Branch: feature/llm-fixes · Pass: 01
 
-# Pass 1 — Requirements Traceability
+# Pass 01 — Requirements traceability
 
-This document maps every requirement the repository defines to its implementation and its
-evidence, and — per the amendment to this pass — assigns a new `X-` requirement ID to every
-behaviour present in code but absent from any pre-existing requirement list, documenting each
-to the same standard. Nothing implemented is treated as out of scope.
+Tree state: `git status --porcelain` reports one modified path,
+`docs/thesis/00_INVENTORY.md` — the Pass 00 output written into `docs/thesis/` by this
+documentation run. No tracked source, test, SQL or configuration file differs from
+`eb924e62686e36020b08b9faff8e88f30172a5e1`; `git diff --stat` lists that single file.
+Every citation below is read at that commit.
 
-`Test` cites a test file whose subject is the requirement; a requirement with no such test is
-marked `none`. `Status ∈ implemented / partial / not implemented / superseded`. Suite status
-for all cited test files is from the single Pass-0 run (`3 failed, 1019 passed`); the three
-failures are confined to `tests/test_orchestrator.py`.
+## 1.1 Requirement-ID systems present in the repository
 
----
+Four ID systems carry requirement-like identity at this commit. Each is named, not invented.
 
-## Amendment 2026-08-17 — reachability corrections from Pass 3
+| system | where declared | range at this commit |
+|---|---|---|
+| Use cases (`UC n`) | `README.md:1332` ("Use Case Reference Table"), table at `README.md:1336–1350`, plus section headers and `ResultState.note(uc, reason)` tags in `enrichment/preprocess.py:135–138` | README declares UC 0 and UC 2–13. Code additionally emits UC 14, 15, 16, 17. UC 1 is declared nowhere. |
+| Issue Catalogue codes (`Gn-…`) | `ISSUE_CATALOGUE`, `enrichment/issue_detection.py:260–423` | 43 declared: 33 `status="live"`, 10 `status="withdrawn"`. Groups G1–G7. |
+| Fix identifiers (`Fix n`, `Fix A–D`) | Comment and docstring markers throughout `enrichment/` | `Fix 1`–`Fix 10`, `Fix A`–`Fix D`. Change-tracking labels, not requirement statements: no file enumerates them, and none carries acceptance criteria. Not traced as requirements here. |
+| Review items (`Item n`) | Test docstrings only (e.g. `tests/test_smart_title_case.py:1`, `tests/test_pipe_splitter_inversion.py:1`) | `Item 1`–`Item 9`. Labels for a review list that is not in the repository. Not traced as requirements here. |
 
-Pass 3 established that two Name-2 procedures are present in the source but cannot execute in
-the running pipeline. A requirement whose implementation cannot be reached is not `implemented`,
-however complete the module behind it. The following rows changed; every other row is unaltered.
+**`FR-1 … FR-36` do not exist in this repository.** `grep -rn 'FR-[0-9]'` over the whole
+tree returns exactly one hit, `docs/thesis-doc-prompt-v2.md:68` — the pass specification
+itself. No source file, test, README section, SQL file or configuration declares an `FR-`
+identifier. ⚠ The functional-requirement numbering the pass specification anticipates is not
+a repository artefact; §1.5 (⚠-9) records this.
 
-| Row | Was | Now | Reason |
-|---|---|---|---|
-| UC 4 | implemented | **partial** | The "discover" half (Mode A, populating a blank Name 2) runs; the "verify" half (Mode B) is unreachable by construction — the orchestrator gate admits only records whose Name 2 is blank (`enrichment/orchestrator.py:2451-2457`) while the mode selector requires it populated (`enrichment/tier2a_contact.py:80`) |
-| X-31 | *(new row)* | **not implemented** | Tier 2B department search exists as a complete module but has no call site and no import in the orchestrator (`enrichment/orchestrator.py:37-59`); back-filled per the Table 2 note below |
+`EP-`, `DD-` and `X-` identifiers likewise return no hits outside `docs/thesis/`. They appear
+only in the superseded `docs/thesis/01_TRACEABILITY.md`, which assigned them itself. This
+pass does not carry them forward.
 
-Table 2's closing note already anticipates back-filling from Pass 3 ("Additional X-items may
-surface there and should be back-filled here"), which is the basis for adding X-31 rather than
-leaving the behaviour untraced.
+## 1.2 Table 1a — Use cases
 
-**Checked and deliberately not changed.** UC 5 (normalise Name 2 to official wording) remains
-`implemented`: it is served by `run_tier2_canonical` at a call site independent of Tier 2A
-(`enrichment/orchestrator.py:2384`), which requires a *populated* field to act on
-(`:2367-2374`) and is reached for `record_type ∈ {research_institution, company}` with a
-resolved Name 1 (`:2362-2365`). The distinction that matters for the thesis: an existing Name 2
-**is** normalised to official wording by an LLM working from the name alone, but it is **not**
-verified or corrected against retrieved web evidence. X-11 and X-13 mention "verify" in the
-sense of the department-domain probe (`_verify_candidate_url`) and are unrelated to Tier 2A
-verification; both are unchanged. The G-series, EP-series and DD-series tables are unaffected.
+`Implemented in` cites the code that performs the behaviour and, where the run records the
+use case, the site that appends the number to `use_cases_triggered`
+(`enrichment/orchestrator.py:810` initialises the list). `Test` cites a test file whose
+subject is the behaviour; `none` where no test file has it as its subject.
 
-The history of how both procedures became unreachable is `09_DECISIONS.md` (D-1); the
-consequences are listed in `08_GAPS.md`.
+| ID | requirement (README wording, verbatim where quoted) | implemented in | test | status |
+|---|---|---|---|---|
+| UC 0 | "Name1 Overflow Detection … Both Name1 + Name2 non-blank → LLM checks if it's one split name; flags if yes" (`README.md:1338`) | `run_overflow_check_block` `enrichment/overflow_check.py:154`, called `enrichment/orchestrator.py:7770`; repair by `enrichment/name_repack.py`; prompt `llm/prompts.py:7`; recorded `enrichment/orchestrator.py:7818–7819` | `tests/test_name_repack.py`, `tests/test_output_casing.py` | implemented |
+| UC 1 | — no requirement text exists. The number is skipped by `README.md:1338–1350` and never passed to `note()` or appended to `use_cases_triggered`. | none | none | not implemented |
+| UC 2 | "Institution ROR Resolution … ROR match found → Enriches Name1 with official ROR name" (`README.md:1339`) | `RORClient.call` `enrichment/tier1_ror.py:1769`, called `enrichment/orchestrator.py:8103`; recorded `enrichment/orchestrator.py:6017–6018`, `:7713–7714`, `:8276–8277`, `:8567–8568` | `tests/test_tier1.py`, `tests/test_registry_name_authority.py` (neither names "UC 2") | implemented |
+| UC 3 | "Company Name Canonicalization … GLEIF/LEI registry lookup first (official legal name + `lei_id`); LLM canonicalization with geographic context as the fallback when LEI misses" (`README.md:1340`) | `Orchestrator._run_lei_lookup` `enrichment/orchestrator.py:7621` over `enrichment/tier1_lei.py`; LLM fallback `run_company_canonical` `enrichment/company_canonical.py:56`, called `enrichment/orchestrator.py:8436`; recorded `enrichment/orchestrator.py:6095–6096`, `:7715–7716`, `:8278–8279`, `:8569–8570` | `tests/test_tier1_lei.py`, `tests/test_canonical_identity.py` (neither names "UC 3") | implemented |
+| UC 4 | "Contact Lookup with Scope Filter … Contact present, ROR hit, domain known → Discovers/verifies Name2 from contact's faculty page" (`README.md:1341`) | `run_tier2a` `enrichment/tier2a_contact.py:70`, mode chosen at `:88` (`"2A_population"` when Name 2 blank, `"2A_verification"` otherwise); gate `can_do_contact_lookup` `enrichment/orchestrator.py:8778–8783`; called `enrichment/orchestrator.py:9040`; recorded `:9108–9109` | `tests/test_tier2a_population.py`, `tests/test_tier2a_verification.py` | implemented |
+| UC 5 | "Department Canonicalization … Name2 present, ROR hit, no child match → LLM normalizes department name to official wording" (`README.md:1342`) | `run_tier2_canonical` `enrichment/tier2_canonical.py:179`, called `enrichment/orchestrator.py:8864` and `:9083`; gate `can_canonical` `enrichment/orchestrator.py:8790–8793`; scope filter `utils/text_utils.py:1016–1018`; recorded `enrichment/orchestrator.py:8968–8969` | `tests/test_tier2_canonical_downgrade.py`, `tests/test_tier2_canonical_medium.py` | implemented |
+| UC 6 | "Accounts Payable Recognition … AP pattern detected → Flags as accounts payable for special handling" (`README.md:1343`) | `enrichment/preprocess.py:181` (section), `res.note(6, …)` `enrichment/preprocess.py:2250`, applied `:2216`; orchestrator write path `enrichment/orchestrator.py:8620–8639`, evidence tag `"uc6:accounts-payable-normalised"` `:8630` | `tests/test_ap_desk_split.py` | implemented |
+| UC 7 | "Contact Person Extraction … Person name in name fields → Moves person name to `contact` field" (`README.md:1344`) | `enrichment/preprocess.py:1605` (section), `res.note(7, …)` `:2208`, `:2212`, `:2510`, `:2514`; Pattern A loop `:2160–2173`, Pattern B2 LLM classifier `:1830` | `tests/test_person_in_name1.py`, `tests/test_person_org_in_street.py` | implemented |
+| UC 8 | "Email Copy (Non-Destructive) … Email address in name or address fields → Copies email to `email` field; source preserved" (`README.md:1345`) | `enrichment/preprocess.py:315` (section), `res.note(8, …)` `:2282`, `:2299`; applied `:2253`; accumulator `ResultState.add_email` `enrichment/preprocess.py:140` | `tests/test_multiple_emails.py` | implemented |
+| UC 9 | "Address Extraction … Street address in name fields → Moves address to `street1`/`street2`/`street3` fields" (`README.md:1346`) | `enrichment/preprocess.py:371` (section), `res.note(9, …)` `:1961`, `:1979`, `:1983`, `:2362`, `:2366`, `:2370`; applied `:2302`, `:2347` | `tests/test_street_org_split.py`, `tests/test_address_in_name_slot.py` | implemented |
+| UC 10 | "Opaque Code Detection … Internal code/ID in name fields → Flags as non-name data" (`README.md:1347`) | `enrichment/preprocess.py:692` (section), `res.note(10, …)` `:1864`, `:2468`; applied `:2463` | `tests/test_leading_code_strip.py` | implemented |
+| UC 11 | "DBA Normalization … 'Doing Business As' variant in name fields → Rewrites variant to canonical 'DBA'" (`README.md:1348`) | `enrichment/preprocess.py:620` (section), `_normalise_dba` referenced `:2126–2132`, `res.note(11, …)` `:2445`; applied `:2435` | `tests/test_dept_block.py` (DBA marker behaviour, `tests/test_dept_block.py:738–739`) | implemented |
+| UC 12 | "Duplicate Name Clearing … Name1==Name2 or Name2==Name3 (case/whitespace insensitive) → Silently clears the duplicate field" (`README.md:1349`) | `enrichment/preprocess.py:2635` (section), `res.note(12, …)` `:1876`, `:1935`, `:2403`, `:2407`, `:2432`; bracketed-span rule `:2374–2377` | `tests/test_canonical_dedup.py`, `tests/test_strip_parentheticals.py` | implemented |
+| UC 13 | "Lab → Parent Department Resolution … Name2 is a granular unit (lab/group/centre/core/facility) at a research institution with a known domain → SERP + page fetch + LLM extracts the parent academic department; parent → Name2, lab → Name3 (when Name3 empty)" (`README.md:1350`) | `run_lab_resolver` `enrichment/lab_resolver.py:48`, called `enrichment/orchestrator.py:8667`; prompt `llm/prompts.py:151`; recorded `enrichment/orchestrator.py:8759–8760`, `:8768–8769` | `tests/test_lab_resolver.py` | implemented — but the number is shared, see ⚠-10 |
+| UC 14 | Name-slot consolidation: the name block is packed leftward after extraction so a slot emptied by UC 7/8/9 is not left as a hole. Declared in code only (`enrichment/preprocess.py:2588–2596`); absent from the README table. | `enrichment/preprocess.py:2588` (section), `res.note(14, …)` `:2612`, `:2630` | `tests/test_preprocess_populated_slot.py` | implemented |
+| UC 15 | c/o and ATTN extraction from the department slots, as a five-case classifier. Declared in code only (`enrichment/preprocess.py:1133`); absent from the README table. | `enrichment/preprocess.py:1133` (section), `res.note(15, …)` `:1465`, `:1488`, `:1497`, `:1504`, `:1511`, `:1544`, `:1559`, `:1565`; applied `:1938–1939` | `tests/test_uc15_co_attn.py`, `tests/test_preprocess_co_attn.py` | implemented |
+| UC 16 | Institution + embedded department split in Name 1. Declared in code only (`enrichment/preprocess.py:1112`); absent from the README table. | `enrichment/preprocess.py:1112` (section), `res.note(16, …)` `:2024`, `:2027`, `:2047`, `:2050`, `:2072`, `:2080`, `:2100`, `:2112`, `:2156`, `:2541`, `:3095`, `:3104`, `:3108`; applied `:2522` | `tests/test_preprocess_co_attn.py:328` | implemented |
+| UC 17 | Long-form legal-suffix normalisation. Declared in code only (`enrichment/preprocess.py:2448`); absent from the README table. | `enrichment/preprocess.py:2448` (section), `res.note(17, …)` `:2460`; output-side mirror `utils/text_utils.py:1297` | `tests/test_legal_suffix_normalisation.py` | implemented |
 
----
+Use-case numbers the running pipeline can actually record, taken from every write site:
+preprocessing emits **6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17** (`ResultState.note`,
+`enrichment/preprocess.py:135–138`, carried up at `enrichment/orchestrator.py:7861–7863`);
+the orchestrator additionally emits **0, 2, 3, 4, 5, 6, 13** as literals. The union is
+UC 0 and UC 2–17. **UC 1 is emitted by nothing.**
 
-## Requirement-ID sources
+## 1.3 Table 1b — Issue Catalogue codes
 
-Four ID systems already exist in the repository:
+`status="live"` maps to `implemented`; `status="withdrawn"` maps to `superseded`, with the
+declared reason quoted. Every declared code is named by at least one test. Detection sites
+are the raise points; a code marked "flag route" is raised from the enriched record's
+`Flag Codes` column through `FLAG_CODE_ISSUES` (`enrichment/issue_detection.py:1515–1559`)
+rather than from record content.
 
-1. **Use-case numbers (UC).** The README "Use Case Reference Table" (`README.md:655-670`)
-   enumerates UC 0 and UC 2–13. The code additionally defines **UC 14–17** as section headers
-   and `res.note()` tags in `enrichment/preprocess.py` (`preprocess.py:612,633,1560,1704`),
-   which the README table does **not** list. **UC 1 is not defined anywhere** (the sequence
-   skips it in both README and code). These extra/absent numbers are recorded as discrepancies
-   in §Discrepancies and carried in Table 1a with status notes, not relabelled — they are real
-   use-case numbers the code uses.
-2. **Issue-catalogue rule codes (G-series).** `enrichment/issue_detection.py:77-117` defines
-   `_ISSUE_CATALOGUE`, a dict of ~35 codes in five groups: **G1** (cross-field / address / name
-   placement), **G2** (validation / name / contact completeness), **G3** (duplicate / conflict),
-   **G4** (overflow / format), **G5** (canonicalisation form).
-3. **API endpoint contracts.** 13 HTTP routes in `api/routes.py` plus the Azure Function
-   catch-all (`function_app.py:14`). Enumerated in Pass 0 §2.
-4. **Phase-2 dedup contract.** The identity model and rules documented in `README.md`
-   (Phase 2 — Deduplication Adjudicator) and encoded in `dedup/`.
+| ID | requirement (catalogue `name`, verbatim) | implemented in | test | status |
+|---|---|---|---|---|
+| `G1-CROSS-001` | Address Content in Name Field | `_detect_wrong_field` `enrichment/issue_detection.py:1056` | `tests/test_issue_detection.py`, `tests/test_routes.py` | implemented |
+| `G1-CROSS-002` | Org Name in Address Field | `_detect_wrong_field` `enrichment/issue_detection.py:1070` | `tests/test_issue_detection.py` | implemented |
+| `G1-CROSS-003` | Contact Information in Wrong Field | `_detect_wrong_field` `enrichment/issue_detection.py:1077`, `:1082` | `tests/test_issue_detection.py` | implemented |
+| `G1-ADDR-001` | House Number Embedded in Street | `_detect_wrong_field` `enrichment/issue_detection.py:1090` | `tests/test_issue_detection.py` | implemented |
+| `G1-ADDR-003` | Sub-location Embedded in Street | `_detect_wrong_field` `enrichment/issue_detection.py:1099` | `tests/test_issue_detection.py` | implemented |
+| `G1-ADDR-004` | PO Box Embedded in Street | `_detect_wrong_field` `enrichment/issue_detection.py:1105` | `tests/test_issue_detection.py` | implemented |
+| `G1-ADDR-006` | Mail Code in Street Field | `_detect_wrong_field` `enrichment/issue_detection.py:1128`, `:1134` | `tests/test_issue_detection.py` | implemented |
+| `G1-ADDR-011` | Department Label in Street Field | `_detect_wrong_field` `enrichment/issue_detection.py:1140` | `tests/test_issue_detection.py` | implemented |
+| `G1-NAME-001` | Name Overflow Across Fields | none — declaration only, `enrichment/issue_detection.py:270–274` | `tests/test_issue_catalogue_coverage.py`, `tests/test_issue_detection.py`, `tests/test_name_slot_parity.py` | superseded — withdrawn 2026-09-07; the deterministic heuristic was a proxy for a rule that is LLM-only |
+| `G1-NAME-004` | Empty field in between populated name fields | `_detect_wrong_field` `enrichment/issue_detection.py:1157` | `tests/test_issue_detection.py`, `tests/test_name_slot_parity.py` | implemented |
+| `G1-NAME-013` | SAP Internal Code in Name Field | `_detect_wrong_field` `enrichment/issue_detection.py:1163`; flag route `FLAG_CODE_ISSUES` `enrichment/issue_detection.py:1527` | `tests/test_flag_issue_alignment.py`, `tests/test_issue_detection.py`, `tests/test_routes.py` | implemented |
+| `G1-ADDR-009` | Unclassified Residual in Address | none — declaration only, `enrichment/issue_detection.py:283–287` | `tests/test_issue_detection.py` | superseded — ndd, never emitted; residual classifier not called by /issues |
+| `G2-VAL-001` | Name 1 Missing | `_REQUIRED_FIELD_CODES` `enrichment/issue_detection.py:497`, consumed `_detect_missing` `:1189` | `tests/test_issue_detection.py`, `tests/test_routes.py` | implemented |
+| `G2-VAL-002` | Postal Code Missing | `_REQUIRED_FIELD_CODES` `enrichment/issue_detection.py:498`, consumed `_detect_missing` `:1189` | `tests/test_issue_detection.py`, `tests/test_routes.py` | implemented |
+| `G2-VAL-004` | Region Missing | `_REQUIRED_FIELD_CODES` `enrichment/issue_detection.py:499`, consumed `_detect_missing` `:1189` | `tests/test_issue_detection.py` | implemented |
+| `G2-VAL-007` | Search Term 1 Missing | `_REQUIRED_FIELD_CODES` `enrichment/issue_detection.py:500`, consumed `_detect_missing` `:1189` | `tests/test_issue_detection.py`, `tests/test_routes.py` | implemented |
+| `G2-VAL-008` | Country Missing | `_REQUIRED_FIELD_CODES` `enrichment/issue_detection.py:501`, consumed `_detect_missing` `:1189` | `tests/test_issue_detection.py` | implemented |
+| `G2-NAME-009` | Lab Without Department | `_detect_missing` `enrichment/issue_detection.py:1266` | `tests/test_issue_detection.py` | implemented |
+| `G2-NAME-012` | Research Institution Missing Department (Name 2 blank or holds only an administrative desk) | `_detect_missing` `enrichment/issue_detection.py:1254` | `tests/test_issue_detection.py`, `tests/test_name_slot_parity.py`, `tests/test_routes.py` | implemented |
+| `G2-CONTACT-008` | No Contact and No Department | none — declaration only, `enrichment/issue_detection.py:305–312` | `tests/test_issue_detection.py` | superseded — Struck through in Catalogue v2. Its gate was identical to G2-NAME-012's, so it could never carry information the latter had not already reported. |
+| `G2-CONTACT-009` | Department Missing And Enrichable from Contact | none — declaration only, `enrichment/issue_detection.py:313–322` | `tests/test_issue_detection.py` | superseded — Struck through in Catalogue v2. Withdrawing it removed the contact-based (Tier 2A) department recovery path, which is why G2-NAME-012 now sits in G6 — no automated route to a department remains. |
+| `G3-NAME-003` | DBA Pattern in Name Field | `_detect_duplicate` `enrichment/issue_detection.py:1289` | `tests/test_issue_detection.py` | implemented |
+| `G3-NAME-005` | Duplicate Name Across Fields | `_detect_duplicate` `enrichment/issue_detection.py:1297` | `tests/test_issue_detection.py`, `tests/test_name_slot_parity.py` | implemented |
+| `G3-NAME-006` | Site Qualifier in Name Conflicts With Address | flag route only — `FLAG_CODE_ISSUES` `enrichment/issue_detection.py:1530` | `tests/test_flag_issue_alignment.py`, `tests/test_issue_detection.py` | implemented |
+| `G3-ADDR-005` | Multiple PO Boxes on Record | `_detect_duplicate` `enrichment/issue_detection.py:1309` | `tests/test_issue_detection.py` | implemented |
+| `G3-ADDR-012` | Duplicate Street Across Fields | `_detect_duplicate` `enrichment/issue_detection.py:1325` | `tests/test_issue_detection.py`, `tests/test_street_fragment_dedup.py` | implemented |
+| `G3-ADDR-013` | Two Distinct Street Addresses on Record | `_detect_duplicate` `enrichment/issue_detection.py:1351` | `tests/test_issue_catalogue_coverage.py`, `tests/test_issue_detection.py` | implemented |
+| `G3-ADDR-014` | PO Box and Street Both Present | `_detect_duplicate` `enrichment/issue_detection.py:1355` | `tests/test_issue_detection.py` | implemented |
+| `G3-CONTACT-007` | Multiple Contacts on Record | `_detect_duplicate` `enrichment/issue_detection.py:1359`; flag route `:1528` | `tests/test_flag_issue_alignment.py`, `tests/test_issue_detection.py` | implemented |
+| `G3-CONTACT-010` | Multiple Email Addresses on Record | `_detect_duplicate` `enrichment/issue_detection.py:1379`; flag route `:1529` | `tests/test_flag_issue_alignment.py`, `tests/test_issue_detection.py`, `tests/test_routes.py` | implemented |
+| `G4-NAME-015` | Name Overflow Beyond the Name Block | `_detect_format` `enrichment/issue_detection.py:1390`; flag route `:1554` | `tests/test_flag_issue_alignment.py`, `tests/test_issue_detection.py` | implemented |
+| `G4-ADDR-008` | Bare Sub-location Marker Without Value | none — declaration only, `enrichment/issue_detection.py:353–361` | `tests/test_issue_detection.py`, `tests/test_mail_stop_variants.py` | superseded — a bare marker cannot be separated from a named building ('810 R L Smith Bldg') without a building-name source; false positives on campus addresses outweigh the true hits |
+| `G4-ADDR-025` | Sub-location Overflow Beyond Street 5 | none — declaration only, `enrichment/issue_detection.py:362–366` | `tests/test_issue_detection.py` | superseded — >4 sub-locations, 0/500 observed; `overflow` covers spill |
+| `G4-ADDR-026` | Postal Code Format Invalid | `_detect_format` `enrichment/issue_detection.py:1397` | `tests/test_issue_detection.py`, `tests/test_routes.py` | implemented |
+| `G4-ADDR-027` | Country Code Not ISO 2-letter | `_detect_format` `enrichment/issue_detection.py:1404` | `tests/test_issue_detection.py`, `tests/test_routes.py` | implemented |
+| `G5-NAME-001` | Organisation Name Not in Official Form | `_detect_naming` `enrichment/issue_detection.py:1437` | `tests/test_issue_catalogue_coverage.py`, `tests/test_issue_detection.py`, `tests/test_routes.py` | implemented |
+| `G5-NAME-002` | Unit Name Not in Official Form | `_detect_naming` `enrichment/issue_detection.py:1446` | `tests/test_issue_catalogue_coverage.py`, `tests/test_issue_detection.py`, `tests/test_name_slot_parity.py` | implemented |
+| `G2-VAL-003` | Tax Jurisdiction Missing | none — declaration only, `enrichment/issue_detection.py:380–384` | `tests/test_issue_detection.py`, `tests/test_routes.py` | superseded — SAP-derived field, 65% blank, not master-data scope |
+| `G2-VAL-006` | Language Missing | none — declaration only, `enrichment/issue_detection.py:385–389` | `tests/test_issue_detection.py`, `tests/test_routes.py` | superseded — 99% populated, no defect class |
+| `G6-RESOLVE-001` | Enrichment Could Not Resolve the Record | none — declaration only, `enrichment/issue_detection.py:390–395` | `tests/test_flag_issue_alignment.py`, `tests/test_issue_detection.py`, `tests/test_routes.py` | superseded — group G6 (not resolvable) dissolved; members re-homed in Step D |
+| `G6-CONFIRM-001` | Enriched Value Requires Confirmation | flag route only — `FLAG_CODE_ISSUES` `enrichment/issue_detection.py:1535–1539` | `tests/test_flag_issue_alignment.py`, `tests/test_issue_detection.py`, `tests/test_routes.py` | implemented |
+| `G7-VERIFY-001` | Enriched Record Requires Verification | none — declaration only, `enrichment/issue_detection.py:410–415` | `tests/test_issue_detection.py`, `tests/test_routes.py` | superseded — routing now carried by group membership (already decided 2026-09-02) |
+| `G7-UNCHANGED-001` | Enrichment Left the Value Unestablished | flag route only — `FLAG_CODE_ISSUES` `enrichment/issue_detection.py:1556–1558` | `tests/test_determinism.py`, `tests/test_flag_issue_alignment.py`, `tests/test_issue_detection.py`, `tests/test_routes.py` | implemented |
 
----
+Counts, from `ISSUE_CATALOGUE` at `enrichment/issue_detection.py:260–423`: 43 declared,
+33 live (implemented), 10 withdrawn (superseded). `EMITTED_CODES`
+(`enrichment/issue_detection.py:426–428`) selects exactly the 33 live codes. Per group,
+live / declared: G1 10/12 · G2 7/9 · G3 9/9 · G4 3/5 · G5 2/2 · G6 1/4 · G7 1/2.
+Three live codes have no content detector and can be raised only from `Flag Codes`
+(`G3-NAME-006`, `G6-CONFIRM-001`, `G7-UNCHANGED-001`); `FLAG_CODE_ISSUES` maps 13 flag
+tokens onto 7 distinct codes.
 
-## Table 1a — Use cases (UC)
+## 1.4 Table 2 — Behaviour in code with no requirement
 
-| ID | Requirement (one line) | Implemented in | Test | Status |
-|----|------------------------|----------------|------|--------|
-| UC 0 | Detect Name1+Name2 being one split organisation name (LLM), flag if so | `enrichment/overflow_check.py`; invoked `orchestrator.py:1724`; tag set `orchestrator.py:1750` | none (no dedicated `run_overflow_check` test) | implemented |
-| UC 2 | Resolve institution Name 1 to official ROR name on a ROR match | `tier1_ror.py:848 (call)`; write path `orchestrator.py:1955-2015`; tag `orchestrator.py:1693` | `test_tier1.py`, `test_tier1_ror_country.py`, `test_ror_name_verbatim.py` | implemented |
-| UC 3 | Canonicalise a company name: GLEIF/LEI registry first, LLM geographic fallback | `_run_lei_lookup orchestrator.py:1624`; `run_company_canonical orchestrator.py:2164`; tag `orchestrator.py:1695` | `test_tier1_lei.py`, `test_classifier.py` | implemented |
-| UC 4 | Discover/verify Name 2 from the contact's faculty page (scope-filtered) | `run_tier2a orchestrator.py:2468`; `enrichment/tier2a_contact.py`; tag `orchestrator.py:2531` | `test_tier2a_population.py`, `test_tier2a_verification.py` | **partial** — discovery (Mode A) reachable; verification (Mode B) unreachable by construction (see Amendment 2026-08-17) |
-| UC 5 | Normalise Name 2 department to official wording (LLM) | `run_tier2_canonical orchestrator.py:2384,2508`; `enrichment/tier2_canonical.py`; tag `orchestrator.py:2411` | `test_tier2_canonical_downgrade.py` | implemented |
-| UC 6 | Recognise accounts-payable / admin desks and flag for special handling | `preprocess.py:1476-1482`; admin classifier `text_utils.py:990 is_admin_unit`; tag `orchestrator.py:2270` | `test_search_terms_fixes.py` (is_admin_unit), `test_preprocess_co_attn.py` | implemented |
-| UC 7 | Move a person name out of the name fields into `contact` | `preprocess.py:1584` (extraction), `preprocess.py:1420` (Attn Pattern A) | `test_person_in_name1.py`, `test_person_in_name1_flag.py`, `test_person_org_in_street.py` | implemented |
-| UC 8 | Copy an email from a name/address field to `email` (non-destructive) | `preprocess.py:1485-` | `test_preprocess_co_attn.py` | implemented |
-| UC 9 | Extract a street address embedded in a name field to a street slot | `preprocess.py:1520-` | `test_org_in_street.py`, `test_street_in_name.py`, `test_address_cleanup.py` | implemented |
-| UC 10 | Detect and clear opaque codes / meaningless identifiers in name fields | `preprocess.py:305` (detect), `preprocess.py:1575` (clear) | `test_leading_code_strip.py` | implemented |
-| UC 11 | Normalise a "Doing Business As" variant to canonical "DBA" | `preprocess.py:1547-1557` | none (rewrite itself untested; the ST2 DBA guard is tested in `test_search_terms_fixes.py`) | partial — the normalisation rewrite has no dedicated test |
-| UC 12 | Silently clear an identical duplicate name field | `preprocess.py:1750-` | `test_canonical_dedup.py`, `test_preprocess_co_attn.py` | implemented |
-| UC 13 | Resolve a granular lab's parent academic department (parent→Name2, lab→Name3) | `enrichment/lab_resolver.py`; `run_lab_resolver orchestrator.py:2298`; tag `orchestrator.py:2341,2355` | `test_lab_resolver.py` | implemented |
-| UC 14 | Consolidate name slots (pack Name 2–4 leftward; promote Name 2→Name 1 after person extraction) | `preprocess.py:1704-` | `test_person_org_in_street.py` (promotion), `test_preprocess_co_attn.py` | implemented — ⚠ not in README UC table |
-| UC 15 | c/o + ATTN five-case extraction from Name 2 (person/company/dept/email/title) | `preprocess.py:633,1247`; `_extract_co_attn_from_name2` | `test_uc15_co_attn.py`, `test_preprocess_co_attn.py` | implemented — ⚠ not in README UC table |
-| UC 16 | Split an institution + embedded department in Name 1; route org/dept in a street to the Name block | `preprocess.py:1634` (Name-1 split); street routers `preprocess.py:1288-1389` | `test_street_org_split.py`, `test_street_scope_routing.py`, `test_pipe_splitter_inversion.py`, `test_named_building.py` | implemented — ⚠ not in README UC table |
-| UC 17 | Normalise long-form legal suffixes (e.g. "Aktiengesellschaft"→"AG", "Incorporated"→"Inc") | `preprocess.py:1560-` | `test_legal_suffix_normalisation.py` | implemented — ⚠ not in README UC table |
+Substantive behaviour that no `UC` number and no Issue-Catalogue code states. The `U-n`
+labels are **assigned by this document** for cross-referencing within the thesis; they are
+not repository identifiers and appear in no source file. Ordered by subsystem.
 
-⚠ **UC 13 dual use.** The number 13 tags two distinct behaviours: lab→parent resolution
-(README + `orchestrator.py`) and "Name 3 residual junk cleanup" (`preprocess.py:1664`). The row
-above documents the README-authoritative meaning; the preprocess use is recorded in
-§Discrepancies. ⚠ **UC 1** is undefined in both README and code.
+| ID | behaviour | implemented in | test | note |
+|---|---|---|---|---|
+| U-1 | Deduplication: signature construction, delivery-point blocking, Mode A / Mode B adjudication, residue widening, identity and address split guards, `Link ID` assignment | `dedup/adjudicator.py:1450` (`cluster_blocks`), `dedup/signatures.py:260`, `:302`, `dedup/address.py:160`, `dedup/candidates.py:216`, `dedup/name_slots.py:345` | `tests/test_dedup.py` (5 failing, §0.7.2), `tests/test_dedup_v2*.py`, `tests/test_candidates.py` | Whole Phase 2 "Pass 2". No UC covers it. |
+| U-2 | Golden-record scoring and election: weighted per-row score, cluster year maxima, tie-break, `election_status`, merge confidence | `dedup/scoring.py:903` (`score_row`), `:1151` (`elect_golden_records`), `:1048`, `:1097`, `:1138`; weights `dedup/weights.json` | `tests/test_scoring.py` (210/210 pass) | Phase 2 "Pass 3". Raises its own issues via `dedup/scoring.py:485`, a second issue vocabulary distinct from `ISSUE_CATALOGUE` — see ⚠-11. |
+| U-3 | Steward approve/reject on a proposed cluster, with promotion of the winner into the golden fields | `dedup/scoring.py:605` (`apply_approval`), route `api/routes.py:1488` | `tests/test_scoring.py` | Stateless by design (`api/routes.py:1494–1495`): no durable approval store. |
+| U-4 | Row-grain → customer-grain consolidation of company codes and sales orgs | `dedup/consolidate.py:355` (`consolidate_rows`), `:219`, `:238`; route `api/routes.py:974` | `tests/test_preprocess_consolidate.py` (51/51 pass) | Named in the pass specification as an endpoint to check for, but stated by no requirement. |
+| U-5 | Before/after issue-reduction reporting across two workbooks | `api/routes.py:917` (`compare_file_issues`), `:456`, `:503` | `tests/test_routes.py` | The reduction metric the evaluation depends on; no requirement defines it. |
+| U-6 | Website resolution Paths A/B/C, including SERP selection and LLM inference of an official site | `enrichment/website_resolver.py:721`, `:875`, `:1007`; orchestrator `enrichment/orchestrator.py:4443` | `tests/test_website_resolver.py` (93/93 pass) | |
+| U-7 | Single write path for `domain` / `website_url` plus the domain-ownership guard | `utils/domain_resolver.py:99`, `:121`, `:145`; `_apply_domain` `enrichment/orchestrator.py:3550` | `tests/test_domain_resolver.py` (102/102 pass) | Name-match threshold is a tuned constant; Pass 04 records the value. |
+| U-8 | Wikidata crosswalk lane — pointer and witness, never an authority | `enrichment/wikidata.py:420`, `:462`, `:494`; `Orchestrator._wikidata_crosswalk` `enrichment/orchestrator.py:6107`, `_crosswalk_to_ror` `:6233`, `_crosswalk_to_gleif` `:6325` | `tests/test_wikidata.py` (55/55 pass) | Role enforcement is Pass 06's subject. |
+| U-9 | Liveness / going-concern check on the named organisation | `enrichment/liveness.py:167`, `:202`, `:223`; `Orchestrator._check_liveness` `enrichment/orchestrator.py:6559` | `tests/test_liveness.py` (38/38 pass) | Produces the `entity-superseded` flag; deliberately not mapped to a catalogue code (`enrichment/issue_detection.py:1508–1514`). |
+| U-10 | Batch consensus — one identity per organisation per address, applied after every record is finalised | `enrichment/batch_consensus.py:611` (`apply_batch_consensus`), called `enrichment/orchestrator.py:4351` | `tests/test_batch_consensus.py` (69/69 pass) | Cross-record behaviour; every UC is per-record. |
+| U-11 | Per-field provenance and admissibility (Scheme B: `source:confidence[+witness]`) | `enrichment/provenance.py:436`, `enrichment/confidence.py:187`, `:260`, `:274` | `tests/test_provenance.py`, `tests/test_provenance_scheme_b.py` | |
+| U-12 | Search-handle derivation (`search_term_1`, `search_term_2`) | `enrichment/search_terms.py:1110` (`derive_search_terms`), called `enrichment/orchestrator.py:3215` | `tests/test_search_terms.py`, `tests/test_search_terms_fixes.py` | `G2-VAL-007` requires Search Term 1 to be present but states nothing about how it is derived. |
+| U-13 | Address Stage 1 — clean, extract, route, cross-check, classify, normalise, after the tiers have run | `enrichment/address_processing.py:989` (`process_address`), `:1317`; `Orchestrator._run_address_stage` `enrichment/orchestrator.py:7570` | `tests/test_address_cleanup.py`, `tests/test_street_scope_table.py` | UC 9 covers only extraction out of *name* fields during preprocessing. |
+| U-14 | The universal grounded lane — SERP + one LLM read + registry re-verification | `enrichment/grounded_resolver.py:329`, `:526`; `Orchestrator._grounded_fallthrough` `enrichment/orchestrator.py:6984` | `tests/test_grounded_resolver.py` (27/27 pass) | |
+| U-15 | Page corroboration — read the candidate website and test whether it names this record | `enrichment/page_corroborator.py:244`, `:347`, `:427`; `Orchestrator._corroborate_domain` `enrichment/orchestrator.py:7126` | `tests/test_page_corroborator.py` (48/48 pass) | |
+| U-16 | One write gate for every Name 1 / Name 2 candidate | `enrichment/name_gate.py:171` (`evaluate`), `enrichment/orchestrator.py:1049` (`_write_registry_name`) | `tests/test_llm_name_authoritative.py`, `tests/test_name_identity_verdicts.py` | |
+| U-17 | Three-verdict identity comparison for a proposed canonical name | `utils/name_identity.py:324`, `:441`, `:490` | `tests/test_name_identity_verdicts.py` (32/32 pass) | |
+| U-18 | The three states an unchanged Name 1 can be in | `enrichment/unchanged_state.py:206` (`resolve`), `:306`, `:328` | `tests/test_unchanged_state.py` (22/22 pass) | |
+| U-19 | Review flags computed once from the record's final state | `enrichment/flags.py:1059` (`compute_flags`), called `enrichment/orchestrator.py:3173` | `tests/test_flags.py` (253/253 pass), `tests/test_flag_issue_alignment.py` | The flag vocabulary is the input to `FLAG_CODE_ISSUES`; four flag tokens are deliberately not mapped to any code (`enrichment/issue_detection.py:1499–1514`). |
+| U-20 | Record classification — the single authority for `record_type`, and the provisional `routing_type` that gates the tiers | `enrichment/classifier.py:172` (`classify`), `enrichment/elf_codes.py`; `_classify_record` `enrichment/orchestrator.py:3458` | `tests/test_classifier.py`, `tests/test_record_type_authority.py` (41/41 pass) | Documented at `README.md:1356–1400`, but as mechanism, not as a numbered requirement. |
+| U-21 | The department block (Name 2..5) as one value with one authority | `enrichment/dept_block.py:207` (`classify`), `:246` (`normalise`) | `tests/test_dept_block.py` (130/132 pass, 2 skip) | |
+| U-22 | Cross-source consistency gate — no record ships two contradictory identities | `enrichment/consistency.py:119` (`apply_cross_source_gate`), counters `:206`, `:325`, reset `:330` | `tests/test_determinism.py`, `tests/test_calibration.py` | |
+| U-23 | One locality comparator shared by the page read and the registries | `enrichment/locality.py:79`, `:112`, `:147` | `tests/test_address_in_name_slot.py`, `tests/test_calibration.py` | |
+| U-24 | Registry candidate acceptance — which candidate wins and whether any does | `enrichment/registry_match.py:90`, `:99`, `:129`, `:138` | `tests/test_registry_name_authority.py` (119/119 pass), `tests/test_ror_short_distinctive_token.py` | |
+| U-25 | Person-affiliation lookup (Stage 2b) — a person-only Name 1 gets its institution from the record's own evidence | `enrichment/person_affiliation.py:104` (`run_person_affiliation`); `Orchestrator._resolve_person_affiliation` `enrichment/orchestrator.py:5163`, called `:8058` | `tests/test_person_affiliation.py`, `tests/test_person_affiliation_guard.py` | UC 7 moves a person to `contact`; recovering the institution is a separate behaviour. |
+| U-26 | The evidence cache: namespaced record/replay store keyed on the request, with a frozen mode | `utils/cache.py:131`, `:150`, `:556`; namespaces described `.gitignore:28–40` | `tests/test_cache.py`, `tests/test_cache_normalisation.py` | `CACHE_FROZEN` semantics are Pass 06's subject. |
+| U-27 | Reproducibility gate — diff two enrichment runs of the same batch | `tools/run_diff.py:82`, `:142`, `:196`, `:231` | none — no test file has `tools/run_diff.py` as its subject | Pass 18 must run it to report determinism. |
+| U-28 | Department/division search via SERP + LLM extraction ("Tier 2B") | `enrichment/tier2b_dept.py:48` (`run_tier2b`) | `tests/test_tier2b.py` (4/4 pass) | **Present but unwired.** `run_tier2b` is imported only by `tests/test_tier2b.py:13`; the orchestrator never imports or calls it. `tier2_mode` is written only at `enrichment/orchestrator.py:3854` from `Tier2AResult.mode`, which is `"2A_population"` or `"2A_verification"` (`enrichment/tier2a_contact.py:88`) and never `"2B"`, so the counter `summary.tier2b_count` (`api/models.py:850`, incremented `enrichment/orchestrator.py:9305`) can never be non-zero. See ⚠-12. |
+| U-29 | Diagnostic and configuration endpoints (`/health`, `/tiers`, `/diag/llm`, `/diag/dedup-llm`) | `api/routes.py:94`, `:1647`, `:1576`, `:1608` | `tests/test_routes.py` | `/diag/llm` and `/diag/dedup-llm` each make a live model call and return the raw error string in the response body (`api/routes.py:1579–1580` and `:1598–1604`; `:1609–1613`). |
 
----
+## 1.5 Discrepancies raised in this pass
 
-## Table 1b — Issue-catalogue rules (G-series)
+Numbering continues from Pass 00 (⚠-1 … ⚠-8). All are carried to `08_GAPS.md`.
 
-Emitted deterministically by `enrichment/issue_detection.py`; catalogue at
-`issue_detection.py:77-117`. All emitted codes are exercised by `tests/test_issue_detection.py`
-(status `implemented`) unless noted. `G2-VAL-*` are emitted by the required-field loop
-(`issue_detection.py:130-136`).
+| id | severity | statement | code side | other side |
+|---|---|---|---|---|
+| ⚠-9 | medium | The `FR-1 … FR-36` functional-requirement numbering does not exist in the repository. | `grep -rn 'FR-[0-9]'` over the tree returns one hit, in the pass specification itself | `docs/thesis-doc-prompt-v2.md:68`: "IDs from the repo's own numbering (UC, FR-1…FR-36, issue codes)". The requirement set the thesis would cite as `FR-n` has no repository source; either it lives outside the repo or the numbering is notional. |
+| ⚠-10 | high | The number `13` names two different behaviours and both write it into the same `use_cases_triggered` array, so a consumer cannot tell them apart. | Lab → parent department: `enrichment/lab_resolver.py:48`, recorded `enrichment/orchestrator.py:8759–8760`, `:8768–8769`. Department-slot residual junk cleanup and person-in-slot routing: `enrichment/preprocess.py:2551` (section), `res.note(13, …)` `:2562`, `:2575`, `:2579`, `:2584` | `README.md:1350` declares UC 13 as "Lab → Parent Department Resolution" only. The preprocessing meaning is undeclared. |
+| ⚠-11 | medium | Two disjoint issue vocabularies exist and neither references the other. | `ISSUE_CATALOGUE` (`enrichment/issue_detection.py:260–423`, 43 codes) drives `/issues`; `detect_issues` in `dedup/scoring.py:485` emits `DedupIssue` (`dedup/scoring.py:458`) from `/api/dedup/score` | No code maps a scoring issue onto a catalogue code, and no catalogue code is declared for a scoring defect. A thesis-level "issue count" is not well defined across the two. |
+| ⚠-12 | medium | Tier 2B exists as a complete module with tests but has no production call site; its telemetry counter is unreachable. | `run_tier2b` `enrichment/tier2b_dept.py:48` is imported only by `tests/test_tier2b.py:13`. `tier2_mode` is written once, `enrichment/orchestrator.py:3854`, from `Tier2AResult.mode` ∈ {`"2A_population"`, `"2A_verification"`} (`enrichment/tier2a_contact.py:88`). `summary.tier2b_count` (`api/models.py:850`) increments only when `r.tier2_mode == "2B"` (`enrichment/orchestrator.py:9304–9305`) | `enrichment/orchestrator.py:8764–8766` names Tier 2B as a downstream option: "the record falls through to tier 2 canonical / 2A / 2B / 3, any of which may settle Name 2". Tier 2B is not among them at this commit. |
+| ⚠-13 | low | The `detect_issues` docstring states the number of codes the flag route drives and it is wrong. | `FLAG_CODE_ISSUES` maps 13 tokens onto 7 distinct codes (`enrichment/issue_detection.py:1515–1559`) | `enrichment/issue_detection.py:1680–1681`: "*flag_codes* carries the enriched record's ``Flag Codes`` and drives six codes through :data:`FLAG_CODE_ISSUES`". |
+| ⚠-14 | medium | The `detect_issues` docstring describes group G6 under its pre-renumbering meaning. | The one live G6 code is `G6-CONFIRM-001`, origin `API` (`enrichment/issue_detection.py:402–405`). The renumbering is recorded at `enrichment/issue_detection.py:259`: "Renumbered 2026-09-06: old G6 withdrawn, old G7->G6, old G8->G7" | `enrichment/issue_detection.py:1693–1695`: "the before/after reduction narrative is defined over the whole G1-G6 set — of which G6 is entirely DS-origin". No live G6 code is DS-origin. |
+| ⚠-15 | low | The README use-case table is four use cases out of date. | The code declares and emits UC 14, 15, 16, 17 (`enrichment/preprocess.py:2588`, `:1133`, `:1112`, `:2448`) | `README.md:1336–1350` lists UC 0 and UC 2–13 only. |
+| ⚠-16 | low | The UC 4 gate carries a condition the README does not state. | `can_do_contact_lookup` requires `not multi_contact` in addition to research institution, contact present and domain known (`enrichment/orchestrator.py:8778–8783`) | `README.md:1341` states the trigger as "Contact present, ROR hit, domain known". A record with two contacts is silently excluded. |
+| ⚠-17 | low | The UC 5 gate is wider than the README trigger. | `can_canonical` admits `routing_type ∈ {research_institution, company}` with any resolved `name1_enriched` (`enrichment/orchestrator.py:8790–8793`) — a GLEIF-resolved company qualifies | `README.md:1342` states the trigger as "Name2 present, ROR hit, no child match". |
+| ⚠-18 | low | The reproducibility gate has no test. | `tools/run_diff.py:82`, `:142`, `:196`, `:231` | No test module names `tools/run_diff.py` as its subject (§0.7.4). Pass 18 depends on this script for its determinism result. |
 
-| ID | Description | Emitted at | Status |
-|----|-------------|-----------|--------|
-| G1-CROSS-001 | Address Content in Name Field | `issue_detection.py:228` | implemented |
-| G1-CROSS-002 | Org Name in Address Field | `issue_detection.py:242` | implemented |
-| G1-CROSS-003 | Contact Information in Wrong Field | `issue_detection.py:256,261` | implemented |
-| G1-ADDR-001 | House Number Embedded in Street | `issue_detection.py:269` | implemented |
-| G1-ADDR-003 | Sub-location Embedded in Street | `issue_detection.py:275` | implemented |
-| G1-ADDR-004 | PO Box Embedded in Street | `issue_detection.py:281` | implemented |
-| G1-ADDR-006 | Mail Code in Street Field | `issue_detection.py:287` | implemented |
-| G1-ADDR-009 | Unclassified Residual in Address | catalogue `issue_detection.py:88` — marked "LLM-only — never emitted" | not implemented (deterministic) |
-| G1-ADDR-011 | Department Label in Street Field | `issue_detection.py:293` | implemented |
-| G1-NAME-001 | Name Overflow Across Fields | catalogue `issue_detection.py:269` — withdrawn 2026-09-07 | not implemented (withdrawn) |
-| G1-NAME-004 | Name 2 Empty With Name 3 Populated | `issue_detection.py:309` | implemented |
-| G1-NAME-013 | SAP Internal Code in Name Field | `issue_detection.py:314` | implemented |
-| G2-VAL-001 | Name 1 Missing | `issue_detection.py:130` | implemented |
-| G2-VAL-002 | Postal Code Missing | `issue_detection.py:131` | implemented |
-| G2-VAL-003 | Tax Jurisdiction Missing | `issue_detection.py:132` | implemented |
-| G2-VAL-004 | Region Missing | `issue_detection.py:133` | implemented |
-| G2-VAL-006 | Language Missing | `issue_detection.py:134` | implemented |
-| G2-VAL-007 | Search Term 1 Missing | `issue_detection.py:135` | implemented |
-| G2-VAL-008 | Country Missing | `issue_detection.py:136` | implemented |
-| G2-NAME-009 | Lab Without Department | `issue_detection.py:351` | implemented |
-| G2-NAME-012 | Research Institution Missing Department | `issue_detection.py:343,366` | implemented |
-| G2-CONTACT-008 | No Contact and No Department | `issue_detection.py:367` | implemented |
-| G2-CONTACT-009 | Department Missing And Enrichable from Contact | `issue_detection.py:369` | implemented |
-| G3-NAME-003 | DBA Pattern in Name Field | `issue_detection.py:383` | implemented |
-| G3-NAME-005 | Duplicate Name Across Fields | `issue_detection.py:390` | implemented |
-| G3-ADDR-005 | Multiple PO Boxes on Record | `issue_detection.py:401` | implemented |
-| G3-ADDR-012 | Duplicate Street Across Fields | `issue_detection.py:417` | implemented |
-| G3-ADDR-013 | Two Distinct Street Addresses on Record | `issue_detection.py:424` | implemented |
-| G3-ADDR-014 | PO Box and Street Both Present | `issue_detection.py:428` | implemented |
-| G3-CONTACT-007 | Multiple Contacts on Record | `issue_detection.py:432` | implemented |
-| G4-NAME-015 | Name Overflow Beyond Name 4 | `issue_detection.py:443` | implemented |
-| G4-ADDR-008 | Bare Sub-location Marker Without Value | `issue_detection.py:448` | implemented |
-| G4-ADDR-025 | Sub-location Overflow Beyond Street 5 | catalogue `issue_detection.py:112` — marked "LLM-only — never emitted" | not implemented (deterministic) |
-| G4-ADDR-026 | Postal Code Format Invalid | `issue_detection.py:456` | implemented |
-| G4-ADDR-027 | Country Code Not ISO 2-letter | `issue_detection.py:463` | implemented |
-| G5-NAME-001 | Organisation Name Not in Official Form | `issue_detection.py:475` | implemented |
-| G5-NAME-002 | Unit Name Not in Official Form | `issue_detection.py:480` | implemented |
+## 1.6 Coverage summary
 
-Two catalogue codes (`G1-ADDR-009`, `G4-ADDR-025`) are declared but the source comment states
-they are LLM-only and never emitted by the deterministic detector — `not implemented` in the
-shipped (deterministic) `/issues` path.
+| requirement set | total | implemented | partial | not implemented | superseded |
+|---|---|---|---|---|---|
+| Use cases (UC 0–17) | 18 | 17 | 0 | 1 (UC 1 — no requirement text exists) | 0 |
+| Issue Catalogue codes | 43 | 33 | 0 | 0 | 10 |
+| **Total traced** | **61** | **50** | **0** | **1** | **10** |
 
----
-
-## Table 1c — API endpoint contracts
-
-Handlers and models per Pass 0 §2. `tests/test_routes.py` exercises route contracts.
-
-| ID | Requirement (one line) | Implemented in | Test | Status |
-|----|------------------------|----------------|------|--------|
-| EP-health | Liveness probe | `api/routes.py:75` | `test_routes.py` | implemented |
-| EP-enrich | Enrich a batch of records (JSON) | `api/routes.py:88` | `test_routes.py`, `test_orchestrator.py` | implemented |
-| EP-enrich-file | Enrich an uploaded XLSX, return XLSX | `api/routes.py:518` | `test_routes.py` | implemented |
-| EP-issues | Deterministic issue audit of an XLSX | `api/routes.py:580` | `test_routes.py`, `test_issue_detection.py` | implemented |
-| EP-issues-compare | Before/after issue comparison of two XLSX | `api/routes.py:628` | `test_routes.py` | implemented |
-| EP-dedup-cluster | Cluster one address-gated block (LLM adjudication) | `api/routes.py:802` → `cluster_blocks dedup/adjudicator.py:933` | `test_dedup.py`, `test_routes.py` | implemented |
-| EP-dedup-file | Cluster an uploaded XLSX of candidate rows | `api/routes.py:832` | `test_routes.py` | implemented |
-| EP-dedup-score | Deterministic scoring + golden-record election (JSON) | `api/routes.py:896` → `elect_golden_records dedup/scoring.py:1033` | `test_scoring.py`, `test_routes.py` | implemented |
-| EP-dedup-score-file | Scoring + election over an XLSX | `api/routes.py:977` → `dedup/scoring_xlsx.py` | `test_scoring.py`, `test_routes.py` | implemented |
-| EP-dedup-approve | Record a human approve/reject on a cluster | `api/routes.py:946` → `apply_approval dedup/scoring.py:574` | `test_scoring.py`, `test_routes.py` | implemented |
-| EP-diag-llm | Probe the enrichment LLM | `api/routes.py:1034` | none | implemented |
-| EP-diag-dedup-llm | Probe the dedup LLM | `api/routes.py:1066` | none | implemented |
-| EP-tiers | Report tier configuration | `api/routes.py:1105` | `test_routes.py` | implemented |
-| EP-azure | Serve all routes as an Azure Function (catch-all ASGI) | `function_app.py:14-19` | none | implemented |
-
----
-
-## Table 1d — Phase-2 dedup rules
-
-Documented in `README.md` (Phase 2 section) and encoded in `dedup/`.
-
-| ID | Requirement (one line) | Implemented in | Test | Status |
-|----|------------------------|----------------|------|--------|
-| DD-sig | STEP A: collapse rows into distinct `(norm_name1, norm_name2)` signatures with a block id | `dedup/signatures.py:build_signatures, derive_block_id` | `test_dedup.py` | implemented |
-| DD-modeA | Mode A: partition a same-`has_name2` bucket into entities (LLM) | `dedup/adjudicator.py:270 _mode_a` | `test_dedup.py` | implemented |
-| DD-modeB | Mode B: assign signatures to existing entities (LLM) | `dedup/adjudicator.py:400 _mode_b` | `test_dedup.py` | implemented |
-| DD-identity | Two-level identity rule + identity/Name2 split enforcement | `dedup/adjudicator.py:136 _enforce_name2_split`, `:185 _enforce_identity_split` | `test_dedup.py`, `test_canonical_identity.py` | implemented |
-| DD-residue | Residue candidate nomination (id/name/token convergence) + pairwise adjudication | `dedup/candidates.py`; `dedup/adjudicator.py:556 _adjudicate_residue` | `test_candidates.py`, `test_dedup.py` | implemented |
-| DD-cap | `MAX_CANDIDATES_PER_BLOCK` cap → route block to `manual_review` | `dedup/adjudicator.py:903 _resolve_candidate_config` | `test_dedup.py` | implemented |
-| DD-elect | Golden-record election (scoring + tie-break + confidence demotion) | `dedup/scoring.py:1033 elect_golden_records` | `test_scoring.py` | implemented |
-| DD-score | Deterministic per-row scoring against `weights.json` bands | `dedup/scoring.py:813 score_row`; `dedup/weights.json` | `test_scoring.py` | implemented |
-| DD-approve | Human approval overrides a proposed cluster | `dedup/scoring.py:574 apply_approval` | `test_scoring.py` | implemented |
-| DD-issues | Dedup-side issue detection (contradictions, etc.) | `dedup/scoring.py:454 detect_issues` | `test_scoring.py` | implemented |
-| DD-eval | Evaluation harness computing dedup metrics | `eval/dedup_eval.py` | `test_dedup_eval.py` | implemented |
-
----
-
-## Table 2 — X-series requirements (behaviour in code, not in any prior requirement list)
-
-Per the amendment, each entry below is a first-class requirement with a new `X-` ID and is
-documented to the same standard as Table 1. These are predominantly the enrichment
-subsystems developed after the original UC/issue-catalogue lists were written.
-
-| ID | Requirement (one line) | Implemented in | Test | Status |
-|----|------------------------|----------------|------|--------|
-| X-1 | Derive Search Term 1: ROR-acronym → `strip_tld(domain)` → usable-Name-1 handle → None | `search_terms.py:479 _derive_search_term_1` | `test_search_terms_fixes.py`, `test_search_terms.py` | implemented |
-| X-2 | Derive Search Term 2: ADMIN → subdomain acronym → Name-2 filled-to-32 → dept-domain host → None | `search_terms.py:505 _derive_search_term_2`, `:442 _subdomain_acronym`, `:413 _fill_to_width` | `test_search_terms_fixes.py`, `test_search_terms.py` | implemented |
-| X-3 | Terminal normalisation of both search terms (upper/trim/collapse/≤32 on word boundary) | `search_terms.py:403 _normalise_term` | `test_search_terms_fixes.py::TestTerminalNormalisation` | implemented |
-| X-4 | ST2 field-content guards: block DBA Name 2 and institution-in-Name-2 (field swap) from handles | `search_terms.py:431 _name2_is_unit_phrase`, guard in `_derive_search_term_2` | `test_search_terms_fixes.py::test_field_swap_flags_and_nulls, ::test_dba_name2_nulled` | implemented |
-| X-5 | Website Path A: adopt ROR `links[]` website / domain on a ROR match | `orchestrator.py:1955-2015` (ROR write); `tier1_ror.py extract_website_from_ror` | `test_website_resolver.py::TestExtractWebsiteFromROR` | implemented |
-| X-6 | Website Path B (SERP): distinctive/acronym-in-host 0/1/2 ranking, rank-0 reject, TLD-needs-host-match | `website_resolver.py:350 select_website_from_serp`, `:150 _has_host_match`, `:139 _acronym_in_host` | `test_website_resolver.py::TestPathBGuards, ::TestSelectWebsiteFromSERP` | implemented |
-| X-7 | Website Path B retrieval: `num_results=10` + one unquoted retry on a first-pass miss | `website_resolver.py:440 resolve_website_via_serp`, `:406 _build_serp_query` | `test_website_resolver.py::TestPathBRetry` | implemented |
-| X-8 | Website Path C (LLM) fallback when Path B finds nothing | `website_resolver.py:550 infer_website_via_llm` | `test_website_resolver.py::TestInferWebsiteViaLLM` | implemented |
-| X-9 | `WEBSITE_TRACE` read-only per-candidate JSON diagnostic + driver script | `website_resolver.py:247 _assemble_path_b_trace`; `config.py website_trace`; `scripts/trace_website.py` | `test_website_resolver.py::TestWebsiteTraceFlag` | implemented |
-| X-10 | Registrable `domain` derivation (ROR → website-derived → source_url-derived) | `orchestrator.py` (`extract_domain` of website; source_url fallback in `finalise`) | `test_domain_from_website.py` | implemented |
-| X-11 | Department-domain probe: subdomain construction, homepage scrape, site SERP, on-domain path, cross-domain SERP | `orchestrator.py:963 _probe_department_url`; scorer `:167 _score_dept_candidate`; verify `:1345 _verify_candidate_url` | `test_dept_domain_probe.py` | implemented |
-| X-12 | Dept-probe generic-path blocklist (§5b) + path canonicality scoring (§5c) | `orchestrator.py:_path_is_generic, _path_canonicality_penalty`; applied at `:2b stage` | `test_dept_domain_probe.py::TestPathGenericAndCanonicality` | implemented |
-| X-13 | Dept-probe morphological verification (`physics`↔`physical`) keeping `science.mit.edu` rejected | `orchestrator.py:1397 _needle_hit` (within `_verify_candidate_url`) | none (asserted only via `_seg_matches_needle` in `test_dept_domain_probe.py`) | partial — the ≥5-char common-prefix rule has no direct verify-level test |
-| X-14 | Dept-probe base: subdomain-aware + redirect-resolved, cached per batch | `orchestrator.py:923 _resolve_probe_base`; `page_fetcher.py resolve_final_url`; `cache.py get/set_resolved_host` | `test_dept_domain_probe.py::TestProbeBaseResolution` | implemented |
-| X-15 | Admin-desk suppression of the dept probe (no fetch/SERP) | `orchestrator.py` (probe precondition using `is_admin_unit`) | `test_search_terms_fixes.py` (is_admin_unit); probe path via `test_dept_domain_probe.py` | implemented |
-| X-16 | Person-only Name 1 → Stage 2b affiliation: propose org, ROR-confirm in-country, else flag | `enrichment/person_affiliation.py:run_person_affiliation`; `orchestrator.py:1413 _resolve_person_affiliation` | `test_person_affiliation.py`, `test_person_affiliation_guard.py`, `test_person_in_name1_flag.py` | implemented (a prior web-only variant was reverted — see 09_DECISIONS) |
-| X-17 | ROR acronym currency selection (current initials over historical acronym) | `tier1_ror.py:490-501`; `text_utils.py:927 name_initials, :944 acronym_matches_name` | `test_search_terms_fixes.py::TestRorAcronymCurrency` | implemented |
-| X-18 | Standardise a Name 1 kept over ROR's divergent official form (`clean_passthrough_org_name`) | `orchestrator.py:2018` | `test_ror_name_verbatim.py::test_stuttgart_univ_standardised_on_drop, ::test_allcaps_input_titlecased_on_drop` | implemented |
-| X-19 | Street "scope-table" reduction: building/floor/room/suite/mail/care-of/campus routing to own fields; Street 1 to one line | `enrichment/address_processing.py:process_address` | `test_street_scope_table.py`, `test_address_cleanup.py`, `test_street_qualifier_split.py` | implemented |
-| X-20 | Street pipe/comma/semicolon splitters routing org/dept segments to the Name block, cleaning the source | `preprocess.py:1288-1389` (routers), splitter helpers | `test_pipe_splitter_inversion.py`, `test_street_org_split.py`, `test_street_scope_routing.py`, `test_person_org_in_street.py` | implemented |
-| X-21 | Name 1 acronym/full-form dedupe (`MIT Massachusetts…`, dash forms `MRC - …`) | `preprocess.py` (`_strip_redundant_acronym`, dash-acronym helpers) | `test_acronym_dedupe.py` | implemented |
-| X-22 | `smart_title_case`: ALL-CAPS → title case, preserving acronyms / `Mc` surnames / hyphen segments | `text_utils.py smart_title_case` | `test_smart_title_case.py` | implemented |
-| X-23 | ROR US state-abbreviation expansion for the ROR query only (`Fla`→`Florida`) | `tier1_ror.py` (`_US_STATE_ABBREVS`, `_expand_state_abbrevs`) | `test_ror_state_abbrev.py` | implemented |
-| X-24 | ROR country guard (reject a same-name org in the wrong country) | `tier1_ror.py` (`_country_ok`, country-filtered `call`) | `test_tier1_ror_country.py` | implemented |
-| X-25 | ROR identity guard (`canonical_preserves_identity`) — keep the fuller input over a token-dropping ROR name | `orchestrator.py:2007`; `text_utils.py canonical_preserves_identity` | `test_ror_name_verbatim.py`, `test_canonical_identity.py` | implemented |
-| X-26 | Named-building extraction from name/street to the Building field | `preprocess.py:712 _named_building`; `address_processing.py:_named_building_value` | `test_named_building.py`, `test_street_scope_table.py` | implemented |
-| X-27 | Request logging + rotating file logging middleware | `api/middleware.py:RequestLoggingMiddleware, configure_logging` | none | implemented |
-| X-28 | TLS/CA sanitisation for corporate VPN (override bogus `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE`) | `config.py:27-67 _sanitize_ssl_env` | none | implemented |
-| X-29 | Process-level SERP cache shared across batches | `utils/cache.py:SerpCache` | `test_cache.py` | implemented |
-| X-30 | `/api/dedup/score` ↔ `/score/file` identical column contract | `dedup/scoring_xlsx.py`; `dedup/scoring.py` | `test_scoring.py` | implemented |
-| X-31 | Tier 2B department search from the institution's website (SERP + on-domain ranking + LLM extraction from structured page elements), for records where the contact-based path does not apply | `enrichment/tier2b_dept.py:50 run_tier2b` | `test_tier2b.py` (direct calls only) | **not implemented** — module complete but never invoked: no call site and no import in `enrichment/orchestrator.py:37-59`; wired in `f77080b`, unwired in `635d5ba` (see `09_DECISIONS.md` D-1) |
-
-⚠ UNVERIFIED — Table 2 was compiled from the subsystems visible in Passes 0–1 and prior
-change history; a guaranteed-complete enumeration of every un-catalogued behaviour would
-require the full algorithm walk of Pass 3. Additional X-items may surface there and should be
-back-filled here.
+Behaviour with no requirement: 29 entries (U-1 … U-29), of which one (U-28, Tier 2B) is
+present in source but unreachable in the running pipeline.
 
 ---
 
-## Discrepancies (code ↔ requirement list)
-
-Recorded here and to be carried into `08_GAPS.md`:
-
-1. **UC 14–17 absent from the README use-case table.** Defined and tagged in
-   `enrichment/preprocess.py` (`:612,633,1560,1704`) but not listed in `README.md:655-670`.
-2. **UC 13 tags two behaviours.** README/`orchestrator.py` = lab→parent resolution;
-   `preprocess.py:1664` comment = "Name 3 residual junk cleanup".
-3. **UC 1 undefined.** The use-case sequence skips 1 in both README and code.
-4. **Two catalogue issue codes are never emitted deterministically** — `G1-ADDR-009`
-   (`issue_detection.py:88`) and `G4-ADDR-025` (`issue_detection.py:112`), both annotated
-   "LLM-only — never emitted".
-5. **`README.md` cites `enrichment/classifier.py` for classification** (Record Classification
-   Logic), but that module is a REMOVED stub (`classifier.py:1-12`); classification is derived
-   from ROR org types in `tier1_ror.py`/`orchestrator.py` (also recorded in Pass 0 §4).
-6. **Tier 2A verification mode is unreachable by construction** (added 2026-08-17). The gate at
-   `enrichment/orchestrator.py:2451-2457` requires Name 2 blank; the mode selector at
-   `enrichment/tier2a_contact.py:80` requires it populated. `tests/test_tier2a_verification.py`
-   exercises the mode by direct call, so the suite passes while no pipeline path reaches it — a
-   test-coverage signal that does not imply reachability.
-7. **`enrichment/tier2b_dept.py:1-11` describes a role the module cannot fill** (added
-   2026-08-17). Its docstring states it is used "when Tier 2A is not applicable … or when name2
-   is already filled and needs normalization", but the module has no call site. Both cases it
-   names are consequently unserved by any web-evidence path.
-8. **Enrichment cannot correct an incorrect existing Name 2** (added 2026-08-17). Both paths
-   that would act on a populated Name 2 against retrieved evidence — Tier 2A Mode B and Tier 2B
-   — are unreachable, so `enrichment_status="verified"`
-   (`enrichment/tier2a_contact.py:459`) and `source="contact_lookup_corrected"` (`:479`) can
-   never appear in output despite being declared values.
-
-Stop.
+**Pass 01 summary.** Traced 61 repository-declared requirements — 18 use cases (17
+implemented, UC 1 declared nowhere) and 43 Issue-Catalogue codes (33 live/implemented, 10
+withdrawn/superseded, every one named by at least one test) — recorded 29 substantive
+behaviours that no requirement states, and raised ten discrepancies (⚠-9 … ⚠-18), the
+largest being that `FR-1…FR-36` exists nowhere in the repository, that UC 13 names two
+different behaviours writing to the same array, and that Tier 2B ships complete and
+tested but unwired.
