@@ -1240,7 +1240,6 @@ The remaining two are genuine data gaps rather than code gaps
 
 | Code | Name | Record that would be required |
 |---|---|---|
-| `G1-NAME-001` | Name Overflow Across Fields | A Name 1 carrying no legal-entity suffix, followed by a Name 2 opening with a connector or a lowercase word (`enrichment/issue_detection.py:296-305`) |
 | `G3-ADDR-013` | Two Distinct Street Addresses on Record | Two street slots holding two *different* values that both satisfy `_looks_like_street` (`enrichment/issue_detection.py:419-424`) |
 
 Separately, one code is exercised **only** by the enriched workbook and by no pre-enrichment

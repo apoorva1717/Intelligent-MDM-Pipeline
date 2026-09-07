@@ -5002,7 +5002,7 @@ The catalogue is the ordered dict `ISSUE_CATALOGUE` at `enrichment/issue_detecti
 | G1-ADDR-004 | G1 | Any Street matches `_PO_BOX_RE` ("PO Box / POB / Post Office Box" + value) | `_detect_wrong_field`, issue_detection.py:278-282; regex address_processing.py:199-202 | Deterministic | Yes (issue_detection.py:281) |
 | G1-ADDR-006 | G1 | `_extract_mail_code(street, allow_bare=True)` returns a mail/drop code (explicit "MAIL CODE:", `[A-Z]\d-\d{4}` complex form, or a bare 2-4-letter+digits token not doubling as a street-type abbreviation) | `_detect_wrong_field`, issue_detection.py:284-288; `_extract_mail_code` address_processing.py:412-432 | Deterministic | Yes (issue_detection.py:287) |
 | G1-ADDR-011 | G1 | Any Street matches `_DEPARTMENT_PAYLOAD_RE` (Department/Dept/Division/Div word), via `_looks_like_department` | `_detect_wrong_field`, issue_detection.py:290-294; regex address_processing.py:333-336, helper 339-340 | Deterministic | Yes (issue_detection.py:293) |
-| G1-NAME-001 | G1 | Name 1 and Name 2 both non-blank, Name 1 has no legal-entity suffix (`_has_legal_suffix` / `_LEGAL_SUFFIX_RE`), and Name 2 opens with a connector or lowercase word (`_NAME_CONTINUATION_RE`); documented as a conservative heuristic for a rule that "is LLM-only" in its true form | `_detect_wrong_field`, issue_detection.py:296-305; `_has_legal_suffix` preprocess.py:804-805, regex preprocess.py:739-751 | Deterministic (heuristic proxy) | Yes (issue_detection.py:305) |
+| G1-NAME-001 | G1 | **Withdrawn 2026-09-07.** The check was a conservative heuristic — Name 1 and Name 2 both non-blank, Name 1 with no legal-entity suffix, Name 2 opening with a connector or lowercase word — for a rule that "is LLM-only" in its true form; it is no longer emitted | catalogue only, issue_detection.py:269 | — | No (withdrawn) |
 | G1-NAME-004 | G1 | Name 2 blank while Name 3 populated | `_detect_wrong_field`, issue_detection.py:307-309 | Deterministic | Yes (issue_detection.py:309) |
 | G1-NAME-013 | G1 | Any Name field whose whole value is an opaque code (`_OPAQUE_CODE_RE`: ≤4 letters, optional dash, ≥5 digits) | `_detect_wrong_field`, issue_detection.py:311-315; regex preprocess.py:312-314, helper 317-320 | Deterministic | Yes (issue_detection.py:314) |
 | G1-ADDR-009 | G1 | Unclassified residual in address — requires the pipeline's LLM residual classifier; intentionally never fired by this module | Catalogue entry issue_detection.py:88; comment issue_detection.py:317 | LLM-only (in the pipeline; see §2.3) | **No** |
@@ -5067,9 +5067,8 @@ Source: `enrichment/issue_detection.py:488-510` (dispatcher) and the five group 
    3. For each Name and Street: if email/phone/URL/c-o-ATTN regex matches → add G1-CROSS-003, stop. Else (for-else) for each Street: if `_street_person_name(st)` → add G1-CROSS-003, stop. [245-262]
    4. If `house_number` blank: for each Street, if `_looks_like_street` → add G1-ADDR-001, stop. [264-269]
    5. For each Street: any `_SUITE_PATTERNS` hit → G1-ADDR-003 [272-276]; `_PO_BOX_RE` hit → G1-ADDR-004 [278-282]; `_extract_mail_code(st, allow_bare=True)[1]` → G1-ADDR-006 [284-288]; `_looks_like_department(st)` → G1-ADDR-011 [290-294].
-   6. If Name 1 and Name 2 non-blank, Name 1 lacks a legal suffix, and Name 2 matches `_NAME_CONTINUATION_RE` → G1-NAME-001. [296-305]
-   7. If Name 2 blank and Name 3 non-blank → G1-NAME-004. [307-309]
-   8. For each Name: `_is_opaque_code(nm)` → G1-NAME-013, stop. [311-315]
+   6. If Name 2 blank and Name 3 non-blank → G1-NAME-004. [307-309]
+   7. For each Name: `_is_opaque_code(nm)` → G1-NAME-013, stop. [311-315]
 3. `_detect_missing(record, found, present_fields)` [506 → 324-369]:
    1. For each `(field, code)` in `_REQUIRED_FIELD_CODES`: skip if `present_fields` given and field absent; else if `is_blank(getattr(record, field))` → add code. [330-334]
    2. If `looks_like_university_or_research_institute(name_1)` and Name 2 blank → G2-NAME-012. [342-343]
@@ -5281,7 +5280,7 @@ Re-executing `detect_issues` on this record returns exactly `['G1-ADDR-004', 'G2
 #### 7 Failure modes
 
 - **Unreachable rule**: G2-CONTACT-008 can never be returned (§1.3) — a caller counting "codes the detector can emit" over-counts by one.
-- **Heuristic proxies**: G1-NAME-001, G5-NAME-001/002, and the G2 department rules are conservative deterministic stand-ins for semantic rules; the module docstring states they favour precision over recall (`enrichment/issue_detection.py:26-28`). E.g. `_ABBREV_TOKEN_RE` includes `Co`, so a legal suffix "Co." in a name fires G5; "Eng" fires but "Engineering" does not.
+- **Heuristic proxies**: G5-NAME-001/002 and the G2 department rules are conservative deterministic stand-ins for semantic rules; the module docstring states they favour precision over recall (`enrichment/issue_detection.py:26-28`). E.g. `_ABBREV_TOKEN_RE` includes `Co`, so a legal suffix "Co." in a name fires G5; "Eng" fires but "Engineering" does not.
 - **Postal formats cover only US and CA** (`enrichment/issue_detection.py:167-170`): a malformed German or UK postcode never fires G4-ADDR-026.
 - **Column gating only protects `G2-VAL-*`**: the non-VAL missing-data rules (G2-NAME-009/012, G2-CONTACT-009) ignore `present_fields`, so a file that genuinely lacks a Contact column can still be judged on `record.contact` being blank (`enrichment/issue_detection.py:342-369`).
 - **`_street_signature` folds House Number into Street 1 only** (`idx == 0`, `enrichment/issue_detection.py:409-415`): a house number conventionally paired with Street 2 would not be detected as a duplicate.

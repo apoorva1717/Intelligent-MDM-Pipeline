@@ -84,14 +84,12 @@ raises **32 of the 37 declared codes**. The five it never raises:
 | `G1-ADDR-009` | Unclassified Residual in Address | Declared but never emitted by the deterministic detector (`enrichment/issue_detection.py:88,317`) — LLM-only |
 | `G4-ADDR-025` | Sub-location Overflow Beyond Street 5 | Declared but never emitted (`enrichment/issue_detection.py:112,465`) — LLM-only |
 | `G2-CONTACT-008` | No Contact and No Department | Has an emission site but it is unreachable (`enrichment/issue_detection.py:364-367`; proof in `03_ALGORITHMS.md` Part H §1.3) |
-| `G1-NAME-001` | Name Overflow Across Fields | ⚠ NO FIXTURE COVERAGE — reachable, but no repository record satisfies it |
+| `G1-NAME-001` | Name Overflow Across Fields | Declared but never emitted — withdrawn 2026-09-07 (`enrichment/issue_detection.py:269`) |
 | `G3-ADDR-013` | Two Distinct Street Addresses on Record | ⚠ NO FIXTURE COVERAGE — reachable, but no repository record satisfies it |
 
-The first three cannot be exercised by any input. The last two are genuine data gaps: a record
-would be needed with, for `G1-NAME-001`, a Name 1 carrying no legal-entity suffix followed by a
-Name 2 opening with a connector or a lowercase word (`enrichment/issue_detection.py:296-305`);
-and for `G3-ADDR-013`, two street slots holding two *different* values that both satisfy
-`_looks_like_street` (`enrichment/issue_detection.py:419-424`).
+The first four cannot be exercised by any input. The last is a genuine data gap: a record
+would be needed with, for `G3-ADDR-013`, two street slots holding two *different* values that
+both satisfy `_looks_like_street` (`enrichment/issue_detection.py:419-424`).
 
 One code is exercised **only** by the enriched workbook and by no pre-enrichment record:
 `G3-ADDR-012` (Duplicate Street Across Fields). It is introduced by the pipeline, not present in

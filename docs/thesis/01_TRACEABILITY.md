@@ -113,7 +113,7 @@ Emitted deterministically by `enrichment/issue_detection.py`; catalogue at
 | G1-ADDR-006 | Mail Code in Street Field | `issue_detection.py:287` | implemented |
 | G1-ADDR-009 | Unclassified Residual in Address | catalogue `issue_detection.py:88` — marked "LLM-only — never emitted" | not implemented (deterministic) |
 | G1-ADDR-011 | Department Label in Street Field | `issue_detection.py:293` | implemented |
-| G1-NAME-001 | Name Overflow Across Fields | `issue_detection.py:305` | implemented |
+| G1-NAME-001 | Name Overflow Across Fields | catalogue `issue_detection.py:269` — withdrawn 2026-09-07 | not implemented (withdrawn) |
 | G1-NAME-004 | Name 2 Empty With Name 3 Populated | `issue_detection.py:309` | implemented |
 | G1-NAME-013 | SAP Internal Code in Name Field | `issue_detection.py:314` | implemented |
 | G2-VAL-001 | Name 1 Missing | `issue_detection.py:130` | implemented |

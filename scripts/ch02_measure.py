@@ -201,16 +201,6 @@ def locate(record: EnrichmentRecord, present: set[str] | None) -> dict[str, set[
         if _looks_like_department(_val(record, f)):
             add("G1-ADDR-011", f)
             break
-    # G1-NAME-001 — every adjacent pair, not only Name 1 / Name 2.
-    for upper, lower in NAME_PAIRS:
-        if (
-            not is_blank(_val(record, upper))
-            and not is_blank(_val(record, lower))
-            and not _has_legal_suffix(_val(record, upper) or "")
-            and _NAME_CONTINUATION_RE.search(_val(record, lower) or "")
-        ):
-            add("G1-NAME-001", upper, lower)
-            break
     # G1-NAME-004 — a blank slot BETWEEN two populated ones. Catalogue v2
     # renamed this to "Empty field in between populated name fields": a blank
     # Name 1 is a missing organisation name (G2-VAL-001), not a gap.

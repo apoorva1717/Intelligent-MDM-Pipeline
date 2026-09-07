@@ -572,7 +572,7 @@ Generated from `ISSUE_CATALOGUE` (`enrichment/issue_detection.py:186-279`) at th
 | `G1-ADDR-004` | G1 | live | Street | Warning | API | PO Box Embedded in Street |
 | `G1-ADDR-006` | G1 | live | Street 2 | Warning | API | Mail Code in Street Field |
 | `G1-ADDR-011` | G1 | live | Street 2 | Warning | API | Department Label in Street Field |
-| `G1-NAME-001` | G1 | live | Name 1 | Warning | API | Name Overflow Across Fields |
+| `G1-NAME-001` | G1 | **withdrawn** | Name 1 | Warning | API | Name Overflow Across Fields |
 | `G1-NAME-004` | G1 | live | Name 2 | Warning | API | Empty field in between populated name fields |
 | `G1-NAME-013` | G1 | live | Name 2 | Warning | API | SAP Internal Code in Name Field |
 | `G1-ADDR-009` | G1 | **ndd** | Street 2 | Warning | API | Unclassified Residual in Address |

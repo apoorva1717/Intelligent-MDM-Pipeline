@@ -11,9 +11,8 @@
     "must raise the code; 'negative' must not. Examples are taken from Issue",
     "Catalogue v2 wherever the catalogue gives one.",
     "",
-    "Items 170 and 171 of 00_OPEN_ITEMS.md are closed by the G1-NAME-001 and",
-    "G3-ADDR-013 entries below: both codes were reachable with no repository record",
-    "satisfying them."
+    "Item 171 of 00_OPEN_ITEMS.md is closed by the G3-ADDR-013 entry below: the",
+    "code was reachable with no repository record satisfying it."
   ],
   "baseline": {
     "Customer": "FIXTURE",
@@ -66,17 +65,6 @@
       "code": "G1-ADDR-011",
       "positive": {"Street 2": "Central Receiving Department"},
       "negative": {"Street 2": "Innovation Way"}
-    },
-    {
-      "code": "G1-NAME-001",
-      "positive": {
-        "Name 1": "Orlando Health Emergency Room",
-        "Name 2": "and Medical Pavilion - Osceola"
-      },
-      "negative": {
-        "Name 1": "Orlando Health Inc",
-        "Name 2": "Medical Pavilion"
-      }
     },
     {
       "code": "G1-NAME-004",

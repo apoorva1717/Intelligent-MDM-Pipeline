@@ -173,10 +173,11 @@ pipeline's LLM residual classifier, `enrichment/issue_detection.py:18-24`):
   code comment at `:360-363` states the suppression as intended; unlike the two LLM-only codes it
   is not annotated as never-emitted at its catalogue entry (`08_GAPS.md:623-630`, G-46).
 
-**The three codes reachable but absent from this dataset:** `G1-NAME-001`, `G3-ADDR-012`,
-`G3-ADDR-013` (run output §3.3). `G3-ADDR-012` is raised by no *pre-enrichment* record but is
-introduced by the pipeline on REC-01 (`03b_EXEMPLARS.md:96-98,129-135`). The inputs that would
-exercise the other two are named at `03b_EXEMPLARS.md:90-94`.
+**The two codes reachable but absent from this dataset:** `G3-ADDR-012`, `G3-ADDR-013` (run
+output §3.3, which also lists `G1-NAME-001` — reachable when that run was taken, withdrawn on
+2026-09-07 and unreachable since). `G3-ADDR-012` is raised by no *pre-enrichment* record but is
+introduced by the pipeline on REC-01 (`03b_EXEMPLARS.md:96-98,129-135`). The input that would
+exercise `G3-ADDR-013` is named at `03b_EXEMPLARS.md:90-94`.
 
 ### 2.2 The five dimensions
 
@@ -199,7 +200,7 @@ Data present on the record but sitting in the wrong column.
 | `G1-ADDR-004` | G1 | A PO-box pattern is inside a street field | Det. | yes | `:279-282` |
 | `G1-ADDR-006` | G1 | A mail or drop code is inside a street field | Det. | yes | `:285-288` |
 | `G1-ADDR-011` | G1 | A department label is inside a street field | Det. | yes | `:291-294` |
-| `G1-NAME-001` | G1 | Name 1 and Name 2 read as one continuous organisation name split across slots | Det. (heuristic) | yes | `:299-305` |
+| `G1-NAME-001` | G1 | Name 1 and Name 2 read as one continuous organisation name split across slots | **withdrawn** | **no** | declared `:269` |
 | `G1-NAME-004` | G1 | Name 2 is blank while Name 3 is populated — the hierarchy skips a level | Det. | yes | `:308-309` |
 | `G1-NAME-013` | G1 | A name field's entire value is an internal or opaque code | Det. | yes | `:312-315` |
 | `G1-ADDR-009` | G1 | Address residual that no deterministic rule can classify | **LLM** | **no** | declared `:88`; `:317` |

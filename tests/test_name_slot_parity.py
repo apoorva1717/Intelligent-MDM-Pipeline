@@ -139,16 +139,16 @@ class TestPreprocessAppliesToEverySlot:
 # ── Issue detection ───────────────────────────────────────────────────────
 
 class TestIssueDetectionAppliesToEverySlot:
-    def test_continuation_detected_at_a_lower_boundary(self):
-        """G1-NAME-001 was the Name 1 / Name 2 pair; the same continuation
-        between Name 3 and Name 4 is the same defect."""
+    def test_continuation_at_a_lower_boundary_raises_no_code(self):
+        """G1-NAME-001 was the Name 1 / Name 2 pair, extended to every
+        boundary; the code is withdrawn and no boundary raises it now."""
         rec = _record(**{
             "Name 1": "Stanford University",
             "Name 2": "School of Medicine",
             "Name 3": "Department of Molecular",
             "Name 4": "and Cellular Physiology",
         })
-        assert "G1-NAME-001" in detect_issues(rec)
+        assert "G1-NAME-001" not in detect_issues(rec)
 
     def test_adjacent_duplicate_detected_at_the_last_boundary(self):
         rec = _record(**{

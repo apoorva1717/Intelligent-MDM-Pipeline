@@ -59,34 +59,37 @@ def test_catalogue_declares_43_entries():
 
 
 def test_status_counts_match_catalogue_v2():
-    """34 live, 9 withdrawn, nothing unlisted, nothing left marked ``ndd``.
+    """33 live, 10 withdrawn, nothing unlisted, nothing left marked ``ndd``.
 
-    Catalogue v2 declared 34 live and the figure is 34 again by a different
-    route: two flag-derived codes added (G6-CONFIRM-001, G7-UNCHANGED-001),
-    two codes added on 2026-09-06 (G3-NAME-006, G3-CONTACT-010), G3-ADDR-012
-    resolved from unlisted to live, and seven entries withdrawn that day.
+    Catalogue v2 declared 34 live and the figure reached 34 again by a
+    different route: two flag-derived codes added (G6-CONFIRM-001,
+    G7-UNCHANGED-001), two codes added on 2026-09-06 (G3-NAME-006,
+    G3-CONTACT-010), G3-ADDR-012 resolved from unlisted to live, and seven
+    entries withdrawn that day. G1-NAME-001 was withdrawn on 2026-09-07,
+    taking it to 33.
     """
     from collections import Counter
 
     counts = Counter(entry.status for entry in ISSUE_CATALOGUE.values())
-    assert counts == {"live": 34, "withdrawn": 9}
+    assert counts == {"live": 33, "withdrawn": 10}
 
 
 def test_withdrawn_codes_are_declared_but_never_emitted():
     """Withdrawn entries stay declared for the audit trail — retaining them
     records that they existed and why — but nothing may emit them.
 
-    The first two are struck through in Catalogue v2. The other six were
+    The first two are struck through in Catalogue v2. The next six were
     withdrawn on 2026-09-06: a rule no deterministic detector can express, one
     that fired on nothing in 500 records, two required-field rules over fields
     outside master-data scope, a routing code now carried by group membership,
     and one whose true hits were outweighed by false positives it had no source
-    to rule out.
+    to rule out. G1-NAME-001 followed on 2026-09-07.
     """
     for code in (
         "G2-CONTACT-008", "G2-CONTACT-009",
         "G1-ADDR-009", "G4-ADDR-008", "G4-ADDR-025", "G2-VAL-003",
         "G2-VAL-006", "G7-VERIFY-001",
+        "G1-NAME-001",
     ):
         assert ISSUE_CATALOGUE[code].status == "withdrawn"
         assert ISSUE_CATALOGUE[code].reason
@@ -136,7 +139,8 @@ def test_origin_breakdown_of_live_quality_codes():
     G1-G6 codes. The gap against v2 is the 2026-09-06 rework and must stay
     visible: four withdrawals off the live count, two codes added, and four
     codes moved from API to BOTH when a ``Flag Codes`` path was mapped onto a
-    detector that already existed.
+    detector that already existed. G1-NAME-001 came off the API-only count
+    when it was withdrawn on 2026-09-07.
 
     The census is over the codes derived from record CONTENT, which is what v2
     counted. The exclusion is ``raised="enriched"`` — a code with no content
@@ -151,8 +155,8 @@ def test_origin_breakdown_of_live_quality_codes():
         and e.group in QUALITY_GROUPS
         and e.raised != "enriched"
     ]
-    assert len(live_quality) == 31
-    assert Counter(e.origin for e in live_quality) == {"DS": 8, "API": 16, "BOTH": 7}
+    assert len(live_quality) == 30
+    assert Counter(e.origin for e in live_quality) == {"DS": 8, "API": 15, "BOTH": 7}
 
 
 def test_the_group_constants_are_labels_not_metric_rules():
@@ -178,7 +182,7 @@ def test_the_group_constants_are_labels_not_metric_rules():
 REDUCTION_METRIC_CODES = {
     "G1-CROSS-001", "G1-CROSS-002", "G1-CROSS-003",
     "G1-ADDR-001", "G1-ADDR-003", "G1-ADDR-004", "G1-ADDR-006", "G1-ADDR-011",
-    "G1-NAME-001", "G1-NAME-004",
+    "G1-NAME-004",
     "G2-VAL-007", "G2-VAL-008", "G2-NAME-009",
     "G3-NAME-003", "G3-NAME-005", "G3-ADDR-012",
     "G4-ADDR-027",
@@ -211,7 +215,7 @@ def test_reduction_metric_set_is_the_reference_table():
         if entry.remedy in ("rule", "enrichment")
     }
     assert actual == REDUCTION_METRIC_CODES
-    assert len(actual) == 19
+    assert len(actual) == 18
 
 
 def test_docstring_counts_match_the_catalogue():
@@ -424,12 +428,12 @@ def test_g1_addr_011_department_label_in_street():
     assert "G1-ADDR-011" in detect_issues(_record(**{"Street 2": "Receiving Department"}))
 
 
-def test_g1_name_001_name_overflow_across_fields():
+def test_g1_name_001_is_withdrawn_and_an_overflow_no_longer_raises_it():
     rec = _record(**{
         "Name 1": "Orlando Health Emergency Room",
         "Name 2": "and Medical Pavilion - Osceola",
     })
-    assert "G1-NAME-001" in detect_issues(rec)
+    assert "G1-NAME-001" not in detect_issues(rec)
 
 
 def test_g1_name_004_name2_empty_name3_populated():
@@ -894,10 +898,10 @@ def test_g5_name_001_org_not_official():
     assert "G5-NAME-001" in detect_issues(_record(**{"Name 1": "Univ of Florida"}))
 
 
-def test_g1_name_001_fires_iff_overflow_slots_is_non_empty():
-    """The extraction must not have moved the boundary. ``_overflow_slots``
-    scans every adjacent pair and G1-NAME-001 fires exactly when it finds one,
-    which is the condition the inline loop tested."""
+def test_overflow_slots_still_scans_every_pair_and_raises_nothing():
+    """``_overflow_slots`` survives the withdrawal because G5 reads it to
+    know WHICH slots are halves. It still scans every adjacent pair, and no
+    pair it finds raises G1-NAME-001 any more."""
     from enrichment.issue_detection import _overflow_slots
     cases = [
         {"Name 1": "University of Florida"},
@@ -922,7 +926,8 @@ def test_g1_name_001_fires_iff_overflow_slots_is_non_empty():
     ]
     for fields in cases:
         rec = _record(**fields)
-        assert ("G1-NAME-001" in detect_issues(rec)) == bool(_overflow_slots(rec)), fields
+        _overflow_slots(rec)  # still callable on every shape
+        assert "G1-NAME-001" not in detect_issues(rec), fields
 
 
 def test_overflow_slots_returns_both_halves_of_the_pair():
@@ -952,8 +957,8 @@ def test_overflow_slots_returns_both_halves_of_the_pair():
     # symbol branch.
     {"Name 2": "Dept of Chemical Engineering", "Name 3": "& Materials Science"},
 ])
-def test_g1_name_001_fires_on_a_seam_at_either_end(fields):
-    assert "G1-NAME-001" in detect_issues(_record(**fields))
+def test_g1_name_001_no_longer_fires_on_a_seam_at_either_end(fields):
+    assert "G1-NAME-001" not in detect_issues(_record(**fields))
 
 
 @pytest.mark.parametrize("fields", [
@@ -989,11 +994,11 @@ def test_g1_name_001_does_not_read_contact_content_as_a_continuation(name2):
     assert "G1-CROSS-003" in issues
 
 
-def test_g1_name_001_tail_arm_still_fires_on_a_real_continuation():
+def test_g1_name_001_no_longer_fires_on_a_real_continuation():
     rec = _record(**{
         "Name 1": "Orlando Health Emergency Room", "Name 2": "and Medical Pavilion",
     })
-    assert "G1-NAME-001" in detect_issues(_record(**{
+    assert "G1-NAME-001" not in detect_issues(_record(**{
         "Name 1": "Orlando Health Emergency Room", "Name 2": "and Medical Pavilion",
     }))
     assert "G1-CROSS-003" not in detect_issues(rec)
@@ -1004,7 +1009,7 @@ def test_the_contact_exclusion_is_tail_arm_only():
     the pair is a split value regardless of what landed in the slot below."""
     rec = _record(**{"Name 1": "Coastal Marine Inc &", "Name 2": "c/o Jane Smith"})
     issues = detect_issues(rec)
-    assert "G1-NAME-001" in issues
+    assert "G1-NAME-001" not in issues
     assert "G1-CROSS-003" in issues
 
 
@@ -1028,7 +1033,7 @@ def test_g5_does_not_judge_a_head_arm_half_value():
         "Name 3": "Materials Science",
     })
     issues = detect_issues(rec)
-    assert "G1-NAME-001" in issues
+    assert "G1-NAME-001" not in issues
     assert "G5-NAME-002" not in issues
 
     rec = _record(**{
@@ -1037,26 +1042,25 @@ def test_g5_does_not_judge_a_head_arm_half_value():
         "Name 3": "Materials Science",
     })
     issues = detect_issues(rec)
-    assert "G1-NAME-001" in issues
+    assert "G1-NAME-001" not in issues
     assert "G5-NAME-002" not in issues
 
     rec = _record(**{"Name 1": "Univ of Florida College of", "Name 2": "Engineering"})
     issues = detect_issues(rec)
-    assert "G1-NAME-001" in issues
+    assert "G1-NAME-001" not in issues
     assert "G5-NAME-001" not in issues
 
 
 def test_g5_name_002_does_not_judge_the_form_of_half_a_value():
     """"Sch of Chemical Engineering &" is not a name in a non-official form,
-    it is half of a name. G1-NAME-001 reports the overflow; G5 has no question
-    to ask of a fragment."""
+    it is half of a name, and G5 has no question to ask of a fragment."""
     rec = _record(**{
         "Name 1": "University of Florida",
         "Name 2": "Sch of Chemical Engineering &",
         "Name 3": "and Materials Science",
     })
     issues = detect_issues(rec)
-    assert "G1-NAME-001" in issues
+    assert "G1-NAME-001" not in issues
     assert "G5-NAME-002" not in issues
 
 
@@ -1091,7 +1095,7 @@ def test_g5_name_001_does_not_judge_name_1_when_it_is_an_overflow_head():
     Name 2."""
     rec = _record(**{"Name 1": "Univ of Florida College of", "Name 2": "and Engineering"})
     issues = detect_issues(rec)
-    assert "G1-NAME-001" in issues
+    assert "G1-NAME-001" not in issues
     assert "G5-NAME-001" not in issues
 
 
@@ -1105,7 +1109,7 @@ def test_g5_skips_only_the_overflow_slots_not_the_whole_block():
         "Name 4": "and Applied Research",
     })
     issues = detect_issues(rec)
-    assert "G1-NAME-001" in issues
+    assert "G1-NAME-001" not in issues
     assert "G5-NAME-002" in issues
 
 

@@ -46,23 +46,24 @@ as today's G7.
 Counts — all derived from the source below, never asserted
 ----------------------------------------------------------
 * **43 declared** catalogue entries.
-* **34 live** — 32 of them are quality issues (G1-G5) and two are verification
+* **33 live** — 31 of them are quality issues (G1-G5) and two are verification
   codes (G6, G7).
 * **0 unlisted** — ``G3-ADDR-012`` held this status while its absence from the
   Catalogue v2 G3 table was open; it was resolved live on 2026-09-06.
-* **34 deterministically emitted** — every code with a real emission site.
+* **33 deterministically emitted** — every code with a real emission site.
   Identical to ``EMITTED_CODES`` (live + unlisted): nothing withdrawn is
   reachable and nothing live is unreachable.
-* **9 withdrawn** — ``G2-CONTACT-008`` and ``G2-CONTACT-009``, struck through
-  in Catalogue v2, plus the seven withdrawn on 2026-09-06: ``G1-ADDR-009``,
+* **10 withdrawn** — ``G2-CONTACT-008`` and ``G2-CONTACT-009``, struck through
+  in Catalogue v2, the seven withdrawn on 2026-09-06: ``G1-ADDR-009``,
   ``G4-ADDR-008``, ``G4-ADDR-025``, ``G2-VAL-003``, ``G2-VAL-006``,
-  ``G7-VERIFY-001`` and ``G6-RESOLVE-001``. All are declared here for the
-  audit trail; each carries its ``reason``.
+  ``G7-VERIFY-001`` and ``G6-RESOLVE-001``, and ``G1-NAME-001`` withdrawn on
+  2026-09-07. All are declared here for the audit trail; each carries its
+  ``reason``.
 * **0 not deterministically detectable** — ``G1-ADDR-009`` held this status
   until it was withdrawn, and no entry carries it now.
 
-Origin breakdown of the 31 live quality codes derived from record CONTENT:
-8 DS-only, 16 API-only, 7 BOTH. The BOTH count grew across the 2026-09-06/07
+Origin breakdown of the 30 live quality codes derived from record CONTENT:
+8 DS-only, 15 API-only, 7 BOTH. The BOTH count grew across the 2026-09-06/07
 rework: four codes that had only a content detector gained a ``Flag Codes``
 path as well.
 
@@ -84,7 +85,7 @@ DATAshaper-facing feed that must not duplicate a native DS rule.
 These figures are asserted against the source by
 ``tests/test_issue_detection.py::test_docstring_counts_match_the_catalogue``, so
 adding or retiring a code fails the suite until this docstring is updated. How
-many of the 34 actually fire on any given batch is a property of that data, not
+many of the 33 actually fire on any given batch is a property of that data, not
 of the rule set.
 
 Several G1-NAME / G2-NAME / G5 rules are inherently semantic; here they are
@@ -266,7 +267,11 @@ ISSUE_CATALOGUE: dict[str, IssueDefinition] = dict([
     _d("G1-ADDR-004", "G1", "PO Box Embedded in Street", "Street", False, "API", "raw", "rule"),
     _d("G1-ADDR-006", "G1", "Mail Code in Street Field", "Street 2", False, "API", "raw", "rule"),
     _d("G1-ADDR-011", "G1", "Department Label in Street Field", "Street 2", False, "API", "raw", "rule"),
-    _d("G1-NAME-001", "G1", "Name Overflow Across Fields", "Name 1", False, "API", "raw", "rule"),
+    _d(
+        "G1-NAME-001", "G1", "Name Overflow Across Fields", "Name 1", False, "API",
+        status="withdrawn",
+        reason="withdrawn 2026-09-07; the deterministic heuristic was a proxy for a rule that is LLM-only",
+    ),
     # v2 renamed this from "Name 2 Empty With Name 3 Populated"; the rename is
     # a scope change — any blank slot *between* two populated ones fires it,
     # not just the Name 2 / Name 3 pair.
@@ -552,7 +557,7 @@ def _validate_required_field_mapping() -> list[str]:
 _REQUIRED_FIELD_MAPPING_PROBLEMS = _validate_required_field_mapping()
 
 # Continuation connectors that suggest one name has been split across two
-# adjacent slots (heuristic for G1-NAME-001). One list, read by both arms of
+# adjacent slots. One list, read by both arms of
 # ``_overflow_slots`` — a connector that opens a tail is the same connector
 # that dangles off a head, and two lists would drift.
 #
@@ -695,8 +700,7 @@ def _overflow_slots(record: EnrichmentRecord) -> set[str]:
     fragment. Callers that judge the *form* of a slot's contents (G5) have
     nothing meaningful to say about either one, and skip both.
 
-    Pure: reads the record and returns a set. G1-NAME-001 fires iff the set is
-    non-empty, which is the same condition it tested before this was extracted.
+    Pure: reads the record and returns a set.
     """
     slots: set[str] = set()
     for upper, lower in ADJACENT_RECORD_NAME_PAIRS:
@@ -1136,16 +1140,6 @@ def _detect_wrong_field(record: EnrichmentRecord, found: set[str]) -> None:
             found.add("G1-ADDR-011")
             break
 
-    # G1-NAME-001 — two adjacent Name fields read as one continuous org
-    # name. Heuristic: the lower field opens with a connector / lowercase
-    # word AND the upper has no legal suffix that would close the entity.
-    # (True rule is LLM-only.) Checked at every slot boundary: the SAP field
-    # split can drop a continuation anywhere in the block, not only after
-    # Name 1. The pair test lives in ``_overflow_slots`` because G5 needs to
-    # know WHICH slots are halves, not merely whether any pair exists.
-    if _overflow_slots(record):
-        found.add("G1-NAME-001")
-
     # G1-NAME-004 — "Empty field in between populated name fields". A blank
     # slot is only a *gap* when something populated sits both above and below
     # it: Name 1 blank with Name 2 populated is a missing organisation name
@@ -1423,12 +1417,11 @@ def _detect_naming(record: EnrichmentRecord, found: set[str]) -> None:
     # ("Inst of Technology") — but "Dept" and "Div" are not: in Name 1 they are
     # still abbreviations of a word the official form spells out.
     #
-    # A slot that G1-NAME-001 has identified as one half of a split value is
-    # not judged at all. "Sch of Chemical Engineering &" is not a name in a
-    # non-official form; it is half of a name, and the question G5 asks — is
-    # this the official spelling of the thing? — has no answer for a fragment.
-    # The overflow is already reported, by G1-NAME-001, which is the code that
-    # describes what is actually wrong with the record.
+    # A slot that ``_overflow_slots`` has identified as one half of a split
+    # value is not judged at all. "Sch of Chemical Engineering &" is not a
+    # name in a non-official form; it is half of a name, and the question
+    # G5 asks — is this the official spelling of the thing? — has no answer
+    # for a fragment.
     #
     # The detector does NOT join the halves and judge the result: reassembly is
     # the pipeline's job (UC 0), and a raw-side detector that simulated the fix
@@ -1555,9 +1548,9 @@ FLAG_CODE_ISSUES: dict[str, str] = {
     #
     # Two paths to one defect, and `detect_issues` accumulates into a set, so
     # a record that trips both reports the code once. (`overflow` has a second
-    # raise site — a value split across adjacent slots, scoped to that pair —
-    # and that shape is reported from content as G1-NAME-001. One token maps
-    # to one code, and the code it maps to is the one the token is named for.)
+    # raise site — a value split across adjacent slots, scoped to that pair.
+    # One token maps to one code, and the code it maps to is the one the
+    # token is named for.)
     "overflow": "G4-NAME-015",
     # The pipeline could not establish the value at all.
     "low-confidence-unchanged": "G7-UNCHANGED-001",
@@ -1644,9 +1637,9 @@ def _detect_enrichment_flags(
 
     A flag this table does not map raises nothing. The pipeline's vocabulary
     is larger than the reviewer-facing catalogue — ``overflow`` and
-    ``name3-not-demoted`` are already reported as ``G1-NAME-001`` and
-    ``G4-NAME-015`` from the record's own content, and reporting them twice
-    from two directions would double-count the same defect.
+    ``name3-not-demoted`` are already reported as ``G4-NAME-015`` from the
+    record's own content, and reporting them twice from two directions would
+    double-count the same defect.
     """
     for code in flag_codes or ():
         issue = FLAG_CODE_ISSUES.get(code.strip().lower())

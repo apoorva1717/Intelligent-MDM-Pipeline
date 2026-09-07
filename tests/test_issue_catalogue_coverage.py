@@ -6,9 +6,9 @@ near-miss record that does not. The cases live in
 not test code, and ``test_every_emittable_code_has_a_fixture`` fails the suite
 when a code is added without one.
 
-This closes items 170 and 171 of ``docs/thesis/00_OPEN_ITEMS.md``:
-``G1-NAME-001`` and ``G3-ADDR-013`` were reachable with no repository record
-satisfying them.
+This closes item 171 of ``docs/thesis/00_OPEN_ITEMS.md``: ``G3-ADDR-013`` was
+reachable with no repository record satisfying it. Item 170 named
+``G1-NAME-001``, which is withdrawn and therefore carries no case here.
 """
 
 from __future__ import annotations

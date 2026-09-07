@@ -144,7 +144,7 @@ Read by at least one detector (`enrichment/issue_detection.py`):
 
 | Field | Read at | For |
 |---|---|---|
-| `name_1`..`name_5` | `_names`, :633-634 | G1-CROSS-001/-003, G1-NAME-001/-004/-013, G2-NAME-009/-012, G3-NAME-003/-005, G4-NAME-015, G5-NAME-001/-002 |
+| `name_1`..`name_5` | `_names`, :633-634 | G1-CROSS-001/-003, G1-NAME-004/-013, G2-NAME-009/-012, G3-NAME-003/-005, G4-NAME-015, G5-NAME-001/-002 |
 | `street_1`..`street_5` | `_streets`, :637-644 | G1-CROSS-002/-003, G1-ADDR-001/-003/-004/-006/-011, G3-ADDR-012/-013/-014, G4-ADDR-008/-025 |
 | `house_number` | :726, :941 | G1-ADDR-001, G3-ADDR-012 |
 | `po_box` | :924 | G3-ADDR-005, G3-ADDR-014 |
@@ -298,7 +298,7 @@ load (:189-192, README.md:3495-3499).
 | G1-ADDR-004 | G1 | PO Box Embedded in Street | Street | No / Warning | API | :742-745 | `_PO_BOX_RE.search(st)` |
 | G1-ADDR-006 | G1 | Mail Code in Street Field | Street 2 | No / Warning | API | :748-753 | `_extract_mail_code(st, allow_bare=True)[1] or _has_mail_code(st)` |
 | G1-ADDR-011 | G1 | Department Label in Street Field | Street 2 | No / Warning | API | :756-759 | `_looks_like_department(st)` |
-| G1-NAME-001 | G1 | Name Overflow Across Fields | Name 1 | No / Warning | API | :767-777 | upper and lower both populated, upper has no legal suffix, `_NAME_CONTINUATION_RE.search(lower)` |
+| G1-NAME-001 | G1 | Name Overflow Across Fields | Name 1 | No / Warning | API | **withdrawn 2026-09-07**, never emitted | — |
 | G1-NAME-004 | G1 | Empty field in between populated name fields | Name 2 | No / Warning | API | :786-794 | a blank slot with something populated both above and below |
 | G1-NAME-013 | G1 | SAP Internal Code in Name Field | Name 2 | No / Warning | API | :797-800 | `_is_opaque_code(nm)` |
 | G1-ADDR-009 | G1 | Unclassified Residual in Address | Street 2 | No / Warning | API | **`ndd`, never emitted** :217-227 | — |
@@ -373,7 +373,7 @@ UNMAPPED_FLAG_CODES: frozenset[str] = frozenset({
 ```
 
 The reasons are stated at enrichment/issue_detection.py:1083-1098: `overflow` and
-`name3-not-demoted` are already reported from record content as G1-NAME-001 and G4-NAME-015
+`name3-not-demoted` are already reported from record content as G4-NAME-015
 (double-counting); `registry-location-mismatch` is advisory and a queue entry would
 contradict that; `entity-superseded` and `source-conflict` ask a *business* question — which
 legal entity a record should point at after a merger — that no catalogue code carries the
@@ -421,7 +421,6 @@ Inputs: `_names(record)` (:682), `_streets(record)` (:683), `record.house_number
 | G1-ADDR-004 | `if st and _PO_BOX_RE.search(st):` (:743) | skipped | no (:745) |
 | G1-ADDR-006 | `_extract_mail_code(st, allow_bare=True)[1] or _has_mail_code(st)` (:750) | skipped | no (:753) |
 | G1-ADDR-011 | `if _looks_like_department(st):` (:757) | `_looks_like_department(None)` is falsy | no (:759) |
-| G1-NAME-001 | `not is_blank(upper_val) and not is_blank(lower_val) and not _has_legal_suffix(upper_val or "") and _NAME_CONTINUATION_RE.search(lower_val or "")` (:771-774) | either slot blank ⇒ no fire | no (:777) |
 | G1-NAME-004 | `not populated[idx] and any(populated[:idx]) and any(populated[idx + 1:])` (:789-791) | this rule **is** the blank rule; a leading blank (Name 1) is excluded by `range(1, len-1)` (:787) so it reports as G2-VAL-001 instead | no (:794) |
 | G1-NAME-013 | `if nm and _is_opaque_code(nm):` (:798) | skipped | no (:800) |
 
@@ -1220,7 +1219,7 @@ See §4.4. Not implemented, not ticketed anywhere in the tree, and not present i
 | 59 | :424 | `⚠ RATIONALE NOT IN REPO` | Why address validation and the `/issues` call are separate ADF pipelines |
 | 148 | :551 | `⚠ NO FIXTURE COVERAGE` | The ST2 unit-phrase guard firing to `None` on its True branches — a Name 2 that is both a unit phrase and matches the research-institution regex, asserting ST2 is `None` **and the record is flagged** |
 | 158 | :561 | `⚠ NO FIXTURE COVERAGE` | Float-typed record-id cells in the `/issues/compare` join (`"1001"` vs `"1001.0"`) |
-| 170 | :578 | `⚠ NO FIXTURE COVERAGE` → **closed** | `G1-NAME-001` reachable with no repository record satisfying it |
+| 170 | :578 | `⚠ NO FIXTURE COVERAGE` → **moot** | `G1-NAME-001` reachable with no repository record satisfying it; the code was withdrawn 2026-09-07 and can no longer be reached |
 | 171 | :579 | `⚠ NO FIXTURE COVERAGE` → **closed** | `G3-ADDR-013` reachable with no repository record satisfying it |
 | — | :129-141 | corrected | An earlier count claim ("34 of the 36") disagreed with the source; the current counts are asserted by test |
 
@@ -1393,8 +1392,8 @@ for that row (`_ISSUES_SUPPRESSED_CODES` applied).
 
 **Detector verdicts.** G1-ADDR-001 does not fire: `is_blank(house_number)` is True, so the
 precondition holds, but `_looks_like_street("S Dr")` is False — no house number in the line.
-G1-NAME-001 does not fire: `_NAME_CONTINUATION_RE` does not match `Genomics` (capitalised, not
-a connector). G2-NAME-012 does not fire — Name 2 is populated. G5-NAME-001/-002 do not fire —
+G1-NAME-001 does not fire: it is withdrawn (and `_NAME_CONTINUATION_RE` would not have
+matched `Genomics` — capitalised, not a connector). G2-NAME-012 does not fire — Name 2 is populated. G5-NAME-001/-002 do not fire —
 no abbreviation token, no dotted acronym. `_detect_enrichment_flags` receives `flag_codes=[]`
 (the `Flag Codes` column exists and is empty; the provenance loop coerces `None`→`[]` at
 api/routes.py:274-275 and neither column reads `low`). `_detect_verification` receives `False`.
