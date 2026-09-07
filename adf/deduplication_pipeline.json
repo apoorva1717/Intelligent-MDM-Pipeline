@@ -1,0 +1,118 @@
+{
+    "name": "Deduplication Pipeline",
+    "properties": {
+        "activities": [
+            {
+                "name": "Lookup1",
+                "type": "Lookup",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "SqlMISource",
+                        "sqlReaderQuery": {
+                            "value": "SELECT\n    Customer               AS row_id,\n    [Block ID]             AS block_id,\n    [Name 1]               AS name1,\n    [Name 2]               AS name2,\n    [Street 1]             AS street,\n    [House Number]         AS house_no,\n    [Postal Code]          AS postal_code,\n    City                   AS city,\n    [Country/Region Key]   AS country,\n    [ROR ID]               AS ror_id,\n    [LEI ID]               AS lei_id\nFROM [@{pipeline().parameters.chrEntity}].Validation\nWHERE [code] LIKE '@{pipeline().parameters.chrGroupCode}\\_%' ESCAPE '\\'",
+                            "type": "Expression"
+                        },
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "AzureSqlMITable3",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": false
+                }
+            },
+            {
+                "name": "Web1",
+                "type": "WebActivity",
+                "dependsOn": [
+                    {
+                        "activity": "Lookup1",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "method": "POST",
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "httpRequestTimeout": "00:10:00",
+                    "url": "https://mdm-pipeline-api.azurewebsites.net/api/dedup/cluster-block",
+                    "connectVia": {
+                        "referenceName": "AutoResolveIntegrationRuntime",
+                        "type": "IntegrationRuntimeReference"
+                    },
+                    "body": {
+                        "value": "@json(concat('{\"rows\":', string(activity('Lookup1').output.value), '}'))",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "Merge Back",
+                "type": "SqlServerStoredProcedure",
+                "dependsOn": [
+                    {
+                        "activity": "Web1",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "storedProcedureName": "dbo.usp_merge_validation_clusters",
+                    "storedProcedureParameters": {
+                        "payload": {
+                            "value": {
+                                "value": "@string(activity('Web1').output)",
+                                "type": "Expression"
+                            },
+                            "type": "String"
+                        }
+                    }
+                },
+                "linkedServiceName": {
+                    "referenceName": "ls_sqlmi_validation",
+                    "type": "LinkedServiceReference"
+                }
+            }
+        ],
+        "parameters": {
+            "chrEntity": {
+                "type": "string"
+            },
+            "chrGroupCode": {
+                "type": "string"
+            }
+        },
+        "annotations": [],
+        "lastPublishTime": "2026-07-29T12:09:37Z"
+    },
+    "type": "Microsoft.DataFactory/factories/pipelines"
+}

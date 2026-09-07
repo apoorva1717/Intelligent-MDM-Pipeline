@@ -1,0 +1,168 @@
+{
+    "name": "Enrichment Pipeline",
+    "properties": {
+        "activities": [
+            {
+                "name": "Lookup2",
+                "type": "Lookup",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "SqlMISource",
+                        "sqlReaderQuery": {
+                            "value": "SELECT (n.rn - 1) AS offset\nFROM (\n    SELECT ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS rn\n    FROM dp_legacy.[@{pipeline().parameters.chrEntity}].Legacy\n    WHERE [code] LIKE '@{pipeline().parameters.chrGroupCode}\\_%' ESCAPE '\\'\n) n\nWHERE (n.rn - 1) % 30 = 0",
+                            "type": "Expression"
+                        },
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "AzureSqlMITable1",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": false
+                }
+            },
+            {
+                "name": "ForEach1",
+                "type": "ForEach",
+                "dependsOn": [
+                    {
+                        "activity": "Lookup2",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "items": {
+                        "value": "@activity('Lookup2').output.value",
+                        "type": "Expression"
+                    },
+                    "isSequential": true,
+                    "activities": [
+                        {
+                            "name": "Lookup1",
+                            "type": "Lookup",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.12:00:00",
+                                "retry": 0,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "SqlMISource",
+                                    "sqlReaderQuery": {
+                                        "value": "SELECT * FROM dp_legacy.[@{pipeline().parameters.chrEntity}].Legacy WHERE [code] LIKE '@{pipeline().parameters.chrGroupCode}\\_%' ESCAPE '\\' ORDER BY [code] OFFSET @{item().offset} ROWS FETCH NEXT 30 ROWS ONLY",
+                                        "type": "Expression"
+                                    },
+                                    "partitionOption": "None"
+                                },
+                                "dataset": {
+                                    "referenceName": "AzureSqlMITable1",
+                                    "type": "DatasetReference"
+                                },
+                                "firstRowOnly": false
+                            }
+                        },
+                        {
+                            "name": "Web1",
+                            "type": "WebActivity",
+                            "dependsOn": [
+                                {
+                                    "activity": "Lookup1",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "policy": {
+                                "timeout": "0.12:00:00",
+                                "retry": 0,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "method": "POST",
+                                "headers": {
+                                    "Content-Type": "application/json"
+                                },
+                                "httpRequestTimeout": "00:10:00",
+                                "url": "https://mdm-pipeline-api.azurewebsites.net/enrich",
+                                "connectVia": {
+                                    "referenceName": "AutoResolveIntegrationRuntime",
+                                    "type": "IntegrationRuntimeReference"
+                                },
+                                "body": {
+                                    "value": "@json(concat('{\"records\":', string(activity('Lookup1').output.value), '}'))",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        {
+                            "name": "Merge Back",
+                            "type": "SqlServerStoredProcedure",
+                            "dependsOn": [
+                                {
+                                    "activity": "Web1",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "policy": {
+                                "timeout": "0.12:00:00",
+                                "retry": 0,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "storedProcedureName": "dbo.usp_merge_legacy_enriched",
+                                "storedProcedureParameters": {
+                                    "payload": {
+                                        "value": {
+                                            "value": "@string(activity('Web1').output)",
+                                            "type": "Expression"
+                                        },
+                                        "type": "String"
+                                    }
+                                }
+                            },
+                            "linkedServiceName": {
+                                "referenceName": "ls_sqlmi_legacy",
+                                "type": "LinkedServiceReference"
+                            }
+                        }
+                    ]
+                }
+            }
+        ],
+        "parameters": {
+            "chrEntity": {
+                "type": "string"
+            },
+            "chrGroupCode": {
+                "type": "string"
+            }
+        },
+        "annotations": [],
+        "lastPublishTime": "2026-09-06T16:49:32Z"
+    },
+    "type": "Microsoft.DataFactory/factories/pipelines"
+}

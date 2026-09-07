@@ -1,0 +1,118 @@
+{
+    "name": "Scoring Pipeline",
+    "properties": {
+        "activities": [
+            {
+                "name": "Lookup1",
+                "type": "Lookup",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "SqlMISource",
+                        "sqlReaderQuery": {
+                            "value": "SELECT\n    Customer                          AS row_id,\n    [Cluster ID]                      AS [Cluster ID],\n    [Confidence]                      AS Confidence,\n    [Routing]                         AS Routing,\n    [Reasoning]                       AS Reasoning,\n    Sales_Order_Last_Used,\n    Sales_Order_Total_Count,\n    Sales_Order_Partner_Last_Used,\n    Sales_Order_Partner_Total_Count,\n    Equipment_Total_Count,\n    SleepingCustomer,\n    CustomerStatus,\n    [Account group],\n    Company_Code_Consolidated,\n    Sales_Org_Consolidated,\n    SF_ID_Biosystems AS sf1,\n    SF_ID_AXS        AS sf2,\n    SF_ID_3          AS sf3,\n    SF_ID_4          AS sf4,\n    SF_ID_5          AS sf5,\n    SF_ID_6          AS sf6,\n    SF_ID_7          AS sf7,\n    SF_ID_8          AS sf8\nFROM [@{pipeline().parameters.chrEntity}].Validation\nWHERE [code] LIKE '@{pipeline().parameters.chrGroupCode}\\_%' ESCAPE '\\'",
+                            "type": "Expression"
+                        },
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "AzureSqlMITable3",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": false
+                }
+            },
+            {
+                "name": "Web1",
+                "type": "WebActivity",
+                "dependsOn": [
+                    {
+                        "activity": "Lookup1",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "method": "POST",
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "httpRequestTimeout": "00:10:00",
+                    "url": "https://mdm-pipeline-api.azurewebsites.net/api/dedup/score",
+                    "connectVia": {
+                        "referenceName": "AutoResolveIntegrationRuntime",
+                        "type": "IntegrationRuntimeReference"
+                    },
+                    "body": {
+                        "value": "@json(concat('{\"rows\":', string(activity('Lookup1').output.value), '}'))",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "Merge Back",
+                "type": "SqlServerStoredProcedure",
+                "dependsOn": [
+                    {
+                        "activity": "Web1",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "storedProcedureName": "dbo.usp_merge_validation_scores",
+                    "storedProcedureParameters": {
+                        "payload": {
+                            "value": {
+                                "value": "@string(activity('Web1').output)",
+                                "type": "Expression"
+                            },
+                            "type": "String"
+                        }
+                    }
+                },
+                "linkedServiceName": {
+                    "referenceName": "ls_sqlmi_validation",
+                    "type": "LinkedServiceReference"
+                }
+            }
+        ],
+        "parameters": {
+            "chrEntity": {
+                "type": "string"
+            },
+            "chrGroupCode": {
+                "type": "string"
+            }
+        },
+        "annotations": [],
+        "lastPublishTime": "2026-07-31T18:27:48Z"
+    },
+    "type": "Microsoft.DataFactory/factories/pipelines"
+}
