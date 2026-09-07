@@ -40,10 +40,8 @@ The thesis author cannot see this repo while writing; whatever you do not state,
   (`usp_MergeLegacyEnriched`, `usp_MergeLegacyIssues`, `usp_MergeValidationClusters`,
   `usp_MergeValidationScores`).
 - `weights.json`.
-- `data/eval/` — five stratum pairs `demo_S{1..5}_*_issues.xlsx` (pre-enrichment) and
-  `demo_S{1..5}_*_enriched*_issues.xlsx` (post-enrichment); the clustering/scoring test set
-  `demo_S5_smb_residual_100_v1 (1)_enriched (4)*.xlsx`;
-  `dedup_STRESS_200_v1_*_scored*.xlsx`. If any file is missing, say which.
+- `data/eval/` — the stratum pairs and the clustering/scoring workbooks. The authoritative
+  pairing rule is in Pass 18; use it, and say which file is missing if one is.
 - Existing `docs/thesis/11_DELTA.md` — read its header for the commit it was generated at;
   that is the baseline for the new delta (Pass 11). Do not otherwise trust old pass docs.
 
@@ -110,9 +108,11 @@ every value.
 
 ## Pass 04 — Parameters → `04_PARAMETERS.md`
 
-Every tunable: name | value (verbatim) | file:line | effect | who sets it (env / config / weights.json).
-Full contents of `weights.json` reproduced, with the commit at which it was last changed
-(`git log -1 --format=%h -- weights.json`).
+Every tunable: name | value (verbatim) | file:line | effect | who sets it
+(env / config / `dedup/weights.json`).
+Full contents of `dedup/weights.json` reproduced, with the commit at which it was last
+changed (`git log -1 --format=%h -- dedup/weights.json`). The file is at
+`dedup/weights.json`, not at the repository root.
 
 ## Pass 05 — Data model → `05_DATA_MODEL.md`
 
@@ -197,6 +197,9 @@ Per issue code: code | group | name | raised (raw/enriched/both) | remedy (rule/
 If the repo contains a Notion export, reconcile; otherwise state that Notion is the author's
 authority for group membership and list only what the code emits.
 
+Document `ISSUE_CATALOGUE` and `DedupIssue` as two distinct vocabularies by design, with
+their separate consumers and emission sites.
+
 ## Pass 16 — Rulesets → `16_RULESETS.md`  *(new)*
 
 Four tables, one per ruleset, each row citing `file:line`. Rules are stated as a reader-verifiable
@@ -231,7 +234,20 @@ Flag every edge that is not mechanically derivable from the detection predicate.
 ## Pass 18 — Evaluation results → `18_EVAL_RESULTS.md`  *(new)*
 
 Compute from `data/eval/` with a script you write under `tools/eval_report.py` (read-only over
-the files; commit nothing). Paste the invocation and full output. Per stratum S1–S5:
+the files; commit nothing). Paste the invocation and full output.
+
+**File pairing.**
+- `data/eval/S{n}_pre.xlsx` is the pre-enrichment issues export for stratum n;
+  `S{n}_post.xlsx` is post-enrichment.
+- Print the resolved pair and row counts per stratum before computing. Stop if a stratum is
+  missing either file.
+- Clustering/scoring workbooks are separate inputs, not a PRE/POST pair.
+
+**Vocabulary.** The reduction metric is the `ISSUE_CATALOGUE` vocabulary only. `DedupIssue`
+codes from `/api/dedup/score` are cluster-quality diagnostics, reported in a separate table
+and never summed with catalogue codes.
+
+Per stratum S1–S5:
 - Rows; issues per code and per group, pre vs post; reduction absolute and relative;
   the 19-code reduction set and the 7 mandatory codes reported separately.
 - **Completeness KPI**: filled/expected per field, pre vs post, over the address/name field set.
