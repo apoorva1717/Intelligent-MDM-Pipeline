@@ -149,6 +149,8 @@ from enrichment.address_processing import (
     _is_identifier_like,
     _looks_like_department,
     _looks_like_street,
+    _NAMED_BUILDING_AMBIGUOUS_MARKERS,
+    _named_building_value,
 )
 from enrichment.confidence import (
     LOW as _CONFIDENCE_LOW,
@@ -1098,6 +1100,22 @@ def _detect_wrong_field(record: EnrichmentRecord, found: set[str]) -> None:
         ):
             found.add("G1-ADDR-003")
             break
+
+    # G1-ADDR-003 — a named building whose marker doubles as an ordinary word
+    # ("Moore Hall"). Detected through the SAME matcher the address stage
+    # extracts with, so a value the guard refuses ("Hall St", "Main Hall",
+    # "Dept of Chemistry Building") never reports a sub-location that nothing
+    # will ever extract. Street 1 is included: the extractor leaves it in place
+    # there, but the steward should still see it.
+    if "G1-ADDR-003" not in found:
+        name_1 = names[0] if names else None
+        for st in streets:
+            if not st:
+                continue
+            nb = _named_building_value(st, name_1, allow_rest=True)
+            if nb and nb.marker.lower() in _NAMED_BUILDING_AMBIGUOUS_MARKERS:
+                found.add("G1-ADDR-003")
+                break
 
     # G1-ADDR-004 — PO Box pattern inside a Street field.
     for st in streets:

@@ -369,3 +369,38 @@ The eight are the same eight at `f57782f`, `2125ad2`, `e31b53b`, `f292bfa`, `e39
 `a17a2e0` and `96dd528` as well: no commit in the range introduced any of them. They are
 now pinned in `tests/KNOWN_FAILURES.md`, which every future gate asserts against as a SET
 rather than as a count.
+
+## Withdrawn codes still in `expected_issue_codes` — the denominator is stale
+
+Every precision/recall figure computed from these fixtures is scored against an
+annotation vocabulary that still expects **158 codes the catalogue has withdrawn**.
+A withdrawn code has no emission site (`enrichment/issue_detection.py` declares each
+with `status="withdrawn"` and a `reason`), so it can never be raised: every occurrence
+below is an unreachable expectation that depresses recall by construction.
+
+| stratum | expected codes | withdrawn | rows affected | breakdown |
+|---|---|---|---|---|
+| S1 | 251 | 66 | 52 | `G1-NAME-001` 34, `G1-ADDR-009` 26, `G4-ADDR-008` 3, `G4-ADDR-025` 3 |
+| S2 | 238 | 38 | 32 | `G1-NAME-001` 15, `G4-ADDR-008` 12, `G1-ADDR-009` 11 |
+| S3 | 206 | 9 | 9 | `G1-NAME-001` 6, `G1-ADDR-009` 2, `G4-ADDR-025` 1 |
+| S4 | 277 | 10 | 9 | `G4-ADDR-008` 5, `G1-NAME-001` 3, `G1-ADDR-009` 2 |
+| S5 | 307 | 35 | 35 | `G4-ADDR-008` 18, `G1-ADDR-009` 11, `G1-NAME-001` 6 |
+| `dedup_STRESS_200_v1` | — | — | — | no `expected_issue_codes` column (Rule 1) |
+
+Totals: `G1-NAME-001` 64, `G1-ADDR-009` 52, `G4-ADDR-008` 38, `G4-ADDR-025` 4.
+
+`G1-ADDR-009` was withdrawn on 2026-09-06 (ndd, never emitted); `G1-NAME-001` on
+2026-09-07; `G4-ADDR-008` and `G4-ADDR-025` on 2026-09-06.
+
+**No read-time filter exists.** No `.py` in the repository reads
+`expected_issue_codes` — this file is maintained by hand — so nothing currently
+subtracts these from the denominator. Anyone quoting a precision or recall number from
+a stratum above must subtract its withdrawn count first, or the figure understates
+recall by up to 26% of the vocabulary (S1).
+
+One cell has been corrected at source: row `13332345` (S1) expected
+`G1-ADDR-009;G2-NAME-012` and now expects `G1-ADDR-003;G2-NAME-012`, which is what the
+detector raises for `Equad A302`. The remaining 26 `G1-ADDR-009` rows in S1 are
+deliberately untouched — remapping each withdrawn code to its replacement is a
+per-code judgement, not a per-row edit, and some have no deterministic replacement,
+which is why they were withdrawn.

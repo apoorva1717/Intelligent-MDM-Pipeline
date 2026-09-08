@@ -1599,3 +1599,45 @@ def test_g1_addr_006_fires_for_a_mail_stop_in_a_street_field(street):
 ])
 def test_g1_addr_006_does_not_fire_on_a_mississippi_or_honorific_ms(street):
     assert "G1-ADDR-006" not in detect_issues(_record(**{"Street 1": street}))
+
+
+# ---------------------------------------------------------------------------
+# G1-ADDR-003 and the named-building rule.
+#
+# The named-building matcher is guarded (`_named_building_prefix_ok`), and the
+# DETECTOR must consult the same guard rather than a bare pattern search — a
+# value the extractor refuses to move ("Hall St", "Main Hall") must not start
+# reporting a sub-location that nothing will ever extract.
+#
+# Street 1 is detect-only: the extractor never moves a named building out of
+# Street 1, but the detector still reports it so a steward sees it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("street1", [
+    "Hall St",                      # street-type word, not a building
+    "Main Hall",                    # bare generic prefix
+    "Dept of Chemistry Building",   # department shape
+])
+def test_named_building_guard_rejects_do_not_raise_g1_addr_003(street1):
+    assert "G1-ADDR-003" not in detect_issues(_record(**{"Street 1": street1}))
+
+
+def test_named_building_in_street_1_is_detected_but_not_extracted():
+    """Street 1 is detect-only. The code is raised; the extractor leaves the
+    value in place and Building stays blank."""
+    import asyncio
+
+    from enrichment.address_processing import process_address
+
+    assert "G1-ADDR-003" in detect_issues(
+        _record(**{"Street 1": "Heroy Bldg/Rm 450"})
+    )
+
+    res = asyncio.run(process_address(
+        record_id="s1", name1="Acme Corp", name2=None, name3=None,
+        street="Heroy Bldg/Rm 450", street_2=None, street_3=None,
+        city="Tampa", state="FL", zip_code="33620", country="US",
+        po_box=None, care_of_enriched=None, llm_client=None,
+    ))
+    assert res.building is None

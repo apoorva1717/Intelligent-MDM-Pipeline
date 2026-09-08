@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 from llm.openai_client import OpenAIClient
 from llm.prompts import (
@@ -658,10 +658,198 @@ _CAMPUS_FRAGMENT_RE = re.compile(
 )
 
 
-def _named_building_value(seg: str | None) -> str | None:
-    """Return the segment when it names a building (routed to the Building
-    field), else None. A leading house number or a full street pattern means it
-    is a street address, not a bare building."""
+# --- Named buildings -------------------------------------------------------
+#
+# CHANGE NOTE (named-building extraction). This function's body was extended
+# rather than paralleled by a second matcher. The alternative considered — a
+# new guarded `match_named_building` plus new `_SUITE_PATTERNS` entries — would
+# have left TWO named-building paths with the UNGUARDED one upstream, so a
+# value the new guard refused ("Main Hall", "Receiving Bldg", "Attn: Dr Hall")
+# would still have been taken by this one. The edit is strictly tightening
+# (`_named_building_prefix_ok` only ever rejects) plus remainder handling that
+# fires only when a separator or a room/suite/floor marker is actually present.
+# Departure from additive-only, authorised deliberately; the A/B gate is the
+# control.
+#
+# A/B over S1-S5 + dedup_STRESS_200_v1 (CACHE_FROZEN): 7 rows changed, all
+# reviewed and accepted. Three consequences are INTENDED, not collateral:
+#
+#   * A fragment that now lands in Building is no longer relocated into a name
+#     slot, so Name 2 / Name 3 go blank on those rows and the
+#     `relocated-unverified` flag and `input:low` provenance drop away with the
+#     value. "Equad" (13332345) and "W R Banks 149" (prairie view) were
+#     mis-relocations: a building is not a department, and provenance leaving
+#     with the value it described is the origin invariant working.
+#   * An ambiguous marker (Hall / Center / Centre / Wing / Annex / Complex)
+#     raises G1-ADDR-003 even where Building did not change. Those rows
+#     ("Engineering Hall", "DeGrace Hall", "Bourns Hall") were always silent
+#     Building moves on an ambiguous word; the code is the widening we wanted.
+#   * The residual trailing-separator trim can alter a Street 1 value
+#     ("6110 Wyche/MMB RM/FLR/"). Punctuation only — no token is lost.
+#
+# Three shapes, tried in order:
+#
+#   "Fairchild Science Bldg"   the whole segment is the building
+#   "Heroy Bldg/Rm 450"        building + a remainder handed back for
+#                              re-extraction by the Room/Suite/Floor entries
+#   "Equad A302"               building + a bare room code (no marker at all)
+#
+# The marker STAYS in the Building value ("Heroy Bldg", never "Heroy") — the
+# convention this function has always followed, and what the steward sees in
+# SAP. The room-code shape has no marker to keep, so it yields the bare name.
+
+# Takes a matched value apart so the prefix can be guarded. `_BUILDING_SUFFIX_RE`
+# remains the gate; this never widens it.
+_BUILDING_SUFFIX_SPLIT_RE = re.compile(
+    r"^(?P<prefix>\S.*?)\s+"
+    r"(?P<marker>Building|Bldg|House|Hall|Pavilion|Tower)\.?\s*$",
+    re.IGNORECASE,
+)
+# Where a building segment ends and a sub-location begins: an explicit
+# separator, or a room/suite/floor marker that carries an identifier.
+_NAMED_BUILDING_SEPARATOR_RE = re.compile(r"\s*[/,]\s*|\s+-\s+")
+_NAMED_BUILDING_SUBLOC_RE = re.compile(
+    r"\s+(?=(?:Rm|Room|Ste|Suite|Fl|Floor)\b\.?\s*"
+    r"(?:number|no|nr)?\.?\s*[:#]?\s*\w*\d)",
+    re.IGNORECASE,
+)
+# "Equad A302" — a name followed by a bare room code, no marker anywhere.
+#
+# The room code must LEAD WITH A LETTER, which is what `_SUITE_PATTERNS`
+# already means by "a trailing room code" (:286). Allowing a bare number here
+# instead made this pattern swallow every "<field marker> <number>" value in
+# the corpus — "PO Box 2000", "Lab 163", "Dow 268", "Dist 11" — moving the
+# marker into Building and destroying the PO Box / Mail Code / Room it named.
+# This function runs BEFORE those extractors, so it cannot rely on their
+# precedence; it has to decline the shape itself.
+_NAMED_BUILDING_ROOM_CODE_RE = re.compile(
+    r"^(?P<prefix>[A-Za-z][\w&.\'-]*(?:\s+[A-Za-z][\w&.\'-]*){0,2})"
+    r"\s+(?P<room>[A-Za-z]\d{2,4}[A-Z]?)$"
+)
+# An all-caps short prefix ("MC 302") is a mail code, not a building. Mail-code
+# extraction runs AFTER this function, so the room-code shape has to decline it
+# here rather than rely on precedence.
+_NAMED_BUILDING_ACRONYM_RE = re.compile(r"^[A-Z]{2,4}$")
+
+_NAMED_BUILDING_MAX_TOKENS = 3
+_NAMED_BUILDING_MAX_CHARS = 25
+# A bare directional/generic word names no building on its own.
+_NAMED_BUILDING_GENERIC_PREFIXES = {
+    "main", "central", "north", "south", "east", "west", "old", "new", "annex",
+}
+# Hard logistics rejects, independent of how `is_logistics_location` is scoped.
+# The site-access words are here for the same reason: "Door E10C" is an
+# unloading point, and its room-code-shaped tail would otherwise read as a
+# building.
+_NAMED_BUILDING_LOGISTICS_TOKENS = {
+    "receiving", "shipping", "warehouse", "dock", "mailroom", "stores",
+    "door", "gate", "bay", "ramp", "entrance", "entry", "elevator",
+    "loading", "unloading",
+}
+_NAMED_BUILDING_CONTACT_RE = re.compile(
+    r"^(?:c/o|att?n+|dr|mr|mrs|ms|prof)\b", re.IGNORECASE,
+)
+# Building words that are common ordinary words too. A move on one of these is
+# reported (G1-ADDR-003) so the steward stays in the loop; "Bldg"/"Building"/
+# "Tower"/"Pavilion" and the room-code shape are unambiguous and are not.
+_NAMED_BUILDING_AMBIGUOUS_MARKERS = {
+    "hall", "center", "centre", "wing", "annex", "complex",
+}
+
+
+class NamedBuilding(NamedTuple):
+    """A named-building match. ``rest`` is the remainder to write back to the
+    street slot (empty when the whole segment was the building); ``marker`` is
+    the building word that ended it (empty for the room-code shape)."""
+
+    building: str
+    rest: str
+    marker: str
+
+
+def _named_building_tokens(value: str | None) -> list[str]:
+    return [t for t in re.split(r"[^A-Za-z0-9&]+", (value or "").lower()) if t]
+
+
+def _named_building_prefix_ok(prefix: str, name_1: str | None) -> bool:
+    """True when *prefix* can name a building. Rejects only — every clause
+    here removes a candidate, none admits one."""
+    if not prefix or not prefix.strip():
+        return False
+    p = prefix.strip()
+    if len(p) > _NAMED_BUILDING_MAX_CHARS:
+        return False
+    toks = p.split()
+    if not toks or len(toks) > _NAMED_BUILDING_MAX_TOKENS:
+        return False
+    if any(not t[:1].isalpha() for t in toks):
+        return False
+    # A street, a street-type word, or a department is not a building name.
+    if _looks_like_street(p) or _looks_like_department(p):
+        return False
+    if any(_STREET_TYPE_WORD_RE.fullmatch(t) for t in toks):
+        return False
+    # A person or a contact instruction ("Attn: Dr Hall") is not a building.
+    if _street_person_name(p) or _NAMED_BUILDING_CONTACT_RE.match(p):
+        return False
+    low = _named_building_tokens(p)
+    if is_logistics_location(p) or any(
+        t in _NAMED_BUILDING_LOGISTICS_TOKENS for t in low
+    ):
+        return False
+    if len(low) == 1 and low[0] in _NAMED_BUILDING_GENERIC_PREFIXES:
+        return False
+    # The organisation's own name (or its initialism) is not a building name:
+    # "Southern Methodist University Bldg", "SMU Bldg".
+    n1 = _named_building_tokens(name_1)
+    if n1 and low:
+        if low == n1[: len(low)]:
+            return False
+        initials = [t[0] for t in n1 if len(t) >= 3]
+        if len(low) == 1 and initials and low[0] == "".join(initials):
+            return False
+    return True
+
+
+def _building_from_segment(
+    seg: str, name_1: str | None,
+) -> tuple[str, str] | None:
+    """``(value, marker)`` when *seg* is entirely "<prefix> <building word>"."""
+    if not _BUILDING_SUFFIX_RE.match(seg):
+        return None
+    m = _BUILDING_SUFFIX_SPLIT_RE.match(seg)
+    if not m or not _named_building_prefix_ok(m.group("prefix"), name_1):
+        return None
+    return seg, m.group("marker")
+
+
+def _split_building_remainder(seg: str) -> tuple[str, str] | None:
+    """Split *seg* at the earliest separator or sub-location marker."""
+    starts: list[tuple[int, int]] = []
+    for pat in (_NAMED_BUILDING_SEPARATOR_RE, _NAMED_BUILDING_SUBLOC_RE):
+        m = pat.search(seg)
+        if m:
+            starts.append((m.start(), m.end()))
+    if not starts:
+        return None
+    start, end = min(starts)
+    return seg[:start].strip(), seg[end:].strip()
+
+
+def _named_building_value(
+    seg: str | None,
+    name_1: str | None = None,
+    *,
+    allow_rest: bool = False,
+) -> NamedBuilding | None:
+    """Return the named building in *seg*, else None. A leading house number or
+    a full street pattern means it is a street address, not a bare building.
+
+    ``allow_rest`` enables the two shapes that leave a remainder. It is off for
+    Street 1, which stays detect-only for those (the value is reported by
+    G1-ADDR-003 and left in place), and for the per-segment reduction of a
+    primary street, which has already split on its own separators.
+    """
     if not seg or not seg.strip():
         return None
     s = seg.strip()
@@ -671,7 +859,37 @@ def _named_building_value(seg: str | None) -> str | None:
         return None
     if _looks_like_department(s):
         return None
-    return s if _BUILDING_SUFFIX_RE.match(s) else None
+
+    hit = _building_from_segment(s, name_1)
+    if hit:
+        return NamedBuilding(hit[0], "", hit[1])
+    if not allow_rest:
+        return None
+
+    split = _split_building_remainder(s)
+    if split:
+        head, rest = split
+        hit = _building_from_segment(head, name_1)
+        if hit and rest:
+            return NamedBuilding(hit[0], rest, hit[1])
+
+    m = _NAMED_BUILDING_ROOM_CODE_RE.match(s)
+    if m:
+        prefix = m.group("prefix")
+        # A prefix that IS a bare sub-location marker means this is the
+        # marker-first form ("Bldg 12", "Ste 400"), which the existing
+        # `_SUITE_PATTERNS` entries own. Building there is the id, not "Bldg".
+        if (
+            not _BARE_MARKER_RE.search(prefix)
+            and not _NAMED_BUILDING_ACRONYM_RE.match(prefix)
+            # A value another extractor owns outright is never a building.
+            and not _PO_BOX_RE.search(s)
+            and not _MAIL_CODE_EXPLICIT_RE.search(s)
+            and not _MAIL_CODE_COMPLEX_RE.search(s)
+            and _named_building_prefix_ok(prefix, name_1)
+        ):
+            return NamedBuilding(prefix, m.group("room"), "")
+    return None
 
 
 def _is_campus_fragment(seg: str | None) -> bool:
@@ -899,6 +1117,7 @@ def _reduce_primary_street(
     city: str | None,
     state: str | None,
     zip_code: str | None,
+    name_1: str | None = None,
 ) -> list[str] | None:
     """Per-segment reduction of a mixed primary street value, per the scope
     table. Runs only for the complex cases — a c/o line, a named building, or a
@@ -918,7 +1137,7 @@ def _reduce_primary_street(
     segs = [s.strip(" ;-") for s in re.split(r"[|,]", primary) if s and s.strip(" ;-")]
     if len(segs) < 2:
         return None
-    has_building = any(_named_building_value(s) for s in segs)
+    has_building = any(_named_building_value(s, name_1) for s in segs)
     has_care_of = any(_CARE_OF_RE.match(s) for s in segs)
     if not (has_pipe or has_building or has_care_of):
         return None
@@ -953,9 +1172,9 @@ def _reduce_primary_street(
             elif not (res.care_of_enriched and res.care_of_enriched.strip()):
                 res.care_of_enriched = payload or None
             continue
-        building = _named_building_value(seg)
-        if building:
-            building = smart_title_case(building) or building
+        nb = _named_building_value(seg, name_1)
+        if nb:
+            building = smart_title_case(nb.building) or nb.building
             if res.building is None:
                 res.building = building
             else:
@@ -1120,6 +1339,7 @@ async def process_address(
     # through to the per-value extractors below unchanged.
     reduced = _reduce_primary_street(
         res, slots["s1"], city=city, state=state, zip_code=zip_code,
+        name_1=name1,
     )
     if reduced is not None:
         tail = [slots[k] for k in ("s2", "s3", "s4", "s5") if slots[k]]
@@ -1136,14 +1356,30 @@ async def process_address(
         if not value:
             continue
 
-        # A whole slot that is a named building ("Chemistry Bldg", "Aster
-        # House") → Building field (the first one; a second building is left in
-        # its street slot per the scope table).
-        nb = _named_building_value(value)
+        # A slot that names a building ("Chemistry Bldg", "Aster House",
+        # "Heroy Bldg/Rm 450", "Equad A302") → Building field (the first one; a
+        # second building is left in its street slot per the scope table).
+        #
+        # Street 1 is detect-only for the shapes that leave a remainder: the
+        # value stays put and G1-ADDR-003 reports it. Splitting a Street 1
+        # value would move the primary address line, which no rule here owns.
+        nb = _named_building_value(
+            value, name1, allow_rest=slot_name != "s1",
+        )
         if nb and res.building is None:
-            res.building = smart_title_case(nb) or nb
-            slots[slot_name] = None
-            continue
+            res.building = smart_title_case(nb.building) or nb.building
+            # A remainder ("Rm 450") goes back to the slot and falls through to
+            # the extractors below, which own Room / Suite / Floor. That also
+            # keeps the marker-first `Bldg <id>` entry from reading the "Rm" of
+            # "Heroy Bldg Rm 450" as the building id.
+            slots[slot_name] = nb.rest or None
+            # A named building whose marker doubles as an ordinary word is
+            # reported so a steward can confirm it.
+            if nb.marker.lower() in _NAMED_BUILDING_AMBIGUOUS_MARKERS:
+                res.issue("G1-ADDR-003")
+            if not nb.rest:
+                continue
+            value = nb.rest
 
         work = value
 
@@ -1193,8 +1429,11 @@ async def process_address(
         if bare_marker:
             res.issue("G4-ADDR-008")
 
-        # Persist the trimmed remainder back to the slot.
-        slots[slot_name] = _strip_residue(work) or None
+        # Persist the trimmed remainder back to the slot. `_trim_fragment`
+        # also removes a trailing "/" — the split's own punctuation, which
+        # `_strip_residue` leaves behind ("Heroy Bldg/") — and blanks a slot
+        # that is nothing but separators.
+        slots[slot_name] = _trim_fragment(_strip_residue(work))
 
     # Step 3 — cross-field checks (flag only).
     _cross_field_checks(

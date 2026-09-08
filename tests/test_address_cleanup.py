@@ -295,3 +295,113 @@ class TestTheCareOfMarkerMatchesOnlyAsAWholeWord:
         from enrichment.preprocess import _CO_ATTN_MARKER as pre
 
         assert addr is pre
+
+
+# ---------------------------------------------------------------------------
+# Named-building extraction (Item: named buildings in the secondary street
+# slots). A named building written marker-last ("Heroy Bldg", "Equad A302")
+# never reached the Building field: the `Bldg <id>` entry in
+# ``_SUITE_PATTERNS`` is marker-FIRST, and ``_is_identifier_like`` rejects an
+# alphabetic value of 3+ characters, so the name was left in the street slot
+# while the trailing room code was pulled out from under it.
+# ---------------------------------------------------------------------------
+
+
+async def _named_building(value, name1="Acme Corp"):
+    """Feed *value* through a SECONDARY slot (street_2) and return the result.
+
+    Street 1 is left empty, so the cleaned remainder left-packs into
+    ``street_cleaned`` — the same convention the tests above use.
+    """
+    return await process_address(
+        record_id="nb", name1=name1, name2=None, name3=None,
+        street=None, street_2=value, street_3=None,
+        city="Tampa", state="FL", zip_code="33620", country="US",
+        po_box=None, care_of_enriched=None, llm_client=None,
+    )
+
+
+class TestNamedBuildingMoves:
+    """Values that MUST be routed into Building (+ Room), leaving the source
+    street slot blank."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value,building,room", [
+        # The marker STAYS in the Building value — the established convention
+        # (`_named_building_value` has always returned the full phrase, and
+        # "Research I Bldg" above locks it in). It preserves the input and is
+        # what the steward sees in SAP. The room-code-only shape has no marker
+        # to keep, so it yields a bare name.
+        ("Heroy Bldg/Rm 450", "Heroy Bldg", "450"),
+        ("Heroy Bldg Rm 450", "Heroy Bldg", "450"),
+        ("Equad A302", "Equad", "A302"),
+        ("Fairchild Science Bldg", "Fairchild Science Bldg", None),
+        ("Moore Hall, Room 12", "Moore Hall", "12"),
+    ])
+    async def test_named_building_and_room_are_extracted(self, value, building, room):
+        res = await _named_building(value)
+        assert res.building == building
+        assert res.room == room
+        # The source slot is emptied — a residual of only separators ("Heroy
+        # Bldg/" → "/") must not survive as a street value.
+        assert res.street_cleaned is None
+        assert res.street_2_cleaned is None
+
+    @pytest.mark.asyncio
+    async def test_room_marker_is_never_taken_as_the_building(self):
+        """Regression. The marker-first entry (`Bldg <id>`) captured the "Rm"
+        of "Heroy Bldg Rm 450" as the building id — `_is_identifier_like`
+        accepts it at two characters — yielding Building="Rm" and a street of
+        "Heroy 450". The named-building path must run first."""
+        res = await _named_building("Heroy Bldg Rm 450")
+        assert res.building != "Rm"
+        assert res.building == "Heroy Bldg"
+        assert res.room == "450"
+        assert res.street_cleaned is None
+
+    @pytest.mark.asyncio
+    async def test_marker_first_building_id_is_unchanged(self):
+        """The existing marker-first rule ("Bldg 12" → Building=12) keeps
+        working exactly as before."""
+        res = await _named_building("Bldg 12")
+        assert res.building == "12"
+        assert res.room is None
+        assert res.street_cleaned is None
+
+
+class TestNamedBuildingLeavesAlone:
+    """Values that must NOT be pulled into Building by the named-building
+    rule. Each row names the property that disqualifies it."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value,name1", [
+        ("Hall St", "Acme Corp"),                       # street-type word
+        ("Dept of Chemistry Building", "Acme Corp"),    # department shape
+        ("Attn: Dr Hall", "Acme Corp"),                 # person / contact shape
+        ("SMU Bldg", "Southern Methodist University"),  # prefix is the org acronym
+        ("Southern Methodist University Bldg",
+         "Southern Methodist University"),              # prefix equals Name 1
+        ("Main Hall", "Acme Corp"),                     # bare generic prefix
+        ("North Wing", "Acme Corp"),                    # bare directional prefix
+        ("Receiving Bldg", "Acme Corp"),                # logistics term
+    ])
+    async def test_building_is_not_set(self, value, name1):
+        res = await _named_building(value, name1=name1)
+        assert res.building is None
+
+    @pytest.mark.asyncio
+    async def test_house_number_and_street_type_keep_the_street(self):
+        """"123 Main St Building 4" is a street address. The existing
+        marker-first rule may take Building=4; the street must survive."""
+        res = await _named_building("123 Main St Building 4")
+        assert res.street_cleaned == "123 Main St"
+        assert res.building in (None, "4")
+
+    @pytest.mark.asyncio
+    async def test_mail_code_shape_still_goes_to_mail_code(self):
+        """Mail-code extraction runs BEFORE sub-location extraction and keeps
+        precedence: "MC302" is a mail code, never a building + room."""
+        res = await _named_building("MC302")
+        assert res.mail_code == "MC302"
+        assert res.building is None
+        assert res.room is None
