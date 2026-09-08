@@ -405,3 +405,86 @@ class TestNamedBuildingLeavesAlone:
         assert res.mail_code == "MC302"
         assert res.building is None
         assert res.room is None
+
+
+# ---------------------------------------------------------------------------
+# PO Box carried through to the enrichment output.
+#
+# The "PO Box" output column maps to `po_box_extracted`, which is only ever set
+# by street extraction. A PO Box that arrives in the DEDICATED column was read
+# as `po_box_present` (for the G3-ADDR-005 conflict check) and never reached the
+# output, so all 62 such rows across S1-S5 + dedup_STRESS_200_v1 shipped blank.
+#
+# Preserve-on-blank holds in `usp_MergeLegacyEnriched` (the DB keeps its
+# incumbent value) and was violated at the API response / enriched workbook.
+# These fixtures pin the OUTPUT layer only.
+#
+# The input value is carried VERBATIM: no normaliser exists for it, and the two
+# sources legitimately differ in shape — `_extract_po_box` returns the whole
+# match ("PO Box 2000") while the dedicated column carries a bare id
+# ("750162"). Normalising the column's shape is tracked separately.
+# ---------------------------------------------------------------------------
+
+
+async def _po_box(po_box=None, street_2=None, street="100 Main St"):
+    return await process_address(
+        record_id="pb", name1="Acme Corp", name2=None, name3=None,
+        street=street, street_2=street_2, street_3=None,
+        city="Tampa", state="FL", zip_code="33620", country="US",
+        po_box=po_box, care_of_enriched=None, llm_client=None,
+    )
+
+
+class TestPoBoxCarriedToOutput:
+    @pytest.mark.asyncio
+    async def test_dedicated_column_reaches_the_output(self):
+        """(a) The case that shipped blank on all 62 rows."""
+        res = await _po_box(po_box="750162")
+        assert res.po_box_extracted == "750162"
+        assert "G3-ADDR-005" not in res.address_issues
+
+    @pytest.mark.asyncio
+    async def test_street_extraction_is_unchanged(self):
+        """(b) Street extraction keeps its existing value AND shape — it
+        returns the whole match, marker included."""
+        res = await _po_box(street_2="PO Box 2000")
+        assert res.po_box_extracted == "PO Box 2000"
+        assert "G3-ADDR-014" in res.address_issues
+        assert "G3-ADDR-005" not in res.address_issues
+
+    @pytest.mark.asyncio
+    async def test_both_present_and_equal_keeps_the_input_and_flags(self):
+        """(c) Presence semantics are unchanged: a street PO Box alongside a
+        populated column raises G3-ADDR-005 whether or not the two agree. The
+        output is the input value."""
+        res = await _po_box(po_box="2000", street_2="PO Box 2000")
+        assert res.po_box_extracted == "2000"
+        assert "G3-ADDR-005" in res.address_issues
+
+    @pytest.mark.asyncio
+    async def test_both_present_and_different_keeps_the_input(self):
+        """(d) The input wins; the conflict is reported, not resolved."""
+        res = await _po_box(po_box="750162", street_2="PO Box 2000")
+        assert res.po_box_extracted == "750162"
+        assert "G3-ADDR-005" in res.address_issues
+
+    @pytest.mark.asyncio
+    async def test_input_is_carried_verbatim(self):
+        """(e) There is no normaliser for the dedicated column — nothing
+        strips a marker or reshapes the value, so it arrives as written."""
+        res = await _po_box(po_box="P.O. Box 750162")
+        assert res.po_box_extracted == "P.O. Box 750162"
+
+    @pytest.mark.asyncio
+    async def test_non_po_box_content_is_carried_verbatim_too(self):
+        """Four of the 62 carry a mail stop / mail code in the PO Box column
+        ("M/S 643", "CODE 71740", "MC 151 NC", "V38"). Preserving the input is
+        the rule; classifying misfiled content is a separate concern."""
+        res = await _po_box(po_box="M/S 643")
+        assert res.po_box_extracted == "M/S 643"
+
+    @pytest.mark.asyncio
+    async def test_blank_column_and_clean_street_stays_blank(self):
+        """No PO Box anywhere invents one."""
+        res = await _po_box()
+        assert res.po_box_extracted is None

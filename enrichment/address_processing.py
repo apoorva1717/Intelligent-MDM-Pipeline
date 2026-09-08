@@ -1435,6 +1435,35 @@ async def process_address(
         # that is nothing but separators.
         slots[slot_name] = _trim_fragment(_strip_residue(work))
 
+    # PO Box output — preserve-on-blank.
+    #
+    # `po_box_extracted` is populated ONLY by street extraction (the branch
+    # above, unchanged). A PO Box that arrived in the record's own PO Box
+    # column was read into `po_box_present` for the G3-ADDR-005 conflict check
+    # and then went nowhere, so the "PO Box" output column — which maps to this
+    # field (`api/output_columns.py`) — shipped BLANK on every such record:
+    # 62 of 62 across S1-S5 and dedup_STRESS_200_v1.
+    #
+    # Preserve-on-blank held one layer down, in `usp_MergeLegacyEnriched`
+    # (`docs/thesis/05_DATA_MODEL.md`), so the database kept its incumbent
+    # value; it was the API response and the enriched workbook that dropped it.
+    # This fills the output layer only — the merge proc is untouched.
+    #
+    # The input is carried VERBATIM. There is no normaliser for this column
+    # (no validator on `EnrichmentRecord.po_box`, nothing in preprocess), and
+    # the two sources differ in shape by design: `_extract_po_box` returns the
+    # whole match ("PO Box 2000") while the column carries a bare id
+    # ("750162"). Output casing then applies to it through the same
+    # `_CASE_TEXT_FIELDS` pass that already covers the extracted value.
+    #
+    # Street extraction still wins when it found something, and a conflict is
+    # still reported rather than resolved: on both-set-and-differ the branch
+    # above has already raised G3-ADDR-005 and left `po_box_extracted` unset,
+    # so the input value is what ships.
+    po_box_out = res.po_box_extracted or (po_box.strip() if po_box else None)
+    if res.po_box_extracted is None and po_box_out:
+        res.po_box_extracted = po_box_out
+
     # Step 3 — cross-field checks (flag only).
     _cross_field_checks(
         res,

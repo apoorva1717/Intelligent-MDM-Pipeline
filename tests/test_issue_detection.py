@@ -1641,3 +1641,23 @@ def test_named_building_in_street_1_is_detected_but_not_extracted():
         po_box=None, care_of_enriched=None, llm_client=None,
     ))
     assert res.building is None
+
+
+def test_g1_addr_004_still_fires_for_a_street_only_po_box():
+    """Fixture (b) of the PO-Box carry-through change. G1-ADDR-004 is a
+    DETECTOR code (a PO Box pattern inside a Street field), not an
+    address-stage one, so it is asserted here rather than alongside the
+    address fixtures. Carrying the dedicated column to the output does not
+    touch it."""
+    codes = detect_issues(_record(**{
+        "Street 1": "100 Main St", "Street 2": "PO Box 2000",
+    }))
+    assert "G1-ADDR-004" in codes
+    assert "G3-ADDR-005" not in codes
+
+
+def test_g3_addr_005_fires_when_both_sources_carry_a_po_box():
+    codes = detect_issues(_record(**{
+        "Street 1": "100 Main St", "Street 2": "PO Box 2000", "PO Box": "750162",
+    }))
+    assert "G3-ADDR-005" in codes

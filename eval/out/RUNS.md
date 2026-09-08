@@ -404,3 +404,34 @@ detector raises for `Equad A302`. The remaining 26 `G1-ADDR-009` rows in S1 are
 deliberately untouched — remapping each withdrawn code to its replacement is a
 per-code judgement, not a per-row edit, and some have no deterministic replacement,
 which is why they were withdrawn.
+
+## Follow-ups opened by the PO Box carry-through
+
+The change that carries a dedicated-column PO Box to the enrichment output was
+deliberately kept to the output layer. Four things were found while doing it and
+consciously not fixed there; each is its own branch.
+
+1. **PO Box output shape normalisation.** The column now mixes two shapes by
+   provenance: `_extract_po_box` returns the whole match (`"PO Box 2000"`) while the
+   dedicated column carries a bare id (`"750162"`). Both are faithful to their source
+   and neither is normalised. Decide one output shape and apply it to both.
+2. **G3-ADDR-005 equality at both emission sites.** The code means "more than one PO
+   Box on the record" and is raised on *presence*, not on disagreement — a street PO
+   Box alongside an identical column value still flags. Both sites do this:
+   `enrichment/address_processing.py` (address stage) and
+   `enrichment/issue_detection.py` (detector, `po_box_count >= 2`). If the code should
+   mean "conflicting PO Boxes", both have to change together.
+3. **No code for non-PO-Box content in the PO Box column.** Four of the 62 rows carry
+   something that is not a PO Box at all — `M/S 643` (S2 13145811), `CODE 71740`
+   (S3 13212527), `MC 151 NC` (S5 13158418), `V38` (`dedup_STRESS_200_v1` 13345937).
+   They are carried through verbatim, because preserving the input is the rule and
+   classifying misfiled content is a different job. No catalogue code currently
+   describes "the PO Box column holds a mail stop / mail code".
+4. **`department_domain` is not reproducible under `CACHE_FROZEN`.** Row 13134277
+   (`university of southern california|los angeles`, `dedup_STRESS_200_v1`) returns
+   `department_domain` as `https://cancer.usc.edu` on some runs and blank on others —
+   **at the same commit, the same frozen cache, the same input, zero network calls**.
+   Four consecutive runs at `5479130` gave value / blank / value / blank. This is not
+   an artefact of any code change; it means the reproducibility gate has a live false
+   positive on this column, and any A/B touching it must run a same-code control
+   before attributing a delta. Every other column was stable across those runs.
