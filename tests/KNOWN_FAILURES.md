@@ -4,7 +4,7 @@ The tests that fail on a clean tree. **A gate asserts the failing set is exactly
 manifest** — not a count, the set. A run with seven of these failing and one other test
 failing is a regression, and a count alone cannot say so.
 
-    12 failed, 3878 passed, 12 skipped, 1 xfailed
+    12 failed, 3906 passed, 12 skipped, 2 xfailed
 
 Established by running the full suite at nine commits — `d3a3cfc`, `f57782f`, `2125ad2`,
 `327ee53`, `e31b53b`, `f292bfa`, `e396722`, `a17a2e0`, `96dd528`. **The same eight fail at
@@ -71,3 +71,30 @@ of this branch's changes were applied:
 
 The count line moved 8 → 12 while the suite itself grew (3311 → 3878 passing), so the
 change is two real drifts, not a re-count of the same set.
+
+## Re-pin, 2026-09-08 (named building keeps trailing identifier)
+
+**The failing set is unchanged — still exactly the 12 above.** What moved is the xfail
+count, 1 → 2, and this section records the second one so it is a pinned known-open item
+rather than an unexplained marker.
+
+| test | why it is open |
+|---|---|
+| `test_address_cleanup.py::TestNamedBuildingDetector::test_street_1_keeps_the_value_and_sets_no_building` | Street 1 half of the named-building trailing-identifier defect |
+
+The Street 2-5 half is fixed (`_split_building_remainder` now runs a recognised building
+segment to the end of the slot when no separator or room word follows). The Street 1 half
+is not, and deliberately: `allow_rest=False` returns from `_named_building_value` before
+the split path is reached, so `_SUITE_PATTERNS`' marker-first `Bldg <id>` entry still
+takes the identifier and rewrites Street 1. Fixing it means suppressing that entry on the
+primary line, which changes Street 1 output — the first STOP condition of this change's
+gate. It gets its own prompt and its own gate, which will need a deliberate exception for
+"Street 1 restored to the input verbatim on rows the marker-first entry currently splits".
+
+`strict=True`, so if the Street 1 behaviour ever changes the suite fails on the XPASS
+instead of going quietly green.
+
+**On the count line.** It reads 3906, not the 3878 recorded at the `8ba0c75` re-pin. The
+clean-tree control for this change measured **3893** — so 15 of the 28 were added by
+`6140e17` and `f3f5dd7` after that re-pin, and 13 are this change's new fixtures. The count
+line is documentation; the manifest table is the gate.

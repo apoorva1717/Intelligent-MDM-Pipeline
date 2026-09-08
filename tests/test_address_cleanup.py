@@ -376,6 +376,13 @@ class TestNamedBuildingLeavesAlone:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("value,name1", [
         ("Hall St", "Acme Corp"),                       # street-type word
+        ("Hall St 305", "Acme Corp"),                   # street-type word + a
+                                                        # trailing number: a
+                                                        # street address, and
+                                                        # "Hall" leads the
+                                                        # value so there is no
+                                                        # prefix to name a
+                                                        # building with
         ("Dept of Chemistry Building", "Acme Corp"),    # department shape
         ("Attn: Dr Hall", "Acme Corp"),                 # person / contact shape
         ("SMU Bldg", "Southern Methodist University"),  # prefix is the org acronym
@@ -405,6 +412,164 @@ class TestNamedBuildingLeavesAlone:
         assert res.mail_code == "MC302"
         assert res.building is None
         assert res.room is None
+
+
+# ---------------------------------------------------------------------------
+# Named building with a TRAILING IDENTIFIER ("Genomics Bldg 1219B-MA").
+#
+# `_split_building_remainder` only ever split on a separator (/ , " - ") or a
+# room/suite/floor word. A named building whose identifier follows the marker
+# with neither — "Genomics Bldg 1219B-MA", "Research Bldg 2" — matched no shape
+# at all, so `_named_building_value` declined and the value fell through to the
+# marker-FIRST `Bldg <id>` entry in `_SUITE_PATTERNS`. That entry took the
+# identifier as the whole Building value and orphaned the building's NAME as a
+# street residual, where the residual classifier then read it as a department
+# and relocated it into a name slot (row 13341769: Building="1219B-MA",
+# Name 4="Genomics", origin `preprocess:street`).
+#
+# Rule: once a named building is recognised, the segment runs to the next
+# separator or room word; with neither, to the end of the slot. The trailing
+# identifier is NOT split off — "Genomics Bldg 1219B-MA" is one building.
+# ---------------------------------------------------------------------------
+
+
+class TestNamedBuildingTrailingIdentifier:
+    """A named building keeps the identifier that trails its marker."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value,building", [
+        ("Genomics Bldg 1219B-MA", "Genomics Bldg 1219B-MA"),  # row 13341769
+        ("Research Bldg 2", "Research Bldg 2"),
+        ("Science Hall 305", "Science Hall 305"),
+    ])
+    async def test_trailing_identifier_stays_in_the_building(
+        self, value, building,
+    ):
+        res = await _named_building(value)
+        assert res.building == building
+        # The identifier belongs to the building, so nothing is left for Room
+        # — and the source slot is emptied, not left holding the bare name.
+        assert res.room is None
+        assert res.street_cleaned is None
+        assert res.street_2_cleaned is None
+
+
+class TestNamedBuildingStopsAtASublocationMarker:
+    """The end-of-slot extension is BOUNDED by any `_SUITE_PATTERNS` marker,
+    not only by the six words in `_NAMED_BUILDING_SUBLOC_RE`.
+
+    Every row here regressed in the first A/B of this change: the building
+    segment ran to the end of the slot and swallowed a Room, a Suite or a Mail
+    Code that a deterministic extractor already owned. Two shapes are the
+    boundary — a tail of two or more tokens (a marker plus a value, or two
+    values), and a marker GLUED to its value ("#5380"), which a token count
+    alone cannot see.
+
+    The expected values are the ones the existing extractors produce, taken
+    from the control run. They are not a design for these rows; they are the
+    behaviour that must not change.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value,building,room,suite,mail_code", [
+        # A room AND a mail code trail the marker — a tail, not an identifier.
+        ("Genentech Hall S252 MC2140", None, "S252", None, "MC2140"),
+        # "Lab <id>" is a room; `_SUITE_PATTERNS` owns it, this must not.
+        ("Enders Bldg Lab 649", None, "Lab 649", None, None),
+        # "#" is shorthand for Suite and is glued to its value.
+        ("Student Services Bldg #5380", None, None, "5380", None),
+        ("Administration Bldg #514", None, None, "514", None),
+        # "CODE:" introduces a room. Note Building is "L", NOT "Mary Moody
+        # Northern Building L": the marker-first `Bldg <id>` entry takes the
+        # single character after "Building" (`_is_identifier_like` accepts a
+        # 1-2 character token), and that is the pre-existing behaviour this
+        # change is required to leave alone.
+        ("Mary Moody Northern Building L CODE: L14", "L", "L14", None, None),
+    ])
+    async def test_sublocation_markers_bound_the_building(
+        self, value, building, room, suite, mail_code,
+    ):
+        res = await _named_building(value)
+        assert res.building == building
+        assert res.room == room
+        assert res.suite == suite
+        assert res.mail_code == mail_code
+
+
+class TestNamedBuildingSeparatorFormsUnchanged:
+    """The shapes that DO carry a separator or a room word keep splitting
+    exactly as before. These are the controls for the rule above: extending a
+    building segment to the end of the slot must not reach past a boundary
+    that is actually present."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value,building,room", [
+        ("Heroy Bldg/Rm 450", "Heroy Bldg", "450"),
+        ("Moore Hall, Room 12", "Moore Hall", "12"),
+    ])
+    async def test_separator_and_room_word_still_split(
+        self, value, building, room,
+    ):
+        res = await _named_building(value)
+        assert res.building == building
+        assert res.room == room
+        assert res.street_cleaned is None
+
+    @pytest.mark.asyncio
+    async def test_marker_first_shape_is_untouched(self):
+        """"Bldg 12" has no prefix before the marker, so it names no building.
+        It stays with the marker-first `Bldg <id>` entry, which owns it."""
+        res = await _named_building("Bldg 12")
+        assert res.building == "12"
+        assert res.room is None
+        assert res.street_cleaned is None
+
+
+class TestNamedBuildingDetector:
+    """G1-ADDR-003 reports the shape on the RAW input, independently of what
+    the extractor does with it. Street 1 stays detect-only: the value is
+    reported and left in place, and Building is never set from it."""
+
+    def test_trailing_identifier_in_street_1_is_reported(self):
+        from api.models import EnrichmentRecord
+        from enrichment.issue_detection import detect_issues
+
+        record = EnrichmentRecord.model_validate({
+            "Name 1": "University of California Riverside",
+            "Street 1": "Genomics Bldg 1219B-MA",
+            "Postal Code": "92521",
+            "Region": "CA",
+            "Language Key": "EN",
+            "Search Term 1": "UCR",
+            "Country/Region Key": "US",
+            "Tax Jurisdiction": "CA0000000",
+        })
+        assert "G1-ADDR-003" in detect_issues(record)
+
+    @pytest.mark.xfail(strict=True, reason=(
+        "SECOND DEFECT, on the primary line, deliberately not fixed here. "
+        "`allow_rest=False` for Street 1 returns from `_named_building_value` "
+        "BEFORE `_split_building_remainder` is reached, so the end-of-slot "
+        "rule never applies there: :263 still takes `1219B-MA` as the Building "
+        "and rewrites Street 1 to `Genomics`. Making Building stay blank means "
+        "suppressing :263 on Street 1, which changes Street 1 output — the "
+        "first STOP condition of this change's gate, and outside its "
+        "allow-list shape (input Street 2-5). It gets its own prompt and its "
+        "own gate, which will need a deliberate exception for `Street 1 "
+        "restored to the input verbatim on rows :263 currently splits`. "
+        "G1-ADDR-003 already reports the value (sibling test), so the shape is "
+        "not silent on Street 1 meanwhile."
+    ))
+    @pytest.mark.asyncio
+    async def test_street_1_keeps_the_value_and_sets_no_building(self):
+        res = await process_address(
+            record_id="nb-s1", name1="University of California Riverside",
+            name2=None, name3=None,
+            street="Genomics Bldg 1219B-MA", street_2=None, street_3=None,
+            city="Riverside", state="CA", zip_code="92521", country="US",
+            po_box=None, care_of_enriched=None, llm_client=None,
+        )
+        assert res.building is None
 
 
 # ---------------------------------------------------------------------------

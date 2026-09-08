@@ -687,22 +687,136 @@ _CAMPUS_FRAGMENT_RE = re.compile(
 #   * The residual trailing-separator trim can alter a Street 1 value
 #     ("6110 Wyche/MMB RM/FLR/"). Punctuation only — no token is lost.
 #
-# Three shapes, tried in order:
+# Four shapes, tried in order:
 #
 #   "Fairchild Science Bldg"   the whole segment is the building
 #   "Heroy Bldg/Rm 450"        building + a remainder handed back for
 #                              re-extraction by the Room/Suite/Floor entries
+#   "Genomics Bldg 1219B-MA"   building + a trailing identifier that is NOT
+#                              handed back — see below
 #   "Equad A302"               building + a bare room code (no marker at all)
 #
 # The marker STAYS in the Building value ("Heroy Bldg", never "Heroy") — the
 # convention this function has always followed, and what the steward sees in
 # SAP. The room-code shape has no marker to keep, so it yields the bare name.
+#
+# CHANGE NOTE (trailing identifier). `_split_building_remainder` used to split
+# ONLY at a separator or a room word, and returned None when neither was
+# present. A named building written "<name> <marker> <identifier>" — "Genomics
+# Bldg 1219B-MA", "Research Bldg 2", "Science Hall 305" — therefore matched no
+# shape at all, and the whole value fell through to the marker-FIRST
+# `Bldg <id>` entry in `_SUITE_PATTERNS` (:263). That entry took the
+# identifier alone as the Building value and left the building's NAME behind
+# as a street residual, where the residual classifier read it as a department
+# (0.95) and relocated it into a name slot. Row 13341769 shipped
+# Building="1219B-MA" and Name 4="Genomics" with origin `preprocess:street`.
+#
+# The rule now: once a named building is recognised, its segment runs to the
+# next separator or room word; with NEITHER, to the end of the slot. A
+# trailing identifier is never split off — it identifies the building, and
+# splitting it produces two half-values instead of one whole one.
+#
+# Scope of the edit, deliberately narrow:
+#
+#   * `_named_building_prefix_ok` still gates the prefix before the marker,
+#     unchanged and still reject-only. The new shape REQUIRES a prefix, so
+#     "Bldg 12" and "Hall St 305" have nothing to name a building with and
+#     stay where they are.
+#   * :263, `_is_identifier_like` and the Room/Suite/Floor entries are
+#     untouched. The marker-first form still belongs to `_SUITE_PATTERNS`.
+#   * A separator or room word that IS present still wins, so "Heroy
+#     Bldg/Rm 450" and "Moore Hall, Room 12" split exactly as before. A
+#     boundary with nothing after it ("Heroy Bldg/") still matches nothing —
+#     it was never a split and is left to the residue trim.
+#   * `allow_rest` is unchanged, so Street 1 never reaches this path. The
+#     Street 1 half of the same defect (:263 splitting a primary-line value)
+#     is NOT addressed here and is pinned xfail in
+#     `test_address_cleanup.py::TestNamedBuildingDetector`.
+#
+# The extension is BOUNDED by any `_SUITE_PATTERNS` marker, not only by the
+# six words in `_NAMED_BUILDING_SUBLOC_RE`. The first A/B of this change was
+# bounded by that regex alone and destroyed a Room, a Suite or a Mail Code on
+# five rows ("Enders Bldg Lab 649", "Student Services Bldg #5380", "Genentech
+# Hall S252 MC2140"). See `_NAMED_BUILDING_TRAILING_ID_RE` for the two shapes
+# that carry the bound, and `TestNamedBuildingStopsAtASublocationMarker` for
+# the five rows pinned at their control values.
+#
+# A/B over S1-S5 + dedup_STRESS_200_v1 (CACHE_FROZEN), same-code control
+# first, known `department_domain` flake subtracted: 12 rows changed, listed
+# below, all reviewed and accepted. THE ALLOW-LIST CAP FOR THIS CHANGE WAS
+# RAISED FROM 10 TO 12 to admit exactly these — the alternative on the table
+# was splitting the change by marker (Bldg/Building first, the ambiguous Hall
+# rows later), which lands under 10 by construction rather than by evidence
+# and would have shipped the same rows in two commits with no extra scrutiny.
+# The cap is a review budget, and this is the review.
+#
+#   input Street 2-5                    Building becomes
+#   ----------------------------------  ---------------------------------
+#   Genomics Bldg 1219B-MA              Genomics Bldg 1219B-MA   (13341769)
+#   VMS Bldg 1813                       VMS Bldg 1813
+#   Thompson Hall 120                   Thompson Hall 120
+#   MRL Bldg 1551                       MRL Bldg 1551
+#   WHS Bldg 44                         WHS Bldg 44
+#   WHS BLDG 3382                       WHS BLDG 3382
+#   Rock Hall 346                       Rock Hall 346
+#   Edwards Bldg R307                   Edwards Bldg R307        (x2 rows)
+#   FAIRCHILD SCIENCE BLDG D150         Fairchild Science BLDG D150
+#   Beckman Institute Bldg 74           Beckman Institute Bldg 74
+#   South Campus Research Building 1    South Campus Research Building 1
+#
+# Consequences to expect in a diff, all three intended:
+#
+#   * A value that now lands whole in Building is no longer relocated into a
+#     name slot, so that name slot goes blank and its `relocated-unverified`
+#     flag / G6-CONFIRM-001 and provenance drop away with the value — the same
+#     origin invariant the note above describes. Name 4 "Genomics" (13341769)
+#     and Name 3 "South Campus Research" are the two.
+#   * The source slot is blank BEFORE left-pack, not after: vacating Street 2
+#     lets Street 3-5 move up one slot, so a row can show Street 2 changing to
+#     what Street 3 held and Street 3 going blank. Existing, documented
+#     left-pack behaviour (see the `MAIL_CODE` note below, which met the same
+#     thing); the two Texas A&M rows show it. No token is lost.
+#   * NO issue-code change. This was predicted and did not happen, so the
+#     prediction is corrected here rather than left standing: an ambiguous
+#     marker CAN newly raise G1-ADDR-003, but only on a value no
+#     `_SUITE_PATTERNS` entry already matches, and S1-S5 + STRESS contains no
+#     such row — every row in the table above was already reporting
+#     G1-ADDR-003 off the marker-first entry. Measured delta across the
+#     Issues column of all six workbooks: 0.
 
 # Takes a matched value apart so the prefix can be guarded. `_BUILDING_SUFFIX_RE`
 # remains the gate; this never widens it.
 _BUILDING_SUFFIX_SPLIT_RE = re.compile(
     r"^(?P<prefix>\S.*?)\s+"
     r"(?P<marker>Building|Bldg|House|Hall|Pavilion|Tower)\.?\s*$",
+    re.IGNORECASE,
+)
+# "Genomics Bldg 1219B-MA" — a named building whose identifier trails the
+# marker with no separator and no room word between them.
+#
+# Two properties do the work, and the A/B is why each is here:
+#
+#   * The prefix REQUIRES at least one token before the marker, which keeps
+#     the marker-first form ("Bldg 12", "Hall St 305") out: there is nothing
+#     in front of the marker for a building to be named after, so this never
+#     matches and `_SUITE_PATTERNS` keeps those values.
+#   * The identifier is exactly ONE token. A tail of two or more tokens is a
+#     marker and a value, or two values, and every one of them is a boundary
+#     `_SUITE_PATTERNS` already owns: "Enders Bldg Lab 649" (Lab + room),
+#     "Mary Moody Northern Building L CODE: L14" (CODE: + room), "Genentech
+#     Hall S252 MC2140" (a room AND a mail code). Extending to the end of the
+#     slot swallowed all three and destroyed the Room / Mail Code they named.
+#
+# `\S.*?` for the prefix but `[A-Za-z0-9][\w.\-/]*` for the identifier: the
+# leading character class refuses "#5380", where the sub-location marker is
+# GLUED to its value and a token count alone would not see it. A bare
+# identifier ("1219B-MA", "D150", "R307", "2") carries no marker and is kept —
+# it identifies the building, and `_SUITE_PATTERNS` matching its SHAPE in
+# isolation is not evidence that the record meant a room.
+_NAMED_BUILDING_TRAILING_ID_RE = re.compile(
+    r"^(?P<prefix>\S.*?)\s+"
+    r"(?P<marker>Building|Bldg|House|Hall|Pavilion|Tower)\b\.?"
+    r"\s+(?P<identifier>[A-Za-z0-9][\w.\-/]*)\s*$",
     re.IGNORECASE,
 )
 # Where a building segment ends and a sub-location begins: an explicit
@@ -823,17 +937,63 @@ def _building_from_segment(
     return seg, m.group("marker")
 
 
-def _split_building_remainder(seg: str) -> tuple[str, str] | None:
-    """Split *seg* at the earliest separator or sub-location marker."""
+def _split_building_remainder(seg: str) -> tuple[str, str, str, str] | None:
+    """Where the building segment of *seg* ends.
+
+    Returns ``(building, rest, marker, prefix)`` — the building segment, the
+    remainder to hand back to the street slot, the building word that the
+    segment was recognised by, and the text before that word (which the caller
+    guards with `_named_building_prefix_ok`). None when *seg* names no
+    building.
+
+    Two endings, in order:
+
+      "Heroy Bldg/Rm 450"      a separator or a room/suite/floor word ends the
+                               building segment; everything after it is `rest`
+      "Genomics Bldg 1219B-MA" NEITHER is present, so the segment runs to the
+                               end of the slot and `rest` is empty
+    """
     starts: list[tuple[int, int]] = []
     for pat in (_NAMED_BUILDING_SEPARATOR_RE, _NAMED_BUILDING_SUBLOC_RE):
         m = pat.search(seg)
         if m:
             starts.append((m.start(), m.end()))
-    if not starts:
+    if starts:
+        start, end = min(starts)
+        head, rest = seg[:start].strip(), seg[end:].strip()
+        # A boundary with nothing after it ("Heroy Bldg/") is a trailing
+        # separator, not a sub-location. It was never a match here and stays
+        # one for the residue trim to handle.
+        if not rest:
+            return None
+        m2 = _BUILDING_SUFFIX_SPLIT_RE.match(head)
+        if not m2:
+            return None
+        return head, rest, m2.group("marker"), m2.group("prefix")
+
+    # No separator and no room word. The identifier that trails the marker
+    # belongs to the building — "Genomics Bldg 1219B-MA" is one building, not
+    # a building called "Genomics" plus a room called "1219B-MA" — so the
+    # segment extends to the end of the slot and nothing is handed back.
+    m3 = _NAMED_BUILDING_TRAILING_ID_RE.match(seg)
+    if not m3:
         return None
-    start, end = min(starts)
-    return seg[:start].strip(), seg[end:].strip()
+    identifier = m3.group("identifier")
+    # A bare marker word is not an identifier ("Heroy Bldg Rm"): it is noise
+    # the residue trim already removes.
+    if _BARE_MARKER_RE.match(identifier):
+        return None
+    # A value another extractor owns outright is never part of a building.
+    # The same three guards the room-code shape below applies, for the same
+    # reason: those extractors run AFTER this function, so it declines the
+    # shape itself rather than relying on precedence.
+    if (
+        _PO_BOX_RE.search(seg)
+        or _MAIL_CODE_EXPLICIT_RE.search(seg)
+        or _MAIL_CODE_COMPLEX_RE.search(seg)
+    ):
+        return None
+    return seg.strip(), "", m3.group("marker"), m3.group("prefix")
 
 
 def _named_building_value(
@@ -868,10 +1028,9 @@ def _named_building_value(
 
     split = _split_building_remainder(s)
     if split:
-        head, rest = split
-        hit = _building_from_segment(head, name_1)
-        if hit and rest:
-            return NamedBuilding(hit[0], rest, hit[1])
+        head, rest, marker, prefix = split
+        if _named_building_prefix_ok(prefix, name_1):
+            return NamedBuilding(head, rest, marker)
 
     m = _NAMED_BUILDING_ROOM_CODE_RE.match(s)
     if m:
