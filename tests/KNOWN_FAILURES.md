@@ -4,7 +4,7 @@ The tests that fail on a clean tree. **A gate asserts the failing set is exactly
 manifest** — not a count, the set. A run with seven of these failing and one other test
 failing is a regression, and a count alone cannot say so.
 
-    8 failed, 3311 passed, 7 skipped
+    12 failed, 3878 passed, 12 skipped, 1 xfailed
 
 Established by running the full suite at nine commits — `d3a3cfc`, `f57782f`, `2125ad2`,
 `327ee53`, `e31b53b`, `f292bfa`, `e396722`, `a17a2e0`, `96dd528`. **The same eight fail at
@@ -23,9 +23,13 @@ every artefact on this machine. Presence or absence of `.env` does not change th
 | `test_orchestrator.py::TestOrchestrator::test_web_search_determines_record_type` | mock-path classification |
 | `test_orchestrator.py::TestOrchestrator::test_tier1_full_resolution` | single |
 | `test_name_slot_parity.py::TestIssueDetectionAppliesToEverySlot::test_department_in_a_lower_slot_is_not_reported_missing` | single |
-| `test_routes.py::TestRoutes::test_issues_compare_segments_g6_and_g7_out_of_the_metric` | single |
+| `test_dedup.py::test_conflicting_ror_not_merged_verdict_guard` | conflicting-registry merge guard |
+| `test_dedup.py::test_conflicting_lei_not_merged_verdict_guard` | conflicting-registry merge guard |
+| `test_dedup.py::test_no_signal_pair_not_nominated_reason_empty_ok` | dedup single |
+| `test_dedup.py::test_mode_b_canonical_assignment_produces_correct_clusters` | dedup single |
+| `test_dedup.py::test_route_cluster_block_identical_rows` | dedup single |
 
-## The three clusters
+## The five clusters
 
 * **Tier 2A gate narrowed, pre-history — 3 tests.** All three assert
   `tier2_mode == "2A_verification"` and get `None`. `run_tier2a` still exists and is still
@@ -33,9 +37,37 @@ every artefact on this machine. Presence or absence of `.env` does not change th
   been withdrawn. One investigation, not three.
 * **Mock-path classification drift — 2 tests.** Both assert `record_type == "company"` and
   get `"unknown"`: the classifier no longer settles a company on the mock search path.
-* **Singles — 3 tests.** `test_tier1_full_resolution` (`confidence` `medium` where `high`
-  is asserted); `test_department_in_a_lower_slot_is_not_reported_missing` (`G2-NAME-012`
-  is now raised for a department in a lower slot); and the issues-compare route
-  (`issues before` 2 where 1 is asserted).
+* **Orchestrator / parity singles — 2 tests.** `test_tier1_full_resolution` (`confidence`
+  `medium` where `high` is asserted); and
+  `test_department_in_a_lower_slot_is_not_reported_missing` (`G2-NAME-012` is now raised
+  for a department in a lower slot). The issues-compare route was the third of these and
+  has since started passing — see the re-pin note below.
+
+* **Conflicting-registry merge guard — 2 tests.** `test_conflicting_ror_…` and
+  `test_conflicting_lei_…` both fail at `assert not co_clustered`: two rows with
+  conflicting ROR / LEI ids ARE being co-merged into one cluster, where the guard should
+  hold them apart and demote both to `manual_review`. One investigation, not two — and the
+  one with the sharpest consequence here, since it is a wrong-entity merge.
+* **Dedup singles — 3 tests.** `test_no_signal_pair_not_nominated_reason_empty_ok`
+  (`reasoning` carries `'mode-a distinct s1'` where `None` is asserted — a no-signal pair
+  is being given a rationale); `test_mode_b_canonical_assignment_produces_correct_clusters`
+  (`ScriptedLLM.calls == 1`, `>= 2` asserted — mode B is making fewer LLM calls than the
+  canonical-assignment path expects); `test_route_cluster_block_identical_rows` (not every
+  row of an identical-row block comes back `routing == "cluster"`).
 
 None is a flake — each is a stable assertion failure at every commit tested.
+
+## Re-pin, 2026-09-08 (`8ba0c75`)
+
+The manifest above replaces the original eight. Two independent drifts had accumulated
+since it was written, both verified against a clean `git worktree` at `7af631c` before any
+of this branch's changes were applied:
+
+* **Added 5** — the `test_dedup.py` cluster above. Not present in the original nine-commit
+  survey; they entered the tree afterwards.
+* **Removed 1** — `test_routes.py::TestRoutes::test_issues_compare_segments_g6_and_g7_out_of_the_metric`
+  now **passes**. It is no longer a known failure and its presence here would mask a
+  future regression in the opposite direction.
+
+The count line moved 8 → 12 while the suite itself grew (3311 → 3878 passing), so the
+change is two real drifts, not a re-count of the same set.
