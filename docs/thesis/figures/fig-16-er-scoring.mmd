@@ -1,0 +1,29 @@
+%% fig-16 — Scoring detail ER
+%% Source: docs/thesis/05_DATA_MODEL.md §9.3 (lines 954-982)
+erDiagram
+    SCORING_ROW {
+        string row_id PK
+        string cluster_id
+        string routing
+        float confidence
+        string company_code_consolidated
+        string sales_org_consolidated
+    }
+    SCORE_BREAKDOWN {
+        int sales_order_last_used
+        int equipment_count
+        int account_group
+        int salesforce_instance_count
+    }
+    SCORING_RESULT_ROW {
+        string row_id PK
+        int score
+        bool is_golden_record
+        string golden_record_id
+        string proposed_golden_id
+        string election_status
+        string approval_status
+    }
+    SCORING_ROW ||--|| SCORING_RESULT_ROW : "score_row + elect"
+    SCORING_RESULT_ROW ||--|| SCORE_BREAKDOWN : "flattened to 11 score_ columns"
+    SCORING_RESULT_ROW ||--|| VALIDATION_ROW : "usp_MergeValidationScores, 21 columns"

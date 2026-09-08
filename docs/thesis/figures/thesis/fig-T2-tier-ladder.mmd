@@ -1,0 +1,11 @@
+%% T2 — Enrichment tier ladder
+flowchart TD
+    A[Incoming record] --> B[Deterministic preprocess]
+    B -->|escalate · free registry| C[Registry lookup]
+    C -->|match| G{Name gate}
+    C -->|miss · escalate · search and fetch| D[Grounded search]
+    D -->|match| G
+    D -->|no evidence · escalate · model only| E[Model inference]
+    E --> G
+    G -->|accept| W[Write enriched value]
+    G -->|refuse| X[Keep input, flag]

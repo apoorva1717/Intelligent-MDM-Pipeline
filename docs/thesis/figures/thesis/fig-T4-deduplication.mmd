@@ -1,0 +1,11 @@
+%% T4 — Deduplication
+flowchart TD
+    A[Validation records] --> B[Delivery-point blocking]
+    B --> C[Signature clustering]
+    C -->|two or more signatures| D[LLM adjudication]
+    D --> E[Deterministic split guards]
+    E --> F[Golden-record election]
+    F -->|proposal| H[Steward approval]
+    F -->|demoted| G[Manual review]
+    G --> H
+    H --> I[Approved golden record]

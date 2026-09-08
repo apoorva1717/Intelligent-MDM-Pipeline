@@ -1,0 +1,10 @@
+%% T1 — End-to-end pipeline
+flowchart LR
+    A[SAP extract] --> B[Import staging]
+    B --> C[Legacy table]
+    C --> D[Enrichment]
+    D --> E[Issue detection]
+    E --> F[Validation table]
+    F --> G[Deduplication]
+    G --> H[Election and approval]
+    H --> I[Golden record]

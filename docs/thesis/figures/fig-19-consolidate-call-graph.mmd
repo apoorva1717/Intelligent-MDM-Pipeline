@@ -1,0 +1,15 @@
+%% fig-19 — POST /api/preprocess/consolidate call graph
+%% Source: docs/thesis/00_INVENTORY.md §0.5.7 (lines 731-745)
+flowchart TD
+    A[preprocess_consolidate] --> B[consolidate_rows]
+    B --> C[_row_lookup]
+    B --> D[Consolidation.observe]
+    B --> E[Consolidation.resolve]
+    B --> F[_read]
+    B --> G[_write]
+    B --> H[missing_column_warnings]
+    B --> I[blank_customer_warning]
+    B --> J[batch_boundary_warning]
+    B --> K[Consolidation.summary]
+    D --> L[customer_key]
+    E --> M[consolidate_values]

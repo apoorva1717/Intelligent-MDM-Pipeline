@@ -1,0 +1,12 @@
+%% T3 — Issue detection and the improvement loop
+flowchart TD
+    A[Batch of records] --> B[Detect issues]
+    B --> C[Assign code and group]
+    C --> D{Remedy class}
+    D -->|rule or enrichment| E[Automated remediation]
+    D -->|steward only| F[Steward queue]
+    E --> G[Re-audit enriched batch]
+    F --> G
+    G --> H[Measure reduction]
+    H --> I[Revise rules and tiers]
+    I --> B

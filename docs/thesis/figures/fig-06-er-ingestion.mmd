@@ -1,0 +1,29 @@
+%% fig-06 — Ingestion detail ER
+%% Source: docs/thesis/05_DATA_MODEL.md §9.1 (lines 872-900)
+erDiagram
+    LEGACY_ROW {
+        string Customer PK
+        string code
+        string Name_1
+        string Street_1
+        string Issues
+        string Issues_Before
+    }
+    ENRICHMENT_RESULT {
+        string record_id PK
+        string name1_enriched
+        string domain
+        string ror_id
+        string lei_id
+        bool flag_for_review
+    }
+    PROVENANCE_EVENT {
+        int seq PK
+        string field
+        string new_value
+        string confidence_scale
+        float confidence_value
+    }
+    LEGACY_ROW ||--|| ENRICHMENT_RESULT : "POST /enrich"
+    ENRICHMENT_RESULT ||--o{ PROVENANCE_EVENT : "scoped write"
+    ENRICHMENT_RESULT ||--|| LEGACY_ROW : "usp_MergeLegacyEnriched, 31 columns"

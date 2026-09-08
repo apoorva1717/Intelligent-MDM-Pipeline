@@ -1,0 +1,16 @@
+%% fig-04 — Enrichment run sequence
+%% Source: docs/thesis/02_ARCHITECTURE.md §2.3.1 (lines 224-239)
+sequenceDiagram
+    participant ADF as Enrichment Pipeline
+    participant SQL as dp_legacy Legacy
+    participant API as Function App
+    participant EXT as Registries and AI Foundry
+    ADF->>SQL: Lookup2 offsets, step 30
+    loop ForEach1 sequential, one offset per iteration
+        ADF->>SQL: Lookup1 OFFSET n FETCH NEXT 30
+        ADF->>API: POST /enrich records
+        API->>EXT: tier ladder per record
+        EXT-->>API: registry and model answers
+        API-->>ADF: results plus summary
+        ADF->>SQL: Mapping.usp_merge_legacy_enriched payload
+    end

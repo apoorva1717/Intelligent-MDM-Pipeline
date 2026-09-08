@@ -1,0 +1,20 @@
+%% fig-03 — Entity-relationship overview
+%% Source: docs/thesis/05_DATA_MODEL.md §8 (lines 821-840)
+erDiagram
+    GROUP_CODE ||--o{ IMPORT_ROW : "scopes"
+    GROUP_CODE ||--o{ LEGACY_ROW : "code prefix"
+    GROUP_CODE ||--o{ VALIDATION_ROW : "code prefix"
+    IMPORT_ROW ||--|| LEGACY_ROW : "Import-Legacy mapping"
+    LEGACY_ROW ||--|| VALIDATION_ROW : "Legacy-Validation mapping"
+    VALIDATION_ROW ||--o| LOAD_FILE_ROW : "published if no mandatory issue"
+    LEGACY_ROW ||--|| ENRICHMENT_RESULT : "one per /enrich record"
+    LEGACY_ROW ||--o{ ISSUE_CODE : "Issues column"
+    ENRICHMENT_RESULT ||--o{ PROVENANCE_EVENT : "one per scoped write"
+    ENRICHMENT_RESULT }o--o| REGISTRY_IDENTITY : "ror_id or lei_id"
+    VALIDATION_ROW }o--|| ADDRESS_BLOCK : "blocked into"
+    ADDRESS_BLOCK ||--|{ SIGNATURE : "collapses to"
+    SIGNATURE }o--o| CLUSTER : "member of"
+    SIGNATURE }o--o| LINK : "related through"
+    VALIDATION_ROW ||--|| SCORE_ROW : "one per scored row"
+    CLUSTER ||--o| GOLDEN_RECORD : "elects"
+    SCORE_ROW }o--o| GOLDEN_RECORD : "is or points at"

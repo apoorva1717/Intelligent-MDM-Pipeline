@@ -1,0 +1,21 @@
+%% fig-10 — POST /issues call graph
+%% Source: docs/thesis/00_INVENTORY.md §0.5.4 (lines 587-607)
+flowchart TD
+    A[detect_file_issues] --> B[_parse_xlsx]
+    A --> C[_audit_rows]
+    A --> D[_build_issues_xlsx]
+    E[detect_json_issues] --> F[_json_rows]
+    E --> C
+    G[compare_file_issues] --> H[_audit_upload]
+    H --> B
+    H --> J
+    H --> K
+    H --> N
+    G --> I[_build_comparison_xlsx]
+    C --> J[_rows_to_records]
+    C --> K[_present_fields]
+    C --> L[_flag_for_review]
+    C --> M[_flag_codes]
+    C --> N[detect_issues]
+    K --> O[_input_alias_to_field]
+    O --> P[_norm_header]

@@ -1,1008 +1,768 @@
-Generated: 2026-08-17 · Commit: 515cc7c1a84f55f817d63b4f3f094ce47d57f7fd · Branch: diag/website-trace
-
-# Pass 4 — Parameters
-
-This document enumerates every tunable value in the system: thresholds, weights, model
-deployment names, generation parameters, retry and backoff policies, HTTP timeouts, batch and
-page sizes, feature flags, environment variables, and the Azure Data Factory activity policies
-that govern the two exported pipelines. Values are copied verbatim from the defining artefact;
-none are rounded or normalised.
-
-## Conventions
-
-- **Defined at** — the artefact and line where the literal appears. Where a value is an
-  environment variable, both the default-declaration site and the `Settings` field site are
-  cited.
-- **Consumed at** — the line where the value actually changes behaviour (a comparison, a
-  request parameter, a loop bound). A parameter that is defined but never reaches a decision
-  is recorded in §5.
-- **Rationale** — filled only from a code comment, a config docstring, a commit message, the
-  `README.md` configuration table, `.env.example`, or the DATAshaper tutorial transcripts, with
-  the source cited. Where no such evidence exists the cell reads
-  `⚠ UNDOCUMENTED — author to supply`. No rationale is inferred from the value itself.
-- **Effect if raised / lowered** — the mechanical consequence read from the consuming code
-  path, not a predicted quality outcome. Where the parameter is a bounded enum or a
-  non-orderable string, the cells state the substitution effect instead.
-- Parameters outside this repository (ADF, DATAshaper) cite `CONTEXT-EXTERNAL.md` and respect
-  its provenance markers ([EXPORT] ground truth, [OBSERVED], [AUTHOR]).
-
----
-
-## 1 · Parameter table
-
-### 1.1 · LLM — Azure OpenAI (Phase 1 enrichment tiers)
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| `AZURE_OPENAI_DEPLOYMENT` | `gpt-5.4` | str (env) | `config.py:84`; `config.py:157`; fallback literal `llm/openai_client.py:199,233` | `llm/openai_client.py:199` (`model=`) | n/a — names a deployment; substituting changes which model answers every Phase-1 tier | n/a | "Deployment for Phase 1 enrichment (and Phase 2 dedup unless `AOAI_DEPLOYMENT_DEDUP` below overrides it)" (`.env.example`); `README.md:1665` area env table |
-| `AZURE_OPENAI_API_VERSION` | *(unset)* → `2024-08-01-preview` | str (env) | `llm/openai_client.py:78` (`DEFAULT_AZURE_OPENAI_API_VERSION`) | `llm/openai_client.py:149-153` | n/a | n/a | "Default Azure OpenAI REST API version for the Phase 1 enrichment tiers. Reasoning models (GPT-5.x) and the `reasoning_effort` parameter need a newer version" (`llm/openai_client.py:75-77`) |
-| `temperature` (Phase 1 chat completions) | `0.0` | float (hardcoded) | `llm/openai_client.py:205` | `llm/openai_client.py:198-207` (request body) | Higher sampling entropy in every tier's JSON extraction | Already at the floor | ⚠ UNDOCUMENTED — author to supply |
-| `max_tokens` — `call_openai` default | `500` | int | `llm/openai_client.py:180` | `llm/openai_client.py:204` (`max_completion_tokens`) | Longer completions permitted; higher per-call token cost | Truncated completions → invalid JSON → the one retry at `llm/openai_client.py:271-288`, then `ValueError` | ⚠ UNDOCUMENTED — author to supply |
-| `max_tokens` — `OpenAIClient.extract_json` default | `1024` | int | `llm/openai_client.py:263` | `llm/openai_client.py:272-275` | As above | As above | ⚠ UNDOCUMENTED — author to supply |
-| `max_tokens` — address residual classification | `200` | int | `enrichment/address_processing.py:679` | same call | As above | Truncation → `_classify_residual` returns `(None, 0.0)` → issue `G1-ADDR-009` (`enrichment/address_processing.py:726-728`) | ⚠ UNDOCUMENTED — author to supply |
-| `max_tokens` — `GET /diag/llm` probe | `50` | int | `api/routes.py:1054` | same call | Larger diagnostic probe | Smaller probe | ⚠ UNDOCUMENTED — author to supply |
-| `max_tokens` — `GET /diag/dedup-llm` probe | `200` | int | `api/routes.py:1088` | same call | Larger diagnostic probe | Smaller probe | ⚠ UNDOCUMENTED — author to supply |
-| JSON-parse retry count | `2` attempts (1 retry) | int (loop bound) | `llm/openai_client.py:271` (`range(2)`) | `llm/openai_client.py:286-290` | More retries on unparseable JSON; more token spend per record | `0` retries — a single malformed response raises `ValueError` to the tier | "Retries once if the first response is not valid JSON" (`llm/openai_client.py:267-268`) |
-| `LLM_HTTP_CONNECT_TIMEOUT` | `30` (seconds) | float (env) | `llm/openai_client.py:162` | `llm/openai_client.py:166` (`httpx.Timeout(connect=)`) | Slower failure on an unreachable endpoint; tolerates slower VPN handshake | Handshakes over a slow tunnel fail before completing | "Connect timeout is generous because a VPN tunnel can add real latency to the initial handshake" (`llm/openai_client.py:160-161`); "Handshake/read timeouts (seconds) — bump if the tunnel is slow" (`.env.example`) |
-| `LLM_HTTP_TIMEOUT` | `60` (seconds) | float (env) | `llm/openai_client.py:163` | `llm/openai_client.py:166` (`httpx.Timeout` read) | Long-running completions tolerated; a hung call blocks the record's tier for longer | Long completions abort as timeouts and the tier escalates | Same `.env.example` comment as above |
-| `LLM_SSL_VERIFY` | `true` | bool (env) | `llm/openai_client.py:110` (`_env_bool(..., default=True)`) | `llm/openai_client.py:110-116`, returned into `httpx.AsyncClient(verify=)` at `:165` | n/a | `false` disables TLS certificate verification for all LLM calls | "`LLM_SSL_VERIFY=false` disables verification entirely. Insecure — a last resort for locked-down machines where the corp CA cannot be installed. Logged loudly." (`llm/openai_client.py:101-103`) |
-| `AZURE_OPENAI_CA_BUNDLE` | *(unset)* | path (env) | `config.py:53`; `llm/openai_client.py:83` | `config.py:54-60`; `llm/openai_client.py:118-124` | n/a | n/a | "On a TLS-inspecting corporate VPN, certifi alone is not enough — the inspected hosts present certs signed by the corp CA" (`config.py:45-50`) |
-
-### 1.2 · LLM — Azure OpenAI (Phase 2 dedup adjudicator)
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| `AOAI_DEPLOYMENT_DEDUP` | *(unset)* → `AZURE_OPENAI_DEPLOYMENT` → `gpt-5.4` | str (env) | `dedup/llm.py:117-121` | `dedup/llm.py:175` (`params["model"]`) | n/a | n/a | "Prefer a dedup-specific deployment; otherwise reuse the Phase 1 deployment so a single configured deployment works for both phases" (`dedup/llm.py:115-116`); "AI Foundry deployment for the full GPT-5.4 model used by the adjudicator" (`.env.example`) |
-| `AOAI_API_VERSION_DEDUP` | *(unset)* → `AZURE_OPENAI_API_VERSION` → `2025-04-01-preview` | str (env) | `dedup/llm.py:112` (`DEFAULT_API_VERSION`), resolved `:124-128` | `dedup/llm.py:144` (`get_openai_client(api_version=)`) | n/a | n/a | "GPT-5.x reasoning models and the `reasoning_effort` parameter require a newer version than the Phase 1 default" (`dedup/llm.py:108-111`); `README.md:1665` |
-| `DEDUP_REASONING_EFFORT` | `low` | str (env) | `dedup/llm.py:122` | `dedup/llm.py:183-184` (`params["reasoning_effort"]`) | Higher effort tiers cost more tokens/latency per adjudication | n/a — `low` is the lowest tier used | "Reasoning effort for the adjudicator (reasoning models may ignore temperature, so temperature is not sent)" (`README.md:1666`); `dedup/llm.py:5-8` |
-| `DEDUP_MAX_RETRIES` | `3` | int (env) | `dedup/llm.py:123` | `dedup/llm.py:172` (loop bound), `:209` | More attempts per adjudication call on 429/5xx; longer worst-case block latency | Fewer attempts; a transient 429 sooner yields `DedupLLMResult(error=…)` → the block's signatures are marked uncertain | "Max attempts per adjudicator call (retries 429/5xx with exponential backoff)" (`.env.example`; `README.md:1669`) |
-| Dedup retry backoff | `0.5 * (2 ** attempt)` seconds → 0.5 s, 1.0 s | float (formula) | `dedup/llm.py:210` | `dedup/llm.py:215` (`asyncio.sleep`) | Longer waits between attempts | Retries pile onto a rate-limited endpoint faster | "bounded exponential-backoff retries" (`dedup/llm.py:163`) |
-| Retryable status set | `429` or `500 ≤ code < 600`, plus `APIConnectionError`/`APITimeoutError` | set (hardcoded) | `dedup/llm.py:49-60` | `dedup/llm.py:209` | n/a | n/a | "Retry only transient failures: connection/timeout, 429, and 5xx." (`dedup/llm.py:50`) |
-| `max_tokens` — `DedupLLM.adjudicate` default | `4000` | int | `dedup/llm.py:161` | `dedup/llm.py:180` | Longer adjudication JSON permitted | Truncated verdict → `parse_json_object` returns `None` → treated as uncertain (`dedup/llm.py:79-81`) | ⚠ UNDOCUMENTED — author to supply |
-| `max_tokens` — actual Mode A / residue call sites | `1000` | int | `dedup/adjudicator.py:452`; `dedup/adjudicator.py:638` | same calls | As above | As above | ⚠ UNDOCUMENTED — author to supply. ⚠ Note the default of `4000` (`dedup/llm.py:161`) is never used by application code — see §5 |
-| `PROMPT_VERSION` | `p2-dedup-v3` | str | `dedup/prompts.py:14` | `dedup/adjudicator.py:822`; emitted per result row | n/a | n/a | "Bumped whenever the prompt wording changes in a way that could shift decisions. Logged per LLM call and emitted in every result row." (`dedup/prompts.py:12-13`) |
-
-### 1.3 · Tier 1 — ROR (research-organisation registry)
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| `ROR_API_BASE` | `https://api.ror.org/v2/organizations` | str (env) | `config.py:85`; `config.py:172`; fallback `enrichment/tier1_ror.py:571` | `enrichment/tier1_ror.py:621` | n/a | n/a | ⚠ UNDOCUMENTED — author to supply |
-| `ROR_CONFIDENCE_THRESHOLD` | `0.8` | float (env) | `config.py:86`; `config.py:177`; read directly at `enrichment/tier1_ror.py:573` | `enrichment/tier1_ror.py:629` (ROR's own score), `:646` (local rescore), `:815` (query-endpoint score) | Fewer Tier-1 matches accepted → more records escalate to Tier 2/3 (LLM/SERP spend rises) | More Tier-1 matches accepted, including ROR affiliation-scorer false positives the local rescore was added to catch (`enrichment/tier1_ror.py:638-642`) | "FIX(Bug 1): single confidence threshold for all record types. Was: separate 0.8 for institutions, 0.9 for companies." (`config.py:174-175`) |
-| ROR HTTP timeout | `15.0` (seconds) | float (hardcoded) | `enrichment/tier1_ror.py:608` | same `httpx.AsyncClient` | Slow ROR responses tolerated longer | ROR calls abort sooner; the record falls through to the next tier | ⚠ UNDOCUMENTED — author to supply |
-| Substring length guard — default | `ratio = 0.6` | float | `enrichment/tier1_ror.py:247` | `enrichment/tier1_ror.py:250` | Shorter/longer name pairs rejected more often | More length-mismatched substring hits score `1.0` | "Length-guarded substring match (shorter side ≥60% of longer) against canonical names only." (`enrichment/tier1_ror.py:203-204`) |
-| Substring length guard — canonical-name call | `ratio = 0.9` | float | `enrichment/tier1_ror.py:281` | same expression | Even tighter substring acceptance | "a short canonical name [matches] a longer query that merely contains it — e.g. 'Regional Health' inside 'LAKELAND REGIONAL HEALTH'" (the failure the tightening prevents) | "The substring rule is tight (≥90% length similarity) to prevent a short canonical name from matching a longer query that merely contains it" (`enrichment/tier1_ror.py:264-267`) |
-| Distinctive/identifier-guard score cap | `0.7` | float | `enrichment/tier1_ror.py:325`, `:328` | `enrichment/tier1_ror.py:329-330` | Above `0.8` the cap would stop suppressing unguarded fuzzy hits | Stronger suppression of guard-failing candidates | "No distinctive token shared — cap at 0.7 so it cannot cross the 0.8 match threshold." (`enrichment/tier1_ror.py:323-324`) |
-| Significant-token minimum length | `4` characters | int | `enrichment/tier1_ror.py:236` | `enrichment/tier1_ror.py:274-279` | Fewer tokens count as significant; the subset shortcut fires less | Short/common words gain subset-matching power | "every significant (≥4-char) query token appears as a whole word → 1.0" (`enrichment/tier1_ror.py:198`) |
-| Distinctive-token minimum length | `5` characters | int | `enrichment/tier1_ror.py:318`; scoring-variant filter `:243`, `:306` | `enrichment/tier1_ror.py:322` | Fewer distinctive tokens → the `0.7` cap fires more often | Common short words can rescue a weak fuzzy score | "A fuzzy match ≥0.8 is trustworthy only if the matched variant also shares a DISTINCTIVE token (length ≥5, not a common domain word)" (`enrichment/tier1_ror.py:295-298`) |
-| Initialism acronym minimum length | `3` letters | int | `enrichment/tier1_ror.py:365` | `enrichment/tier1_ror.py:377-385` | Fewer initialism rescues | Two-letter coincidences could score `1.0` | "the acronym must be ≥3 letters, must map to a run that includes a distinctive (non-common, ≥4-letter) word" (`enrichment/tier1_ror.py:360-362`) |
-| Initialism run distinctive-word length | `4` characters | int | `enrichment/tier1_ror.py:384` | same condition | Stricter initialism acceptance | An acronym satisfied purely by short/common words | Same comment as above |
-| `_CHILD_MATCH_THRESHOLD` | `70` | int (rapidfuzz `token_sort_ratio`) | `enrichment/orchestrator.py:633` | `enrichment/orchestrator.py:660` | Fewer Name-2 values matched to a ROR parent's children list | More false child matches accepted without a second ROR call | "rapidfuzz token_sort_ratio minimum" (`enrichment/orchestrator.py:633`); "This avoids a second ROR API [call]" (`enrichment/orchestrator.py:643`) |
-
-### 1.4 · Tier 1 — GLEIF / LEI (company registry)
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| `LEI_LOOKUP_ENABLED` | `true` | bool (env) | `config.py:87`; `config.py:184` | `enrichment/orchestrator.py:1643` | n/a | `false` skips GLEIF; the company branch goes straight to the LLM | "Feature flag so the lookup can be A/B tested or disabled cheaply; when off the company branch behaves exactly as before (straight to the LLM)." (`config.py:181-182`) |
-| `GLEIF_API_BASE` | `https://api.gleif.org/api/v1` | str (env) | `config.py:88`; `config.py:187`; default arg `enrichment/tier1_lei.py:213` | `enrichment/tier1_lei.py:236-237`, `:327` | n/a | n/a | ⚠ UNDOCUMENTED — author to supply |
-| `GLEIF_TIMEOUT_SECONDS` | `15` | float (env) | `config.py:89`; `config.py:190`; default arg `enrichment/tier1_lei.py:214` | `enrichment/tier1_lei.py:252` (`httpx.AsyncClient(timeout=)`) via `:390,404` | Slow GLEIF responses tolerated longer | Calls abort sooner; `{"matched": False, "error": True}` returned (`enrichment/tier1_lei.py:225`) | ⚠ UNDOCUMENTED — author to supply |
-| `LEI_NAME_MATCH_THRESHOLD` | `88` | float, 0–100 (env) | `config.py:90`; `config.py:196`; default arg `enrichment/tier1_lei.py:216` (`88.0`) | `enrichment/tier1_lei.py:167` (`if score < threshold`) via `:271,361` | Fewer GLEIF candidates accepted; more company records fall to LLM canonicalisation | More fabricated matches accepted — the named failure is "Personalvorsorgestiftung der Pfizer AG" for "Pfizer AG" | "rapidfuzz token_sort_ratio (0-100). GLEIF's legalName filter is fulltext, not exact, so a candidate below this is rejected to avoid fabricated matches" (`config.py:192-194`) |
-| `LEI_MAX_RETRIES` | `2` | int (env) | `config.py:91`; `config.py:199`; default arg `enrichment/tier1_lei.py:215` | `enrichment/tier1_lei.py:200` | More attempts on transient GLEIF errors | A single 5xx/network error fails the lookup | "Max retries (exponential backoff) on transient GLEIF errors" (`README.md:1620`) |
-| GLEIF retry backoff | `0.5 * (2 ** (attempt - 1))` seconds → 0.5 s, 1.0 s | float (formula) | `enrichment/tier1_lei.py:202` | `enrichment/tier1_lei.py:207` | Longer waits between attempts | Faster re-hits on a failing endpoint | "retrying transient errors with backoff" (`enrichment/tier1_lei.py:183`) |
-| GLEIF retryable condition | status is `None` or `>= 500` | predicate | `enrichment/tier1_lei.py:198` | `enrichment/tier1_lei.py:200` | n/a | n/a | "Only retry transient failures (network, timeout, 5xx). A 4xx is not going to get better on retry." (`enrichment/tier1_lei.py:195-196`) |
-| GLEIF `page[size]` | `"10"` | str (API param) | `enrichment/tier1_lei.py:259` | request params at `:268` | More candidate records verified per exact query | Fewer candidates; a correct match beyond rank 10 is never seen | ⚠ UNDOCUMENTED — author to supply |
-| Fuzzy-completions resolution cap | `5` (`_FUZZY_RESOLVE_LIMIT`) | int | `enrichment/tier1_lei.py` | `enrichment/tier1_lei._fuzzy_lookup` | More per-LEI record fetches (more GLEIF calls per record) | Fewer fuzzy candidates resolved and verified | A **call budget**: each completion resolved costs one further GLEIF request. Which five are taken is §1.19.3's business — since Fix C(1) it is the five smallest LEIs, not the first five GLEIF listed. A truncation is still a selection, and this one was the last place in the pipeline where arrival order decided an answer (measured: one chemspeed record, AkzoNobel, resolved to a different LEI when the recorded completion list was reversed) |
-
-### 1.5 · Search (SERP) and page fetching
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| `SERPAPI_KEY` | *(unset)* | str, **secret** (env) | `config.py:160` | `enrichment/orchestrator.py:773-781` (provider selection); `config.py:137-145` (startup warning) | n/a | Unset → `DuckDuckGoClient` is used instead of `SerpAPIClient` | "SERPAPI_KEY is not set — falling back to DuckDuckGo. DuckDuckGo returns lower-quality results." (`config.py:141-144`); "SerpAPI key; if absent, DuckDuckGo is used" (`README.md:1629`) |
-| `num_results` — `SearchClient.search` default | `5` | int | `search/base.py:21`; `search/serpapi_client.py:22`; `search/duckduckgo_client.py:19` | `search/serpapi_client.py:41,56`; `search/duckduckgo_client.py:34,42` | Larger SERP result set per query | Fewer candidates to rank | ⚠ UNDOCUMENTED — author to supply |
-| `num_results` — website Path B | `10` | int | `enrichment/website_resolver.py:468` | `enrichment/website_resolver.py:492` | More candidates scanned for a host match | Reverting toward `5` re-introduces the retrieval misses the change was made to fix | "Path B distinctive/acronym-in-host ranking …; num_results 5->10 + one unquoted retry" (commit `515cc7c`); "**Website Path B retrieval (§8)** — `num_results` 5 → 10, plus one **unquoted retry** … (recovers `Atlantic Testing Labs` → `atlantictesting.com`, `Fine Organics Limited` → `fineorganics.com`)" (`README.md:1991`) |
-| Path B unquoted retry count | `1` (only when the quoted query returned nothing) | int | `enrichment/website_resolver.py:522-530` | `:529` | n/a | `0` retries — differently-branded sites stay unresolved and fall to Path C | "§8: one unquoted retry when the exact-phrase query found no valid candidate — the site may brand itself slightly differently ('…Labs' vs '…Laboratories'). Only runs on a first-pass miss; one retry maximum." (`enrichment/website_resolver.py:522-524`) |
-| `num_results` — department probe SERP (site-restricted) | `5` | int | `enrichment/orchestrator.py:1183` | same call | More candidate hosts scored | Fewer candidate hosts | `README.md:745` documents the value; no rationale given — ⚠ UNDOCUMENTED — author to supply |
-| `num_results` — department probe SERP (cross-domain) | `5` | int | `enrichment/orchestrator.py:1297` | same call | As above | As above | ⚠ UNDOCUMENTED — author to supply |
-| `num_results` — Tier 2A contact lookup | `5` | int | `enrichment/tier2a_contact.py:330` | same call | More contact-page candidates fetched | Fewer candidates | ⚠ UNDOCUMENTED — author to supply |
-| `num_results` — Tier 2B department search | `5` | int | `enrichment/tier2b_dept.py:227` | same call | More department-page candidates | Fewer candidates | ⚠ UNDOCUMENTED — author to supply |
-| `num_results` — lab resolver (UC 13) | `5` | int | `enrichment/lab_resolver.py:83` | same call | More parent-department candidates | Fewer candidates | ⚠ UNDOCUMENTED — author to supply |
-| `num_results` — person affiliation (Stage 2b) | `5` | int | `enrichment/person_affiliation.py:124` | same call | More affiliation snippets | Fewer snippets | ⚠ UNDOCUMENTED — author to supply |
-| `PAGE_FETCH_TIMEOUT_SECONDS` | `10` | int (env) | `config.py:110`; `config.py:212`; `PageFetcher` default `search/page_fetcher.py:69` | `search/page_fetcher.py:189`, `:220` via `enrichment/orchestrator.py:740,749` | Slow pages tolerated; per-record latency rises | Fetches abort sooner and return `None`/`[]` (`search/page_fetcher.py:91-93`) | "HTTP timeout for page fetching" (`README.md:1623`) |
-| `MAX_PAGE_CONTENT_CHARS` | **conflicting: `3000` / `1500`** — see §2 | int (env) | `config.py:93` (`"3000"`); `config.py:209` (`"1500"`); `PageFetcher` default `search/page_fetcher.py:69` (`1500`) | `search/page_fetcher.py:248-249` (body-text truncation) | Larger page slices sent to the LLM; higher prompt-token cost | Body text truncated earlier with a `…` suffix | "Adjusted `max_page_content_chars` in `config.py` from 3000 to 1500 for better performance." (commit `b19cd1a`) |
-| `subdomain_exists` HEAD timeout | `5` (seconds) | int (default arg) | `search/page_fetcher.py:95` | `search/page_fetcher.py:148` | Slow candidate subdomains tolerated longer | Probes give up sooner and return `False` | ⚠ UNDOCUMENTED — author to supply |
-| `resolve_final_url` redirect timeout | `5` (seconds) | int (default arg) | `search/page_fetcher.py:111` | `search/page_fetcher.py:126`, `:133` | As above | Redirect chain unresolved → the probe keys off the stale base | ⚠ UNDOCUMENTED — author to supply |
-| Redirect-follow HEAD→GET fallback trigger | `status_code >= 400` | int | `search/page_fetcher.py:130` | `search/page_fetcher.py:131-139` | n/a | n/a | "Some servers reject HEAD — retry with a streamed GET." (`search/page_fetcher.py:131`) |
-| `subdomain_exists` accept band | `200 ≤ status < 400` | range | `search/page_fetcher.py:155` | same | n/a | n/a | "Returns `True` for any 2xx/3xx response, `False` for 4xx/5xx/timeout/DNS failure." (`search/page_fetcher.py:96-97`) |
-| Page-slice truncation — title / h1 / breadcrumb | `300` characters each | int | `search/page_fetcher.py:254-256` | same | More text per authoritative slice | Slices cut shorter | ⚠ UNDOCUMENTED — author to supply |
-| Anchor-text truncation (outgoing links) | `200` characters | int | `search/page_fetcher.py:213` | same | More link text scored | Less link text | ⚠ UNDOCUMENTED — author to supply |
-| HTTP `User-Agent` | `BrukerMDM-Enrichment/1.0` | str | `search/page_fetcher.py:127,134,150,190,221` | same requests | n/a | n/a | ⚠ UNDOCUMENTED — author to supply |
-| Stripped page elements | `{script, style, nav, footer, header, aside, form, iframe}` | set | `search/page_fetcher.py:25` | `search/page_fetcher.py:244-245` | n/a | n/a | "The extractor pulls out the parts of the page that institutions actually use to name themselves … not the full body prose" (`search/page_fetcher.py:3-7`) |
-
-### 1.6 · Website resolution (Paths B and C)
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| `DOMAIN_BLACKLIST` | `wikipedia.org, linkedin.com, facebook.com, twitter.com, x.com, instagram.com, youtube.com, ratemyprofessors.com, glassdoor.com, yelp.com, bbb.org, crunchbase.com, bloomberg.com, indeed.com, ziprecruiter.com` | frozenset (15 entries) | `enrichment/website_resolver.py:49-54` | `enrichment/website_resolver.py:84` via `:371` | More directories excluded | Directory/social results become eligible website candidates | "Domains to exclude from SERP candidate selection — directories, social networks, review sites, employment aggregators. The official institution / company site is never one of these." (`enrichment/website_resolver.py:47-49`) |
-| `_OFFICIAL_TLDS` | `{edu, gov, org}` | frozenset | `enrichment/website_resolver.py:58` | `enrichment/website_resolver.py:396` | More TLDs grant `high` confidence to institutions | Fewer institution results reach `high`; more get flagged for review | "TLDs we treat as authoritative for research-institution / public bodies. An on-blacklist match is rejected before this is consulted." (`enrichment/website_resolver.py:56-57`); "an authoritative TLD (`.edu`/`.gov`/`.org`) grants `high` **only** with a clean (rank-2) host match" (`README.md:721`) |
-| Candidate rank scale | `0` (title-only) / `1` (host match with foreign brand label) / `2` (clean host match) | int | `enrichment/website_resolver.py:381-384` | `enrichment/website_resolver.py:386-398` | n/a | n/a | "2 = distinctive/acronym host match, no foreign brand word (clean); 1 = host match but the label adds a foreign brand (sub-brand); 0 = name only overlaps the title, not the host → rejected" (`enrichment/website_resolver.py:377-380`) |
-| Significant-token minimum length (Name 1) | `4` characters | int | `enrichment/website_resolver.py:95` | `enrichment/website_resolver.py:101`, `:126`, `:179` | Fewer tokens qualify → fewer candidates pass overlap | Short generic words can validate a stranger's domain | ⚠ UNDOCUMENTED — author to supply |
-| `_GENERIC_NAME_TOKENS` | 28 industry words (`research, therapeutics, diagnostics, medical, instruments, sciences, science, laboratories, laboratory, labs, technologies, technology, solutions, systems, group, holdings, international, global, pharma, pharmaceutical, bio, biotech, health, healthcare, services, consulting, partners, associates`) | frozenset | `enrichment/website_resolver.py:107-113` | `enrichment/website_resolver.py:118` → `:136` | More words treated as non-distinctive; stricter host matching | "a stranger's domain must not be validated just because it shares one of these" — the guard weakens | "Generic industry words that do NOT distinctively identify an organisation … Mirrors the distinctive-token guard ROR applies upstream." (`enrichment/website_resolver.py:104-106`) |
-| Foreign-brand label minimum length | `4` characters | int | `enrichment/website_resolver.py:181` (and the read-only mirror `:240`) | `enrichment/website_resolver.py:182-184` | Fewer label parts inspected → fewer sub-brand rejections | Short connectors ("of", "and") would be treated as foreign brand words | "short connector ('of', 'and') — never distinctive" (`enrichment/website_resolver.py:182`) |
-| Path C sentinel values | `"", null, none, unknown, n/a, na` (case-insensitive) | set | `enrichment/website_resolver.py:614` | `enrichment/website_resolver.py:615-616` | n/a | n/a | ⚠ UNDOCUMENTED — author to supply |
-| Path C confidence | always `low` | str (literal) | `enrichment/website_resolver.py:633` | `enrichment/orchestrator.py:894,914` (write + flag) | n/a | n/a | "Result is always returned as `confidence='low'` when a URL is produced — the orchestrator writes it to `website_url` and flags the record for manual review." (`enrichment/website_resolver.py:562-565`) |
-| `WEBSITE_TRACE` | `false` | bool (env) | `config.py:118`; `config.py:247` | `enrichment/orchestrator.py:894`, `:914` → `enrichment/website_resolver.py:478,509,582` | `true` emits one JSON trace line per candidate on `enrichment.trace.website` | n/a | "Diagnostic-only: when true, the Path B / Path C website resolver emits a structured per-candidate JSON trace … Purely additive — resolution behaviour is unchanged. Default off." (`config.py:115-118`) |
-
-#### 1.6a · Domain ownership conditions (`utils/domain_resolver.resolve_domain`)
-
-Six conditions, first hit wins. The two added by the witness calibration are marked **new**; the
-four originals are unchanged in rule, threshold and order relative to each other.
-
-| # | Condition | `verified_by` | Provenance it produces | Rationale |
-|---|-----------|---------------|------------------------|-----------|
-| 1 | Registry provenance — the candidate *came from* a ROR/GLEIF record that passed that registry's guard | `registry` | `ror:verified` / `gleif:verified` | Sufficient alone; the registry authored the value |
-| 2 | **new** — an independent system *states* this website: ROR `links[]` or Wikidata `P856` whose registrable domain equals the candidate's | `witness_registry` / `witness_wikidata` | `web:{domain}:verified+registry` / `+wikidata` | Two systems that never consulted each other naming one website is a **witness** under provenance hard rule 4, which is why this is the only web-derived accept that reaches `verified`. Compared on the registrable stem through `canonicalise_domain`, so scheme / `www.` / path differences are not disagreements. Ranked above every scored condition because it is a second source, not a better similarity. The designed states `web:{domain}:verified+wikidata` / `+registry` existed in the provenance grammar with no code path producing them; this is that path |
-| 3 | Name similarity ≥ `DOMAIN_NAME_MATCH_THRESHOLD` (82) | `name` | `web:{domain}:provisional` | Unchanged — see the threshold's own derivation in `README.md` §2b |
-| 4 | Non-generic email domain on the record | `email` | `web:{domain}:provisional+domain` | Unchanged |
-| 5 | On-domain SERP evidence — every significant Name-1 token in the title/H1 of a result *on that domain* | `serp` | `web:{domain}:provisional` | Unchanged |
-| 6 | **new** — page identity: the page served *by* the candidate states this organisation's name, with no region/country-level location contradiction | `page` | `web:{domain}:provisional` | **Last, and `provisional` by construction.** A page fetched from the domain it vouches for is one source, not two, so it can never carry a value to `verified` — `page` is deliberately absent from `provenance._DOMAIN_WITNESSES`. It closes the open item recorded in `corroborator_report.md`: the pipeline was reading the page, deciding the site named the record's organisation, withdrawing the flag, and then leaving the field empty — asking a reviewer to do by hand the check it had just run. A fetch that failed (403, bot challenge, parked, replay miss) carries no statement and can never satisfy it, in either direction |
-
-Neither new condition moves a threshold. Both were measured against the negative gates: a
-candidate whose stated-website claim names a *different* domain falls through to the conditions it
-always had, and a candidate whose page cannot be read, or whose page names a different
-organisation under the containment rule (§1.17), is refused exactly as before.
-
-**Where the condition-2 claims come from, and what they cost.** ROR's `links[]` is retained by
-`consistency.record_registry_identity` at every point a registry match is accepted — no call.
-Wikidata's `P856` is retained by the crosswalk lane at match time — no call — and, on a record the
-registries had *already* resolved (where the crosswalk lane declines to run at all), by the
-corroboration-only pass gated on `WIKIDATA_DOMAIN_CORROBORATION`, which is the one request this
-calibration adds. See §1.18.
-
-### 1.7 · Department-domain probe (`_probe_department_url`)
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| `DEPT_PROBE_CROSS_DOMAIN` | `false` | bool (env) | `config.py:114`; `config.py:166-168` | `enrichment/orchestrator.py:1277` | `true` runs a second, unrestricted SERP call per unresolved department | n/a | "When False (default) the department-domain probe issues at most one SERP call (the site-restricted query). The cross-domain fallback query — which catches departments hosted on a separate brand domain (e.g. hopkinsmedicine.org) — only runs when this is enabled, so the common case stays at one SERP call per record." (`config.py:161-165`); "`DEPT_PROBE_CROSS_DOMAIN` default → `false` (§6) — matches the documented intent" (`README.md:1993`). ⚠ `.env.example` contradicts this — see §2 |
-| Host-prefix match score | `+3` | int | `enrichment/orchestrator.py:248` | `enrichment/orchestrator.py:1154`, `:1204` | n/a — the host match is mandatory for any positive score | n/a | "Strict rule: the host prefix MUST contain a significant token or the acronym (substring match) for any positive score. Path / title matches alone aren't enough — that's how parent hosts like `fas.harvard.edu` (FAS) or `krieger.jhu.edu` (umbrella school) were sneaking in." (`enrichment/orchestrator.py:216-221`) |
-| Path match bonus | `+1` | int | `enrichment/orchestrator.py:254` | same scoring function | Path signal outweighs title signal further | Path evidence contributes nothing | "only reward a path match on a real department path — a generic (news/events) path earns no bonus and a deep/dated path is penalised" (`enrichment/orchestrator.py:251-252`) |
-| Title match bonus | `+1` | int | `enrichment/orchestrator.py:257` | same | Title signal weighs more | Title evidence contributes nothing | ⚠ UNDOCUMENTED — author to supply |
-| Path-penalty cap | `min(2, penalty)` | int | `enrichment/orchestrator.py:255` | same | A deep path could drive the score below the host baseline | Penalty stops discriminating deep paths | ⚠ UNDOCUMENTED — author to supply |
-| Canonicality penalty — depth | `max(0, len(segments) - 1)` | int (formula) | `enrichment/orchestrator.py:164` | `enrichment/orchestrator.py:255`, `:1257` | n/a | n/a | "a penalty (≥0) for deep / dated / sub-page paths, so a department landing page outranks an archived or sub-section page at the same host" (`enrichment/orchestrator.py:161-162`) |
-| Canonicality penalty — dated path | `+5` (any 4-digit year segment) | int | `enrichment/orchestrator.py:165-166` | as above | Dated pages pushed further down the ranking | Archived pages can tie a landing page | "dated / archive content" (`enrichment/orchestrator.py:165`); "so an archived event URL no longer ties a landing page" (`enrichment/orchestrator.py:1236`) |
-| Canonicality penalty — sub-page segment | `+3` | int | `enrichment/orchestrator.py:167-168` | as above | Sub-pages pushed further down | "…/chemistry/undergrad/" can outrank the landing page | "sub-pages of a department (penalised, not rejected — the landing page is preferred over '…/chemistry/undergrad/')" (`enrichment/orchestrator.py:143-144`) |
-| `_GENERIC_HOST_PREFIXES` | 28 subdomains (`professorships, inside, calendar, news, alumni, admin, hr, store, shop, give, donate, support, events, directory, library, libraries, career, careers, jobs, search, secure, my, mail, email, wiki, intranet, media, press`) | set | `enrichment/orchestrator.py:103-109` | `enrichment/orchestrator.py:239-240` (forced score `0`) | More hosts excluded outright | `professorships.jhu.edu` (the named regression) can win the probe | "Subdomains that are administrative/cross-cutting, never a department home — pre-empt the SERP probe from latching onto them." (`enrichment/orchestrator.py:101-102`); named failures at `:975-976` |
-| `_GENERIC_PATH_SEGMENTS` | 22 segments (`news, news-events, events, event, story, stories, article, articles, blog, calendar, archive, colloquium, seminar, admin, hr, library, libraries, careers, career, directory, media, press`) | set | `enrichment/orchestrator.py:137-142` | `enrichment/orchestrator.py:152-157` → `:253`, `:1251` | More paths rejected as non-department | News/event pages accepted as department homes | "§5b: path segments that are non-department content (news, events, archived stories, calendars). A candidate whose path contains one of these is not a department landing page." (`enrichment/orchestrator.py:134-136`) |
-| `_SUBPAGE_PATH_SEGMENTS` | 13 segments (`undergrad, undergraduate, graduate, grad, people, faculty, staff, contact, admissions, apply, courses, alumni, giving`) | set | `enrichment/orchestrator.py:145-148` | `enrichment/orchestrator.py:167` | More paths penalised as sub-pages | Sub-pages compete with landing pages | See canonicality-penalty rationale above |
-| `_THIRD_PARTY_DOMAINS` | 23 registrable domains (`wikipedia.org, linkedin.com, facebook.com, twitter.com, x.com, youtube.com, instagram.com, reddit.com, researchgate.net, scholar.google.com, google.com, amazon.com, indeed.com, glassdoor.com, pubmed.gov, ncbi.nlm.nih.gov, nih.gov, doi.org, academia.edu, github.com, github.io, medium.com, substack.com`) | set | `enrichment/orchestrator.py:113-120` | `enrichment/orchestrator.py:123-132` | More platforms excluded | A third-party platform could be written as a department domain | "Registrable domains that are third-party platforms — never represent a department's web home. Used to filter no-site SERP results." (`enrichment/orchestrator.py:111-112`) |
-| Candidate-subdomain acronym length band | `2 ≤ len ≤ 6` | int range | `enrichment/orchestrator.py:1091` | `enrichment/orchestrator.py:1092` | Longer acronyms probed | Fewer acronym subdomains probed | ⚠ UNDOCUMENTED — author to supply |
-| Candidate tokens probed | top `2` longest tokens of length `≥ 4` | int | `enrichment/orchestrator.py:1093-1096` | `enrichment/orchestrator.py:1109-1115` | More HEAD/GET probes per record | Fewer subdomain candidates verified | ⚠ UNDOCUMENTED — author to supply |
-| Abbreviated-subdomain prefix lengths | `(4, 3)` | tuple | `enrichment/orchestrator.py:1103` | `enrichment/orchestrator.py:1104-1107` | More prefix candidates probed | "chem" ← "chemistry" style subdomains not probed | "Departments often use an abbreviated subdomain ('chem' ← 'chemistry', 'phys' ← 'physics', 'math' ← 'mathematics'). Probe short prefixes of the token too." (`enrichment/orchestrator.py:1100-1102`) |
-| Scored candidates verified per stage | top `5` (`scored[:5]`) | int | `enrichment/orchestrator.py:1161`, `:1211` | same loops | More page fetches per record | A correct host ranked 6th is never verified | ⚠ UNDOCUMENTED — author to supply |
-| Segment/needle shared-prefix minimum | `3` characters | int | `enrichment/orchestrator.py:201` | `enrichment/orchestrator.py:200-203` | Stricter abbreviation matching | Two-character coincidences match | "Shared leading prefix of ≥3 chars — abbreviation either direction." (`enrichment/orchestrator.py:199`) |
-| Verification — phrase length gate | `≥ 4` characters | int | `enrichment/orchestrator.py:1380` | same condition | Longer phrases required for the fast-path accept | Very short phrases accept trivially | ⚠ UNDOCUMENTED — author to supply |
-| Verification — morphological prefix | `≥ 5` shared leading characters | int | `enrichment/orchestrator.py:1404` | `enrichment/orchestrator.py:1397-1406` | Stricter variant matching | "physic"al ← "physic"s style variants no longer verify | "§5d: accept morphological variants, not just the literal token, so physics.nist.gov ('Physical Measurement Laboratory') verifies for a 'Physics' needle." (`enrichment/orchestrator.py:1388-1392`) |
-| Verification — needle-count threshold | `≥ 2` needles, or `≥ 1` when only one needle exists | int | `enrichment/orchestrator.py:1408-1411` | same | Fewer pages verify; more departments left unresolved | "science.mit.edu is the School of Science, not the Computer Science department" — the rejection the threshold exists for | "at least 2 significant needles (tokens + acronym) appear there (or 1 needle, when only one is available). This rejects pages that resolve but don't describe the dept" (`enrichment/orchestrator.py:1356-1361`); "The needle-count thresholds are unchanged (≥2, or ≥1 for a single needle), so science.mit.edu still fails a Computer Science query." (`enrichment/orchestrator.py:1393-1394`) |
-| Significant department-token minimum length | `3` characters (regex `[A-Za-z]{3,}`) | int | `enrichment/orchestrator.py:172` | `enrichment/orchestrator.py:181-185` | Fewer tokens qualify | Two-letter fragments become department tokens | "Lowercased alpha words ≥3 chars, minus generic descriptors. The result is what we expect to see in a real department URL." (`enrichment/orchestrator.py:178-179`) |
-
-### 1.8 · Tiers 2A, 2B, 3
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| `FUZZY_MATCH_THRESHOLD` | `80` | int, 0–100 (env) | `config.py:92`; `config.py:204` | `enrichment/tier2a_contact.py:451` via `:170,425` | Fewer existing Name-2 values accepted as matching the contact page → more are replaced wholesale | More weak matches normalised to the page's official form | "RapidFuzz threshold for name matching" (`README.md:1621`); "≥ 80 exact/partial: normalise to official format; < 80: name2 is wrong, replace with page version" (`enrichment/tier2a_contact.py:430-431`) |
-| Tier 2A near-exact cut-off | `95` | int, 0–100 | `enrichment/tier2a_contact.py:456` | same | Fewer results marked `exact`/`verified`; more marked `partial` and flagged for review | Weaker matches marked `exact` and pass unflagged | "Near-exact match" (`enrichment/tier2a_contact.py:457`) |
-| Tier 2B match-band cut-offs | `exact ≥ 90`, `partial ≥ 60`, else `no_match` | int, 0–100 | `enrichment/tier2b_dept.py:152` | same expression | Stricter labels | Weaker matches labelled `exact` | ⚠ UNDOCUMENTED — author to supply |
-| Tier 2B confidence assignment | on-domain → `medium`, off-domain → `low`; `flag_for_review` always `True` | str | `enrichment/tier2b_dept.py:156-162` | same | n/a | n/a | "Extracted by LLM from official domain page" / "Extracted by LLM from non-official source" (`enrichment/tier2b_dept.py:158,161`) |
-| Tier 3 address-in-name overlap gate | `≥ 0.5` token overlap with the record's street | float | `enrichment/tier3_llm.py:46` | same condition | Fewer Tier-3 name suggestions rejected as address content | More legitimate names rejected as address-like | "True when a Tier 3 NAME suggestion is actually address content — a postal code, a house-number + street-type pattern, or a high token overlap with the record's own street field (i.e. copied wholesale from the street)." (`enrichment/tier3_llm.py:33-35`) |
-| Tier 3 token minimum length | `3` characters (regex `[A-Za-z]{3,}`) | int | `enrichment/tier3_llm.py:29` | `enrichment/tier3_llm.py:45` | Fewer tokens in the overlap denominator | Short words inflate the overlap ratio | ⚠ UNDOCUMENTED — author to supply |
-
-### 1.9 · Preprocessing, text normalisation, address stage, issue detection
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| Canonical-name dedupe fuzz ratio | `92` | int, 0–100 | `enrichment/preprocess.py:1776`; `enrichment/orchestrator.py:547` | same conditions | Fewer near-identical names collapsed | Genuinely distinct units collapsed together | "The 92 threshold is [set so that] … ('Department of Main Receiving' vs 'Department of Main Receivingt')" (`enrichment/preprocess.py:1769`) — a typo-tolerance gate |
-| `_SPELLING_VARIANT_TOKEN_RATIO` | `85.0` | float, 0–100 | `utils/text_utils.py:753` | `utils/text_utils.py:768` | Fewer token pairs treated as spelling variants | Unrelated tokens treated as typos of each other | "…`_SPELLING_VARIANT_TOKEN_RATIO` — i.e. one is a typo of the other." (`utils/text_utils.py:761`) |
-| Acronym letter-count band | `2 ≤ len ≤ 8` | int range | `enrichment/preprocess.py:368`, `:414` | `enrichment/preprocess.py:419-421` | Longer strings admitted as acronyms | Fewer acronym/full-form pairs detected | ⚠ UNDOCUMENTED — author to supply |
-| Acronym full-form minimum words | `≥ 3` | int | `enrichment/preprocess.py:419`, `:421` | same | Fewer pairs qualify | "proper-noun hyphenations ('Heriot-Watt University'…)" become acronym candidates | "side must have >=3 words so proper-noun hyphenations ('Heriot-Watt University'…)" (`enrichment/preprocess.py:393`) |
-| `_RESIDUAL_CONFIDENCE_THRESHOLD` | `0.85` | float, 0–1 | `enrichment/address_processing.py:657` | `enrichment/address_processing.py:729` | Fewer LLM residual classifications acted on; more rows carry `G1-ADDR-009` | Low-confidence LLM classifications move content out of street slots | ⚠ UNDOCUMENTED — author to supply |
-| `_SAP_NAME_LIMIT` | `140` | int | `enrichment/issue_detection.py:121` | `enrichment/issue_detection.py:442` (`G4-NAME-015`) | Fewer records flagged as over-length | More records flagged | "SAP name-field length limit (Name 1–4 combined)." (`enrichment/issue_detection.py:120`) |
-| Search-term width (SORT1/SORT2) | `32` characters | int | `enrichment/search_terms.py:392` (default arg), `:410`, `:413`, `:551` | `enrichment/search_terms.py:409-410` (terminal normalisation), `:551` (fill) | Terms exceed the SAP field width | Terms truncated earlier on a word boundary | "truncate to 32 chars on a word boundary (SAP SORT1/SORT2 width)" (`enrichment/search_terms.py:405-406`); "trimmed, internal-whitespace-collapsed, uppercased, and truncated to **32 chars** on a word boundary (SAP SORT1/SORT2 width)" (`README.md:1989`) |
-| Issue catalogue size | 36 codes, G1–G5 | dict | `enrichment/issue_detection.py:75-118` | `enrichment/issue_detection.py:504-510` | n/a | n/a | Two codes (`G1-ADDR-009`, `G4-ADDR-025`) are marked "LLM-only — never emitted" (`enrichment/issue_detection.py:88,112`) |
-
-### 1.10 · Phase 2 — dedup clustering (`/api/dedup/cluster-block`)
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| `SIG_PARTITION_THRESHOLD` | `12` | int (env) | `dedup/adjudicator.py:36` (`DEFAULT_SIG_PARTITION_THRESHOLD`), resolved `:948-949` | `dedup/adjudicator.py:849` (`elif n <= threshold`) | More blocks use Mode A (one partition call per Name-2 bucket) with larger prompts | More blocks use Mode B — one LLM call per signature, i.e. O(signatures) calls | "Signature count at/below which a block uses one partition call (Mode A); above it, incremental canonical assignment (Mode B)." (`.env.example`; `README.md:1667`); mode-cost table `README.md:1239-1243` |
-| `DEDUP_MAX_CONCURRENCY` | `5` | int (env) | `dedup/adjudicator.py:37` (`DEFAULT_DEDUP_MAX_CONCURRENCY`), resolved `:950-951` | `dedup/adjudicator.py:952` (`asyncio.Semaphore(max(1, concurrency))`) | More in-flight adjudicator calls; faster wall-clock, higher 429 risk | Serialised adjudication; longer request latency | "Max in-flight adjudicator LLM calls across all blocks in a request." (`.env.example`; `README.md:1668`) |
-| `NAME_CANDIDATE_THRESHOLD` | `0.85` | float, 0–1 (Jaro-Winkler) | `config.py:107`; `config.py:230`; `dedup/adjudicator.py:38`; resolved `:917-919` | `dedup/candidates.py:149` | Fewer residue pairs nominated → fewer LLM calls, more missed merges | More nominations → more LLM calls per block, closer to the `MAX_CANDIDATES_PER_BLOCK` cap | "A pair of signatures becomes an LLM adjudication candidate when suffix-stripped name similarity (Jaro-Winkler) reaches NAME_CANDIDATE_THRESHOLD … Nomination never merges — the LLM verdict decides." (`config.py:102-106`) |
-| `TOKEN_CANDIDATE_THRESHOLD` | `0.6` | float, 0–1 (token-set Jaccard) | `config.py:108`; `config.py:233`; `dedup/adjudicator.py:39`; resolved `:920-922` | `dedup/candidates.py:153` | Fewer token-overlap nominations | More nominations, more LLM calls | Same `config.py:102-106` block |
-| `MAX_CANDIDATES_PER_BLOCK` | `50` | int (env) | `config.py:109`; `config.py:236`; `dedup/adjudicator.py:40`; resolved `:923-925` | `dedup/adjudicator.py` residue pass (cap applied to the ordered candidate list; over the cap the block routes to `manual_review`) | More LLM calls permitted per block before the manual-review escape | Blocks route to `manual_review` sooner; `candidate_cap_exceeded` is emitted (`dedup/scoring.py:416,480-489`) | "MAX_CANDIDATES_PER_BLOCK caps LLM calls per block; over the cap the block routes to manual_review." (`config.py:105-106`); "Over MAX_CANDIDATES_PER_BLOCK LLM calls the block routes to manual_review." (`.env.example`) |
-| Candidate nomination priority | `id-convergence > name similarity > token overlap` | ordering | `dedup/candidates.py:139-156`; sort key `:120` | `dedup/candidates.py:195` | n/a | n/a | "Priority when several fire: id-convergence > name similarity > token overlap (a merge is never implied — this only picks the LLM candidate)." (`dedup/candidates.py:139-140`); "the LLM-call cap is applied by the caller against this ordered list, so id-convergence pairs are retained before name/token pairs when the cap trips" (`dedup/candidates.py:179-181`) |
-| `CLUSTER_ID_PREFIX` | `c_` | str | `dedup/cluster_key.py:13` | cluster-id derivation; matches the DS view's observed `c_22b1a6e41a78` etc. (`CONTEXT-EXTERNAL.md:392-393`) | n/a | n/a | ⚠ UNDOCUMENTED — author to supply |
-
-### 1.11 · Phase 2 — golden-record election (`/api/dedup/score`)
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| `CONFIDENCE_MERGE_THRESHOLD` | `0.95` | float, 0–1 (env) | `config.py:100`; `config.py:224`; `dedup/scoring.py:48` (`DEFAULT_CONFIDENCE_MERGE_THRESHOLD`), resolved `:1004-1017` | `dedup/scoring.py:1119` (election demotion); `:513` (`low_confidence_merge` issue) | More clusters demoted to `manual_review`; more human review, fewer auto-proposals | Lower-confidence merges pass as `proposed` without human confirmation | "a duplicate merge whose adjudication confidence is below this keeps its cluster membership but enters election as manual_review (a human confirms before anything is blocked). Retuning it never re-runs the LLM — election reads the confidence persisted by clustering." (`config.py:95-99`) |
-| Cluster confidence aggregation | `min(confidences)` over the cluster | function | `dedup/scoring.py:513`; `_cluster_merge_confidence` `dedup/scoring.py:1020-1023` | `dedup/scoring.py:1119` | n/a | n/a | "Conservative on purpose: if any member joined below threshold the whole [cluster is demoted]" (`dedup/scoring.py:1023`) |
-| Tie-break ordering | `-total`, `-last_order_year`, `-equipment_count`, `-company_code_count`, lowest `row_id` | tuple key | `dedup/scoring.py:939-955` | `elect_golden_records` (`dedup/scoring.py:1033`+) | n/a | n/a | "UNCONFIRMED ordering (confirm with Bernd): total score, most recent last_order_year, equipment_count, company_code_count, then LOWEST row_id — compared numerically when every row_id in the cluster parses as an integer, else lexically. row_id is the final uniqueness guarantee, so the winner is invariant under input shuffling." (`dedup/scoring.py:941-946`) — **explicitly not agreed with the industry supervisor** |
-| Weights-override rule | all-or-nothing over every `(criterion, band)` pair | policy | `dedup/scoring.py:626-660` | `api/routes.py:917-923`; `dedup/scoring_xlsx.py` Weights sheet | n/a | n/a | "all-or-nothing. Every (criterion, band) pair in `expected` (dedup/weights.json) must be present with a numeric Points value, else the WHOLE candidate is rejected — a half-applied retune is worse than none." (`dedup/scoring.py:632-635`) |
-| `weights_version` fingerprint length | `12` hex characters (sha256 prefix) | int | `dedup/scoring.py:615` | written onto every scored row | Longer fingerprint | Higher collision probability across weight tables | "Stable 12-hex fingerprint of the weights table (sha256 of the canonical JSON). Written onto every scored row so a proposal and its later approval can be checked for score drift when weights were retuned in between." (`dedup/scoring.py:611-613`) |
-| Duplicate `row_id` policy | hard error → HTTP 400 | policy | `dedup/scoring.py:78-83`; `api/routes.py:927-931` | same | n/a | n/a | "The one hard error is a duplicated row_id in a single request — that means a broken upstream join, and scoring it would double-elect." (`dedup/scoring.py:11-13`) |
-| Unmatched-value policy | score `0`, never raise | policy | `dedup/scoring.py:725-780` | `score_row` (`dedup/scoring.py:813`) | n/a | n/a | "The real CRM extract is ~half empty and dirty. Scoring is therefore permissive: a missing or unrecognised value scores 0 (with a warning when the value was present but unrecognised) and NEVER raises or fails the batch." (`dedup/scoring.py:9-11`) |
-
-### 1.12 · Concurrency, request shape, and logging
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| `EnrichmentOptions.max_concurrency` | `5` (bounded `ge=1, le=20`) | int (request field) | `api/models.py:289` | `enrichment/orchestrator.py:797` (`asyncio.Semaphore`) | More records enriched in parallel per batch; higher concurrent load on ROR/GLEIF/SERP/LLM | Records processed more serially; longer batch wall-clock | ⚠ UNDOCUMENTED — author to supply |
-| `/enrich/file` `max_concurrency` query parameter | `5` (bounded `ge=1, le=20`) | int (query) | `api/routes.py:521` | `api/routes.py:547` → orchestrator | As above | As above | ⚠ UNDOCUMENTED — author to supply |
-| `DEFAULT_MAX_CONCURRENCY` | `5` | int (env) | `config.py:94`; `config.py:217` | `api/routes.py:1115` (`/tiers` response only) — **not** the semaphore; see §5 | No runtime effect on processing | No runtime effect on processing | "Default concurrent record processing limit" (`README.md:1624`) — ⚠ the README description does not match the consumption site |
-| `EnrichmentRequest.records` minimum | `min_length=1` | int | `api/models.py:296` | Pydantic validation | Larger minimum batch | Empty batches accepted | ⚠ UNDOCUMENTED — author to supply |
-| `LOG_LEVEL` | `INFO` | str (env) | `config.py:113`; `config.py:244` | `api/middleware.py:85` → `logging.basicConfig` | (Toward `DEBUG`) more volume | (Toward `ERROR`) less volume | ⚠ UNDOCUMENTED — author to supply |
-| `LOG_FILE` | *(unset)* → `logs/enrichment_api.log` | path (env) | `config.py:252`; `api/middleware.py:98-100` | `api/middleware.py:102-107` | n/a | Empty string (`LOG_FILE=""`) disables file logging | "Log file path. None => configure_logging uses its default (logs/enrichment_api.log); set LOG_FILE=\"\" to disable file logging." (`config.py:250-251`) |
-| Log rotation size | `10 * 1024 * 1024` bytes | int | `api/middleware.py:106` | `RotatingFileHandler` | Larger files before rotation | More frequent rotation | "The file rotates at ~10 MB, keeping 5 backups, so it never grows unbounded." (`api/middleware.py:83`) |
-| Log backup count | `5` | int | `api/middleware.py:106` | `RotatingFileHandler` | More history retained on disk | Less history retained | Same comment as above |
-| Suppressed library log levels | `httpx`, `httpcore`, `openai`, `urllib3` → `WARNING` | level | `api/middleware.py:132-135` | same | n/a | n/a | "Quiet noisy libraries" (`api/middleware.py:131`) |
-| Request-ID length | `8` characters (UUID4 prefix) | int | `api/middleware.py:22` | `X-Request-ID` header (`api/middleware.py:58`) | Lower collision probability | Higher collision probability | ⚠ UNDOCUMENTED — author to supply |
-
-### 1.13 · Runtime, hosting, and deployment configuration
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| `MOCK_EXTERNAL_CALLS` | `false` | bool (env) | `config.py:111`; `config.py:241` | `api/routes.py:58`, `:673`, `:83`, `:1117` | `true` substitutes mock clients — no real API calls | n/a | "Use mock clients (no real API calls)" (`README.md:1632`) |
-| `ENV` | `production` | str (env) | `config.py:112`; `config.py:243` | `Settings.env` | n/a | n/a | "Set to `local` for development (enables dotenv loading)" (`README.md:1633`). ⚠ Code note: `load_dotenv()` is now unconditional (`config.py:17-22`), so `ENV` no longer gates it — "The old conditional `if os.getenv(\"ENV\") == \"local\"` was a chicken-and-egg bug" (`config.py:19-21`) |
-| uvicorn host / port / reload (local dev) | `0.0.0.0` / `8000` / `True` | str, int, bool | `main.py:8` | `uvicorn.run` | n/a | n/a | ⚠ UNDOCUMENTED — author to supply |
-| Azure Functions HTTP auth level | `ANONYMOUS` | enum | `function_app.py:12` | `func.FunctionApp(http_auth_level=)` | n/a | A key-based level would require ADF to present a function key | ⚠ UNDOCUMENTED — author to supply |
-| Functions route prefix | `""` (empty) | str | `host.json:13` | Azure Functions host | n/a | n/a | ⚠ UNDOCUMENTED — author to supply |
-| Functions extension bundle | `[4.*, 5.0.0)` | version range | `host.json:18` | Azure Functions host | n/a | n/a | ⚠ UNDOCUMENTED — author to supply |
-| Application Insights sampling | `isEnabled: true`, `excludedTypes: "Request"` | bool / str | `host.json:5-8` | Azure Functions host | n/a | n/a | ⚠ UNDOCUMENTED — author to supply |
-| `functionTimeout` | *(not set)* | — | absent from `host.json:1-20` | — | n/a | n/a | Platform default for the (unconfirmed) hosting plan applies; the plan is `CONTEXT-EXTERNAL.md:446` open item 6 — ⚠ the ceiling must not be stated until the plan is confirmed (`02_ARCHITECTURE.md:279-284`) |
-| `pytest` async mode / testpaths | `strict` / `tests` | str | `pytest.ini:2-3` | pytest | n/a | n/a | ⚠ UNDOCUMENTED — author to supply |
-
-### 1.14 · Azure Data Factory activity policies [EXPORT]
-
-Both pipelines were published `2026-07-29T12:09:37Z` and are reproduced verbatim in
-`CONTEXT-EXTERNAL.md`. Every activity in both pipelines carries the identical policy block.
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| Activity `timeout` (all 7 activities) | `0.12:00:00` (12 hours) | ADF timespan | `CONTEXT-EXTERNAL.md:53,95,125,153` (Enrichment); `:215,245,273` (Deduplication) | ADF activity runtime | Longer before an activity is abandoned | Long `/enrich` batches or long-running Lookups abort | ⚠ UNDOCUMENTED — author to supply. Note the Azure Functions plan ceiling, not this timeout, bounds a single `/enrich` call (`02_ARCHITECTURE.md:282-284`) |
-| Activity `retry` (all 7 activities) | `0` | int | `CONTEXT-EXTERNAL.md:54,96,126,154,216,246,274` | ADF activity runtime | Transient `Web1`/`Merge Back` failures retried instead of stopping the sequential ForEach | Already at the floor | ⚠ UNDOCUMENTED — author to supply. [AUTHOR] "Before 2026-08-21 the pipeline is to be amended to … [set] a retry policy above 0 on `Web1` and `Merge Back`." (`CONTEXT-EXTERNAL.md:194-197`) |
-| `retryIntervalInSeconds` (all 7 activities) | `30` | int | `CONTEXT-EXTERNAL.md:55,97,127,155,217,247,275` | ADF activity runtime | Longer pause between retries | Faster retries | ⚠ UNDOCUMENTED — author to supply. **Inert while `retry: 0`** |
-| `secureOutput` / `secureInput` (all 7 activities) | `false` / `false` | bool | `CONTEXT-EXTERNAL.md:56-57,98-99,128-129,156-157,218-219,248-249,276-277` | ADF activity logging | `true` would redact activity payloads from ADF run history | n/a | ⚠ UNDOCUMENTED — author to supply |
-| Enrichment page size | `50` rows | int (in T-SQL) | `CONTEXT-EXTERNAL.md:64` (`rn * 50 AS offset`); `:106` (`FETCH NEXT 50 ROWS ONLY`) | ADF `Lookup2` / `Lookup1` | Fewer, larger `/enrich` calls — a single call must finish inside the Functions timeout | More, smaller calls — more round trips, more `Merge Back` invocations | ⚠ UNDOCUMENTED — author to supply. The two `50` literals must be changed together — see §2 |
-| `ForEach1.isSequential` | `true` | bool | `CONTEXT-EXTERNAL.md:88` | ADF `ForEach1` | n/a | `false` would run offsets in parallel (default batch count applies) | ⚠ UNDOCUMENTED — author to supply. Consequence documented: "the sequential ForEach stops at the failing iteration and does not process subsequent offsets" (`02_ARCHITECTURE.md:220-223`) |
-| `firstRowOnly` (all Lookups) | `false` | bool | `CONTEXT-EXTERNAL.md:73,115,235` | ADF Lookup activities | n/a | `true` would return only the first row | ⚠ UNDOCUMENTED — author to supply |
-| Deduplication batching | none — one unbatched Lookup over all of `test_77.Validation` | — | `CONTEXT-EXTERNAL.md:224-236` | ADF `Lookup1` | n/a | n/a | ⚠ At risk against ADF's 5,000-row / 4 MB Lookup ceiling (`02_ARCHITECTURE.md:489`). [AUTHOR] "to be amended … to iterate distinct `block_id` values through a ForEach" (`CONTEXT-EXTERNAL.md:312-314`) |
-| Integration runtime | `AutoResolveIntegrationRuntime` | str | `CONTEXT-EXTERNAL.md:137,257` | ADF `Web1` | n/a | n/a | ⚠ UNDOCUMENTED — author to supply |
-| Service endpoint (both pipelines) | `https://mdm-pipeline-api.azurewebsites.net` | URL | `CONTEXT-EXTERNAL.md:135,255` | ADF `Web1` `url` | n/a | n/a | Cross-tenant public hop, Tillit → Bruker spoke (`02_ARCHITECTURE.md:402-405`) |
-
-### 1.15 · Parameters outside this repository
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| Address-validation auto-write-back confidence | `80%` | percentage | `CONTEXT-EXTERNAL.md:423` [AUTHOR] — ⚠ the ADF pipeline implementing step 6 is not exported (`CONTEXT-EXTERNAL.md:442`) | ⚠ not in this repository — no code path in the service reads or applies it (verified: the only `0.8` literals in the codebase belong to `ROR_CONFIDENCE_THRESHOLD`, `config.py:86,177`, `enrichment/tier1_ror.py:573`) | Fewer addresses written back automatically; more left for a steward | More validated addresses committed without review | ⚠ UNDOCUMENTED — author to supply. ⚠ UNVERIFIED — the value, the validating service, and the comparison operator (`>` vs `≥`) are all unevidenced by any artefact; only the author's statement "auto write-back above 80% confidence" exists |
-| DATAshaper validation-rule weights | rule with the highest weight decides; weight `1` is the default fall-back rule | int | ⚠ configured in the DATAshaper SaaS interface; no file export (`CONTEXT-EXTERNAL.md:337-339`) | DS validation engine | A rule overrides lower-weighted rules | The default weight-1 rule wins | "we have multiple rules, but it's simple because there's the weights. If we have multiple rules that are valid, then it's the rule with the highest weight that is the one that is the decider." (`Datashaper-Tutorial-Part2.txt:56`); "the rule with the weight 1, that's the default rule. And that one should be configured that it always applies." (`Datashaper-Tutorial-Part2.txt:65`) |
-
-### 1.16 · Fix 2 — the three unchanged-Name-1 states (`enrichment/unchanged_state.py`)
-
-The split introduces **no numeric threshold**. Every decision it takes reuses an existing
-comparison: `normalize_key` equality (the same predicate Stage 5 uses to decide a "correction"
-is not one) and the domain ownership guard's own `verified_by` verdict. That is deliberate — a
-new state whose boundary is a new number would need its own derivation and its own tuning
-batch; a new state whose boundary is an existing guard inherits both.
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| `NAME_TYING_OWNERSHIP_CONDITIONS` | `{name, serp, registry}` | frozenset | `enrichment/unchanged_state.py` | `unchanged_state.resolve` | Adding `email` would treat a non-generic address on the record as corroborating the *name*; more rows become `unchanged-verified` and lose their flag | Removing `serp` drops on-domain-title evidence; those rows fall back to `unchanged-unresolved` and are flagged | "`email` is excluded on purpose. A non-generic address on the record says which organisation the record belongs to; it says nothing about whether the Name 1 *string* is that organisation's name, which is the question here. `unguarded` is excluded because the guard was switched off, so nothing was checked at all." (`enrichment/unchanged_state.py`). Measured — of 24 verified rows in run F, 9 came in on `name` and 3 on `serp` (`unchanged_split_report.md`) |
-| `unchanged-confirmed` equality predicate | `normalize_key(proposal) == normalize_key(input)` | function | `enrichment/unchanged_state.py` (`resolve`) | same | n/a — not orderable | n/a | "the same equality Stage 5 uses to decide that a 'correction' is punctuation and not a new name" (`enrichment/unchanged_state.py`); `normalize_key` reused from `dedup/signatures.py`, never reimplemented |
-| Registry near-match as corroboration | **not implemented** | — | — | — | n/a | n/a | Evidence-based decision, not an omission: the only qualifying candidate across the 41 retained-Name-1 rows in run A was `TORAY ADVANCED COMPOSITES USA INC.` at **80.7 / 88** against "Advanced Composites Inc" — a different legal entity (`unchanged_split_report.md`). Recorded as an open item rather than silently defaulted |
-| `enrichment_status` for verified / confirmed | `verified` | enum | `enrichment/unchanged_state.enrichment_status_for` | `enrichment/orchestrator._resolve_unchanged_name1` | n/a — bounded enum. Substituting `enriched` would claim the pipeline changed the value, which it did not | Substituting `unresolved` restores the "Warning — manual review" severity on a record the pipeline has just declined to flag, which is the contradiction the mapping exists to avoid | "`verified` \| Info issue (confirmed correct) \| Values confirmed, logged for audit" (`README.md`, Status-to-Severity Mapping); "`enriched` is never downgraded: a record whose Name 1 was retained can still have had Name 2 or the domain genuinely enriched" (`enrichment/unchanged_state.py`) |
-
-### 1.17 · Fix 3 — page-read corroborator (`enrichment/page_corroborator.py`)
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| `PAGE_CORROBORATION_ENABLED` | `true` | bool (env) | `config.py` (`Settings.page_corroboration_enabled`); `.env.example` | `enrichment/orchestrator._corroborate_domain` | n/a | `false` → no page is fetched, no `operating_name` written, no `domain-unverified` cleared; behaviour reverts exactly to pre-Fix-3 | Feature flag following the `LEI_LOOKUP_ENABLED` / `DOMAIN_OWNERSHIP_GUARD_ENABLED` pattern so the step can be A/B disabled cheaply (`config.py`) |
-| `PAGE_NAME_MATCH_THRESHOLD` | `88` | float (env) | `config.py` (`Settings.page_name_match_threshold`); `.env.example` | `page_corroborator.compare` | Fewer pages count as naming this organisation → fewer corroborations, more `name_mismatch` | More pages accepted as corroborating → an unrelated site can clear a `domain-unverified` flag | **DERIVATION:** a supplied-name-vs-stated-legal-name comparison — the same shape as GLEIF's name-verification guard — reusing that guard's scorer verbatim (`enrichment/tier1_lei._name_match_score`: `token_sort_ratio`, max of raw and legal-form-stripped). It therefore inherits `LEI_NAME_MATCH_THRESHOLD`'s derivation and its value. A **separate knob** rather than a reference so retuning the registry guard does not silently retune what counts as a corroborating page, and vice versa; the default is deliberately identical (`config.py`) |
-| Withdrawal rule — required location scope | `{region, country}` | frozenset (inline) | `enrichment/orchestrator._corroborate_domain` | same | Adding `city` restores the behaviour that withdrew four correct domains | Removing both disables withdrawal entirely; a wrong-entity accepted domain is only annotated | **DERIVED FROM THE BATCH.** Name score alone withdrew 4 correct domains in run D (`AquaPhoenix` 66.7, `Applied Catalysts` 65.4, `Analytical Sales` 71.1, `Armor Industrial` 72.7 — all brand-vs-legal-name variants) and no threshold separates them: a genuine wrong-entity pair ("Acme Biotech" vs "Aum Biotech") scores 74.1. Requiring a second, region-or-country-level disagreement leaves the one true positive standing (`Apollo Organic Synthesis` NY vs `Apollo Olive Oil` Northern California) and drops all four false ones. City alone is excluded because a plant and a head office in one state (Houston / Baytown, TX) are one company (`corroborator_report.md`) |
-| Name comparison | ratio **or** normalised token-set containment | rule | `enrichment/registry_match.names_agree` | `page_corroborator.compare`, and `enrichment/consistency._agrees` | n/a | n/a | The ratio (`PAGE_NAME_MATCH_THRESHOLD`, above) is unchanged and still primary; containment is a second way to agree, not a lowered bar. It exists because `token_sort_ratio` is length-sensitive **by design** — that property is what makes it safe as GLEIF's guard — and the commonest shape in a customer master is exactly the shape it scores low: the record carries a brand plus a division or a legal form and the other source carries the brand. Measured pairs: a site stating the brand against a record carrying brand-plus-division scores 51.9, a register's formal legal name against another register's brand scores 53.8; both are one organisation. **The rule:** normalise both names through `_normalise_for_tokens`, drop legal forms and the generic structural words (`_LEGAL_FORM_TOKENS ∪ _GENERIC_COMPANY_WORDS`), and agree when one token set is a subset of the other **and** the subset retains the longer name's leading token. Direction-agnostic. See §1.17a for the leading-token condition, which is the whole guard |
-| Containment leading-token condition | the subset must contain the superset's **first** distinctive token | rule | `enrichment/registry_match.names_agree_by_containment` | as above | n/a | Dropping it admits a different company whose name is a suffix of the record's | **DERIVED FROM A NEGATIVE.** Bare subset containment is too weak, and the pair that shows it is a record reading "⟨Head⟩ ⟨Brand⟩ Sales LLC" against a page for "⟨Brand⟩ Incorporated": `{brand}` **is** a subset of `{head, brand, sales}`, and the two are unrelated companies. An organisation name in these registries is head-initial — the brand first, the division / product line / legal form after — so the leading distinctive token is the one that says *which* organisation, and a subset that has dropped it has dropped the identity rather than a qualifier. Keeping it also refuses a subsidiary contained in its parent's name (`{fisher, scientific} ⊂ {thermo, fisher, scientific}` fails on the missing head), which is the conservative answer. A name with no distinctive tokens left (all legal forms and generic words) agrees with nothing: "contained in everything" is not agreement |
-| Page-identity acceptance floor | `ACTIONABLE_LOCATION_SCOPES = {region, country}` — the **same** frozenset as the withdrawal rule | frozenset | `enrichment/page_corroborator.py` | `page_identifies_record` (accept) and `location_decides` (withdraw), both read by `_corroborate_domain` | n/a | n/a | One claim, one floor. "The page places this organisation somewhere else" cannot be strong enough to take a domain back while being too weak to withhold one, or the reverse — so the constant the withdrawal rule was derived on (row above) now governs acceptance too, and both sites read one predicate. Measured consequence: a site stating the brand and a city inside the record's own state (Milpitas / Santa Clara, both CA) is a plant-and-head-office difference and accepts; a different state or country does not. The registry comparator reaches the same answer by a different route — it holds a *set* of addresses and downgrades a city difference inside an agreeing region to a note before the verdict — because it can see the region agree and a single page read cannot |
-| `PAGE_READ_TIMEOUT_SECONDS` | `8` | int (env) | `config.py` (`Settings.page_read_timeout_seconds`); `.env.example` | `search/page_fetcher.PageFetcher.fetch_page_result` via `page_corroborator.fetch_pages` | Slow hosts tolerated; per-record latency rises, and up to 5 requests per domain multiply it | Fetches abort sooner → `fetch_unavailable`, which changes nothing about the record | "Shorter than `PAGE_FETCH_TIMEOUT_SECONDS` because this step is optional evidence on a path that already has an answer: up to five requests may be issued per domain (root plus the imprint probe), and a slow host must not dominate the record's latency." (`config.py`) |
-| `IMPRINT_PATHS` | `(/impressum, /legal, /about, /contact)` — first 2xx wins | tuple | `enrichment/page_corroborator.py` | `page_corroborator.fetch_pages` | More paths probed per domain → more requests, more chance of finding a legal identity | Fewer probes; a site stating its identity only on `/contact` returns `no_identity` | "`/impressum` first because a German-law imprint is the single most reliable statement of legal identity any site carries; the English-language equivalents follow in decreasing order of how formal they usually are." (`enrichment/page_corroborator.py`). Measured on run F: root alone 17, `+/about` 14, `+/legal` 5, `+/contact` 5, `+/impressum` 3 |
-| `_MIN_CONTENT_CHARS` | `120` | int | `enrichment/page_corroborator.py` | `page_corroborator.read_page` | Short pages skipped without an LLM call | More near-empty pages sent to the reader, which can only return nulls | "Not a tuned threshold: it is the length below which the LLM has no sentence to read, and the purpose is to skip an LLM call that can only return nulls." (`enrichment/page_corroborator.py`) |
-| `_PARKING_MARKERS` | 15 phrases (`this domain is for sale`, `hugedomains`, `sedo`, …) | tuple | `enrichment/page_corroborator.py` | `page_corroborator._looks_parked` | More parked pages detected as `parked` (no evidence) | A parking placeholder reaches the reader and is scored as a page | "These are the phrases the parking services themselves render; a real company page does not carry them." (`enrichment/page_corroborator.py`). Fired 0 times on run F |
-| `_CHALLENGE_MARKERS` | 10 phrases (`checking your browser`, `verify you are human`, `captcha`, …) | tuple | `enrichment/page_corroborator.py` | `page_corroborator._looks_challenged` | More interstitials treated as `fetch_unavailable` | A bot-challenge page reaches the reader and its text is scored as the organisation's own statement | "The server answered 200, so the status code alone does not reveal that we were refused." (`enrichment/page_corroborator.py`) |
-| Blocked-status set | `{401, 403, 429, 451}` | inline | `search/page_fetcher.PageFetchResult.blocked` | `page_corroborator.corroborate` | n/a | n/a | "a 403 or a bot-challenge means *we could not look*, and must never be read as evidence for or against the record, whereas a 404 on `/impressum` simply means try the next path." (`search/page_fetcher.py`) |
-| Postal-code comparison prefix | first `5` alphanumerics | int | `page_corroborator._postal_matches` | `page_corroborator.compare_location` | Longer prefix → ZIP+4 no longer matches a bare 5-digit ZIP | Shorter prefix → distinct ZIPs collide | "'12345-6789' and '12345' are the same place written two ways, and a 5-digit ZIP is the part both sides always carry." (`enrichment/page_corroborator.py`) |
-| `PAGE_FIXTURE_DIR` | `tests/fixtures/page_reads` | str (env) | `config.py` (`Settings.page_fixture_dir`); `.env.example` | `utils.cache.PageCache` via `Orchestrator.__init__` | n/a | Empty string → memory-only; a re-run re-fetches and its corroboration decisions may differ from the recorded run | "a page read is a claim about what a site said on a given day, so it is kept on disk and not only in memory: re-running a thesis batch must reproduce its corroboration decisions rather than re-litigate them against today's web." (`config.py`) |
-| `PAGE_FIXTURE_REPLAY_ONLY` | `false` | bool (env) | `config.py` (`Settings.page_fixture_replay_only`); `.env.example` | `page_corroborator.fetch_pages` | `true` → a missing fixture returns `fetch_unavailable` and no network call is made | n/a | "what an offline re-analysis or a CI run wants" (`config.py`) |
-| `PAGE_EXTRACT_FEEDS_RETRY` | `false` | bool (env) | `config.py` (`Settings.page_extract_feeds_retry`); `.env.example` | `enrichment/orchestrator._maybe_feed_retry_from_page` | `true` → a page-extracted legal name carrying a legal form and differing from Name 1 under `normalize_key` is offered to Stage 5, spending its own once-per-record budget; every retry guard still applies | n/a | "OFF by default and deliberately so — Fix 1's trace shows Stage 5's yield is bounded by GLEIF's coverage of private US SMBs, not by the supply of candidate names, so this buys API calls before it buys identifiers." (`config.py`, `retry_trace_findings.md`). **Open item — author to decide** |
-| `RETRY_TRACE` | `false` | bool (env) | `config.py` (`Settings.retry_trace`); `.env.example` | `enrichment/orchestrator._emit_retry_trace` | `true` → one JSON line per finalised record on `enrichment.trace.retry` | n/a | "Purely additive — retry behaviour is unchanged." (`config.py`); diagnostic-only, mirrors `WEBSITE_TRACE` |
-| Region normalisation source | `tier1_ror._US_POSTAL_CODES` (50 two-letter codes) | dict | `enrichment/tier1_ror.py`; consumed in `page_corroborator._norm_region` | `page_corroborator.compare_location` | n/a | Without it, `San Francisco, California` on a page contradicts `San Francisco, CA` on the record — measured as a false contradiction on `Anresco Laboratories` in run D | Reuses the existing map rather than a second table. The map is ROR-local because expanding those codes inside a *name* is ambiguous ("IN Laboratories"); here the value is a Region field, where a bare two-letter token can only be the state, and the result is used for a comparison and never written (`enrichment/page_corroborator.py`) |
-
-### 1.18 · Stage 2c — Wikidata crosswalk lane (`enrichment/wikidata.py`)
-
-> **Post-baseline.** This section documents code added *after* the commit pinned in this
-> document's header (`515cc7c`). It is recorded here rather than in a separate note because the
-> feature brief asked for the type whitelist and the call budget to live with the other
-> parameters, and splitting one parameter table across two documents helps nobody. Every other
-> section of this document still describes the baseline.
-
-The lane introduces **no numeric name threshold**. Constraint 5 of its gauntlet reuses
-`enrichment/tier1_lei._name_match_score` at `LEI_NAME_MATCH_THRESHOLD` (§1.4) — the same scorer
-and the same value the page-read corroborator inherits in §1.17, and for the same stated reason:
-it is the same supplied-name-vs-official-name comparison, so retuning it in one place must not
-silently retune it in another, and a new number would need its own derivation and its own tuning
-batch.
-
-What the lane *does* add is two closed sets and a call budget, both below.
-
-#### 1.18.1 · Feature flags, transport and fixtures
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| `WIKIDATA_ENABLED` | `true` | bool (env) | `config.py` (`Settings.wikidata_enabled`); `.env.example` | `enrichment/orchestrator._wikidata_crosswalk` | n/a | `false` → no call is made, no counter moves, and every serialised field is byte-identical to a build without the lane | "Feature flag, following LEI_LOOKUP_ENABLED / PAGE_CORROBORATION_ENABLED. … asserted, not assumed, by `tests/test_wikidata.py::TestTheLaneIsAPureInsert`" (`config.py`) |
-| `WIKIDATA_DOMAIN_CORROBORATION` | `true` | bool (env) | `config.py` (`Settings.wikidata_domain_corroboration`); `.env.example` | `enrichment/orchestrator._retain_wikidata_website` | n/a | `false` → the lane keeps only its crosswalk role; the `+wikidata` domain witness then fires only where the crosswalk lane itself matched, and a registry-resolved record has no witness claim to offer | **The one request this calibration adds.** The crosswalk lane declines a record that already holds a registry identifier and is right to — a register outranks a wiki and a resolved record has no pointer to gain. What it *does* have to gain is the item's `P856`: an independent statement of the official website, and the only evidence that verifies a candidate domain the name comparator structurally cannot reach (an acronym host, a contraction, a brand domain — all three documented as unreachable in `README.md` §2b's "known cost"). So on such a record the lane runs in a **corroboration-only** mode: the gauntlet is its own, unchanged, and the sole effect is to stash the website claim. It follows no pointer, writes no name, proposes no `operating_name`, and touches no field — asserted by `tests/test_calibration.py::TestTheCorroborationOnlyPass`, which pins that the record differs in exactly one key afterwards. Three further guards keep the call count down, each of them a call *not* made: the crosswalk lane already ran, the record has no registry identity (that is the crosswalk lane's own population), or the domain already came *from* a registry — a website the register itself supplied gains nothing from a second statement of the same fact. Measured on the 99-row S2 evaluation file: **22 calls over 99 records**, 3 of which returned a `P856`, 1 of which verified a domain that had been `domain-unverified` |
-| `WIKIDATA_API_BASE` | `https://www.wikidata.org/w/api.php` | str (env) | `config.py` (`Settings.wikidata_api_base`); `.env.example` | `wikidata.WikidataClient._get` | n/a — endpoint | n/a | "The SPARQL endpoint is deliberately NOT used anywhere in this lane: it is separately rate-limited, frequently unavailable, and a query language is a far larger surface than a search plus an entity fetch needs." (`config.py`) |
-| `WIKIDATA_TIMEOUT_SECONDS` | `10` | float (env) | `config.py` (`Settings.wikidata_timeout_seconds`); `.env.example` | `wikidata.WikidataClient._get` | Slow responses tolerated; per-record latency rises | Calls abort sooner → `wikidata_unavailable`, which changes nothing about the record | "Short for the same reason the page read's is: this lane is optional evidence on a record that will proceed to the web lane regardless, so a slow host must not dominate the record's latency." (`config.py`). Cf. `PAGE_READ_TIMEOUT_SECONDS` = 8 (§1.17) |
-| `WIKIDATA_MAX_RETRIES` | `2` | int (env) | `config.py` (`Settings.wikidata_max_retries`); `.env.example` | `wikidata.WikidataClient._get` | More attempts on 5xx / network / 429 | `0` → the first transient failure is `wikidata_unavailable` | Mirrors `LEI_MAX_RETRIES` = 2 (§1.4) and reuses its `0.5 * 2^(attempt-1)` backoff shape. **429 is treated as transient**, unlike the GLEIF client, because Wikidata rate-limits anonymous bulk callers and a 429 is the API asking to be slowed down rather than a refusal (`enrichment/wikidata.py`) |
-| `WIKIDATA_SEARCH_LIMIT` | `5` | int (env) | `config.py` (`Settings.wikidata_search_limit`); `.env.example` | `wikidata.WikidataClient.search` | More candidates run through the gauntlet → more chances of a match AND more chances of a two-survivor collision, which is a no-match. Also widens the single batched entity request | Fewer candidates; the true item can fall outside the window and the record misses | "Five is the collision window: the gauntlet is run over ALL of them (in one batched entity call) so that two survivors can be detected as an ambiguity rather than silently resolved by taking the first." (`config.py`). The value is `wbsearchentities`'s own conventional page size |
-| `WIKIDATA_FIXTURE_DIR` | `tests/fixtures/wikidata` | str (env) | `config.py` (`Settings.wikidata_fixture_dir`); `.env.example` | `utils.cache.PageCache` via `Orchestrator.__init__` (prefix `wikidata`) | n/a | Empty string → memory-only; a re-run re-queries and its matching decisions may differ from the recorded run | "Wikidata is an open wiki whose items change under you, so a matching decision is a claim about what it said on a day — exactly the reasoning behind PAGE_FIXTURE_DIR." (`config.py`) |
-| `WIKIDATA_FIXTURE_REPLAY_ONLY` | `false` | bool (env) | `config.py` (`Settings.wikidata_fixture_replay_only`); `.env.example` | `wikidata.WikidataClient._cached` / `.entities` | `true` → an unrecorded query is `wikidata_unavailable` and no network call is made | n/a | Set to `true` for the whole test suite in `tests/conftest.py`: nineteen test modules build an Orchestrator with a partial `mock_clients` dict, and without it the lane would reach the live API from any test whose record misses ROR and GLEIF |
-| `WIKIDATA_TRACE` | `false` | bool (env) | `config.py` (`Settings.wikidata_trace`); `.env.example` | `wikidata.resolve` (`enrichment.trace.wikidata`) | `true` → one JSON line per lane invocation, carrying every candidate and its rejection reason | n/a | Diagnostic-only, mirrors `RETRY_TRACE` / `WEBSITE_TRACE`. **The batch-summary counters are maintained unconditionally** (as the page-read counters are), "so a report run does not have to remember to turn this on to get its numbers" (`config.py`) |
-| Name-match threshold | **reused**, `LEI_NAME_MATCH_THRESHOLD` = `88` | float (env) | §1.4 | `wikidata.best_name_score` via `orchestrator._wikidata_crosswalk` | see §1.4 | see §1.4 | Deliberately **not** a separate knob, unlike `PAGE_NAME_MATCH_THRESHOLD`. The page corroborator separated its copy so that retuning a registry guard would not silently retune what counts as a corroborating page; here the comparison decides whether a wiki item may be used as a *registry lookup key*, which is the registry's own question, so the registry's own threshold is the right one to move with |
-
-#### 1.18.2 · The type whitelist and the one `P279` step
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if widened | Effect if narrowed | Rationale |
-|-----------|-------|------|-----------|-------------|-------------------|--------------------|-----------|
-| `TYPE_WHITELIST` | 22 QIDs (below) | frozenset (inline) | `enrichment/wikidata.py` | `wikidata.type_allowed` | More item kinds admitted; the failure mode is a same-named non-organisation matching a record (the film case) | Fewer candidates survive constraint 3; `wikidata_type_rejected` rises and the hit rate falls | "The list is deliberately explicit rather than derived from a `P279` closure. Two steps up from 'pharmaceutical company' is 'organization', and two steps up from a film production company is also 'organization' — a closure admits everything and gates nothing." (`enrichment/wikidata.py`). Every QID verified against live Wikidata on 2026-08-23; pinned by `test_wikidata.py::TestTheWhitelist` |
-| `P279_ONE_STEP` | 12 subtype → parent pairs | dict (inline) | `enrichment/wikidata.py` | `wikidata.type_allowed` | A subtype added here reaches the whitelist in one step | A subtype removed is rejected outright | **Resolved from a declared table, not a live query.** "The alternative is a third API call per unrecognised class, and the two-call budget … is a hard constraint — a class hierarchy walk is exactly the unbounded fan-out that budget exists to prevent." A subtype absent from the table gets no step up and is rejected: "the lane under-matches rather than admitting an unverified class, and the rejection is visible as `wikidata_type_rejected` rather than as a silent pass." (`enrichment/wikidata.py`) |
-| Country gate | `Q30` (United States) only; missing `P17` **and** `P159` ⇒ reject | inline | `enrichment/wikidata.py` (`country_verdict`) | `wikidata.resolve` | Admitting a missing country would match a US record against a same-named organisation anywhere on earth | n/a — already the strictest setting | Deliberately conservative, on the same reasoning as ROR's country guard (§1.3): "a wrong-country identity is worse than none, because it wrongly converges distinct entities in Phase 2." An item with no country statement "is not thereby 'probably American' — it is an item nobody has finished curating." (`enrichment/wikidata.py`) |
-| Identity cross-check granularity | **city** (region rescues a state-level HQ) | inline | `enrichment/wikidata.py` (`city_verdict`) | `wikidata.resolve` | Relaxing to region would match the page corroborator's withdrawal rule and admit more items | n/a | Deliberately stricter than §1.17's `{region, country}` withdrawal scope, and the asymmetry is argued rather than inherited: "the corroborator is deciding whether to *destroy* a domain it already published … whereas this is deciding whether to *admit* a crowd-sourced identity in the first place. Refusing to admit one is cheap; the record simply proceeds to the web lane." Region normalisation reuses `tier1_ror._US_POSTAL_CODES` through `page_corroborator._norm_region`, exactly as §1.17 does (`enrichment/wikidata.py`) |
-| Collision rule | 2+ survivors ⇒ no-match | inline | `enrichment/wikidata.py` (`resolve`) | same | n/a — not orderable | Substituting "take the highest name score" would resolve collisions silently | "Two curated items both pass every constraint, so the constraints have not identified one organisation — and choosing between them on the higher fuzzy score would be exactly the tiebreak this lane does not do." Counted separately as `wikidata_ambiguous` so the cost is visible (`enrichment/wikidata.py`) |
-| Disambiguation rule | `P31 = Q4167410` ⇒ whole-record no-match | inline | `enrichment/wikidata.py` (`resolve`) | same | n/a | n/a | A disambiguation hit short-circuits the *record*, not just the candidate — a good candidate behind it is deliberately not reached, because "the wiki is saying the name identifies several organisations, and picking one from the list is precisely the judgement this lane refuses to make" (`enrichment/wikidata.py`) |
-
-`TYPE_WHITELIST`, verbatim, with the label Wikidata returns for each:
-
-| Category | QIDs |
-|---|---|
-| business / company | `Q4830453` business · `Q783794` company · `Q6881511` enterprise |
-| university / college | `Q3918` university · `Q189004` college · `Q875538` public university · `Q902104` private university · `Q1336920` community college · `Q1371037` institute of technology |
-| research institute | `Q31855` research institute · `Q7315155` research center · `Q483242` laboratory |
-| national laboratory | `Q2624320` United States national laboratory |
-| hospital / health system | `Q16917` hospital · `Q11000047` health system · `Q4287745` medical organization · `Q1774898` clinic |
-| government agency | `Q327333` government agency · `Q2659904` government organization · `Q20857065` United States federal agency |
-| nonprofit organisation | `Q163740` nonprofit organization · `Q708676` charitable organization |
-
-`P279_ONE_STEP`, verbatim: `Q19644607` pharmaceutical company → company, business · `Q90298876` biotechnology
-company → company, business · `Q7603893` state public university → public university · `Q1336920` community
-college → college · `Q11000047` health system → medical organization · `Q1371037` institute of technology →
-university · `Q2624320` US national laboratory → research institute, laboratory · `Q483242` laboratory →
-research institute · `Q708676` charitable organization → nonprofit organization · `Q20857065` US federal
-agency → government agency · `Q875538` public university → university · `Q902104` private university →
-university.
-
-#### 1.18.3 · The call budget
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| Per-record API calls | **2**, plus a conditional 3rd | inline | `enrichment/wikidata.py` (`resolve`) | same | A per-candidate entity fetch would be 1 + N calls | Dropping the entity call removes every constraint but the search itself | One `wbsearchentities`, then one `wbgetentities` that fetches **all** search hits in a single batched request. Batching is what makes the collision check affordable: "the gauntlet has to be run over every candidate to know whether more than one survives, and one request does that." (`enrichment/wikidata.py`) |
-| Conditional reference call | 1, batched per record, cached by QID across the batch | inline | `enrichment/wikidata.py` (`resolve`) | same | n/a | Removing it forces constraints 4 and 6 to be dropped, or the successor label to go unnamed in the `entity-superseded` reason | ⚠ **Stated deviation from the two-call budget.** Constraints 4 (`P159` → its country) and 6 (`P159` → its label) and the supersession reason (`P1366` → its label) all need *referenced* items, whose QIDs are unknown until the second call has returned; a third call is unavoidable if those constraints are to be applied at all. It fires only when a **surviving** candidate carries `P159` or `P1366`, resolves every referenced item in one request, and is cached by QID across the whole batch, so it costs nothing after the first record that names a given city. `P17` is present on most curated US organisations, so the common path remains two calls. The alternative — silently dropping constraints 4 and 6, or silently making the call — was rejected in favour of recording it here and in `README.md` |
-| `wbgetentities` `ids` cap | 50 | int (inline) | `enrichment/wikidata.py` (`entities`) | same | n/a — the API's own limit | n/a | The lane never asks for more than `WIKIDATA_SEARCH_LIMIT` plus a handful of referenced items, so the cap is a defensive slice rather than a tuning knob |
-| Fixture key | `search:<normalize_key(query)>` · `entity:<QID>` | inline | `enrichment/wikidata.py` | `utils.cache.PageCache` | n/a | n/a | The normalised query reuses `dedup.signatures.normalize_key`, under the same contract every other cache namespace here keeps (§`utils/cache.py`): the key is a dictionary key only, and the **unnormalised** name is what is sent to the API |
-| `READ_PROPERTIES` (fixture pruning) | 9 properties: `P31`, `P279`, `P17`, `P159`, `P856`, `P6782`, `P1278`, `P576`, `P1366` | tuple (inline) | `enrichment/wikidata.py` (`prune_entity`) | `WikidataClient.entities` before `PageCache.set` | Recording more properties enlarges the fixture store; nothing is read that is not parsed | Recording fewer breaks the gauntlet on replay | Measured: unpruned recordings for the 100-row chemspeed batch were **4.3 MB**, against 589 KB for the entire page-read fixture store; pruned they are **169 KB**. "A fixture is a record of *what the pipeline consumed*, which is the thing a re-run has to reproduce, and it is worth being able to read one" — the same choice the page fixtures make in storing extracted text rather than raw HTML. ⚠ **Stated cost:** adding a property to the lane means existing recordings do not carry it and must be refreshed with `scripts/wikidata_warm_fixtures.py` (`enrichment/wikidata.py`) |
-| `_RATE_LIMIT_BACKOFF_SECONDS` | `5.0` | float (inline) | `enrichment/wikidata.py` | `wikidata._backoff` | Longer waits between rate-limited retries; fewer 429s, slower batches | Shorter waits; more `wikidata_unavailable` under load | **Derived from the batch.** The first live 100-row run at concurrency 3 took `HTTPStatusError:429` on **28 of 68** invocations under the GLEIF client's 0.5 s schedule (§1.4). "A 429 is the API stating a rate, not a failure to recover from, so retrying it in half a second is not a retry — it is the same request." An ordinary transient error keeps the 0.5 s schedule (`enrichment/wikidata.py`) |
-| `_MAX_RETRY_AFTER_SECONDS` | `30.0` | float (inline) | `enrichment/wikidata.py` | `wikidata._backoff` | A longer server-supplied pause is honoured; one header can stall a batch further | Shorter cap → the lane gives up sooner and reports `wikidata_unavailable`, which costs the record nothing | A server-supplied `Retry-After` wins over the schedule — "guessing over the top of the server's own stated interval is how a client earns a longer ban" — but is capped so one header cannot stall a whole batch (`enrichment/wikidata.py`) |
-| Warm-up pause | `2.0` s between live requests | float (CLI) | `scripts/wikidata_warm_fixtures.py` (`--pause`) | same | Slower recording, fewer 429s | Faster recording, more 429s | Recording a workbook's fixtures serially before the measured run turns that run into a replay: no rate limiting, no network variance, and a re-run that reproduces its matching decisions. 100 queries warmed in 110 live HTTP requests with **zero** 429s at this pause |
-
----
-
-### 1.19 · Determinism and cross-source consistency (Fixes A–D)
-
-> **Post-baseline.** Like §1.17 and §1.18, this section documents code added *after* the commit
-> pinned in this document's header. It is recorded here because the parameters below are
-> reproducibility controls, and a reproducibility control that is not written down in the
-> parameter table cannot be reproduced from it.
-
-**Why these exist.** Two runs of the identical 101-row chemspeed batch, on the identical
-codebase, produced **7 substantively different records** — measured with `tools/run_diff.py`
-against `logs/runs/E_final.json` and `logs/runs/F_final.json`, 30 differing cells across 14
-columns. Two of the seven were silent wrong-entity acceptances. Every parameter below is either
-a determinism control or a refusal rule; **none of them widens a threshold or accepts anything
-the previous build rejected.**
-
-#### 1.19.1 · Fix A — LLM sampling parameters
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| `LLM_TEMPERATURE` | `0.0` | float (module constant) | `llm/openai_client.py` | every `chat.completions.create` on both phases | Sampling entropy in every tier's JSON extraction | Already at the floor | Was a bare literal inside `call_openai`; promoted to a named constant so the person-affiliation provenance event that *records* the temperature cannot disagree with the request that used it. **Deliberately not an env var** — "a reproducibility control that can be changed per environment is not a control", the argument `dedup/llm.py` already makes for its own `TEMPERATURE` |
-| `LLM_TOP_P` | `1.0` | float (module constant) | `llm/openai_client.py` | as above | n/a — 1.0 is the whole distribution | Nucleus truncation becomes a second, independent source of run-to-run variation | Temperature 0 selects the arg-max; `top_p` decides *which tokens were candidates at all*. Leaving it at the service default meant the enrichment tiers were relying on an unstated value |
-| `LLM_SEED` | `42` | int (module constant) | `llm/openai_client.py` | as above, as `seed=` | n/a | n/a | **The value is arbitrary; only its fixity matters.** It is recorded here so a thesis re-run is reproducible from the parameter table alone. `temperature=0` alone is not determinism: a tie between two equally-likely tokens is still broken server-side, and batching/MoE routing perturbs the logits between requests. Measured: three chemspeed rows flipped `confidence` between `self_high` and `self_medium` across the two runs, which matters because `finalise` drops a Tier 3 department guess below high confidence. ⚠ **Measured limit** — the deployment (`gpt-5.4-2026-03-05`) *accepts* the parameter on every API version probed (`2024-08-01-preview` … `2025-04-01-preview`) and returns **no `system_fingerprint`**, and two warm runs with the seed accepted and sent still differed on **10 of 100 rows**, every one of them an LLM decision. The seed is a best-effort request, not a guarantee; §1.19.2's `llm` cache namespace is what closes the gap |
-| Seed-rejection fallback | one-shot, process-wide | bool (module state) | `llm/openai_client.py` (`_SEED_SUPPORTED`) | `call_openai`; `dedup/llm.py` (`_use_seed`) | n/a | n/a | A deployment that rejects `seed` is caught **once**, logged, and the call retried without it; every later call goes out without it. A per-call probe would pay a guaranteed 400 on every record. Same shape as the existing `reasoning_effort` and `temperature` fallbacks in `dedup/llm.py` |
-
-Prompt content carries no clock, run id or record id (asserted structurally by
-`tests/test_determinism.py::TestPromptsCarryNothingNondeterministic`), and every evidence list
-injected into a prompt is sorted by a stable key before rendering —
-`enrichment/person_affiliation.py` sorts its SERP snippets by URL, so two runs that retrieve the
-same five results in a different order build the same prompt.
-
-#### 1.19.2 · Fix B — the shared evidence cache
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| `EVIDENCE_CACHE_DIR` | `tests/fixtures` | str (env) | `config.py` (`Settings.evidence_cache_dir`); `.env.example` | `utils.cache.build_evidence_cache` via `Orchestrator.__init__` | n/a — a path | Empty string → memory-only everywhere; a second run re-gathers all its evidence and its output is not comparable to the first | One root for six namespaces (`page_reads/`, `wikidata/`, `serp/`, `fetch/`, `registry/`, `llm/`). Before it, the SERP and registry caches were in-memory and cleared per batch, and the person-affiliation lane and every `PageFetcher` entry point were not cached at all — so a "re-run" re-gathered most of its evidence. **11 of the 30 differing cells were an extraction date and nothing else**, which is what that looks like from the outside |
-| `CACHE_FROZEN` | `false` | bool (env) | `config.py` (`Settings.cache_frozen`); `.env.example`; `scripts/run_batch.py --frozen` | every `DiskCache` (`replay_only`) | `true` → a miss is an ERROR: no call, recorded per record as `evidence-unavailable-frozen` on `enrichment.trace.cache`, counted as `evidence_frozen_misses`, record proceeds without that evidence | n/a | The **evaluation freeze switch**, and the direct analogue of freezing `dedup/weights.json` before a measurement. Applies to every namespace at once — freezing three of five sources would not freeze the run. `PAGE_FIXTURE_REPLAY_ONLY` / `WIKIDATA_FIXTURE_REPLAY_ONLY` still freeze their own namespace independently and OR with this |
-| `PAGE_FIXTURE_DIR` | `<EVIDENCE_CACHE_DIR>/page_reads` | str (env) | `config.py` (`_cache_dir`) | as §1.17 | n/a | n/a | Derived from the shared root now, with the explicit variable still winning. Its committed recordings keep their path, so nothing moved |
-| `WIKIDATA_FIXTURE_DIR` | `<EVIDENCE_CACHE_DIR>/wikidata` | str (env) | `config.py` (`_cache_dir`) | as §1.18 | n/a | n/a | As above |
-| `llm` namespace | `<EVIDENCE_CACHE_DIR>/llm` | dir | `utils.cache.EvidenceCache.LAYOUT`; key by `llm_disk_key` | `llm.openai_client.OpenAIClient.extract_json` | n/a | Removing it returns the pipeline to the 10-of-100 noise floor `LLM_SEED` alone leaves | **The measurement that forced it.** With `temperature=0`, `top_p=1` and an accepted `seed`, two warm runs of the chemspeed batch still differed on 10 rows. An LLM answer *is* evidence the pipeline reads, on exactly the argument `PAGE_FIXTURE_DIR` already makes about a page, so it is recorded like one. The key is a SHA-256 of deployment + API version + all three sampling parameters + `max_tokens` + **both prompts verbatim**, so an entry can only be served to a byte-identical request and editing a prompt template invalidates every entry that used it. Deliberately not the `prompt_version` digest, which identifies the *template*: two records put different values through one template. The prompts are not stored — only the parsed response plus a 160/400-character head of each, for legibility |
-| Entry immutability | write-once | rule (inline) | `utils/cache.py` (`DiskCache.set`) | every namespace | n/a | Overwriting would move `fetched_at` forward on evidence that was never re-gathered, and change `Operating Name Provenance` on a record nothing else about had changed | A recorded entry is never rewritten; a second run reads what the first one saw. `fetched_at` falls back to the file's modification date for entries recorded before the field existed — still the day of the fetch, still stable across runs |
-
-The batch summary gains `evidence_network_calls`, `evidence_cache_hits`,
-`evidence_frozen_misses` and `evidence_cache_frozen`. `evidence_network_calls == 0` on a warm
-second run is the reproducibility gate's precondition.
-
-#### 1.19.3 · Fix C — registry candidate selection
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| `REGISTRY_AMBIGUITY_MARGIN` | `2.0` (0–100 scale; `scaled_margin()` converts to ROR's 0–1) | float (module constant) | `enrichment/registry_match.py` | `tier1_lei._best_verified_candidate`; `tier1_ror.call_ror` (query path) | More candidate pairs refused as indistinguishable → fewer registry matches, more records to the web lane. Above ~5 it starts refusing pairs a whole distinguishing token separates ("Analytical Sales" vs "Analytical Sales and Services"), which would be refusing matches the evidence *does* distinguish | `0` restores "the top candidate always wins", i.e. the oscillation this exists to stop | **DERIVATION.** The margin must cover the difference a single character makes and no more. `token_sort_ratio` is a normalised edit distance: on the 15–30 character legal names these registries return, one character between two candidates moves the score by ≈2 points (2/(2·20)·100 ≈ 2.5 for a 20-character pair). Two candidates that close are separated by a punctuation or spelling variant in the registry's own record, and which ranks higher can flip when the registry re-indexes. **2.0 is the smallest value that covers the one-character case.** ONE constant, deliberately — the Wikidata lane's ambiguity rule ("more than one candidate survived the gauntlet") needs no threshold, so there was none to reuse and there is now exactly one to reuse from |
-| Short-name length | `≤ 4` significant characters (legal forms dropped) | int (module constant) | `enrichment/registry_match.py` (`_SHORT_NAME_MAX_LEN`) | `is_collision_prone` | More names require a corroborating signal → fewer short-name matches accepted | Fewer; at `0` the guard never fires and "BHS" can match any expansion | "BHS", "BIC" and "3M" are three characters or fewer after the legal form is dropped. There is not enough string there for a name match to identify one organisation among a registry's millions, at any threshold — the batch matched a *different* BHS expansion on each of two runs |
-| Acronym length | `≤ 5` for a single all-caps token | int (module constant) | `enrichment/registry_match.py` (`_ACRONYM_MAX_LEN`) | `is_collision_prone` | Longer all-caps names treated as acronyms → the guard fires on more records | Fewer acronyms guarded | Restricted to a **single token** on purpose: a great many SAP records carry their whole name in capitals ("LARGO MEDICAL CTR"), and treating each as an acronym would apply the guard to most of a batch. Five covers the NASA/USDA-shaped acronyms where same-name registry collisions actually happen |
-| Corroborating signals | locality `consistent`, **or** candidate website = record domain | closed set | `enrichment/registry_match.py` (`second_signal`) | both registry clients | n/a — the set is closed by the fix that authorised it | n/a | A *neutral* locality is not agreement: silence is not evidence, the rule the whole locality comparator rests on. The record's domain comes from an already-accepted `domain` or the host of a supplied email — weak evidence of a website, strong evidence of which organisation the record is about |
-| Selection order | `(stronger discriminator, score DESC, canonical id ASC)` | rule | `enrichment/registry_match.py` (`rank_key`) | both registry clients; SERP selection in `website_resolver`, Tier 2A, Tier 2B, the department probe | n/a | n/a | The previous order was a stable sort on score alone (or `max()`, which returns the first maximum), so every tie inherited the API's response order. ROR's `items[:10]` truncation was removed with it — that was another way for response order to decide which candidates were scored at all |
-| GLEIF completion truncation | five smallest **LEIs**, not the first five returned | rule | `enrichment/tier1_lei._fuzzy_lookup` | same | n/a | n/a | The counterpart to removing ROR's `[:10]`, for a cap that cannot be removed because it is a real call budget (§1.4). Found by `tools/shuffle_evidence.py` after the rest of Fix C had landed: a truncation is a selection, and this one still read arrival order |
-
-#### 1.19.4 · Fix D — cross-source consistency
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| Cross-source comparison | `names_agree` — the reused ratio **or** containment | rule | `enrichment/registry_match.names_agree` | `enrichment/consistency._agrees` | n/a | Without containment, a same-entity agreement reads as a contradiction and the losing registry's id, domain and acronym are deleted | The two registers do not answer the same question about a name: GLEIF returns the **formal legal name** and ROR returns the **brand**. On a length-sensitive ratio a formal name against a brand scores in the 50s, and the gate was reading that as two organisations — deleting a correct `ror_id`, the domain it supplied and the acronym `search_term_1` was derived from, and raising `source-conflict` on a row whose two sources agreed. Same rule, same function and same derivation as §1.17's page comparison, implemented once. **On agreement:** both identifiers are kept, the name keeps the provenance its own registry earned (a registry-authored value is already `verified`, so no new state is invented), and the finding is recorded — `_ev_registry_agreement`, a `source_agreement` trace line and the `registry_agreement_count()` batch counter. An agreement raises no flag: it is a finding, not a triage signal. **On genuine disagreement:** unchanged, byte for byte — higher-priority source kept, other nulled, `source-conflict` raised |
-| Cross-source name threshold | **reused**, `LEI_NAME_MATCH_THRESHOLD` = `88` | float (env) | §1.4 | `enrichment/consistency.apply_cross_source_gate` | see §1.4 | see §1.4 | Deliberately **not** a new knob. "Do these two names name the same organisation" is the question GLEIF's verification guard, the page reader (§1.17) and the Wikidata lane (§1.18) all already ask, with one scorer (`tier1_lei._name_match_score`) at one value. A fourth number would need its own derivation and its own tuning batch |
-| Source priority | GLEIF/ROR ≻ web; between the registries, the one closer to the record's own Name 1 | rule | `enrichment/consistency.py` | as above | n/a | n/a | A page is a witness and a register is a register. Between two registries the tiebreak scores against `name1_original` — **not** the enriched name, which by that point *is* one of the two claimants, so scoring against it would hand the tie to whichever source wrote last. On the BIC row: input "BIC Corp", GLEIF "BIC CORPORATION", ROR "Centene Corporation" |
-| Admin desk in Name 2 | `utils.text_utils.is_admin_unit` → no Name 2 verification | rule | `utils/text_utils.py` | `enrichment/flags.compute_flags`, `search_terms` (`ADMIN`), `orchestrator` §5a | n/a | n/a | An administrative desk ("Accounts Payable", "Procurement Services", "Central Purchasing") is not a claim anything could verify: there is no registry entry, no web presence and no page for the accounts-payable desk of a chemicals company. The phrase names where in the customer an invoice goes, not a unit whose existence is in question. Two consumers already acted on this — `search_term_2` is `ADMIN` and the department-domain probe skips the row before spending a fetch — so flagging afterwards asked a reviewer to confirm what the pipeline declined to look for. Clears **both** Name 2 doubts (`unverified-inference` and the derived low-confidence), unlike `department_domain`, which answers "does this unit exist" and leaves spelling open. Scoped to Name 2 only; a Name 1 doubt is untouched. Matching is on the words that say WHICH desk it is — leading `Office of`/qualifier, trailing generic org word (`Services`, `Department`, `Team`) and plurals removed — so the vocabulary states each desk once instead of once per spelling |
-| Registry locality verdict | comparator reused verbatim from §1.17 | rule | `enrichment/locality.py` | both registry clients → `apply_registry_location_check` | n/a | n/a | Same three rules as the page read: silence is neutral, only a stated place that differs is a contradiction, and the granularity is part of the answer. A contradiction **flags** (`registry-location-mismatch`) and does not discard — a company relocating within one country is ordinary. Only in combination with the short-name guard does it refuse, because there the contradiction is exactly the second signal that was needed |
-| Addresses compared | **all** of them; agreement with any one is agreement | rule | `enrichment/tier1_lei._record_fields`, `enrichment/tier1_ror` | `enrichment/locality.compare_registry_addresses` | n/a | n/a | GLEIF publishes `legalAddress` (incorporation) and `headquartersAddress` (operations), and for a US company those are routinely two states. Reading only the first reported eleven false contradictions on the chemspeed batch, most of them Delaware. Corroborated = agrees with any address; contradicted = agrees with none and disagrees with one; neutral = all silent. Identical blocks contribute one address, not two — a duplicate double-counts one statement in the trace without changing the verdict |
-| Region normalisation | `^[a-z]{2}-[a-z0-9]{1,3}$` prefix stripped, then `US_REGION_CODES` | rule | `enrichment/locality.strip_subdivision_prefix` → `normalise_region` | every locality comparison, both registries and the page read | n/a | n/a | Three spellings of one region reach the comparator: GLEIF's ISO 3166-2 code (`US-TX`), the SAP record's bare state code (`TX`) and a page's full name (`Texas`). Both folds live in `normalise_region`, **not** at each parse site — a strip applied only where the GLEIF response is read normalises that one lane and leaves ROR's `country_subdivision_code` fallback, the page read and the record's own state field comparing `us-tx` against `texas`. The pattern matches the ISO *shape* rather than cutting at the last hyphen, which would turn `Nord-Pas-de-Calais` into `Calais`; a region whose name is genuinely hyphenated is left as written. Prose runs through `region_label`, which strips and re-expands — a bare `DE` on a US batch reads as Germany and means Delaware. Countries fold the same way through `normalise_country` (`United States` = `US`), which removed six false ROR contradictions |
-| Legal-form equivalence | abbreviation ↔ expansion of one word only | rule | `enrichment/registry_match._LEGAL_FORM_ALIASES` | `names_match_verbatim` → `name_match_tier` | n/a | n/a | `inc`↔`incorporated`, `corp`↔`corporation`, `co`↔`company`, `ltd`↔`limited`. The tier already forgave a legal form the record **omits**, so `Huntsman` scored `exact` against `HUNTSMAN CORPORATION` while `Huntsman Corp` scored `fuzzy` — typing the suffix in the abbreviated form an SAP operator uses ranked below not typing it at all, and that wrong tier is what put `registry-location-mismatch` on record 13017466 (Longview TX, LEI `5299000V56320A7RIQ67`, both GLEIF addresses Wilmington DE). Never folds one form into another: `inc` and `corp` stay distinct although both name corporations, and `oy` stays distinct from `oyj` (private vs public). Sole consumer is the locality flag trigger — no other guard reads the tier |
-| Region in selection | discriminator, ranked below status and above score | rule | `enrichment/tier1_lei._region_agrees` | `_best_verified_candidate` ranking + ambiguity rule | n/a | n/a | Name verification is a **gate**; where two candidates both clear it, the one the registry places where the record is, is the one the record means. Uses the same address set and comparator as the verdict (`legalAddress` **and** `headquartersAddress`), so selection and the advisory can never disagree about where the registry says an entity is. Inert when the record states no region — silence is not agreement — so a row with an empty Region cell ranks exactly as before. It also resolves a near-tie the ambiguity margin would otherwise refuse, but never creates one: a candidate the registry places elsewhere cannot make an otherwise-identified winner ambiguous |
-| Country guard scope | both registered addresses | rule | `enrichment/tier1_lei._best_verified_candidate` | GLEIF candidate filter | n/a | n/a | Was `legalAddress.country` alone, which rejects an entity incorporated abroad and headquartered in the record's country. Agreement with either address is agreement, matching the locality rule. The GLEIF API filter is unchanged — this is the post-filter that `fuzzycompletions` (uncountry-filterable) makes necessary |
-| Flag trigger | conjunction: contradicted **and** below `exact` tier | rule | `enrichment/registry_match.location_check_action` | `enrichment/consistency.apply_registry_location_check` | n/a | n/a | A contradicted address means two different things depending on what identified the entity. Name stated verbatim → identified by name, and the address disagreeing is geography: no flag, `registry_location_unconfirmed` to the trace with a batch counter (`registry_location_unconfirmed_count`). Fuzzy / short-name / crosswalk → no anchor, and the address is the second opinion that failed: flag. A missing tier falls to the flagging side — silence about a match's strength is not a claim that it was strong. Took the flag from 19 chemspeed rows to 1. **One implementation, every lane** (`location_check_action(verdict, tier)`): the rule was written for GLEIF, and a rule stated once but applied per-lane is a rule that drifts. GLEIF, ROR and the Wikidata crosswalk now call the same pure function |
-| Trigger inputs — the address set | **all** the addresses the registry publishes, per lane | rule | `enrichment/tier1_lei._record_fields` (`legalAddress` + `headquartersAddress`), `enrichment/tier1_ror._extract_org_fields` (**every** `locations[]` entry) | `enrichment/locality.compare_registry_addresses` | n/a | n/a | Parity of *evidence*, not just of rule. ROR's `locations[]` is a list and a multi-site organisation genuinely carries several; truncating it to `locations[0]` is how a record naming a real site of the organisation gets reported as contradicting "the" registered address — the same defect GLEIF's two blocks were handed to the comparator to fix. ROR's flat `city`/`region`/`country` keys still name the **primary** location: they are output fields, and only the comparison reads the set. Duplicates contribute one address. *(Inert on the S2 evaluation file — no ROR record in that population publishes more than one location — so it is a correctness fix for the academic and hospital strata rather than a measured delta on this one.)* |
-| Trigger inputs — the tier | every name the registry publishes, per lane | rule | `enrichment/tier1_ror._name_tier` (all `names[]` variants), `enrichment/tier1_lei._record_fields` (`legalName` + `otherNames` + `transliteratedOtherNames`) | `enrichment/registry_match.name_match_tier` | n/a | n/a | The other half of the parity. ROR has always ranked the record against every name variant it publishes; GLEIF was ranking it against the legal name alone, so a record stating a registered *trading* name verbatim was classified `fuzzy` and its address advisory fired on a match the name had settled. Containment (§1.17) explicitly does **not** feed this: the tier asks the stricter question — is this the same string typed twice — and a brand against a brand-plus-division is a `fuzzy` match whose address check stays armed |
-| Crosswalk locality — recorded | `record_registry_identity` on **both** crosswalk lanes | rule | `enrichment/orchestrator._crosswalk_to_ror`, `_crosswalk_to_gleif` | `apply_registry_location_check` | n/a | n/a | The client had been comparing the crosswalk lane's locality since Fix D(2); nothing was listening, because the crosswalk write sites never called `record_registry_identity` and the verdict never reached the gate. So the one route that picks an organisation **without ever reading its name** was also the one route whose address was never checked — and `CROSSWALK_TIER` is below exact by construction precisely because a stale pointer is how a record acquires another organisation's registry entry. Closing it is the only *new* flag this calibration raises on the S2 file (one row, a crosswalk-resolved entity registered two states from the record) |
-
-A failed search is **not** recorded. `search.base.SearchUnavailable` distinguishes "the provider could not execute this query" from "this query has no results"; the providers previously swallowed a reset connection and returned `[]`, which a durable cache would have made permanent — one dropped TLS handshake recorded as "this organisation has no web presence". Callers still see `[]` and behave exactly as before. The same rule already applied to registry errors (`registry_record` refuses anything carrying `error`).
-
-#### 1.19.5 · The reproducibility gate
-
-| Parameter | Value | Type | Defined at | Rationale |
-|-----------|-------|------|-----------|-----------|
-| Join key | `(name1_original, city)`, then customer number, then input row position | tuple | `tools/run_diff.py` (`KEY_FIELDS`) | Input-side, so two runs that disagree about a record still line that record up. **Not** Search Term 1: the pipeline writes it, and Fix D(3) exists precisely because it could be derived from a registry entity that lost a consistency check. The two fallbacks exist because 17 chemspeed rows share a `(name, city)` key — nine of them carrying neither a Name 1 nor a customer number — and silently merging or dropping them would shrink the batch the gate measures |
-| Columns compared | all of `api/output_columns.RESPONSE_COLUMNS` | set | `tools/run_diff.py` | Nothing is excluded, whitelisted or normalised away. `None` and `""` compare equal and that is the only fold. `duration_ms` is not in the shipped schema and is the one output that *should* differ |
-| Pass condition | zero differing rows **and** `evidence_network_calls == 0` on run 2 | rule | `tools/run_diff.py`; batch summary | A clean diff from a run that went to the network does not mean what the gate needs it to mean — it is not comparing the same evidence the first run saw |
-| Replay control | run the batch against an **order-inverted** copy of the same cache and diff | rule | `tools/shuffle_evidence.py` | The gate above cannot, on its own, tell a reproducible pipeline from a replay of one recording. This can: identical content in inverted order is exactly the perturbation a live API makes, and identical output **plus identical cache-hit counts** means no selection and no prompt read the order. It is also what caught the GLEIF truncation above |
-
----
-
-### 1.19a · Country gate — the record's country vs the candidate's ccTLD (`utils/domain_resolver.country_conflict`)
-
-> **Post-baseline.** Like §1.17–§1.19, this documents code added *after* the commit pinned in this
-> document's header.
-
-**The negative it was derived from.** Record `13044666`, "Unilever Trumbull Research Services Inc",
-US / TX, routed `research_institution`. Path B's query was
-`"Unilever Trumbull Research Services Inc" official website US`; the candidate it selected was
-`unilever.be`. Every guard in `select_website_from_serp` passed it, correctly: `_name_overlap` on
-"unilever", `_distinctive_in_host` on the same token after `research` and `services` are dropped as
-generic, `_domain_introduces_foreign_brand` clean because the label has no hyphen to split. The
-candidate genuinely **is** a Unilever site. Nothing in the pipeline compared it to the country the
-record states, so the only fact that distinguished the parent's Belgian site from a Texas
-subsidiary's record was the one fact never consulted.
-
-The ownership guard then rejected it (§1.16's conditions), so the field stayed empty — but the
-rejected candidate was written into the `domain-unverified` reason as
-*"confirm unilever.be before using it"*, which is how the defect surfaced: as a suggestion.
-
-**Why the existing conditions cannot cover this.** Name similarity is the condition that would
-accept `unilever.be`, and it accepts it *because the name is right*. A multinational's name matches
-its site in every country it trades in, so no threshold on a name comparison separates the two —
-the same property that makes condition 3 work is what makes it blind here.
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| `DOMAIN_COUNTRY_GATE_ENABLED` | `true` | bool (env) | `config.py` (`Settings.domain_country_gate_enabled`); `.env.example` | `website_resolver.select_website_from_serp` / `infer_website_via_llm` (eligibility), `domain_resolver.resolve_domain` (disqualifier) | n/a | `false` → candidates are judged exactly as before; the country still shapes the query and the geo parameter, only the disqualifier stops | Feature flag on the `LEI_LOOKUP_ENABLED` / `DOMAIN_OWNERSHIP_GUARD_ENABLED` pattern, so the gate can be A/B disabled without touching the query (`config.py`) |
-| `SERP_COUNTRY_LOCALISATION_ENABLED` | `true` | bool (env) | `config.py` (`Settings.serp_country_localisation_enabled`); `.env.example` | `utils.cache.cached_serp` → `SearchClient.search(country=…)` → SerpAPI `gl` | n/a | `false` → the un-localised search this replaced: every record ranked from the provider's default locale | The country was already collected and already part of the SERP cache key (`utils.cache.serp_key`) but never part of the request, so the key promised a distinction the request had not made. `gl` is a **ranking** parameter, not a filter — the gate below does not depend on the provider honouring it |
-| ccTLD detection rule | a TLD of exactly two letters | rule (inline) | `domain_resolver.country_conflict` | as above | n/a | n/a | ICANN has never delegated a two-character gTLD, and every ccTLD string **is** the ISO 3166-1 alpha-2 code of its country. The country a domain claims is therefore derivable without a 249-entry table, and everything longer (`.com`, `.org`, `.pharmacy`, an IDN's `xn--…` form) is country-neutral by construction |
-| `_GENERIC_USE_CCTLDS` | 16 labels (`io`, `ai`, `co`, `me`, `tv`, `cc`, `ly`, `sh`, `gg`, `fm`, `to`, `ac`, `su`, `st`, `am`, `im`) | frozenset | `utils/domain_resolver.py` | `country_conflict` | Fewer ccTLDs treated as worldwide → more foreign-domain rejections, and false positives on generically-sold TLDs | More ccTLDs exempted → a genuinely foreign site passes | These are sold and used worldwide and their letters no longer state a location. `.io` is the British Indian Ocean Territory and `.ai` is Anguilla on paper; rejecting a US company's `.ai` site as foreign would be a false positive on one of the commonest TLDs it could pick |
-| `_CCTLD_TO_ISO` | `{uk: GB}` | dict | `utils/domain_resolver.py` | `country_conflict` | n/a | Dropping it makes every `.uk` domain conflict with every `GB` record | `.uk` is the common ccTLD whose letters differ from its ISO code, and `country_to_iso_code` normalises "UK" / "United Kingdom" / "England" / "Scotland" to `GB`. Both sides have to reach one code before they can be compared at all |
-| `_EU_MEMBER_STATES` | 27 codes | frozenset | `utils/domain_resolver.py` | `country_conflict` | n/a | n/a | `.eu` is supranational: not neutral — a US organisation has no claim to one — but it names no single country either, so it is read as "any member state" and conflicts only outside the union |
-| Fail-open rule | an unreadable country, an unreadable TLD, or no country ⇒ **no conflict** | rule | `country_conflict` | as above | n/a | n/a | The gate rejects candidates, so an unrecognised country string must never manufacture a conflict. A record that states no country this module can read makes no claim, and there is no claim to contradict |
-
-**Exemptions, and why each one is exempt.** The gate applies to conditions 3, 5 and 6 of §1.16 and
-to neither 1, 2 nor 4:
-
-| Condition | Gated? | Why |
-|-----------|--------|-----|
-| 1 · Registry provenance | **no** | ROR/GLEIF *stating* the website is a fact about the organisation, not a guess about it. A US-registered subsidiary whose registry record names a `.de` site is reporting something true |
-| 2 · Stated-website witness | **no** | The same claim from an independent system. A witness under provenance hard rule 4 outranks a geographic heuristic |
-| 3 · Name similarity | **yes** | The condition the defect passed through, and the one that cannot see the difference |
-| 4 · Email domain | **no** | It does not attribute the candidate — it *discards* it for a domain the record already carries. Gating it would take away a rescue rather than prevent an error |
-| 5 · On-domain SERP evidence | **yes** | The foreign site's own page names the organisation, because it is the same organisation in another country |
-| 6 · Page identity | **yes** | As above, and already `provisional` by construction |
-
-**Where it is applied, and why in two places.** Eligibility in `select_website_from_serp` (a
-mismatched candidate is removed from `valid`, not demoted — the question it fails is not "how good
-a match is this" but "could this be the record's site"), and again as a disqualifier in
-`resolve_domain`, which is the chokepoint every `_apply_domain` caller passes through. Path C is
-gated for a specific reason: Path B rejecting a foreign candidate is exactly what *makes* Path C
-run, so a gate covering only Path B would hand the same domain back through the fallback it opened.
-
-**Flag consequence.** A country rejection raises **no** `domain-unverified` flag, and this is the
-one behavioural change a reviewer sees. The code means "a candidate was found and a human has to
-decide about it"; a country rejection leaves nothing to decide, since a ccTLD in another country is
-a fact rather than a doubt. The rejection is still recorded in full as a provenance event
-(`rule_id: domain-country-gate`, `DETERMINISTIC`, carrying `domain_country` and `record_country`),
-so the decision is auditable without being pushed at a person — and `domain_rejected` is still set,
-so it still blocks later candidates exactly as before. Rejections on the ownership conditions are
-unchanged and still name the candidate (`rejected_by: conditions`).
-
-
-### 1.19b · Search terms — two terms, the ampersand, and phrases that identify nothing (`enrichment/search_terms.py`)
-
-> **Post-baseline.** Like §1.17–§1.19a, this documents code added *after* the commit pinned in this
-> document's header.
-
-**What a search term is for.** It is a string a person types into a search box to get this
-organisation back. Three defects all came from the derivation optimising for something else —
-fitting the 32-char SAP field — and the field width turning out to be a much weaker constraint than
-the question the term is supposed to answer.
-
-| Parameter | Value | Type | Defined at | Consumed at | Effect if raised | Effect if lowered | Rationale |
-|-----------|-------|------|-----------|-------------|------------------|-------------------|-----------|
-| Term cap | **2** terms | int (rule) | `search_terms._cap_to_two_terms` | `search_terms._normalise_term` — the one function BOTH chains pass through, so neither can grow a third term by adding a branch | Longer handles; past two words a term stops being a query and becomes a copy of the name (`KELLOGG BATTLE CREEK MI PLANT` retrieves nothing `KELLOGG` does not) | A single term loses the qualifier that separates same-head records (`DOW CHEMICAL` vs `DOW`) | **DERIVED FROM THE BATCH.** 20 of 92 shipped Search Term 1 values carried three or more words, and in every one the extra words were an address, a legal form, a facility word or corporate scaffolding — never the part that identifies. The width was doing the cutting (32 chars, on a word boundary), which is why `MASSACHUSETTS INSTITUTE` survived and `Technology` did not: an arbitrary boundary, not a choice about which half says more |
-| Which two | head + first **identifying** token | rule | `search_terms._cap_to_two_terms` | as above | n/a | n/a | The head is kept unconditionally: an organisation name in these registries is head-initial — the same property `registry_match.names_agree_by_containment` is built on — so the leading token says WHICH organisation even when the word is a common one (`General Mills`, `Global Technical`). The second slot goes to the first token that narrows the search, **stepping over** scaffolding rather than letting it occupy the slot, which is what turns `Novartis Institute Biomedical` into `NOVARTIS BIOMEDICAL`. When nothing after the head identifies anything the head stands alone — `Kellogg North America` is `KELLOGG`, because `NORTH` is not the half worth searching |
-| `_FACILITY_WORDS` | 30 words (`headquarters`, `receiving`, `stores`, `plant`, `site`, `manufacturing`, `interplant`, …) | frozenset | `enrichment/search_terms.py` | `is_identifying_token` | More words treated as facility → shorter handles, more empty Search Term 2 | Facility words reach the output and occupy a term slot | Every large site has a receiving bay, a headquarters and a stores desk. The words name a building or an activity inside one; none says *whose* building |
-| `_GENERIC_CORPORATE_WORDS` | 26 words (`corporate`, `operations`, `solutions`, `systems`, `partners`, `holdings`, `global`, …) | frozenset | `enrichment/search_terms.py` | `is_identifying_token` | as above | as above | These attach to any company at all. `Service`/`Services` is deliberately **excluded** — it is half of real unit names (`Food Service`), and an admin service desk is already caught upstream by `is_admin_unit` |
-| `_GEO_WORDS` | direction / continent / country words **+ full US state names** | frozenset | `enrichment/search_terms.py` | `is_identifying_token` | Place names crowd out identity | An address occupies a term slot | Two-letter state codes are deliberately **absent**: `GE`, `GM`, `HP`, `BD` and `LG` are two-letter organisations, and `in` / `or` / `me` / `de` are ordinary words at least as often as they are Indiana, Oregon, Maine and Delaware. A state abbreviation is read as one only when the record's own address says so (row below) |
-| `_record_geo_tokens` | the record's `city`, `region`, `country_region_key` | rule | `enrichment/search_terms.py` | `is_identifying_token`, per record | n/a | n/a | **The address is already in the address columns.** A handle repeating it has spent its two terms saying where the mail goes instead of who the organisation is. This is also what lets the abbreviation be recognised without guessing: `MI` is Michigan in `Kellogg Battle Creek MI Plant` because *this record's* region says Michigan, not because two letters were assumed to be a state code. Code and full name are interchangeable in both directions |
-| `_CONNECTORS` | `{&, of, for}` | frozenset | `enrichment/search_terms.py` | `_cap_to_two_terms`, `is_identifying_token` | n/a | Without them `University of Florida` caps to `UNIVERSITY`, and `Procter & Gamble` reads as three terms | A connector joins two terms into one handle and counts as neither, so `UNIVERSITY OF FLORIDA` and `PROCTER & GAMBLE` are two-term values. It is kept **only** when it sits directly between the two chosen terms, which is why `Massachusetts Institute of Technology` drops its `of` (the word before it is Institute, not the head). Connectors also change what the token after them MEANS: a trailing place name is an address (`Nucor Steel Florida` is a Florida site of Nucor Steel) but a place name after `of` is the name itself (the University *of* Florida is not a Florida branch of some University), so a token directly after `of`/`for` identifies whatever list it appears on |
-| Ampersand | preserved | rule | `derive_acronym`, `_name1_text_handle`, `_fill_to_width`, `_first_two_significant_words` | as above | n/a | n/a | **Three independent sites dropped it**, which is why it disappeared from every path: `_WORD_RE` requires a leading letter so a standalone `&` never reached `derive_acronym`'s loop at all (`Procter & Gamble` → `PG`); `_name1_text_handle` filtered it as a non-alphanumeric token (→ `PROCTER GAMBLE`); and `_fill_to_width` filtered it as a member of `_TERM2_STOPWORDS` (→ `TRUCK BUS`). It is part of the handle people search — P&G, J&J, AT&T — and is kept only between two words, never leading or trailing, where it is punctuation again |
-| Empty when nothing identifies | rule | rule | `search_terms.has_identifying_token` | `_derive_search_term_2` step 0b | n/a | Facility phrases ship as unit handles | A phrase built entirely from qualifiers and facility functions — `Central Receiving`, `Corporate Headquarters`, `Stores`, `Interplant Site Off E` — describes where a delivery goes and names no unit. A search term matching every large employer in the country is **worse** than an empty field, because the empty field does not claim to have found something. Runs after the `is_admin_unit` override, so a real admin desk keeps its `ADMIN` handle, and before the acronym and phrase branches, so neither can rebuild a handle from words just found to identify nothing. **Search Term 1 is not subject to it** — Name 1 is the organisation, and a company legitimately named "Central Stores Ltd" must keep a handle rather than have the pipeline rule that its name is not a name |
-
-**Consequence for the 32-char width (§1 row "Search-term width").** It is now a backstop rather than
-the operative rule: the two-term cap binds first in every observed case. `_name1_text_handle` no
-longer shortens at all — it hands the whole cleaned name to the cap, because a greedy 32-char fill
-had already cut `Massachusetts Institute of Technology` down to `Massachusetts Institute` before the
-cap could tell that `Technology` was the half worth keeping.
-
-
-### 1.20 · Provenance Scheme B — the exported grammar (`enrichment/confidence.py`)
-
-> **Post-baseline.** Like §1.17–§1.19, this documents code added *after* the commit pinned in this
-> document's header.
->
-> **Canonical definition: README § "The provenance grammar — Scheme B".** The grammar and the
-> confidence table are reproduced here because this document is the thesis's parameter reference
-> and a reader must be able to interpret an exported provenance column from it alone. They are
-> **not** maintained here: the machine-readable source is `enrichment/confidence.py`
-> (`PROVENANCE_PATTERN`, `compute_confidence`), which the pipeline, the parsers and the tests all
-> import rather than re-derive. If this table and that module ever disagree, the module is right.
-
-**Why this exists.** The exported provenance was `producer:tier:method` — `ror:1:exact`,
-`llm_tier3:3:self_medium`, `website_resolver:3:rule` — plus `web:{domain}:extracted:{date}` for
-the operating name. It exported the *mechanism* where a reader needs the *claim*. The tier is a
-route, not a warrant; the method token was not comparable across producers (`exact` meant
-"an identifier was returned" for a registry and "≥ 99.5 on a fuzzy ratio" for a string
-comparison); `self_*` leaked a model's assessment of its own output into a slot read as an
-authority claim; and the date decayed, which is why eleven rows of two diffed runs once differed
-in nothing else.
+Generated: 2026-09-07 · Commit: 86d173b8a4d715a619b0a2656986c145da7fa81e · Branch: feature/llm-fixes · Pass: 04
+
+# Pass 04 — Parameters
+
+Every tunable the pipeline reads at this commit: environment variables, module
+constants, LLM sampling parameters, the scoring weights table, the tunable word
+lists, and the parameters carried by the infrastructure (ADF pipelines, the
+Function App host, the merge procedures, the HTTP request bodies).
+
+`Value` is the literal in the file cited. `Who sets it` names the mechanism that
+can change it without a code edit: `env` (an environment variable), `request`
+(an HTTP request field), `ADF` (a pipeline JSON property), `weights.json`, `CLI`
+(a script flag), or `code` (a module constant with no external override).
+
+## 0. Method
+
+The tree at this commit carries modifications to `docs/thesis/00_INVENTORY.md`,
+`01_TRACEABILITY.md`, `02_ARCHITECTURE.md`, `03_ALGORITHMS.md` and
+`03b_EXEMPLARS.md` — the outputs of Passes 00–03b in this same set. No source,
+configuration, SQL or ADF file is modified, so `86d173b` is the state every
+citation below refers to.
 
 ```
-provenance := source ":" confidence ( "+" witness )?
-source     := "input" | "ror" | "gleif" | "wikidata" | "web:" domain | "llm"
-confidence := "verified" | "provisional" | "low"
-witness    := "web" | "wikidata" | "llm" | "registry" | "domain"
+$ git status --porcelain
+ M docs/thesis/00_INVENTORY.md
+ M docs/thesis/01_TRACEABILITY.md
+ M docs/thesis/02_ARCHITECTURE.md
+ M docs/thesis/03_ALGORITHMS.md
+ M docs/thesis/03b_EXEMPLARS.md
+$ git rev-parse HEAD
+86d173b8a4d715a619b0a2656986c145da7fa81e
+$ git rev-parse --abbrev-ref HEAD
+feature/llm-fixes
+$ date -I
+2026-09-07
 ```
 
-**Confidence is computed by one function** — `compute_confidence(evidence)`. No lane, tier or
-guard assigns a confidence of its own; each records what it saw, and this table says what that is
-worth. Precedence is top to bottom.
+---
 
-| Evidence situation | Confidence | Witness |
+## 1. Environment variables
+
+### 1.1 Credentials and endpoints
+
+| Name | Value (verbatim default) | file:line | Effect | Who sets it |
+|---|---|---|---|---|
+| `AZURE_OPENAI_API_KEY` | `""` | `config.py:213`, `llm/openai_client.py:249` | Azure OpenAI key. Required; absence is warned at startup and raises at client construction. | env |
+| `AZURE_OPENAI_ENDPOINT` | `""` | `config.py:214`, `llm/openai_client.py:250` | Azure OpenAI resource endpoint. Required. | env |
+| `AZURE_OPENAI_DEPLOYMENT` | `"gpt-5.4"` | `config.py:215`, `llm/openai_client.py:381` | Deployment name for every Phase 1 enrichment call. | env |
+| `AZURE_OPENAI_API_VERSION` | unset → `DEFAULT_AZURE_OPENAI_API_VERSION` | `llm/openai_client.py:253` | REST API version for Phase 1 calls. | env |
+| `AZURE_OPENAI_CA_BUNDLE` | unset | `config.py:53`, `llm/openai_client.py:163` | Corporate CA bundle path. First entry of `_CA_BUNDLE_ENV_VARS`; also the replacement value when `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` point at a non-existent path. | env |
+| `REQUESTS_CA_BUNDLE`, `SSL_CERT_FILE` | unset | `config.py:57`, `llm/openai_client.py:163` | CA bundle fallbacks. A value naming a non-existent file is overwritten at import by `_sanitize_ssl_env`. | env |
+| `LLM_SSL_VERIFY` | `true` | `llm/openai_client.py:201` | `false` disables TLS verification for LLM calls. | env |
+| `SERPAPI_KEY` | `""` | `config.py:218`, `config.py:195` | SerpAPI key. Empty selects the DuckDuckGo fallback. | env |
+| `AOAI_DEPLOYMENT_DEDUP` | unset → `AZURE_OPENAI_DEPLOYMENT` → `"gpt-5.4"` | `dedup/llm.py:143-147` | Deployment for adjudication calls, separate from the enrichment deployment. | env |
+| `AOAI_API_VERSION_DEDUP` | unset → `AZURE_OPENAI_API_VERSION` → `DedupLLM.DEFAULT_API_VERSION` | `dedup/llm.py:150-154` | REST API version for adjudication calls. | env |
+
+### 1.2 Registry lanes (Tier 1)
+
+| Name | Value (verbatim default) | file:line | Effect | Who sets it |
+|---|---|---|---|---|
+| `ROR_API_BASE` | `"https://api.ror.org/v2/organizations"` | `config.py:230`; also read directly at `enrichment/tier1_ror.py:934`, `:1654`, `enrichment/liveness.py:263` | ROR v2 endpoint. | env |
+| `ROR_CONFIDENCE_THRESHOLD` | `"0.8"` | `config.py:235`; read directly at `enrichment/tier1_ror.py:936` | Minimum locally-rescored ROR match score for acceptance. One threshold for all record types. | env |
+| `LEI_LOOKUP_ENABLED` | `"true"` | `config.py:300` | When false the company branch skips GLEIF entirely. | env |
+| `GLEIF_API_BASE` | `"https://api.gleif.org/api/v1"` | `config.py:303`; defaulted again at `enrichment/tier1_lei.py:567`, `:803` | GLEIF endpoint. | env |
+| `GLEIF_TIMEOUT_SECONDS` | `"15"` | `config.py:306`; defaulted again at `enrichment/tier1_lei.py:568`, `:804` | Per-request GLEIF timeout. | env |
+| `LEI_NAME_MATCH_THRESHOLD` | `"88"` | `config.py:312`; read at import at `enrichment/orchestrator.py:1776`, again at `:3100`; defaulted again at `enrichment/tier1_lei.py:570`, `:806` | rapidfuzz `token_sort_ratio` (0–100) a GLEIF candidate's legal name must reach against the supplied name. GLEIF's `legalName` filter is fulltext, so a candidate below this is rejected. | env |
+| `LEI_MAX_RETRIES` | `"2"` | `config.py:315`; defaulted again at `enrichment/tier1_lei.py:569`, `:805` | Retries on transient GLEIF failures. Backoff `0.5 × 2^(attempt−1)` seconds (`enrichment/tier1_lei.py:556`). | env |
+
+### 1.3 Name acceptance and department eligibility
+
+| Name | Value (verbatim default) | file:line | Effect | Who sets it |
+|---|---|---|---|---|
+| `LLM_FALLBACK_AUTHORITATIVE` | `True` | `config.py:241-245` | "Write unless disproven". False reverts every acceptance gate to the legacy `confidence=="high"` floors, the binary identity guard and the established-nothing passthrough. | env |
+| `UNDECIDABLE_WRITES` | `True`, accepting `on`/`off` as well as `true`/`false` | `config.py:249-255` | Whether an `undecidable` verdict writes (flagged `unverified-inference`) or is held back as a suggestion. | env |
+| `DEPT_SPLIT_CANONICALISES` | `True` | `config.py:290-294` | Tier 2 eligibility by slot origin: a slot whose value preprocessing split, lifted or moved is eligible for canonicalisation; a value an authority produced is settled. | env |
+| `FUZZY_MATCH_THRESHOLD` | `"80"` | `config.py:363`; consumed at `enrichment/tier2a_contact.py:180`, `:497` | Score a Tier 2A contact-page department must reach before it is written. | env |
+
+### 1.4 Domain and search
+
+| Name | Value (verbatim default) | file:line | Effect | Who sets it |
+|---|---|---|---|---|
+| `DOMAIN_NAME_MATCH_THRESHOLD` | `"82"` | `config.py:328` | rapidfuzz `token_sort_ratio` Name 1 must reach against a candidate's domain label before a web-derived domain is attributed. Tuned on the demo batch: highest wrong-owner pair 81.8, lowest right-owner pair 82.4 (`config.py:318-326`). Registry provenance, email evidence and on-domain search evidence bypass it. | env |
+| `DOMAIN_OWNERSHIP_GUARD_ENABLED` | `True` | `config.py:333-337` | Off skips the ownership conditions; candidates are still canonicalised to the registrable domain. | env |
+| `DOMAIN_COUNTRY_GATE_ENABLED` | `True` | `config.py:345-349` | Refuses a candidate whose ccTLD places it in a country other than the record's. | env |
+| `SERP_COUNTRY_LOCALISATION_ENABLED` | `True` | `config.py:355-359` | Sends the record's country to the provider as SerpAPI `gl` (`search/serpapi_client.py:72`). | env |
+| `DEPT_PROBE_CROSS_DOMAIN` | `False` | `config.py:224-226` | Off holds the department-domain probe at one site-restricted SERP call; on adds the cross-domain fallback query. | env |
+| `ACCEPTED_DOMAIN_CITY_WITHDRAWAL_ENABLED` | `"false"` | `config.py:430-434` | Withdrawal of an accepted domain on a name mismatch paired with a city-level location contradiction. The rule and its cascade are built; the trigger is disabled. | env |
+
+### 1.5 Page fetching and corroboration
+
+| Name | Value (verbatim default) | file:line | Effect | Who sets it |
+|---|---|---|---|---|
+| `MAX_PAGE_CONTENT_CHARS` | `"1500"` | `config.py:368` | Characters of page text passed downstream (`PageFetcher(max_chars=…)`, `enrichment/orchestrator.py:4133`, `:4146`). ⚠ `config.py:121` and `.env.example:105` both state `3000` — see §9.1. | env |
+| `PAGE_FETCH_TIMEOUT_SECONDS` | `"10"` | `config.py:371` | Per-request page fetch timeout (`enrichment/orchestrator.py:4132`, `:4145`). | env |
+| `PAGE_CORROBORATION_ENABLED` | `True` | `config.py:406-410` | Off: the corroboration step does not run and no page is fetched for it. | env |
+| `PAGE_NAME_MATCH_THRESHOLD` | `"88"` | `config.py:436` | rapidfuzz `token_sort_ratio` an extracted page name must reach against Name 1. Reuses `enrichment.tier1_lei._name_match_score` and inherits `LEI_NAME_MATCH_THRESHOLD`'s value as a separate knob (`config.py:411-422`). | env |
+| `PAGE_READ_TIMEOUT_SECONDS` | `"8"` | `config.py:443-445` | Hard per-request timeout for a corroboration fetch; shorter than `PAGE_FETCH_TIMEOUT_SECONDS` because up to five requests may be issued per domain. | env |
+| `PAGE_FIXTURE_DIR` | `_cache_dir("PAGE_FIXTURE_DIR", "page_reads")` → `tests/fixtures/page_reads` | `config.py:451-453`, `config.py:76-90` | Page-read recording directory. `""` is memory-only. | env |
+| `PAGE_FIXTURE_REPLAY_ONLY` | `False` | `config.py:457-461` | Refuses to fetch anything not recorded; a miss surfaces as `fetch_unavailable`. | env |
+| `PAGE_EXTRACT_FEEDS_RETRY` | `False` | `config.py:467-471` | Offers a page-extracted legal name to the Stage 5 Tier 1 retry as a lookup candidate. | env |
+
+### 1.6 Evidence cache
+
+| Name | Value (verbatim default) | file:line | Effect | Who sets it |
+|---|---|---|---|---|
+| `EVIDENCE_CACHE_DIR` | `"tests/fixtures"` | `config.py:390`, `config.py:89` | Root of the shared evidence cache; namespaces `page_reads/`, `wikidata/`, `serp/`, `registry/`, `fetch/`, `llm/` sit under it. `""` is memory-only. | env / `--cache-dir` |
+| `CACHE_FROZEN` | `False` | `config.py:399-401` | A cache miss becomes an error rather than a network call; the miss is recorded per record as `evidence-unavailable-frozen` on `enrichment.trace.cache` and counted in the batch summary, and the record proceeds without that evidence. Applies to every namespace at once. | env / `--frozen` |
+| `DEDUP_FIXTURE_CACHE_DIR` | unset (cache off) | `dedup/cache.py:49`, `:184` | Record/replay store for adjudicator calls. Unset means no cache. | env |
+| `DEDUP_FIXTURE_CACHE_MODE` | `"record"` | `dedup/cache.py:50`, `:179`, `:187` | `record` writes a miss down; `replay` refuses it. Reported in the output workbook via `current_mode()`. | env |
+
+### 1.7 Wikidata crosswalk lane
+
+| Name | Value (verbatim default) | file:line | Effect | Who sets it |
+|---|---|---|---|---|
+| `WIKIDATA_ENABLED` | `True` | `config.py:479-481` | Off: the lane does not run and no Wikidata call is made. | env / `--no-wikidata` |
+| `WIKIDATA_DOMAIN_CORROBORATION` | `True` | `config.py:498-502` | On a registry-resolved record the lane runs corroboration-only, retaining the item's `P856` website claim; nothing is written and no pointer is followed. | env |
+| `WIKIDATA_API_BASE` | `"https://www.wikidata.org/w/api.php"` | `config.py:507-511` | MediaWiki Action API. The SPARQL endpoint is not used in this lane. | env |
+| `WIKIDATA_TIMEOUT_SECONDS` | `"10"` | `config.py:516`, consumed at `enrichment/wikidata.py:701` | Per-request timeout. | env |
+| `WIKIDATA_MAX_RETRIES` | `"2"` | `config.py:519`, consumed at `enrichment/wikidata.py:702` | Retries; `enrichment/wikidata.py:743`. | env |
+| `WIKIDATA_SEARCH_LIMIT` | `"5"` | `config.py:526`, consumed at `enrichment/wikidata.py:703`, `:792`, `:802` | `wbsearchentities` candidates. The gauntlet runs over all of them in one batched entity call so two survivors register as an ambiguity. | env |
+| `WIKIDATA_FIXTURE_DIR` | `_cache_dir("WIKIDATA_FIXTURE_DIR", "wikidata")` → `tests/fixtures/wikidata` | `config.py:533-535` | Recording directory, one JSON file per key. | env |
+| `WIKIDATA_FIXTURE_REPLAY_ONLY` | `False` | `config.py:538-542` | A missing fixture surfaces as `wikidata_unavailable`. | env |
+| `WIKIDATA_TRACE` | `False` | `config.py:549-551` | One JSON line per lane invocation on `enrichment.trace.wikidata`. Batch-summary counters are maintained regardless. | env / `--wikidata-trace` |
+
+### 1.8 Liveness lane
+
+| Name | Value (verbatim default) | file:line | Effect | Who sets it |
+|---|---|---|---|---|
+| `LIVENESS_ENABLED` | `True` | `config.py:560-562` | Off: no probe, no redirect check; the lane can only ever add an `entity-superseded` flag. | env |
+| `LIVENESS_ROR_PROBE_ENABLED` | `True` | `config.py:568-572` | The ROR half — one query per distinct (name, country) in the batch, re-asked with `all_status=`. | env |
+| `LIVENESS_REDIRECT_CHECK_ENABLED` | `True` | `config.py:575-579` | The redirect half; reuses the department probe's resolution and its `BatchCache` entry. | env |
+| `LIVENESS_REDIRECT_NAME_THRESHOLD` | `"60"` | `config.py:585-589`, consumed at `enrichment/liveness.py:328-358` | Above it, a cross-domain redirect reads as a move and is ignored; below it, the landing domain names a different organisation. Measured gap 16.7 / 66.7, dated 2026-08-26 (`enrichment/liveness.py:350-357`). | env |
+
+### 1.9 Clustering and scoring
+
+| Name | Value (verbatim default) | file:line | Effect | Who sets it |
+|---|---|---|---|---|
+| `SIG_PARTITION_THRESHOLD` | `12` | `dedup/adjudicator.py:39`, `:1466` | Signatures per block above which the block is partitioned. | env / request |
+| `DEDUP_MAX_CONCURRENCY` | `5` | `dedup/adjudicator.py:40`, `:1468` | In-flight adjudication calls across all blocks (one shared semaphore, `dedup/adjudicator.py:1469`). | env / request |
+| `NAME_CANDIDATE_THRESHOLD` | `0.85` | `config.py:606`, `dedup/adjudicator.py:41`, `:1434-1436` | Jaro-Winkler suffix-stripped name similarity at which a signature pair becomes an adjudication candidate. Nomination never merges. | env / settings |
+| `TOKEN_CANDIDATE_THRESHOLD` | `0.6` | `config.py:609`, `dedup/adjudicator.py:42`, `:1437-1439` | Token-set Jaccard alternative for the same nomination. | env / settings |
+| `MAX_CANDIDATES_PER_BLOCK` | `50` | `config.py:612`, `dedup/adjudicator.py:43`, `:1440-1442` | Cap on adjudication calls per block; over the cap the block routes to `manual_review`. | env / settings |
+| `CONFIDENCE_MERGE_THRESHOLD` | `0.95` | `config.py:600`, `dedup/scoring.py:50`, `:1126` | A merge below this confidence keeps its cluster membership and enters election as `manual_review`. Retuning reads the confidence persisted by clustering and never re-runs the LLM. | env / request arg |
+| `DEDUP_REASONING_EFFORT` | `"low"` | `dedup/llm.py:148` | `reasoning_effort` sent on adjudication calls. Empty disables it, which is what re-enables `temperature`. | env |
+| `DEDUP_MAX_RETRIES` | `"3"` | `dedup/llm.py:149`, `:206`, `:281-287` | Bounded retries on retryable adjudication failures; delay `0.5 × 2^attempt` seconds. | env |
+| `DEDUP_V2_BLOCKING` | unset → off | `dedup/flags.py:31`, `:40-42` | Delivery-point blocking (`dedup/address.py`) in place of the raw `country\|postal\|street\|house` hash. | env |
+| `DEDUP_V2_NAME2` | unset → off | `dedup/flags.py:32`, `:45-47` | Classifying the text below Name 1 before it is treated as a department. | env |
+| `DEDUP_V2_ID_CONFLICT` | unset → off | `dedup/flags.py:33`, `:50-52` | Routing an ROR/LEI conflict to review instead of splitting the entity. | env |
+
+`_TRUTHY` for the three v2 flags is `{"1", "true", "yes", "on"}` (`dedup/flags.py:29`); the value is `.strip().lower()`-ed, and anything else reads as off. Any v2 flag on adds the `Link ID` column (`dedup/flags.py:55-63`).
+
+### 1.10 Runtime, transport and diagnostics
+
+| Name | Value (verbatim default) | file:line | Effect | Who sets it |
+|---|---|---|---|---|
+| `ENV` | `"production"` | `config.py:619` | Environment label. `.env` is loaded unconditionally at import (`config.py:22`). | env |
+| `LOG_LEVEL` | `"INFO"` | `config.py:620` | Log level. | env |
+| `LOG_FILE` | unset | `config.py:635`, `api/middleware.py:98` | `None` selects `configure_logging`'s default (`logs/enrichment_api.log`); `""` disables file logging. | env |
+| `MOCK_EXTERNAL_CALLS` | `False` | `config.py:616-618`, `api/routes.py:76`, `:1091` | Substitutes mock clients for the external lanes. | env |
+| `DEFAULT_MAX_CONCURRENCY` | `"5"` | `config.py:592-593` | ⚠ Reported by `/config` (`api/routes.py:1656`) and read nowhere else — see §9.2. | env |
+| `LLM_HTTP_CONNECT_TIMEOUT` | `"30"` | `llm/openai_client.py:264` | httpx connect timeout for the Azure OpenAI client. | env |
+| `LLM_HTTP_TIMEOUT` | `"60"` | `llm/openai_client.py:265` | httpx read timeout for the Azure OpenAI client. | env |
+| `NAME_FIELD_WIDTH` | `"40"` | `enrichment/name_repack.py:50`, `:107`, `:140` | SAP name-column width used by `chunk_name` and the repack rules. | env |
+| `WEBSITE_TRACE` | `False` | `config.py:623-625` | Per-candidate JSON trace of the Path B / Path C website resolver on `enrichment.trace.website`. Resolution behaviour is unchanged. | env / `--website-trace` |
+| `RETRY_TRACE` | `False` | `config.py:630-632` | One JSON line per finalised record on `enrichment.trace.retry` covering the Stage 5 Tier 1 re-lookup. Retry behaviour is unchanged. | env / `--retry-trace` |
+
+### 1.11 CLI flags that set environment variables
+
+`scripts/run_batch.py` sets process environment before `Settings` is constructed
+(`scripts/run_batch.py:87-99`).
+
+| Flag | file:line | Sets |
 |---|---|---|
-| Value authored by a registry (ROR/GLEIF response) | `verified` | `+wikidata` iff the crosswalk routed there, else none |
-| Non-registry value + an independent second source agrees | `verified` | required — name the witness |
-| Single uncontradicted source | `provisional` | `+llm` only for the canonical-proposal-equals-input case; else none |
-| No source, contradicted evidence, ambiguity/no-match, short-name guard | `low` | never |
-
-| Parameter | Value | Type | Defined in | Consumed by | Rationale |
-|---|---|---|---|---|---|
-| Grammar | `PROVENANCE_PATTERN` — the regex above, anchored | regex (module constant) | `enrichment/confidence.py` | `finalise`'s assertion; `parse()`; `tools/run_diff.py`'s scheme detector; `scripts/fix_reports.py` | One definition, imported everywhere. A second copy of a grammar is a second grammar |
-| Confidence vocabulary | `verified` \| `provisional` \| `low` | closed set | `enrichment/confidence.py` | as above | Three values, ordered, and comparable across every producer — which the scale-namespaced bands (`self_high`, `exact`, `rule`) deliberately were not |
-| Witness vocabulary | `web` \| `wikidata` \| `llm` \| `registry` \| `domain` | closed set | `enrichment/confidence.py` | as above | Names the second evidence system, so a `verified` on a non-registry value is never unattributed |
-| Scoped columns | all 7 `*_provenance` columns | set | `enrichment/orchestrator.PROVENANCE_COLUMNS` | the finalisation assertion | Includes `operating_name_provenance`, which is written directly rather than derived — the one column that could drift out of the scheme unnoticed |
-| Hard rule 1 | `llm` never reaches `verified`, as source or as witness | rule | `confidence.compute_confidence`, `confidence.validate` | finalisation assertion | "A confident unverifiable claim is the more dangerous case, not the safer one" — the claim `self_high` in an exported column was being read as |
-| Hard rule 2 | a witness-less `verified` is legal only for `ror` / `gleif` / `wikidata`-as-crosswalked-registry | rule | `confidence.validate` | finalisation assertion | Makes the rule checkable from the string alone, without knowing which lane wrote it |
-| Hard rule 3 | rejected or contradicted evidence never appears in provenance | rule | `confidence.compute_confidence` (contradiction is tested **above** the registry row) | — | A registry hit a consistency check refused is a value the pipeline decided against, not a verified value that happens to carry a flag |
-| Hard rule 4 | "independent" = a different evidence system | rule | `provenance.situation_for` (`_DOMAIN_WITNESSES`) | domain provenance | A page fetched from the domain it corroborates is **one** source. A domain reaches `verified` only on a registry-stated website, a Wikidata `P856` agreement, or the record's own email domain |
-| Invalid output | raises `ProvenanceGrammarError` | rule | `confidence.validate_all` in `finalise` | — | A provenance column that does not parse is worse than an empty one: a consumer reads it as an attribution. An empty column is always legal — a field with no value has nothing to attribute |
-| Review-flag core fields | `name1_enriched`, `name2_enriched` | set | `enrichment/flags.CORE_PROVENANCE_FIELDS` | `compute_flags` | `flagged := any(core field == low) OR any code`. `domain` and `record_type` export their confidence but do not raise the flag: the flag asks a human to check a **name**. Including `record_type` would take the 100-record reference batch from 55 flagged rows to 96, since 72 of its records have no determinable type |
-
-**Measured on the 100-record chemspeed batch**, migrating against the same frozen evidence cache
-(`tools/provenance_invariance.py`): **0 differences across all 56 non-provenance, non-flag
-columns**; every provenance column migrated; **0 rows changed flag status**; `Flag Reason`
-byte-identical on all 100 rows. The double-run reproducibility gate still passes at
-0 differing rows and 0 network calls on run 2. Full mapping with counts:
-`provenance_migration_report.md`.
+| `--retry-trace` | `scripts/run_batch.py:68`, `:88-89` | `RETRY_TRACE=true` |
+| `--website-trace` | `scripts/run_batch.py:70`, `:90-91` | `WEBSITE_TRACE=true` |
+| `--wikidata-trace` | `scripts/run_batch.py:72`, `:92-93` | `WIKIDATA_TRACE=true` |
+| `--no-wikidata` | `scripts/run_batch.py:74`, `:94-95` | `WIKIDATA_ENABLED=false` |
+| `--frozen` | `scripts/run_batch.py:76`, `:96-97` | `CACHE_FROZEN=true` |
+| `--cache-dir` | `scripts/run_batch.py:80`, `:98-99` | `EVIDENCE_CACHE_DIR=<value>` |
+| `--concurrency` (default `5`) | `scripts/run_batch.py:82` | `EnrichmentOptions.max_concurrency` |
+| `--limit` (default `None`) | `scripts/run_batch.py:83` | Rows enriched |
+| `--trace-out` (default `logs/trace.jsonl`) | `scripts/run_batch.py:66` | Trace file path |
 
 ---
 
-## 2 · Conflicts — parameters defined in more than one place
+## 2. Module constants
 
-### 2.1 · `MAX_PAGE_CONTENT_CHARS` — three sources, two values
+These have no environment override. Changing one is a code edit.
 
-| Source | Value | Line |
-|--------|-------|------|
-| `OPTIONAL_VARS_WITH_DEFAULTS` | `"3000"` | `config.py:93` |
-| `Settings.max_page_content_chars` | `"1500"` | `config.py:209` |
-| `PageFetcher.__init__` default arg | `1500` | `search/page_fetcher.py:69` |
-| `README.md` env table | `3000` | `README.md:1622` |
-| `.env.example` | `3000` | `.env.example` (Pipeline section) |
+### 2.1 Enrichment — registry and identity guards
 
-**Which wins at runtime.** `Settings.max_page_content_chars` (`config.py:208-210`) — it is the
-only one the orchestrator reads (`enrichment/orchestrator.py:741,750`). With the variable
-unset the effective value is **`1500`**. `OPTIONAL_VARS_WITH_DEFAULTS` is a documentation-only
-dictionary: nothing reads it to supply a default (verified — the dict name appears only at its
-definition, `config.py:83`). The `PageFetcher` default arg (`1500`) is never reached from the
-application because the orchestrator always passes the setting explicitly. If a deployment
-copies `.env.example` verbatim, the environment sets `3000` and that wins over both defaults.
+| Name | Value | file:line | Effect |
+|---|---|---|---|
+| `_DISTINCTIVE_TOKEN_MIN_LEN` | `4` | `enrichment/tier1_ror.py:593` | Minimum query-token length counting as distinctive in the step-4 ROR guard. At five, "Acme Biotech" scored 0.87 against ROR's "AUM BioTech" on the shared "biotech" alone and was written as verified; at four "acme" is distinctive, "aum" does not cover it, and the candidate caps at 0.7 (`enrichment/tier1_ror.py:572-592`). |
+| `_FUZZY_RESOLVE_LIMIT` | `5` | `enrichment/tier1_lei.py:95` | `fuzzycompletions` candidates resolved to their full lei-record. A call budget; the five taken are those with the smallest LEI. |
+| `page[size]` | `"10"` | `enrichment/tier1_lei.py:634` | GLEIF exact-filter page size (Strategy A). |
+| `REGISTRY_AMBIGUITY_MARGIN` | `2.0` | `enrichment/registry_match.py:63` | Score gap below which two registry candidates count as ambiguous. The Wikidata lane has no numeric margin — its ambiguity rule is "more than one candidate survived the gauntlet". |
+| `_ACRONYM_MAX_LEN` | `5` | `enrichment/registry_match.py:83` | A single all-caps token this long or shorter reads as an acronym. |
+| `_SHORT_NAME_MAX_LEN` | `4` | `enrichment/registry_match.py:87` | A name with this many significant characters or fewer is collision-prone whatever its case. |
+| `_LEI_NAME_THRESHOLD` | `float(os.getenv("LEI_NAME_MATCH_THRESHOLD", "88"))` | `enrichment/orchestrator.py:1776` | Module-level capture of the GLEIF name threshold, read once at import. |
+| `MAX_REJECTIONS_PER_FIELD` | `3` | `enrichment/provenance.py:421` | Rejections retained per field per record; beyond it only the count is kept. |
+| `GUARDS` | 6 entries | `enrichment/provenance.py:415-418` | `ror_country`, `distinctive_token`, `identifier_token`, `domain_ownership`, `gleif_name`, `page_identity`. |
 
-**Provenance of the divergence.** Commit `b19cd1a` states "Adjusted `max_page_content_chars` in
-`config.py` from 3000 to 1500 for better performance." The `Settings` field was changed; the
-`OPTIONAL_VARS_WITH_DEFAULTS` entry, `README.md`, and `.env.example` were not. → record in
-`08_GAPS.md`.
+### 2.2 Enrichment — web, department and page evidence
 
-### 2.2 · `DEPT_PROBE_CROSS_DOMAIN` — code says `false`, `.env.example` says `true`
+| Name | Value | file:line | Effect |
+|---|---|---|---|
+| `_DOMAIN_MAX_ATTEMPTS` | `3` | `enrichment/orchestrator.py:279` | SERP candidates the domain lane may try for one record: the ranker's pick plus two runners-up. |
+| `num_results` (website resolver) | `10` | `enrichment/website_resolver.py:911` | Organic results requested for website resolution. |
+| `num_results` (Tier 2A/2B, person affiliation, lab resolver, dept probe) | `5` | `enrichment/tier2b_dept.py:220`, `enrichment/tier2a_contact.py:337`, `enrichment/person_affiliation.py:133`, `enrichment/lab_resolver.py:80`, `enrichment/orchestrator.py:4904`, `:5037` | Organic results requested per SERP call. |
+| `MAX_FETCHES` | `3` | `enrichment/grounded_resolver.py:83` | Pages the grounded resolver fetches. Past the third organic result the pages stop being about the organisation. |
+| `NUM_RESULTS` | `5` | `enrichment/grounded_resolver.py:88`, consumed at `:374` | Organic results requested by the grounded resolver — wider than `MAX_FETCHES` because a snippet is evidence too. |
+| `_CHILD_MATCH_THRESHOLD` | `70` | `enrichment/orchestrator.py:3632` | rapidfuzz `token_sort_ratio` minimum for matching Name 2 against a parent org's children list. |
+| `_MIN_CONTENT_CHARS` | `120` | `enrichment/page_corroborator.py:123` | Below this much page text the corroboration LLM call is skipped. |
+| `_FOOTER_MAX_CHARS` | `600` | `search/page_fetcher.py:35` | Footer text kept, taken from the tail. |
+| `PageFetcher(timeout=…, max_chars=…)` | `10`, `1500` | `search/page_fetcher.py:134-135` | Constructor defaults; the orchestrator overrides both from `Settings` (`enrichment/orchestrator.py:4131-4135`, `:4144-4148`). |
+| `subdomain_exists(timeout=…)` | `5` | `search/page_fetcher.py:284` | Subdomain probe timeout. |
+| `resolve_final_url(timeout=…)` | `5` | `search/page_fetcher.py:308` | Redirect-resolution timeout. |
+| `SERP_LABEL_RELATION_MIN` | `60.0` | `enrichment/unchanged_state.py:122` | How closely a `serp`-accepted domain's label must resemble Name 1 for that acceptance to count as tying the domain to the name. Below the ownership threshold on purpose: it separates an organisation's own site from a page about it. |
+| `RATIO_THRESHOLD` | `92` | `enrichment/dept_block.py:112` | Department-unit equivalence. "Physics" and "Physiology" score 82 and stay two units; a one-character typo is one. |
+| `fuzz.ratio(...) >= 92` | `92` | `enrichment/preprocess.py:2661` | The same equivalence bar inside UC 12 slot dedup. |
+| `score >= 90` / `>= 60` | `90`, `60` | `enrichment/tier2b_dept.py:150` | Tier 2B `name2_match` bands: `exact` / `partial` / `no_match`. |
+| `effective_score >= 95` | `95` | `enrichment/tier2a_contact.py:502` | Tier 2A near-exact band; above it `enrichment_status="verified"`, below `"enriched"`. |
+| `_RESIDUAL_CONFIDENCE_THRESHOLD` | `0.85` | `enrichment/address_processing.py:751` | Minimum LLM confidence for a residual address classification. |
+| `_SAP_NAME_LIMIT` | `140` | `enrichment/issue_detection.py:465`, consumed at `:1389` | Combined SAP name-block length limit. |
+| `NAME_SLOT_COUNT` | `5` | `utils/name_slots.py:35` | SAP name columns carried through the pipeline; `NAME_SLOTS` and `RECORD_NAME_FIELDS` derive from it. |
+| `_SIGNIFICANT_TOKEN_LEN` | `4` | `utils/domain_resolver.py:80` | Minimum token length counting as significant when checking whether a page title or H1 names the organisation. |
+| `_SUBSTANTIVE_MIN_LEN` | `5` | `utils/name_identity.py:167` | Below this length a token with no dictionary standing reads as a code, and its absence from a proposal is not evidence against it. |
+| `_SPELLING_VARIANT_TOKEN_RATIO` | `85.0` | `utils/text_utils.py:1435` | Minimum per-token fuzz ratio for two tokens to count as spelling variants. |
+| `_RATE_LIMIT_BACKOFF_SECONDS` | `5.0` | `enrichment/wikidata.py:655`, consumed at `:681` | Base backoff for a 429 from Wikidata. An order of magnitude longer than the GLEIF client's 0.5 s; the first live 100-row run at concurrency 3 took `HTTPStatusError:429` on 28 of 68 invocations under GLEIF's schedule. |
+| `_MAX_RETRY_AFTER_SECONDS` | `30.0` | `enrichment/wikidata.py:660` | Cap on a server-supplied `Retry-After`; past it the lane reports `wikidata_unavailable`. |
+| non-429 backoff base | `0.5` | `enrichment/wikidata.py:681` | Base backoff for other transient Wikidata failures. |
 
-| Source | Value | Line |
-|--------|-------|------|
-| `OPTIONAL_VARS_WITH_DEFAULTS` | `"false"` | `config.py:114` |
-| `Settings.dept_probe_cross_domain` | `default=False` | `config.py:166-168` |
-| `README.md` env table | `false` | `README.md:1630` |
-| `.env.example` | `DEPT_PROBE_CROSS_DOMAIN=true`, commented "when true (default)" | `.env.example` (Search section) |
+### 2.3 Clustering
 
-**Which wins at runtime.** `Settings.dept_probe_cross_domain` (`config.py:166-168`) is the sole
-consumer (`enrichment/orchestrator.py:1277`); unset, the effective value is **`false`**. But a
-deployment that copies `.env.example` sets the variable to `true` and the cross-domain stage-3
-SERP call runs — doubling SERP spend for unresolved departments relative to the documented
-default. The commit that flipped the default states "`DEPT_PROBE_CROSS_DOMAIN` default →
-`false`" (commit `515cc7c`) and the README records "matches the documented intent"
-(`README.md:1993`); `.env.example` was not updated. `02_ARCHITECTURE.md:509-510` flags the same
-discrepancy from the `Domain_DeptDomain_SearchTerm_Logic.pdf` side. → record in `08_GAPS.md`.
+| Name | Value | file:line | Effect |
+|---|---|---|---|
+| `STREET_NAME_THRESHOLD` | `0.85` | `dedup/address.py:87` | Street cores this close count as the same street. |
+| `ZIP_EDIT_TOLERANCE` | `1` | `dedup/address.py:91` | Edit distance two postal codes may drift and still be one delivery point, transposition included. |
+| `ACRONYM_MAX_LEN` | `6` | `dedup/candidates.py:151` | Longest string still read as an acronym. |
+| `ACRONYM_MIN_LEN` | `3` | `dedup/candidates.py:158` | Shortest. Two characters is a coincidence — "HP" matches the initials of every two-word name beginning H, P. |
+| `ACRONYM_THRESHOLD` | `0.8` | `dedup/candidates.py:159` | Similarity an initialism must reach against a candidate acronym. |
+| `CROSS_SLOT_THRESHOLD` | `0.85` | `dedup/candidates.py:160` | Similarity for a cross-slot name match. |
+| `NAME_VARIANT_MAX_EXTRA_TOKENS` | `1` | `dedup/candidates.py:279`, consumed at `:302-304` | Extra words a superset name may carry and still be one name. One is a variant; four is a different organisation. |
+| `JaroWinkler.similarity(a, b) >= 0.85` | `0.85` | `dedup/candidates.py:298` | Name-variant similarity floor. |
+| `OVERFLOW_THRESHOLD` | `0.92` | `dedup/name_slots.py:109` | How close a rebuilt Name 1 must be to a real one in the block to count as overflow. Higher than the candidate threshold: the rule ends with two rows sharing a signature with no model in between. |
+| `INSTITUTION_THRESHOLD` | `0.85` | `dedup/name_slots.py:112` | How close the Name 2 of an opaque-coded row must be to a real Name 1. |
+| `INSTITUTION_SPLIT_THRESHOLD` | `0.92` | `dedup/name_slots.py:118` | How close a rebuilt name must be to a real institution before the two slots count as one name split in half. |
+| `DEFAULT_SIG_PARTITION_THRESHOLD` | `12` | `dedup/adjudicator.py:39` | Default for `SIG_PARTITION_THRESHOLD`. |
+| `DEFAULT_DEDUP_MAX_CONCURRENCY` | `5` | `dedup/adjudicator.py:40` | Default for `DEDUP_MAX_CONCURRENCY`. |
+| `DEFAULT_NAME_CANDIDATE_THRESHOLD` | `0.85` | `dedup/adjudicator.py:41` | Default for `NAME_CANDIDATE_THRESHOLD`. |
+| `DEFAULT_TOKEN_CANDIDATE_THRESHOLD` | `0.6` | `dedup/adjudicator.py:42` | Default for `TOKEN_CANDIDATE_THRESHOLD`. |
+| `DEFAULT_MAX_CANDIDATES_PER_BLOCK` | `50` | `dedup/adjudicator.py:43` | Default for `MAX_CANDIDATES_PER_BLOCK`. |
 
-### 2.3 · `ROR_CONFIDENCE_THRESHOLD` — read twice, from two places
+Resolution order for the three residue knobs is settings attribute > environment
+variable > module default (`dedup/adjudicator.py:1420-1443`); an unparseable
+environment value logs a warning and falls through to the default (`:1429-1430`).
 
-| Source | Value | Line |
-|--------|-------|------|
-| `Settings.ror_confidence_threshold` | `float(os.getenv(..., "0.8"))` | `config.py:177` |
-| Direct env read in the client | `float(os.getenv(..., "0.8"))` | `enrichment/tier1_ror.py:573` |
-| `OPTIONAL_VARS_WITH_DEFAULTS` | `"0.8"` | `config.py:86` |
+### 2.4 Scoring
 
-**Which wins at runtime.** `enrichment/tier1_ror.py:573` — the matching decision at `:629`,
-`:646` and `:815` uses the value read there, not the `Settings` field. The `Settings` field is
-consumed **only** by the `/tiers` response (`api/routes.py:1111`). Both read the same variable
-with the same literal default, so the two never diverge at runtime; the duplication is
-structural, and a future change to one default alone would make `/tiers` report a threshold
-the matcher does not use.
+| Name | Value | file:line | Effect |
+|---|---|---|---|
+| `WEIGHTS_PATH` | `Path(__file__).parent / "weights.json"` → `dedup/weights.json` | `dedup/scoring.py:45` | The weights table's location. It is at `dedup/weights.json`, not at the repository root. |
+| `DEFAULT_CONFIDENCE_MERGE_THRESHOLD` | `0.95` | `dedup/scoring.py:50` | Default for `CONFIDENCE_MERGE_THRESHOLD`. |
+| `weights_version` digest length | `12` hex characters of `sha256` over canonical JSON | `dedup/scoring.py:641-646` | Written onto every scored row as `scored_with_weights_version` so a proposal and its later approval can be checked for score drift. |
+| tie detection | `len(scores) >= 2 and scores.count(top) >= 2` | `dedup/scoring.py:556` | When the top score is held by two or more members the tie-break runs. |
+| `_cluster_merge_confidence` | minimum of non-`None` member confidences | `dedup/scoring.py:1138-1145` | A cluster is gated if any member joined below threshold. All-`None` returns `None` and never gates. |
 
-### 2.4 · Residue-nomination thresholds — three definition sites each
-
-`NAME_CANDIDATE_THRESHOLD`, `TOKEN_CANDIDATE_THRESHOLD`, and `MAX_CANDIDATES_PER_BLOCK` are
-each declared in `config.py` (`:107-109`, `:229-237`), in `dedup/adjudicator.py` (`:38-40`),
-and in `.env.example`. **All three sites carry identical values** (`0.85`, `0.6`, `50`), so
-there is no value conflict. The resolution order is explicit and settings-first:
-`_resolve_candidate_config` takes the `Settings` attribute if non-`None`, else the environment
-variable, else the module default (`dedup/adjudicator.py:903-926`). The `Settings` fields are
-themselves environment-derived, so in practice **`Settings` wins** whenever a `settings` object
-is passed to `cluster_blocks`; the `dedup/adjudicator.py` defaults only apply when it is not.
-
-### 2.5 · Dedup adjudication `max_tokens` — default never used
-
-`DedupLLM.adjudicate` declares `max_tokens: int = 4000` (`dedup/llm.py:161`), but both
-application call sites pass `max_tokens=1000` (`dedup/adjudicator.py:452`, `:638`). The
-effective value in production is **`1000`**; the `4000` default is reached only by test doubles
-(`tests/test_dedup.py:54,750`).
-
-### 2.6 · Enrichment page size `50` — two coupled literals
-
-The batch size appears twice in the Enrichment pipeline's T-SQL: the offset generator
-`rn * 50 AS offset` (`CONTEXT-EXTERNAL.md:64`) and the page fetch `FETCH NEXT 50 ROWS ONLY`
-(`CONTEXT-EXTERNAL.md:106`). They are not bound to a shared parameter. Changing one without
-the other silently skips or re-processes rows; neither is derived from the other.
-
-### 2.7 · `SIG_PARTITION_THRESHOLD` / `DEDUP_MAX_CONCURRENCY` — env only, no `Settings` field
-
-Unlike the residue knobs, these two are read directly from the environment inside
-`cluster_blocks` (`dedup/adjudicator.py:948-951`) with module-level defaults
-(`dedup/adjudicator.py:36-37`); they have no `Settings` field and no entry in
-`OPTIONAL_VARS_WITH_DEFAULTS`. The env value wins; absent it, the module default.
+Election `election_status` takes `proposed` / `manual_review` / `unique`
+(`dedup/scoring.py:318`) and carries no numeric threshold other than
+`CONFIDENCE_MERGE_THRESHOLD`.
 
 ---
 
-## 3 · Environment variables
+## 3. LLM parameters
 
-Every environment variable read anywhere in the repository — 54 rows covering 56 variables (the
-final row groups the three standard proxy variables). The seven added by Fixes 1 and 3
-(`RETRY_TRACE`, `PAGE_*`) and the eight added by the Stage 2c crosswalk lane (`WIKIDATA_*`) are
-all optional with working defaults; none breaks anything when unset. "Breaks when unset" is read
-from the code path that consumes it. **Secret** marks values that authenticate to an external
-service — the Wikidata lane adds none, because the Action API needs no authentication.
+### 3.1 Sampling — Phase 1 enrichment
 
-| Variable | Default | Secret | Sourced from | What breaks when unset | Defined / read at |
-|----------|---------|--------|--------------|------------------------|-------------------|
-| `AZURE_OPENAI_API_KEY` | *(none — required)* | **yes** | Azure Functions Application Settings in production; `.env` locally (`config.py:1-5`); AI Foundry on the Bruker spoke (`02_ARCHITECTURE.md:389`) | `validate_env` logs a warning at startup but does **not** raise (`config.py:122-135`); `get_openai_client` raises `RuntimeError` on the first LLM call (`llm/openai_client.py:154-159`). Every LLM tier and the dedup adjudicator fail | `config.py:79`, `:155`; `llm/openai_client.py:147` |
-| `AZURE_OPENAI_ENDPOINT` | *(none — required)* | no (but resource-identifying) | as above | Same as `AZURE_OPENAI_API_KEY` — both are checked together (`llm/openai_client.py:154`) | `config.py:80`, `:156`; `llm/openai_client.py:148` |
-| `AZURE_OPENAI_DEPLOYMENT` | `gpt-5.4` | no | Application Settings / `.env` | Nothing — falls back to the literal `gpt-5.4` at three sites (`llm/openai_client.py:199,233`; `dedup/llm.py:121`). Fails at call time if no such deployment exists | `config.py:84`, `:157` |
-| `AZURE_OPENAI_API_VERSION` | `2024-08-01-preview` (Phase 1) / `2025-04-01-preview` (dedup) | no | Application Settings / `.env` | Nothing — per-phase defaults apply | `llm/openai_client.py:151`; `dedup/llm.py:126` |
-| `AOAI_DEPLOYMENT_DEDUP` | falls back to `AZURE_OPENAI_DEPLOYMENT`, then `gpt-5.4` | no | Application Settings / `.env` | Nothing — the adjudicator reuses the Phase 1 deployment | `dedup/llm.py:118` |
-| `AOAI_API_VERSION_DEDUP` | falls back to `AZURE_OPENAI_API_VERSION`, then `2025-04-01-preview` | no | Application Settings / `.env` | Nothing. ⚠ A too-old version makes every block route to `manual_review` with `errors > 0` (`README.md:1675`) | `dedup/llm.py:125` |
-| `DEDUP_REASONING_EFFORT` | `low` | no | Application Settings / `.env` | Nothing. An empty value disables the parameter entirely (`dedup/llm.py:131`) | `dedup/llm.py:122` |
-| `DEDUP_MAX_RETRIES` | `3` | no | Application Settings / `.env` | Nothing | `dedup/llm.py:123` |
-| `SIG_PARTITION_THRESHOLD` | `12` | no | Application Settings / `.env` | Nothing | `dedup/adjudicator.py:949` |
-| `DEDUP_MAX_CONCURRENCY` | `5` | no | Application Settings / `.env` | Nothing | `dedup/adjudicator.py:951` |
-| `NAME_CANDIDATE_THRESHOLD` | `0.85` | no | Application Settings / `.env` | Nothing | `config.py:107`, `:230`; `dedup/adjudicator.py:918` |
-| `TOKEN_CANDIDATE_THRESHOLD` | `0.6` | no | Application Settings / `.env` | Nothing | `config.py:108`, `:233`; `dedup/adjudicator.py:921` |
-| `MAX_CANDIDATES_PER_BLOCK` | `50` | no | Application Settings / `.env` | Nothing | `config.py:109`, `:236`; `dedup/adjudicator.py:924` |
-| `CONFIDENCE_MERGE_THRESHOLD` | `0.95` | no | Application Settings / `.env` | Nothing. A non-numeric value logs "Invalid CONFIDENCE_MERGE_THRESHOLD %r; using %.2f" and falls back (`dedup/scoring.py:1013-1015`) | `config.py:100`, `:224`; `dedup/scoring.py:1008` |
-| `SERPAPI_KEY` | *(none)* | **yes** | `.env` / Application Settings | The service falls back to `DuckDuckGoClient` — "DuckDuckGo returns lower-quality results" (`config.py:141-144`); every SERP-dependent stage (website Path B, department probe, Tier 2A/2B, lab resolver, person affiliation) degrades | `config.py:137`, `:160` |
-| `DEPT_PROBE_CROSS_DOMAIN` | `false` | no | `.env` / Application Settings | Nothing — the probe stops after one SERP call (`enrichment/orchestrator.py:1277-1283`). ⚠ Conflicting `.env.example` value (§2.2) | `config.py:114`, `:167` |
-| `ROR_API_BASE` | `https://api.ror.org/v2/organizations` | no | `.env` / Application Settings | Nothing | `config.py:85`, `:172`; `enrichment/tier1_ror.py:571` |
-| `ROR_CONFIDENCE_THRESHOLD` | `0.8` | no | `.env` / Application Settings | Nothing | `config.py:86`, `:177`; `enrichment/tier1_ror.py:573` |
-| `LEI_LOOKUP_ENABLED` | `true` | no | `.env` / Application Settings | Nothing — GLEIF lookup stays on | `config.py:87`, `:184` |
-| `GLEIF_API_BASE` | `https://api.gleif.org/api/v1` | no | `.env` / Application Settings | Nothing | `config.py:88`, `:187` |
-| `GLEIF_TIMEOUT_SECONDS` | `15` | no | `.env` / Application Settings | Nothing | `config.py:89`, `:190` |
-| `LEI_NAME_MATCH_THRESHOLD` | `88` | no | `.env` / Application Settings | Nothing | `config.py:90`, `:196` |
-| `RETRY_TRACE` | `false` | no | `.env` / Application Settings | Nothing — Stage 5 behaves identically; only the `enrichment.trace.retry` JSON lines are not emitted | `config.py` (`OPTIONAL_VARS_WITH_DEFAULTS`, `Settings.retry_trace`); `enrichment/orchestrator._emit_retry_trace` |
-| `DOMAIN_COUNTRY_GATE_ENABLED` | `true` | no | `.env` / Application Settings | Nothing — the country gate stays on (§1.19a) | `config.py` (`Settings.domain_country_gate_enabled`); `utils/domain_resolver.resolve_domain`, `enrichment/website_resolver` |
-| `SERP_COUNTRY_LOCALISATION_ENABLED` | `true` | no | `.env` / Application Settings | Nothing — the record country still reaches the provider as SerpAPI `gl` | `config.py` (`Settings.serp_country_localisation_enabled`); `utils/cache.cached_serp`; `search/serpapi_client` |
-| `PAGE_CORROBORATION_ENABLED` | `true` | no | `.env` / Application Settings | Nothing — the page-read step stays on | `config.py` (`Settings.page_corroboration_enabled`); `enrichment/orchestrator._corroborate_domain` |
-| `PAGE_NAME_MATCH_THRESHOLD` | `88` | no | `.env` / Application Settings | Nothing | `config.py` (`Settings.page_name_match_threshold`); `enrichment/page_corroborator.compare` |
-| `PAGE_READ_TIMEOUT_SECONDS` | `8` | no | `.env` / Application Settings | Nothing | `config.py` (`Settings.page_read_timeout_seconds`); `search/page_fetcher.PageFetcher.fetch_page_result` |
-| `PAGE_FIXTURE_DIR` | `tests/fixtures/page_reads` | no | `.env` / Application Settings | Nothing — the default path is used. An **empty** value disables the disk layer, so page reads live only in memory and a re-run may reach different corroboration verdicts | `config.py` (`Settings.page_fixture_dir`); `utils.cache.PageCache` |
-| `PAGE_FIXTURE_REPLAY_ONLY` | `false` | no | `.env` / Application Settings | Nothing — live fetching stays enabled | `config.py` (`Settings.page_fixture_replay_only`); `enrichment/page_corroborator.fetch_pages` |
-| `PAGE_EXTRACT_FEEDS_RETRY` | `false` | no | `.env` / Application Settings | Nothing — the optional Stage 5 feed stays off | `config.py` (`Settings.page_extract_feeds_retry`); `enrichment/orchestrator._maybe_feed_retry_from_page` |
-| `WIKIDATA_ENABLED` | `true` | no | `.env` / Application Settings | Nothing — the Stage 2c crosswalk lane stays on | `config.py` (`Settings.wikidata_enabled`); `enrichment/orchestrator._wikidata_crosswalk` |
-| `WIKIDATA_API_BASE` | `https://www.wikidata.org/w/api.php` | no | `.env` / Application Settings | Nothing | `config.py` (`Settings.wikidata_api_base`); `enrichment/wikidata.WikidataClient._get` |
-| `WIKIDATA_TIMEOUT_SECONDS` | `10` | no | `.env` / Application Settings | Nothing | `config.py` (`Settings.wikidata_timeout_seconds`); `enrichment/wikidata.WikidataClient._get` |
-| `WIKIDATA_MAX_RETRIES` | `2` | no | `.env` / Application Settings | Nothing | `config.py` (`Settings.wikidata_max_retries`); `enrichment/wikidata.WikidataClient._get` |
-| `WIKIDATA_SEARCH_LIMIT` | `5` | no | `.env` / Application Settings | Nothing | `config.py` (`Settings.wikidata_search_limit`); `enrichment/wikidata.WikidataClient.search` |
-| `WIKIDATA_FIXTURE_DIR` | `tests/fixtures/wikidata` | no | `.env` / Application Settings | Nothing — the default path is used. An **empty** value disables the disk layer, so a re-run may reach different matching verdicts | `config.py` (`Settings.wikidata_fixture_dir`); `utils.cache.PageCache` (prefix `wikidata`) |
-| `WIKIDATA_FIXTURE_REPLAY_ONLY` | `false` | no | `.env` / Application Settings; forced to `"true"` for the whole test suite by `tests/conftest.py` | Nothing — live querying stays enabled | `config.py` (`Settings.wikidata_fixture_replay_only`); `enrichment/wikidata.WikidataClient._cached` |
-| `WIKIDATA_TRACE` | `false` | no | `.env`; forced to `"true"` by `scripts/run_batch.py --wikidata-trace` | Nothing — the lane behaves identically and the summary counters are still maintained; only the `enrichment.trace.wikidata` JSON lines are not emitted | `config.py` (`Settings.wikidata_trace`); `enrichment/wikidata.resolve` |
-| `LEI_MAX_RETRIES` | `2` | no | `.env` / Application Settings | Nothing | `config.py:91`, `:199` |
-| `FUZZY_MATCH_THRESHOLD` | `80` | no | `.env` / Application Settings | Nothing | `config.py:92`, `:204` |
-| `MAX_PAGE_CONTENT_CHARS` | `1500` effective (⚠ `3000` documented — §2.1) | no | `.env` / Application Settings | Nothing | `config.py:93`, `:209` |
-| `PAGE_FETCH_TIMEOUT_SECONDS` | `10` | no | `.env` / Application Settings | Nothing | `config.py:110`, `:212` |
-| `DEFAULT_MAX_CONCURRENCY` | `5` | no | `.env` / Application Settings | Nothing — and nothing changes when it *is* set, except the `/tiers` response (§5) | `config.py:94`, `:217` |
-| `MOCK_EXTERNAL_CALLS` | `false` | no | `.env` (local dev) | Nothing — real clients are used | `config.py:111`, `:241` |
-| `ENV` | `production` | no | `.env` | Nothing — `load_dotenv()` is unconditional (`config.py:17-22`) | `config.py:112`, `:243` |
-| `LOG_LEVEL` | `INFO` | no | `.env` / Application Settings | Nothing — an unrecognised level silently falls back to `INFO` (`api/middleware.py:85`) | `config.py:113`, `:244` |
-| `LOG_FILE` | *(unset)* → `logs/enrichment_api.log` | no | `.env` / Application Settings | Nothing. An unwritable path logs a warning and keeps console-only logging (`api/middleware.py:109-113`) | `config.py:252`; `api/middleware.py:98` |
-| `WEBSITE_TRACE` | `false` | no | `.env`; forced to `"true"` by `scripts/trace_website.py:32` | Nothing — the diagnostic trace is simply not emitted | `config.py:118`, `:248` |
-| `AZURE_OPENAI_CA_BUNDLE` | *(unset)* | no (a certificate path) | `.env` / Application Settings; the repo ships a corporate CA bundle under `certs/` (`00_INVENTORY.md:26-27`) | Nothing on a normal network. On a TLS-inspecting corporate VPN, ROR / GLEIF / SerpAPI / page fetch / LLM calls fail the handshake with `CERTIFICATE_VERIFY_FAILED` (`enrichment/tier1_ror.py:600-606`; `enrichment/tier1_lei.py:244-250`) | `config.py:53`; `llm/openai_client.py:83` |
-| `REQUESTS_CA_BUNDLE` | *(unset)* | no | OS / corporate image | Nothing. If set to a **non-existent** path it is overwritten at import with the corp bundle or certifi (`config.py:57-64`) | `config.py:57`; `llm/openai_client.py:83` |
-| `SSL_CERT_FILE` | *(unset)* | no | OS / corporate image | Same as `REQUESTS_CA_BUNDLE` | `config.py:57`; `llm/openai_client.py:83` |
-| `LLM_SSL_VERIFY` | `true` | no | `.env` | Nothing. `false` disables TLS verification for LLM calls and logs a loud warning (`llm/openai_client.py:111-115`) | `llm/openai_client.py:110` |
-| `LLM_HTTP_CONNECT_TIMEOUT` | `30` | no | `.env` | Nothing | `llm/openai_client.py:162` |
-| `LLM_HTTP_TIMEOUT` | `60` | no | `.env` | Nothing | `llm/openai_client.py:163` |
-| `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` | *(unset)* | no | Corporate VPN client | Nothing off-VPN. Honoured automatically because `trust_env=True` (`llm/openai_client.py:167`); documented in `.env.example` | consumed by `httpx` via `trust_env` (`llm/openai_client.py:167`) |
+| Name | Value | file:line | Effect | Who sets it |
+|---|---|---|---|---|
+| `LLM_TEMPERATURE` | `0.0` | `llm/openai_client.py:102` | Sampling temperature for every Phase 1 call. A module constant rather than an environment knob: a reproducibility control that can be changed per environment is not a control (`llm/openai_client.py:88-92`). | code |
+| `LLM_TOP_P` | `1.0` | `llm/openai_client.py:103` | Removes nucleus truncation as a second source of variation. | code |
+| `LLM_SEED` | `42` | `llm/openai_client.py:108` | Fixed request seed. The value is arbitrary; only its fixity matters. | code |
+| `_SEED_SUPPORTED` | `True` | `llm/openai_client.py:114`, `:448` | Set to `False` once, process-wide, the first time the deployment rejects `seed`; the parameter is then not sent again. | code (runtime one-shot) |
+| `call_openai(max_tokens=…)` | `500` | `llm/openai_client.py:282` | Default budget for the bare function. | code |
+| `OpenAIClient.extract_json(max_tokens=…)` | `1024` | `llm/openai_client.py:411` | Budget for every enrichment call except the two below. | code |
+| `DEFAULT_AZURE_OPENAI_API_VERSION` | `"2024-08-01-preview"` | `llm/openai_client.py:81` | Phase 1 REST API version when `AZURE_OPENAI_API_VERSION` is unset. | code |
+| JSON retry attempts | `2` | `llm/openai_client.py:462` | One retry when the first response is not valid JSON. | code |
 
-**Secrets summary.** Two variables are secrets: `AZURE_OPENAI_API_KEY` and `SERPAPI_KEY`. Both
-are sourced from Azure Functions Application Settings in production and from a git-ignored
-`.env` locally (`config.py:1-5`); `.env.example` carries placeholders only, and commit `1ce16bd`
-("Remove real API keys from .env.example") records that real keys were once committed there.
-`GET /diag/llm` deliberately reports only the key's presence and length, never its value
-(`api/routes.py:1046-1047`).
+Per-call budgets that differ from the `1024` default:
+
+| Call site | `max_tokens` | file:line |
+|---|---|---|
+| Address residual classification | `200` | `enrichment/address_processing.py:773` |
+| `/diagnostics` LLM smoke call | `50` | `api/routes.py:1595` |
+| `/diagnostics` dedup smoke call | `200` | `api/routes.py:1629` |
+
+Every other `extract_json` caller passes no budget and takes `1024`:
+`enrichment/tier2b_dept.py:264`, `enrichment/tier2a_contact.py:415`,
+`enrichment/tier3_llm.py:120`, `enrichment/tier2_canonical.py:198`,
+`enrichment/company_canonical.py:81`, `enrichment/page_corroborator.py:363`,
+`enrichment/grounded_resolver.py:596`, `enrichment/website_resolver.py:1062`,
+`enrichment/person_affiliation.py:163`, `enrichment/lab_resolver.py:112`,
+`enrichment/overflow_check.py:124`, `enrichment/preprocess.py:3345`.
+`enrichment/grounded_resolver.py:597` is the one site that passes
+`temperature=0.0` explicitly; it equals the default.
+
+The LLM answer is itself cached under a digest of deployment, API version,
+temperature, `top_p`, seed, `max_tokens` and both prompts
+(`llm/openai_client.py:440-452`); under `replay_only` a miss raises
+`LLMUnavailableFrozen` (`:456-459`).
+
+### 3.2 Sampling — Phase 2 adjudication
+
+| Name | Value | file:line | Effect | Who sets it |
+|---|---|---|---|---|
+| `DedupLLM.TEMPERATURE` | `0.0` | `dedup/llm.py:138` | Sent when `reasoning_effort` is not in play. Fixed rather than configurable for the same reason as Phase 1. | code |
+| `DedupLLM.DEFAULT_API_VERSION` | `"2025-04-01-preview"` | `dedup/llm.py:132` | Adjudicator REST API version; GPT-5.x reasoning models and `reasoning_effort` require a newer version than the Phase 1 default. | code |
+| `reasoning_effort` | `"low"` | `dedup/llm.py:148` | Reasoning budget. While it is active, `temperature` is suppressed — on a reasoning deployment the two are mutually exclusive (`dedup/llm.py:9-15`, `:166-169`). | env |
+| `LLM_SEED`, `LLM_TOP_P` | `42`, `1.0` | `dedup/llm.py:30-31` | Imported from the Phase 1 client; each is dropped once, process-wide, if the deployment rejects it (`dedup/llm.py:157-160`, `:260`, `:270`, `:279`). | code |
+| `adjudicate(max_tokens=…)` | `4000` | `dedup/llm.py:195` | Signature default. | code |
+| adjudication call budget | `1000` | `dedup/adjudicator.py:642`, `:911` | What the two adjudication call sites actually pass. | code |
+| retry delay | `0.5 * (2 ** attempt)` | `dedup/llm.py:282` | Exponential backoff between bounded retries. | code |
 
 ---
 
-## 4 · Golden-record scoring weights
+## 4. `dedup/weights.json`
 
-The election model is a headline contribution and is documented here in full so it is
-reproducible from the thesis alone.
+The golden-record scoring weights. The file is at `dedup/weights.json`, not at
+the repository root (`dedup/scoring.py:45`). The scorer holds no points in code;
+`load_weights` reads this file and drops keys beginning `_` as metadata
+(`dedup/scoring.py:649-654`).
 
-### 4.1 · Provenance and agreement status
+Last change to the file:
 
-The weights table is `dedup/weights.json` (58 lines, 11 criteria). Its own header comment
-records the agreement status verbatim:
+```
+$ git log -1 --format='%H %ad %s' --date=short -- dedup/weights.json
+f5c8d8df9db1a6dc3d93f912781849c49383af72 2026-09-05 Dates are not years: four sales-order rules scored 0 on every record
+$ git log -1 --format=%h -- dedup/weights.json
+f5c8d8d
+```
 
-> "Golden-record scoring weights. Editable reference table — the scorer never hardcodes points.
-> Band labels: 'a-b' inclusive range, '>n' strictly greater, 'n+' greater-or-equal, bare number
-> exact, 'X/Y' either literal (case-insensitive). Values with no matching band score 0.
-> UNCONFIRMED (verify with Bernd): combined_presence_bonus value, sales_order_partner_count
-> tiers, account_group DRIT (transcript said DRID; live SAP shows DRIT)."
-> — `dedup/weights.json:2`
+Fingerprint written onto every scored row at this commit:
 
-The industry supervisor is named in code as **Bernd** (Bernd Schnurrer, also named at
-`CONTEXT-EXTERNAL.md:434`). The transcripts record that the scoring specification originated
-with him: "in his original spec, Burn gave me some rules. And he said, for example, on the
-status, if it's an active customer, you need to score it, give it 10 points, or else 0 points.
-If it's a sleeping customer as well, and then depending on how many sales orders there are, you
-need to give it this many." (`Datashaper-Tutorial-Part2.txt:1856`), and "then I had some scores
-for all the factors I got the spec from … Bert" (`Datashaper-Tutorial-Part3.txt:530`).
-("Burn"/"Bert" are transcription variants of the same name.) The transcript also confirms the
-aggregation rule — "we count all these together to get the final score"
-(`Datashaper-Tutorial-Part2.txt:1889`) — and the election rule — "assign the golden record to
-the one with the highest score in the group" (`Datashaper-Tutorial-Part2.txt:1898`).
+```
+$ PYTHONPATH=. python3 -W ignore -c "
+from dedup.scoring import load_weights, weights_version, WEIGHTS_PATH
+w = load_weights()
+print('path      :', WEIGHTS_PATH.relative_to(WEIGHTS_PATH.parent.parent))
+print('criteria  :', len(w))
+print('version   :', weights_version(w))
+"
+path      : dedup/weights.json
+criteria  : 11
+version   : 3147cac47910
+```
 
-⚠ The transcripts do **not** enumerate the per-band point values other than
-`customer_status: active = 10`. For every other criterion the transcript establishes only that a
-specification exists and that the criterion is in it, not the numbers. The numbers below are
-therefore evidenced by `dedup/weights.json` alone.
+`weights_version` is computed over the metadata-stripped mapping
+(`dedup/scoring.py:641-646`, `:1172-1175`), so `_comment` does not enter the
+digest.
 
-### 4.2 · The weights table, verbatim
+### 4.1 Full contents
 
-Every value below is copied from `dedup/weights.json`. "Agreed with supervisor" is `yes` only
-where a repository artefact states the agreement; `⚠ marked UNCONFIRMED in code` where the file
-or the scorer explicitly flags it; `⚠ not stated` otherwise.
+```json
+{
+  "_comment": "Golden-record scoring weights. Editable reference table — the scorer never hardcodes points. Band labels: 'a-b' inclusive range, '>n' strictly greater, 'n+' greater-or-equal, bare number exact, 'X/Y' either literal (case-insensitive). Values with no matching band score 0. The two *_last_used ladders are banded on the OFFSET from the election's reference year (0 = this year, 1 = last year, ...), not on absolute years — a negative offset (future-dated order) matches nothing and scores 0. The three count ladders start at 1, not 0: the source report encodes 'none' as NULL and never as a literal 0, so the first band means 'has activity'. UNCONFIRMED (verify with Bernd): combined_presence_bonus value, sales_order_partner_count tiers, account_group DRIT (transcript said DRID; live SAP shows DRIT).",
+  "sales_order_last_used": {
+    "0": 20,
+    "1": 15,
+    "2": 10,
+    "3": 5
+  },
+  "sales_order_count": {
+    "1-5": 5,
+    "6-10": 15,
+    ">10": 25
+  },
+  "sales_order_partner_last_used": {
+    "0": 20,
+    "1": 15,
+    "2": 10,
+    "3": 5
+  },
+  "sales_order_partner_count": {
+    "1-5": 5,
+    "6-10": 15,
+    ">10": 25
+  },
+  "equipment_count": {
+    "1-3": 5,
+    "4-8": 12,
+    "9-15": 20,
+    ">15": 30
+  },
+  "sleeping_customer": {
+    "No": 15,
+    "Yes": 0
+  },
+  "customer_status": {
+    "active": 10,
+    "blocked": 0
+  },
+  "account_group": {
+    "DRIT": 20,
+    "0002/SHIP2": 15,
+    "0003": 10,
+    "0004": 10,
+    "0005/LIEF/MLIEF": 5
+  },
+  "company_code_count": {
+    "1": 5,
+    "2-4": 15,
+    "5+": 25
+  },
+  "combined_presence_bonus": {
+    "company code AND sales org": 10
+  },
+  "salesforce_instance_count": {
+    "per instance": 10
+  }
+}
+```
 
-| Criterion | Band | Points | Source line | Agreed with industry supervisor? |
-|-----------|------|-------:|-------------|----------------------------------|
-| `sales_order_last_used` | `2026` | `20` | `dedup/weights.json:4` | ⚠ not stated — the criterion is in the spec (`Datashaper-Tutorial-Part2.txt:1886`); these year tiers are not |
-| `sales_order_last_used` | `2025` | `15` | `dedup/weights.json:5` | ⚠ not stated |
-| `sales_order_last_used` | `2024` | `10` | `dedup/weights.json:6` | ⚠ not stated |
-| `sales_order_last_used` | `2023` | `5` | `dedup/weights.json:7` | ⚠ not stated |
-| `sales_order_count` | `0-5` | `5` | `dedup/weights.json:10` | ⚠ not stated |
-| `sales_order_count` | `6-10` | `15` | `dedup/weights.json:11` | ⚠ not stated |
-| `sales_order_count` | `>10` | `25` | `dedup/weights.json:12` | ⚠ not stated |
-| `sales_order_partner_last_used` | `2026` | `20` | `dedup/weights.json:15` | ⚠ not stated |
-| `sales_order_partner_last_used` | `2025` | `15` | `dedup/weights.json:16` | ⚠ not stated |
-| `sales_order_partner_last_used` | `2024` | `10` | `dedup/weights.json:17` | ⚠ not stated |
-| `sales_order_partner_last_used` | `2023` | `5` | `dedup/weights.json:18` | ⚠ not stated |
-| `sales_order_partner_count` | `0-5` | `5` | `dedup/weights.json:21` | ⚠ **marked UNCONFIRMED in code** — `dedup/weights.json:2`; "UNCONFIRMED: partner count tiers mirror sales order count. CONFIRM w/ Bernd." (`dedup/scoring.py:873`) |
-| `sales_order_partner_count` | `6-10` | `15` | `dedup/weights.json:22` | ⚠ **marked UNCONFIRMED in code** (as above) |
-| `sales_order_partner_count` | `>10` | `25` | `dedup/weights.json:23` | ⚠ **marked UNCONFIRMED in code** (as above) |
-| `equipment_count` | `0-3` | `5` | `dedup/weights.json:26` | ⚠ not stated — the criterion is in the spec ("how many equipments are linked to the customer", `Datashaper-Tutorial-Part2.txt:1886`); the tiers are not |
-| `equipment_count` | `4-8` | `12` | `dedup/weights.json:27` | ⚠ not stated |
-| `equipment_count` | `9-15` | `20` | `dedup/weights.json:28` | ⚠ not stated |
-| `equipment_count` | `>15` | `30` | `dedup/weights.json:29` | ⚠ not stated |
-| `sleeping_customer` | `No` | `15` | `dedup/weights.json:32` | ⚠ not stated — the criterion is in the spec ("If it's a sleeping customer as well", `Datashaper-Tutorial-Part2.txt:1856`); the points are not |
-| `sleeping_customer` | `3-4` | `5` | `dedup/weights.json:33` | ⚠ not stated |
-| `sleeping_customer` | `>5` | `0` | `dedup/weights.json:34` | ⚠ not stated |
-| `customer_status` | `active` | `10` | `dedup/weights.json:37` | **yes** — "on the status, if it's an active customer, you need to score it, give it 10 points, or else 0 points" (`Datashaper-Tutorial-Part2.txt:1856`) |
-| `customer_status` | `blocked` | `0` | `dedup/weights.json:38` | **yes** — "or else 0 points" (as above) |
-| `account_group` | `DRIT` | `20` | `dedup/weights.json:41` | ⚠ **marked UNCONFIRMED in code** — "account_group DRIT (transcript said DRID; live SAP shows DRIT)" (`dedup/weights.json:2`) |
-| `account_group` | `0002/SHIP2` | `15` | `dedup/weights.json:42` | ⚠ not stated |
-| `account_group` | `0003` | `10` | `dedup/weights.json:43` | ⚠ not stated |
-| `account_group` | `0004` | `10` | `dedup/weights.json:44` | ⚠ not stated |
-| `account_group` | `0005/MLIEF` | `5` | `dedup/weights.json:45` | ⚠ not stated |
-| `company_code_count` | `1` | `5` | `dedup/weights.json:48` | ⚠ not stated |
-| `company_code_count` | `2-4` | `15` | `dedup/weights.json:49` | ⚠ not stated |
-| `company_code_count` | `5+` | `25` | `dedup/weights.json:50` | ⚠ not stated |
-| `combined_presence_bonus` | `company code AND sales org` | `10` | `dedup/weights.json:53` | ⚠ **marked UNCONFIRMED in code** — "UNCONFIRMED (verify with Bernd): combined_presence_bonus value" (`dedup/weights.json:2`); "UNCONFIRMED bonus value; sales org has no standalone tier." (`dedup/scoring.py:912`) |
-| `salesforce_instance_count` | `per instance` | `10` | `dedup/weights.json:56` | ⚠ not stated |
+### 4.2 Band grammar and maxima
 
-**Theoretical maximum.** Summing the highest band of each criterion — 20 + 25 + 20 + 25 + 30 +
-15 + 10 + 20 + 25 + 10 = **200 points**, plus `salesforce_instance_count` at 10 points **per
-instance** across up to 8 slots (`dedup/scoring.py:75`, `:918-920`), i.e. up to 80 further
-points. ⚠ This arithmetic is derived from the table above, not read from any file; no code or
-document states a maximum.
+Band-label grammar, stated in `_comment` (`dedup/weights.json:2`): `a-b` is an
+inclusive range, `>n` strictly greater, `n+` greater-or-equal, a bare number is
+exact, `X/Y` is either literal case-insensitively, and a value matching no band
+scores 0.
 
-### 4.3 · How the weights are applied
+| Criterion | Bands | Maximum points |
+|---|---|---|
+| `sales_order_last_used` | `0`/`1`/`2`/`3` (offset from the reference year) | 20 |
+| `sales_order_count` | `1-5`, `6-10`, `>10` | 25 |
+| `sales_order_partner_last_used` | `0`/`1`/`2`/`3` (offset) | 20 |
+| `sales_order_partner_count` | `1-5`, `6-10`, `>10` | 25 |
+| `equipment_count` | `1-3`, `4-8`, `9-15`, `>15` | 30 |
+| `sleeping_customer` | `No`, `Yes` | 15 |
+| `customer_status` | `active`, `blocked` | 10 |
+| `account_group` | `DRIT`, `0002/SHIP2`, `0003`, `0004`, `0005/LIEF/MLIEF` | 20 |
+| `company_code_count` | `1`, `2-4`, `5+` | 25 |
+| `combined_presence_bonus` | `company code AND sales org` | 10 |
+| `salesforce_instance_count` | `per instance` (multiplied by instance count) | unbounded |
 
-| Mechanism | Behaviour | Source |
-|-----------|-----------|--------|
-| Table loading | `load_weights()` reads `dedup/weights.json` and drops keys beginning `_` as metadata | `dedup/scoring.py:43`, `:618-623` |
-| Numeric band matching | `"a-b"` inclusive range; `">n"` strictly greater; `"n+"` greater-or-equal; a bare number is an exact match. No match (including `None`) scores 0 | `dedup/scoring.py:725-751` |
-| Label band matching | Case-insensitive (`casefold`); `"X/Y"` matches either literal. `None` scores 0 silently; a present-but-unrecognised value scores 0 with a warning when `warn_unknown` | `dedup/scoring.py:754-780` |
-| Single-band criteria | `combined_presence_bonus` and `salesforce_instance_count` take the sole band's value | `dedup/scoring.py:783-785` |
-| `combined_presence_bonus` condition | Awarded only when `company_codes > 0 AND sales_orgs > 0` | `dedup/scoring.py:913-917` |
-| `salesforce_instance_count` | `sf_instances * 10` — 10 points **per** non-empty Salesforce id slot, across `sf1…sf8` | `dedup/scoring.py:75`, `:713-717`, `:918-920` |
-| Derived counts | `company_code_count`, `sales_org_count`, `salesforce_instance_count` are always derived from the consolidated `";"`-delimited fields / id slots, never read from the file | `dedup/scoring.py:698-718` |
-| Total | `sum(breakdown.values())` — no normalisation, no weighting of criteria against each other | `dedup/scoring.py:975` |
-| G1 recency-dominance gate | A sales-order **count** component scores 0 unless the row's last-used year equals the cluster maximum; a row with no year never receives count points; a `None` cluster maximum (singleton) awards | `dedup/scoring.py:792-810`, `:852-889` |
-| Election | One winner per cluster by `_tiebreak_key`; every election is a **proposal**, never auto-committed | `dedup/scoring.py:939-955`, `:1033-1052`, `:1046-1047` |
-| Drift detection | `weights_version` (12-hex sha256 of the canonical JSON) is written onto every scored row | `dedup/scoring.py:610-615` |
+The two `*_last_used` ladders band on the offset from the election's reference
+year, not on absolute years; a negative offset matches nothing and scores 0. The
+three count ladders start at 1, not 0, because the source report encodes "none"
+as NULL and never as a literal 0.
 
-**G1 — the one weighting rule with a recorded rationale.** The recency gate is the only part of
-the model whose *reason* is documented rather than only its value:
+⚠ UNVERIFIED — the file's own `_comment` marks three entries as unconfirmed:
+`combined_presence_bonus`'s value, `sales_order_partner_count`'s tiers, and
+`account_group`'s `DRIT` key (the transcript reads `DRID`; live SAP shows
+`DRIT`). Verification is with Bernd (`dedup/weights.json:2`).
 
-> "Bernd's rule: the count is always 'in relation to the year' — it only differentiates records
-> sharing the most-recent year, and 'does not define what is the golden record, it just adds
-> something'." — `dedup/scoring.py:795-797`
+### 4.3 Weights overrides at request time
 
-> "G1: count only 'adds something' when this row owns the cluster's most recent year —
-> otherwise an older, higher-volume record could out-score a more recent one, which Bernd said
-> must never happen." — `dedup/scoring.py:852-854`
-
-Commit `c18921d` ("Refactor scoring logic to align with Bernd's year-priority rule") records
-when this was implemented; commit `994fb3b` ("Enhance scoring logic to prevent false recency
-suppression warnings") records the follow-up that limits the suppression warning to genuine
-recency losses (`dedup/scoring.py:860-869`).
-
-### 4.4 · ⚠ Divergence from the DATAshaper-side implementation
-
-The DATAshaper prototype of the same scoring model uses a **month-difference** banding for
-sales-order recency, not the calendar-year tiers in `dedup/weights.json`:
-
-> "when there's never been a sales order and it's zero, when it's between 0 and 9 months, then
-> it's 25. Between 20 and 24, it's 15. Else it's 5."
-> — `Datashaper-Tutorial-Part3.txt:527` (restated at `Datashaper-Tutorial-Part2.txt:1880` as
-> "when it's between 0 and 9, then it's 25. When it's between 10 and 24, then it's 15. Else it's
-> 5.")
-
-Three differences follow: (a) the DS bands are relative to the current date, the repository's
-are absolute calendar years; (b) the DS top band is **25** points, `dedup/weights.json:4` gives
-**20**; (c) the two transcript passages disagree with each other on the middle band's lower
-bound (`10` vs `20` months). ⚠ Which of the two models is authoritative for the thesis, and
-whether the repository's year tiers were re-agreed, is not evidenced anywhere in the repository
-— author to supply. → record in `08_GAPS.md`.
-
-### 4.5 · Fields the model deliberately excludes
-
-`ZFIS` is absent from the criteria by design: "ZFIS is deliberately absent: it is a separate
-upstream gate that runs before enrichment; those records never reach dedup."
-(`dedup/scoring.py:15-16`). This matches the workflow's step 1 ZFI exclusion
-(`CONTEXT-EXTERNAL.md:418,434`), whose own rationale is ⚠ not recorded.
-
-`blocked` customers score 0 on `customer_status` but remain **eligible to win**: "'blocked'
-scores 0 but stays ELIGIBLE to win — a differentiator, not an eligibility exclusion. Absent
-status is never defaulted to 'active'." (`dedup/scoring.py:897-898`).
+An override is all-or-nothing: every (criterion, band) pair in
+`dedup/weights.json` must be present with a numeric Points value, or the
+override is rejected (`dedup/scoring.py:657-665`). The rule is shared by the
+JSON `/api/dedup/score` body and the `/api/dedup/score/file` Weights sheet.
 
 ---
 
-## 5 · Parameters defined but not consumed
+## 5. Tunable vocabularies
 
-Recorded because a thesis reproduction would otherwise assume they take effect.
+Word lists and mappings whose membership changes acceptance decisions. Contents
+are enumerated in Pass 16; sizes here are measured, not stated.
 
-| Parameter | Declared at | Why it has no effect |
-|-----------|-------------|----------------------|
-| `OpenAIClient.extract_json(temperature=0.0)` | `llm/openai_client.py:262` | The argument is accepted but never forwarded — `call_openai` is invoked without it (`llm/openai_client.py:272-275`) and hardcodes `temperature=0.0` in the request body (`llm/openai_client.py:205`). Setting a non-zero temperature through this parameter changes nothing |
-| `OPTIONAL_VARS_WITH_DEFAULTS` | `config.py:83-119` | A documentation dictionary. `validate_env` reads only `REQUIRED_VARS` and `SERPAPI_KEY` (`config.py:128,137`); every default actually applied comes from the `Settings` field's `os.getenv(..., "…")` call. The dictionary's `MAX_PAGE_CONTENT_CHARS` entry therefore documents a value the code does not use (§2.1) |
-| `Settings.default_max_concurrency` | `config.py:216-218` | Consumed only by the `/tiers` response (`api/routes.py:1115`). The actual semaphore uses `options.max_concurrency` from the request (`enrichment/orchestrator.py:797`), whose default is the independent literal `5` at `api/models.py:289` and `api/routes.py:521`. Changing `DEFAULT_MAX_CONCURRENCY` does not change how many records run concurrently |
-| `Settings.ror_confidence_threshold` | `config.py:176-178` | Consumed only by `/tiers` (`api/routes.py:1111`); the matching decision reads the environment variable directly (`enrichment/tier1_ror.py:573`) — see §2.3 |
-| `DedupLLM.adjudicate` default `max_tokens=4000` | `dedup/llm.py:161` | Both application call sites override it with `1000` — see §2.5 |
-| `PageFetcher` default args `timeout=10, max_chars=1500` | `search/page_fetcher.py:69` | The orchestrator always constructs `PageFetcher` with both values passed explicitly from `Settings` (`enrichment/orchestrator.py:739-742,748-751`); the defaults are reached only by tests (`tests/mocks/page_mock.py:80`) |
-| ADF `retryIntervalInSeconds: 30` | `CONTEXT-EXTERNAL.md:56` and six further sites | Inert while `retry: 0` on every activity — there is no retry to space out |
+```
+$ PYTHONPATH=. python3 -W ignore scratchpad/vocab_count.py
+enrichment.tier1_ror._COMMON_DOMAIN_WORDS	38
+enrichment.tier1_ror._CONNECTOR_WORDS	43
+enrichment.tier1_ror.ROR_RESEARCH_TYPES	7
+enrichment.tier1_ror._LEGAL_SUFFIX_SUBS	8
+enrichment.tier1_lei._LEGAL_FORM_TOKENS	34
+enrichment.registry_match._LEGAL_FORM_ALIASES	4
+enrichment.issue_detection._NONCANON_TOKENS	32
+enrichment.issue_detection._POSTAL_FORMATS	3
+enrichment.page_corroborator.IMPRINT_PATHS	4
+enrichment.page_corroborator._PARKING_MARKERS	15
+enrichment.page_corroborator._CHALLENGE_MARKERS	10
+enrichment.liveness.GLEIF_DEAD_ENTITY_STATUS	1
+enrichment.liveness.GLEIF_DEAD_REGISTRATION_STATUS	2
+enrichment.liveness.ROR_DEAD_STATUS	1
+dedup.candidates.LEGAL_SUFFIXES	38
+dedup.candidates.CORPORATE_STRUCTURE_WORDS	16
+dedup.candidates._ACRONYM_STOPWORDS	5
+dedup.name_slots.LOGISTICS_TERMS	15
+dedup.name_slots._CONTINUATION_NOUNS	31
+dedup.name_slots._DANGLING_CONNECTORS	8
+dedup.address.STREET_TYPES	23
+dedup.address.DIRECTIONALS	9
+search.page_fetcher.REMOVE_TAGS	8
+```
+
+The script is reproduced verbatim at the end of this section.
+
+| Vocabulary | Entries | file:line | Effect |
+|---|---|---|---|
+| `_COMMON_DOMAIN_WORDS` | 38 | `enrichment/tier1_ror.py:562` | Tokens that describe an organisation's type rather than name it; excluded from the distinctive-token guard so a four-letter legal form cannot cap a candidate. |
+| `_CONNECTOR_WORDS` | 43 | `enrichment/tier1_ror.py:619` | Articles, prepositions and conjunctions. A connector never says which organisation, so it cannot cap a candidate however long it is. |
+| `ROR_RESEARCH_TYPES` | 7 | `enrichment/tier1_ror.py:52` | ROR organisation types the research branch accepts. |
+| `_LEGAL_SUFFIX_SUBS` | 8 | `enrichment/tier1_ror.py:219` | Legal-suffix substitutions applied before comparison. |
+| `_WORDLIKE_POSTAL_CODES` | `{"hi","in","or","ok","me","la","de"}` | `enrichment/tier1_ror.py:171` | Two-letter tokens that read as words as well as postal codes. |
+| `_LEGAL_FORM_TOKENS` | 34 | `enrichment/tier1_lei.py:82` | Legal-form tokens dropped before a GLEIF name is measured. Also the source for `registry_match._legal_form_tokens()` (`enrichment/registry_match.py:70-73`). |
+| `_LEGAL_FORM_ALIASES` | 4 | `enrichment/registry_match.py:237` | Legal-form aliases folded together. |
+| `_NONCANON_TOKENS` | 32 | `enrichment/issue_detection.py:759` | Tokens marking a non-canonical unit name. |
+| `_UNIT_EXEMPT_TOKENS` | `{"dept","div","inst"}` | `enrichment/issue_detection.py:777` | Unit abbreviations exempt from the non-canonical rule. |
+| `_ORG_EXEMPT_TOKENS` | `{"inst"}` | `enrichment/issue_detection.py:778` | Organisation-level exemption. |
+| `_POSTAL_FORMATS` | 3 | `enrichment/issue_detection.py:953` | Country postal-code patterns validated. |
+| `_TRUTHY` (issue detection) | `{"true","yes","y","x","1"}` | `enrichment/issue_detection.py:1456` | Values read as set in a boolean input column. |
+| `IMPRINT_PATHS` | 4 | `enrichment/page_corroborator.py:89` | `/impressum`, `/legal`, `/about`, `/contact` — the imprint probe's paths. |
+| `_PARKING_MARKERS` | 15 | `enrichment/page_corroborator.py:103` | Markers identifying a parked domain. |
+| `_CHALLENGE_MARKERS` | 10 | `enrichment/page_corroborator.py:113` | Markers identifying a bot-challenge interstitial. |
+| `ACTIONABLE_LOCATION_SCOPES` | `{"region","country"}` | `enrichment/page_corroborator.py:479` | Location-contradiction scopes that act. |
+| `GLEIF_DEAD_ENTITY_STATUS` | `{"INACTIVE"}` | `enrichment/liveness.py:107` | GLEIF entity status counting as dead. |
+| `GLEIF_DEAD_REGISTRATION_STATUS` | `{"RETIRED","MERGED"}` | `enrichment/liveness.py:112` | GLEIF registration status counting as dead. |
+| `ROR_DEAD_STATUS` | `{"inactive"}` | `enrichment/liveness.py:116` | ROR status counting as dead. |
+| `LEGAL_SUFFIXES` | 38 | `dedup/candidates.py:30` | Suffixes stripped before name comparison in nomination. |
+| `CORPORATE_STRUCTURE_WORDS` | 16 | `dedup/candidates.py:268` | Words marking a corporate-structure difference. |
+| `_ACRONYM_STOPWORDS` | 5 | `dedup/candidates.py:147` | `of`, `the`, `and`, `for`, `&` — dropped before initials are taken, so "University of Texas" initialises to UT. |
+| `LOGISTICS_TERMS` | 15 | `dedup/name_slots.py:67` | Logistics/admin markers stripped from a name slot. |
+| `_CONTINUATION_NOUNS` | 31 | `dedup/name_slots.py:93` | Nouns marking a Name 2 that continues Name 1. |
+| `_DANGLING_CONNECTORS` | 8 | `dedup/name_slots.py:104` | Words a truncated Name 1 ends on. |
+| `STREET_TYPES` | 23 | `dedup/address.py:54` | Street-type normalisation map. |
+| `DIRECTIONALS` | 9 | `dedup/address.py:71` | Directional normalisation map. `STREET_SUFFIXES` is their union (`dedup/address.py:78`). |
+| `REMOVE_TAGS` | 8 | `search/page_fetcher.py:27` | HTML tags stripped before text extraction. |
+
+The counting script, written for this pass and not committed:
+
+```python
+import importlib
+TARGETS = [
+    ("enrichment.tier1_ror", "_COMMON_DOMAIN_WORDS"),
+    ("enrichment.tier1_ror", "_CONNECTOR_WORDS"),
+    ("enrichment.tier1_ror", "ROR_RESEARCH_TYPES"),
+    ("enrichment.tier1_ror", "_LEGAL_SUFFIX_SUBS"),
+    ("enrichment.tier1_lei", "_LEGAL_FORM_TOKENS"),
+    ("enrichment.registry_match", "_LEGAL_FORM_ALIASES"),
+    ("enrichment.issue_detection", "_NONCANON_TOKENS"),
+    ("enrichment.issue_detection", "_POSTAL_FORMATS"),
+    ("enrichment.page_corroborator", "IMPRINT_PATHS"),
+    ("enrichment.page_corroborator", "_PARKING_MARKERS"),
+    ("enrichment.page_corroborator", "_CHALLENGE_MARKERS"),
+    ("enrichment.liveness", "GLEIF_DEAD_ENTITY_STATUS"),
+    ("enrichment.liveness", "GLEIF_DEAD_REGISTRATION_STATUS"),
+    ("enrichment.liveness", "ROR_DEAD_STATUS"),
+    ("dedup.candidates", "LEGAL_SUFFIXES"),
+    ("dedup.candidates", "CORPORATE_STRUCTURE_WORDS"),
+    ("dedup.candidates", "_ACRONYM_STOPWORDS"),
+    ("dedup.name_slots", "LOGISTICS_TERMS"),
+    ("dedup.name_slots", "_CONTINUATION_NOUNS"),
+    ("dedup.name_slots", "_DANGLING_CONNECTORS"),
+    ("dedup.address", "STREET_TYPES"),
+    ("dedup.address", "DIRECTIONALS"),
+    ("search.page_fetcher", "REMOVE_TAGS"),
+]
+for mod, name in TARGETS:
+    print(f"{mod}.{name}\t{len(getattr(importlib.import_module(mod), name))}")
+```
 
 ---
 
-## 6 · Parameters required before the code freeze
+## 6. Request, orchestration and database parameters
 
-Enumerated so the thesis records what is not yet fixed. All are open items already tracked in
-`CONTEXT-EXTERNAL.md:439-448`.
+### 6.1 HTTP request options
 
-1. **Address-validation confidence threshold** (`80%`) — the value is [AUTHOR]-stated only
-   (`CONTEXT-EXTERNAL.md:423`); the implementing ADF pipeline is not exported
-   (`CONTEXT-EXTERNAL.md:442`) and no repository code applies it. ⚠ The comparison operator and
-   the validating service are unevidenced.
-2. **Azure Functions hosting plan and its HTTP timeout ceiling** — `host.json` sets no
-   `functionTimeout` (`host.json:1-20`), so the platform default for an unconfirmed plan bounds
-   every `/enrich` call (`CONTEXT-EXTERNAL.md:446`).
-3. **ADF retry policy above 0** on the Enrichment `Web1` and `Merge Back` activities
-   (`CONTEXT-EXTERNAL.md:194-197`).
-4. **Group-code predicate** on all three Lookup activities (`CONTEXT-EXTERNAL.md:194-197`,
-   `:312-314`) — a parameterisation, currently absent from both exports.
-5. **`enriched_at` watermark** so the Enrichment `Lookup1` selects only unenriched rows
-   (`CONTEXT-EXTERNAL.md:194-197`).
-6. **Deduplication `block_id` batching parameter** replacing the whole-table Lookup
-   (`CONTEXT-EXTERNAL.md:312-314`).
-7. **`sales_order_partner_count` tiers, `combined_presence_bonus` value, and `account_group`
-   `DRIT`** — flagged UNCONFIRMED in `dedup/weights.json:2` and `dedup/scoring.py:873,912`.
-8. **Tie-break ordering** — flagged "UNCONFIRMED ordering (confirm with Bernd)"
-   (`dedup/scoring.py:942`).
-9. **Reconciliation of the year-tier vs month-difference recency banding** (§4.4).
+| Name | Value | file:line | Effect | Who sets it |
+|---|---|---|---|---|
+| `EnrichmentOptions.max_concurrency` | `5`, constrained `ge=1, le=20` | `api/models.py:306` | Per-request concurrency for `/enrich`. Consumed at `api/routes.py:121`, `:742`. | request |
+| `EnrichmentOptions.serp_provider` | `"serpapi"`, one of `serpapi` \| `duckduckgo` | `api/models.py:307` | Search provider for the request. | request |
+| `EnrichmentOptions.skip_tier` | `None` | `api/models.py:308` | Skips one tier. | request |
+| `EnrichmentRequest.records` | `min_length=1` | `api/models.py:313` | At least one record per request. | request |
+| `/enrich/file` `max_concurrency` | `5`, `ge=1, le=20` | `api/routes.py:703` | Query parameter equivalent for the file endpoint. | request |
+| `/enrich/file` `serp_provider` | `"serpapi"` | `api/routes.py:704` | Query parameter equivalent. | request |
+| `/enrich/file` `skip_tier` | `None` | `api/routes.py:705` | Query parameter equivalent. | request |
+
+### 6.2 ADF pipeline parameters and activity policies
+
+Four pipelines are exported (`adf/enrichment_pipeline.json`,
+`adf/issues_pipeline.json`, `adf/deduplication_pipeline.json`,
+`adf/scoring_pipeline.json`). All four take the same two parameters and carry
+identical activity policies.
+
+| Name | Value | file:line | Effect | Who sets it |
+|---|---|---|---|---|
+| `chrEntity` | `string`, no default | `adf/enrichment_pipeline.json:157-159`, `adf/issues_pipeline.json:107-109`, `adf/deduplication_pipeline.json:107-109`, `adf/scoring_pipeline.json:107-109` | DS entity the run targets. | ADF |
+| `chrGroupCode` | `string`, no default | `adf/enrichment_pipeline.json:160-162`, `adf/issues_pipeline.json:110-112`, `adf/deduplication_pipeline.json:110-112`, `adf/scoring_pipeline.json:110-112` | Group code the run targets. | ADF |
+| activity `timeout` | `"0.12:00:00"` | `adf/enrichment_pipeline.json:10`, `:57`, `:92`, `:128`; `adf/issues_pipeline.json:10`, `:45`, `:81`; `adf/deduplication_pipeline.json:10`, `:45`, `:81`; `adf/scoring_pipeline.json:10`, `:45`, `:81` | 12 hours per activity. | ADF |
+| activity `retry` | `0` | same lines +1 | No activity-level retry. | ADF |
+| activity `retryIntervalInSeconds` | `30` | same lines +2 | Interval that would apply if `retry` were raised. | ADF |
+| `secureInput` / `secureOutput` | `false` | same lines +3, +4 | Activity inputs and outputs are logged. | ADF |
+| `httpRequestTimeout` | `"00:10:00"` | `adf/enrichment_pipeline.json:104`, `adf/issues_pipeline.json:57`, `adf/deduplication_pipeline.json:57`, `adf/scoring_pipeline.json:57` | 10 minutes per Web activity call. | ADF |
+| Lookup `firstRowOnly` | `false` | `adf/enrichment_pipeline.json:30`, `:77`; `adf/issues_pipeline.json:30`; `adf/deduplication_pipeline.json:30`; `adf/scoring_pipeline.json:30` | Lookups return every row. | ADF |
+| `ForEach1.isSequential` | `true` | `adf/enrichment_pipeline.json:50` | The enrichment pipeline's batch loop runs one iteration at a time. The other three pipelines have no ForEach. | ADF |
+| Web activity URL | `https://mdm-pipeline-api.azurewebsites.net/enrich` | `adf/enrichment_pipeline.json:105` | Enrichment endpoint. | ADF |
+| Web activity URL | `https://mdm-pipeline-api.azurewebsites.net/issues/json` | `adf/issues_pipeline.json:58` | Issues endpoint. | ADF |
+| Web activity URL | `https://mdm-pipeline-api.azurewebsites.net/api/dedup/cluster-block` | `adf/deduplication_pipeline.json:58` | Clustering endpoint. | ADF |
+| Web activity URL | `https://mdm-pipeline-api.azurewebsites.net/api/dedup/score` | `adf/scoring_pipeline.json:58` | Scoring endpoint. | ADF |
+
+### 6.3 Function App host
+
+| Name | Value | file:line | Effect | Who sets it |
+|---|---|---|---|---|
+| `version` | `"2.0"` | `host.json:2` | Functions runtime major version. | code |
+| `logging.applicationInsights.samplingSettings.isEnabled` | `true` | `host.json:6` | App Insights sampling on. | code |
+| `samplingSettings.excludedTypes` | `"Request"` | `host.json:7` | Requests are exempt from sampling. | code |
+| `extensions.http.routePrefix` | `""` | `host.json:13` | No `/api` route prefix; routes are as declared. | code |
+| `extensionBundle.version` | `"[4.*, 5.0.0)"` | `host.json:18` | Extension bundle range. | code |
+
+`host.json` declares no `functionTimeout`, so the platform default for the plan
+applies. ⚠ MEASUREMENT REQUIRED — the effective function timeout is a
+deployment setting and is not in the repository.
+
+### 6.4 Merge-procedure parameters
+
+| Procedure | Parameters | file:line |
+|---|---|---|
+| `[Mapping].[usp_MergeLegacyEnriched]` | `@chrEntity SYSNAME`, `@chrGroupCode NVARCHAR(50)`, `@payload NVARCHAR(MAX)` | `sql/usp_merge_legacy_enriched.sql:1-4` |
+| `[Mapping].[usp_MergeLegacyIssues]` | `@chrEntity SYSNAME`, `@chrGroupCode NVARCHAR(50)`, `@payload NVARCHAR(MAX)`, `@target_column SYSNAME = N'Issues'` | `sql/usp_merge_legacy_issues.sql:1-5` |
+| `[Mapping].[usp_MergeValidationClusters]` | `@chrEntity SYSNAME`, `@chrGroupCode NVARCHAR(50)`, `@payload NVARCHAR(MAX)` | `sql/usp_merge_validation_clusters.sql:1-4` |
+| `[Mapping].[usp_MergeValidationScores]` | `@chrEntity SYSNAME`, `@chrGroupCode NVARCHAR(50)`, `@payload NVARCHAR(MAX)` | `sql/usp_merge_validation_scores.sql:1-4` |
+
+`@target_column` is the one parameter carrying a default: `N'Issues'`
+(`sql/usp_merge_legacy_issues.sql:5`). Derived values inside the procedures —
+the group-code guard pattern and the target table name — are computed, not
+tunable:
+
+| Derived value | Expression | file:line |
+|---|---|---|
+| Group-code pattern | `LTRIM(RTRIM(@chrGroupCode)) + N'\_%'` | `sql/usp_merge_legacy_enriched.sql:27`, `sql/usp_merge_legacy_issues.sql:36`, `sql/usp_merge_validation_clusters.sql:31`, `sql/usp_merge_validation_scores.sql:31` |
+| Legacy target | `N'dp_legacy.' + QUOTENAME(@chrEntity) + N'.Legacy'` | `sql/usp_merge_legacy_enriched.sql:29`, `sql/usp_merge_legacy_issues.sql:38` |
+| Validation target | `QUOTENAME(@db) + N'.' + QUOTENAME(@chrEntity) + N'.Validation'` | `sql/usp_merge_validation_clusters.sql:33`, `sql/usp_merge_validation_scores.sql:33` |
 
 ---
 
-Pass 4 complete. 147 parameter rows across 15 subsystem groups (§1), plus §1.20's 10
-provenance-grammar rows added post-baseline; 7 conflicts recorded (§2);
-40 environment variables enumerated, of which 2 are secrets and 2 are required (§3); 33
-scoring-weight bands documented, of which 2 are evidenced as agreed with the industry
-supervisor, 5 are explicitly flagged UNCONFIRMED in code, and 26 carry no recorded agreement
-(§4); 7 parameters defined but not consumed (§5); 9 parameters required before the freeze (§6).
-Stop.
+## 7. Run-time-derived parameters
+
+Values fixed per run rather than configured. They change the output and are not
+settable.
+
+| Name | Derivation | file:line | Effect |
+|---|---|---|---|
+| Election reference year | `datetime.date.today().year`, resolved once per election | `dedup/scoring.py:1181` | The origin of both `*_last_used` offset ladders. Not resolved at import (a warm Function App instance alive across New Year would score one batch under two ladders) and not per row (a batch straddling midnight on 31 December would band its first and last rows differently). Recorded per row as `scored_with_reference_year` (`dedup/scoring.py:331`, `:1309`, `:1323`). |
+| `scored_with_weights_version` | `weights_version(weights)` | `dedup/scoring.py:1175` | 12-hex digest of the weights table in force. `3147cac47910` at this commit. |
+| Cluster year maxima | `max` over cluster members | `dedup/scoring.py:1197-1200` | Count criteria are cluster-context-dependent; single-member and unclustered rows are scored context-free. |
+| Dedup cache mode | `off` \| `record` \| `replay` | `dedup/cache.py:170-179` | Written into the output workbook so a run served from a recording is distinguishable from one that called the deployment. |
+| `_SEED_SUPPORTED` | `True` until the deployment rejects `seed` | `llm/openai_client.py:114` | Once dropped, `seed` is omitted for the rest of the process and byte-identical re-runs are no longer claimed (`llm/openai_client.py:339-341`). |
+
+---
+
+## 8. Local configuration not in the commit
+
+`.env` is git-ignored (`.gitignore:9`) and is not part of `86d173b`; only
+`.env.example` is tracked. The values below are the local run configuration on
+the machine this pass was produced on, and are recorded because two of them
+differ from the code defaults and because the deployment name appears nowhere in
+the repository. Secrets are redacted.
+
+⚠ NOT IN COMMIT — the following is read from an untracked file.
+
+| Variable | Local value | Code default | file:line |
+|---|---|---|---|
+| `AZURE_OPENAI_API_KEY` | `<redacted>` | `""` | `.env:7` |
+| `AZURE_OPENAI_ENDPOINT` | `https://aif-bbio-marketing-reg-sweden.cognitiveservices.azure.com/` | `""` | `.env:8` |
+| `AZURE_OPENAI_DEPLOYMENT` | `MDM-Apoorva-gpt-5.4` | `gpt-5.4` | `.env:9` |
+| `SERPAPI_KEY` | `<redacted>` | `""` | `.env:12` |
+| `ROR_API_BASE` | `https://api.ror.org/v2/organizations` | same | `.env:15` |
+| `ROR_CONFIDENCE_THRESHOLD` | `0.8` | same | `.env:16` |
+| `FUZZY_MATCH_THRESHOLD` | `80` | same | `.env:19` |
+| `MAX_PAGE_CONTENT_CHARS` | `3000` | `1500` | `.env:20` |
+| `DEFAULT_MAX_CONCURRENCY` | `5` | same | `.env:21` |
+| `PAGE_FETCH_TIMEOUT_SECONDS` | `10` | same | `.env:22` |
+| `MOCK_EXTERNAL_CALLS` | `false` | same | `.env:25` |
+| `ENV` | `local` | `production` | `.env:26` |
+| `LOG_LEVEL` | `INFO` | same | `.env:27` |
+| `DEDUP_V2_BLOCKING` | `true` (trailing space; `_TRUTHY` test strips) | unset → off | `.env:31` |
+| `DEDUP_V2_NAME2` | `true` (trailing space) | unset → off | `.env:32` |
+| `DEDUP_V2_ID_CONFLICT` | `true` (trailing space) | unset → off | `.env:33` |
+
+Every other variable in §1 takes its code default locally. In particular the
+three v2 clustering flags, which are off by default in code, are on in this
+configuration.
+
+---
+
+## 9. Discrepancies and unknowns
+
+Collected for Pass 08.
+
+**9.1 `MAX_PAGE_CONTENT_CHARS` has two stated defaults.**
+`config.py:121` lists `"MAX_PAGE_CONTENT_CHARS": "3000"` and `.env.example:105`
+states `MAX_PAGE_CONTENT_CHARS=3000`, while the field that is actually read
+defaults to `1500` (`config.py:368`). `OPTIONAL_VARS_WITH_DEFAULTS` is not
+consumed by any code path — `grep -rn 'OPTIONAL_VARS_WITH_DEFAULTS'` matches
+only its own definition at `config.py:100` — so the effective default is `1500`
+and the two documented `3000` values are inert. The local `.env` sets `3000`
+(§8), so a run on that machine uses 3000 characters.
+
+**9.2 `DEFAULT_MAX_CONCURRENCY` is reported and never applied.**
+`settings.default_max_concurrency` (`config.py:592-593`) is read at exactly one
+site, the `/config` diagnostics response (`api/routes.py:1656`, model field
+`api/models.py:890`). The concurrency the pipeline actually uses comes from
+`EnrichmentOptions.max_concurrency`, whose default is the literal `5` at
+`api/models.py:306` and `api/routes.py:703`. Raising `DEFAULT_MAX_CONCURRENCY`
+changes the diagnostics output and nothing else.
+
+**9.3 `dept_split_canonicalises` — comment and default disagree.**
+The comment block states "Phase 5 — origin-based Tier 2 eligibility. OFF by
+default." and "Off by default" (`config.py:257`, `:268`); the field defaults to
+`True` (`config.py:290-294`). The same block records that a flip to `True` "was
+gated and REVERTED" while the code at this commit has it on. Code wins: the lane
+is on at `86d173b`.
+
+**9.4 `UNDECIDABLE_WRITES` parsing is substring-based.**
+`(os.getenv("UNDECIDABLE_WRITES") or "").replace("on", "true").replace("off",
+"false")` (`config.py:251-252`) rewrites the substring `on` anywhere in the
+value, not only the whole token. A value that contains `on` for another reason
+is rewritten before `_bool` sees it.
+
+**9.5 Thresholds read from the environment outside `Settings`.**
+`ROR_CONFIDENCE_THRESHOLD` (`enrichment/tier1_ror.py:936`), `ROR_API_BASE`
+(`enrichment/tier1_ror.py:934`, `:1654`, `enrichment/liveness.py:263`) and
+`LEI_NAME_MATCH_THRESHOLD` (`enrichment/orchestrator.py:1776`, `:3100`) are
+read from `os.getenv` directly rather than through the `Settings` snapshot. The
+`enrichment/orchestrator.py:1776` read happens at import, so a variable set
+after the module is imported does not reach `_LEI_NAME_THRESHOLD`.
+
+**9.6 GLEIF defaults are stated in two places.**
+`enrichment/tier1_lei.py:567-570` and `:803-806` repeat `base_url`, `timeout`,
+`max_retries` and `threshold` as function-signature defaults alongside the
+`Settings` values the `LEIClient` passes (`enrichment/tier1_lei.py:919-924`).
+Both sets agree at this commit.
+
+**9.7 Environment variables read by code but absent from `.env.example`.**
+`AZURE_OPENAI_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `SSL_CERT_FILE`,
+`LLM_SSL_VERIFY`, `LLM_HTTP_CONNECT_TIMEOUT`, `LLM_HTTP_TIMEOUT`,
+`LLM_FALLBACK_AUTHORITATIVE`, `UNDECIDABLE_WRITES`, `DEPT_SPLIT_CANONICALISES`,
+`ACCEPTED_DOMAIN_CITY_WITHDRAWAL_ENABLED`, `NAME_FIELD_WIDTH`, `LOG_FILE`,
+`WEBSITE_TRACE`, `RETRY_TRACE`, `DEDUP_V2_BLOCKING`, `DEDUP_V2_NAME2`,
+`DEDUP_V2_ID_CONFLICT`, `DEDUP_FIXTURE_CACHE_DIR`, `DEDUP_FIXTURE_CACHE_MODE`.
+A reader configuring from `.env.example` alone cannot reach them.
+
+**9.8 `weights.json` carries three unconfirmed values.**
+See §4.2. `combined_presence_bonus`, `sales_order_partner_count` and the
+`account_group` `DRIT` key are marked UNCONFIRMED in the file itself
+(`dedup/weights.json:2`).
+
+**9.9 Function timeout is not in the repository.**
+`host.json` sets no `functionTimeout` (`host.json:1-20`). ⚠ MEASUREMENT
+REQUIRED — the value in force is an Azure Function App application setting; the
+Azure portal or `az functionapp config appsettings list` would supply it.
+
+**9.10 ADF activity retry is 0 on every activity.**
+`retry: 0` on all thirteen policy-bearing activities across the four exported
+pipelines — four in `adf/enrichment_pipeline.json` and three in each of the
+other three (§6.2) — with `retryIntervalInSeconds: 30` present but unreachable. A transient failure
+in a Lookup, Web or stored-procedure activity fails the pipeline run.
+
+---
+
+Pass 04 complete: 73 environment-variable rows (§1.1–§1.10) plus 9 CLI flags
+that set them (§1.11), 55 module constants (§2), 18 LLM sampling and budget
+entries (§3), the full `dedup/weights.json` — last changed at `f5c8d8d`, version
+`3147cac47910` (§4), 28 tunable vocabularies with measured sizes (§5), 32
+request / ADF / host / SQL parameters (§6), 5 run-time-derived values (§7), the
+16 local `.env` settings that are not in the commit (§8), and 10 discrepancies
+for Pass 08 (§9).

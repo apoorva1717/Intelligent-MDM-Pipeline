@@ -1,521 +1,556 @@
-Generated: 2026-08-16 · Commit: 515cc7c1a84f55f817d63b4f3f094ce47d57f7fd · Branch: diag/website-trace
+Generated: 2026-09-07 · Commit: 86d173b8a4d715a619b0a2656986c145da7fa81e · Branch: feature/llm-fixes · Pass: 02
 
-# Pass 2 — Architecture
+# Pass 02 — Architecture
 
-This document describes the system as a whole, not the FastAPI service in isolation. The
-service in this repository (`mdm-pipeline-api`) is one component among several: it is invoked
-by Azure Data Factory (ADF) pipelines, reads from and writes to an Azure SQL Managed Instance
-under the control of DATAshaper (DS) stored procedures, and sits between the DS import/legacy/
-validation table progression and a human data steward who approves the final result. The ADF
-pipelines, the SQL Managed Instance and its stored procedures, and the DATAshaper
-configuration are documented here as first-class components.
+Tree state: `git status --porcelain` reports two modified paths,
+`docs/thesis/00_INVENTORY.md` and `docs/thesis/01_TRACEABILITY.md` — the outputs of this
+documentation run written into `docs/thesis/`. `git diff --stat -- . ':!docs/thesis'` is
+empty: no source, test, SQL, ADF or configuration file differs from
+`86d173b8a4d715a619b0a2656986c145da7fa81e`. Every citation below is read at that commit.
 
-Evidence conventions follow Passes 0–1: behavioural claims about the service cite
-`path/file.py:LINE`. Claims about the systems outside this repository cite
-`CONTEXT-EXTERNAL.md:LINE` and respect its provenance markers ([EXPORT] ground truth,
-[OBSERVED] a 2026-08-16 interface observation, [AUTHOR] pending confirmation). DATAshaper
-behaviour additionally cites the vendor onboarding transcripts as
-`Datashaper-Tutorial-PartN.txt` for internal traceability only — these are an internal
-recorded call, not a publishable source. Design-rationale documents at the repository root are
-cited as `Domain_DeptDomain_SearchTerm_Logic.pdf` and `Website_Trace_Findings.pdf`.
+## 2.0 Evidence classes used in this pass
 
-Genuinely absent artefacts are enumerated once in `CONTEXT-EXTERNAL.md` §7 and referenced
-from there rather than re-listed.
+Three systems in the architecture do not live in this repository: Azure Data Factory, the
+Azure SQL Managed Instance, and DATAshaper. Their evidence is of three different kinds and is
+labelled at every use.
 
-Four near-term changes are being implemented before the 2026-08-21 code freeze
-(`CONTEXT-EXTERNAL.md:194-197,312-314`). They are documented here as part of the system, in
-the diagrams and the workflow table. Each sentence asserting one carries a
-`<!-- VERIFY-BY-FREEZE: … -->` comment immediately after it so the claims can be grepped and
-confirmed against the code at freeze.
+| class | meaning | where it comes from |
+|---|---|---|
+| code | read from a file in this repository at this commit | `adf/*.json`, `sql/*.sql`, `api/`, `dedup/`, `enrichment/`, `config.py`, `host.json` |
+| [OBSERVED] | recorded from the DATAshaper Studio interface on 2026-08-16, per that file's own provenance convention | `docs/thesis/CONTEXT-EXTERNAL.md:7–15` |
+| [AUTHOR] | stated by the author, unconfirmed against the system | `docs/thesis/CONTEXT-EXTERNAL.md:12–13` |
 
----
+The ADF sections below are built **from `adf/*.json` only**. `docs/thesis/CONTEXT-EXTERNAL.md`
+also quotes ADF JSON, at §2 and §3; that quotation is an earlier export and disagrees with the
+files at this commit on three points (§2.7, ⚠-24). Where they differ the file in `adf/` wins.
 
-## 1 · Scope, entity, and group-code scoping
+## 2.1 Component diagram
 
-The processed data belongs to one **entity**, `test_77`, realised as the SQL schema name; a
-**group code** identifies one import within that entity (`CONTEXT-EXTERNAL.md:20-29`). The
-`Legacy` and `Validation` tables hold records from **all** group codes under the entity
-(`CONTEXT-EXTERNAL.md:26-28`), so group code is the required scoping predicate for any
-per-import processing. Record codes carry the group code as a prefix (`TEST7_41000009`,
-`TEST10_42000001` — `CONTEXT-EXTERNAL.md:35-36`); the code is formed in the DS legacy mapping
-as `<group code> + '_' + <source key>`, cast to NVARCHAR, and is the stable primary key across
-the Import → Legacy → Validation → load-file progression
-(`Datashaper-Tutorial-Part1.txt:1409-1469`).
+The two halves carry the same `eNN` edge labels. An edge that crosses the two planes appears
+in both. §2.1.3 is the single evidence table for all of them.
 
-Both exported ADF pipelines are to be parameterised by group code, binding `@groupCode` into
-the Lookup predicates so each run processes exactly one import.
-<!-- VERIFY-BY-FREEZE: group-code predicate added to all three Lookup activities (Enrichment Lookup1+Lookup2, Deduplication Lookup1) -->
-As exported (`lastPublishTime` 2026-07-29T12:09:37Z), neither pipeline yet carries a group-code
-predicate: the enrichment Lookups read `test_77.Legacy` unfiltered
-(`CONTEXT-EXTERNAL.md:64,106`) and the deduplication Lookup reads `test_77.Validation`
-unfiltered (`CONTEXT-EXTERNAL.md:226`). The enrichment pipeline's `Lookup2`/`Lookup1` pair and
-the deduplication pipeline's single `Lookup1` are the three Lookup activities the predicate
-must reach.
-
----
-
-## 2 · Component diagram
-
-Protocols/payloads on each edge are cited beneath the diagram. Dashed edges are components
-whose ADF artefact is not exported (`CONTEXT-EXTERNAL.md:439-448`).
+### 2.1a Data plane
 
 ```mermaid
 flowchart TD
-    SAP["SAP S/4HANA (source system)"]
-    PRE["Preprocess + ZFI exclusion\n(script ⚠ not located)"]
-    subgraph TILLIT["Tillit tenant"]
-        DSIMP["DS Import table (bronze)\ntest_77 schema, per group code"]
-        LEG["Legacy table (silver)\nAzure SQL MI"]
-        VAL["Validation table (gold)\nAzure SQL MI\n[Block ID] precomputed by DS address gate"]
-        LOAD["Load file\n(records without mandatory issues)"]
-        DSISSUE["DS issues view\n(steward review)"]
-        DSDEDUP["DS deduplication view\nApply Leading Code (steward)"]
-        ADFENR["ADF Enrichment Pipeline\nLookup2→ForEach(Lookup1→Web1→Merge Back)"]
-        ADFDEDUP["ADF Deduplication Pipeline\nLookup1→Web1→Merge Back"]
-        ADFADDR["ADF Address validation\n(⚠ not exported)"]
-        ADFISS["ADF /issues call\n(⚠ not exported)"]
-    end
-    subgraph BRUKER["Bruker Azure spoke"]
-        API["Function App mdm-pipeline-api\nFastAPI behind Azure Functions ASGI"]
-        FOUNDRY["AI Foundry (Azure OpenAI)"]
-    end
-    EXT["External APIs\nROR · GLEIF/LEI · SerpAPI/DuckDuckGo · page fetch"]
-    APPINS["Application Insights"]
-
-    SAP -->|"e1: manual extract (Excel/CSV)"| PRE
-    PRE -->|"e2: preprocessed file, ZFI removed"| DSIMP
-    DSIMP -->|"e3: DS legacy mapping (T-SQL stored proc)"| LEG
-    LEG -->|"e4: SqlMISource T-SQL, 50-row page"| ADFENR
-    ADFENR -->|"e5: POST /enrich HTTPS JSON {records:[…50]}"| API
-    API -->|"e6: HTTPS per-record"| EXT
-    API -->|"e7: HTTPS chat completions"| FOUNDRY
-    ADFENR -->|"e8: usp_merge_legacy_enriched(payload=string)"| LEG
-    LEG -->|"e9"| ADFADDR
-    ADFADDR -.->|"e10: auto write-back >80% conf"| LEG
-    LEG -->|"e11"| ADFISS
-    ADFISS -.->|"e12: /issues → Issues column"| LEG
-    LEG -->|"e13: DS ProcessValidation (T-SQL)"| VAL
-    VAL -->|"e14: Issues column + DS rules"| DSISSUE
-    VAL -->|"e15: SqlMISource projection T-SQL"| ADFDEDUP
-    ADFDEDUP -->|"e16: POST /api/dedup/cluster-block HTTPS JSON {rows:[…]}"| API
-    API -->|"e17: HTTPS dedup LLM adjudication"| FOUNDRY
-    ADFDEDUP -->|"e18: usp_merge_validation_clusters(payload=string)"| VAL
-    VAL -->|"e19"| DSDEDUP
-    DSDEDUP -->|"e20: POST /api/dedup/score (⚠ not wired in ADF)"| API
-    DSDEDUP -->|"e21: Apply Leading Code ≙ POST /api/dedup/approve"| API
-    VAL -->|"e22: DS load-file mapping"| LOAD
-    API -->|"e23: telemetry"| APPINS
+    SAP[SAP customer master] -->|e01| IMP[DS Import bronze]
+    IMP -->|e02| LEG[dp_legacy entity Legacy silver]
+    LEG -->|e03| ENR[/enrich read/]
+    ENR -->|e06| LEG
+    LEG -->|e07| ISS[/issues read/]
+    ISS -->|e09| LEG
+    LEG -->|e10| VAL[dp_validation entity Validation gold]
+    VAL -->|e11| CLU[cluster-block read]
+    CLU -->|e13| VAL
+    VAL -->|e14| SCO[score read]
+    SCO -->|e16| VAL
+    VAL -->|e17| VIEW[DS issues and dedup views]
+    VIEW -->|e18| STE[Data steward]
+    STE -->|e19| VAL
+    VAL -->|e20| LOAD[Load file]
+    LOAD -->|e21| SAP
 ```
 
-**Edge protocols and payloads**
+### 2.1b Processing plane
 
-- **e1–e2** — Manual extract and preprocessing; the script that reduces the SAP extract to the
-  processable schema and excludes ZFI records is not located (`CONTEXT-EXTERNAL.md:418,444`).
-  ZFI exclusion is on Bernd Schnurrer's instruction with rationale not recorded
-  (`CONTEXT-EXTERNAL.md:434-435`).
-- **e3** — DS Import→Legacy mapping runs as a SQL stored procedure invoked ad-hoc or from ADF
-  (`CONTEXT-EXTERNAL.md:348-352`); every DS process corresponds to a stored procedure
-  (`Datashaper-Tutorial-Part3.txt:752-757`).
-- **e4** — ADF `Lookup1` reads `SELECT * FROM test_77.Legacy ORDER BY Customer OFFSET @offset
-  ROWS FETCH NEXT 50 ROWS ONLY` via `SqlMISource` (`CONTEXT-EXTERNAL.md:104-110`).
-- **e5** — ADF `Web1` POSTs JSON `{"records": <50 legacy rows>}` to
-  `https://mdm-pipeline-api.azurewebsites.net/enrich`, `Content-Type: application/json`
-  (`CONTEXT-EXTERNAL.md:133-143`); handled by `enrich_records` (`api/routes.py:88-89`) — the
-  **JSON** endpoint, not `/enrich/file`.
-- **e6** — Per record the service calls ROR (`enrichment/tier1_ror.py`), GLEIF/LEI
-  (`enrichment/tier1_lei.py`), SerpAPI or DuckDuckGo (`search/serpapi_client.py`,
-  `search/duckduckgo_client.py`), and page fetch (`search/page_fetcher.py`); see Pass 0 §3.1.
-- **e7 / e17** — Azure OpenAI chat completions (`llm/openai_client.py`, `dedup/llm.py`); the
-  deployment name defaults to `gpt-5.4` (`config.py:84,157`).
-- **e8** — `Merge Back` calls `dbo.usp_merge_legacy_enriched` on linked service
-  `ls_sqlmi_legacy`, passing the whole `/enrich` response as one String `payload`
-  (`CONTEXT-EXTERNAL.md:160-176`).
-- **e9–e12** — Address validation (step 6) and the `/issues` call (step 7) have no exported
-  ADF pipeline (`CONTEXT-EXTERNAL.md:442-443`). ⚠ The only `/issues` endpoint in the service
-  consumes a multipart XLSX upload (`detect_file_issues`, `api/routes.py:580-581`), not JSON,
-  so how an ADF Web activity invokes it is unverified — reinforcing that this pipeline is not
-  exported.
-- **e13** — DS Legacy→Validation mapping + validation rules run as `ProcessValidation`
-  (`CONTEXT-EXTERNAL.md:30-32,348-352`).
-- **e14** — DS validation rules read the Issues column and DS also applies its own rules
-  independent of that column (`CONTEXT-EXTERNAL.md:354-361`); see §5.
-- **e15** — ADF `Lookup1` reads a fixed projection of `test_77.Validation` defining the dedup
-  request contract (`CONTEXT-EXTERNAL.md:224-310`); `[Block ID]` is precomputed by the DS
-  address gate and read, not derived, by the service (`CONTEXT-EXTERNAL.md:309-310`).
-- **e16** — ADF `Web1` POSTs JSON `{"rows": <validation rows>}` to
-  `/api/dedup/cluster-block` (`CONTEXT-EXTERNAL.md:253-264`); handled by
-  `dedup_cluster_block` (`api/routes.py:802-803`).
-- **e18** — `Merge Back` calls `dbo.usp_merge_validation_clusters` on `ls_sqlmi_validation`
-  (`CONTEXT-EXTERNAL.md:280-295`).
-- **e20** — Golden-record election `POST /api/dedup/score` (`api/routes.py:896-897`). ⚠ Not
-  invoked by either exported ADF pipeline (see §7); where election is triggered in production
-  is `CONTEXT-EXTERNAL.md:445` open item 5.
-- **e21** — The DS "Apply Leading Code" action (`CONTEXT-EXTERNAL.md:395-399`) corresponds to
-  `POST /api/dedup/approve` (`api/routes.py:946-947`); see §7.
-- **e22** — DS load-file mapping publishes records without mandatory issues
-  (`Datashaper-Tutorial-Part3.txt:574-584`).
-- **e23** — Application Insights logging is bound in `host.json:3-10`.
+```mermaid
+flowchart TD
+    EP[Enrichment Pipeline] -->|e03| FA[Function App mdm-pipeline-api]
+    IP[Issues Pipeline] -->|e07| FA
+    DP[Deduplication Pipeline] -->|e11| FA
+    SP[Scoring Pipeline] -->|e14| FA
+    FA -->|e04| AOAI[AI Foundry gpt-5.4]
+    FA -->|e05| ROR[ROR]
+    FA -->|e05| LEI[GLEIF]
+    FA -->|e05| WD[Wikidata]
+    FA -->|e05| SERP[SerpAPI or DuckDuckGo]
+    FA -->|e05| PAGE[Page fetch]
+    FA -->|e22| AI[App Insights mdm-pipeline-insights]
+    EP -->|e06| M1[usp_MergeLegacyEnriched]
+    IP -->|e09| M2[usp_MergeLegacyIssues]
+    DP -->|e13| M3[usp_MergeValidationClusters]
+    SP -->|e16| M4[usp_MergeValidationScores]
+```
 
----
+### 2.1c Edge evidence
 
-## 3 · The twelve-step production workflow
+| edge | from → to | evidence | class |
+|---|---|---|---|
+| e01 | SAP → DS Import | "Create group code; import preprocessed file into DATAshaper", `docs/thesis/CONTEXT-EXTERNAL.md:419`; the preprocessing script is not in the repository (`:418`, `:444`) | [AUTHOR] |
+| e02 | Import → Legacy | "Import (bronze) → Legacy (silver) → Validation (gold) → load file", `docs/thesis/CONTEXT-EXTERNAL.md:343`; DS tasks `LegacyMapping`, `MigrateData` (`:31–32`, `:352`) | [OBSERVED] |
+| e03 | Legacy → `/enrich` | `adf/enrichment_pipeline.json:21` (offset driver) and `:68` (page read), both `FROM dp_legacy.[@{pipeline().parameters.chrEntity}].Legacy`; posted at `:105` | code |
+| e04 | Function App → AI Foundry | `AZURE_OPENAI_ENDPOINT` / `AZURE_OPENAI_DEPLOYMENT` (`config.py:96–97`, `:214–215`); dedup override `AOAI_DEPLOYMENT_DEDUP` (`.env.example:28`) | code |
+| e05 | Function App → external APIs | `ROR_API_BASE` `config.py:102`, `GLEIF_API_BASE` `config.py:105`, `WIKIDATA_API_BASE` `config.py:152`, SerpAPI/DuckDuckGo selection `config.py:195–202`, page fetch `search/page_fetcher.py:1` | code |
+| e06 | `/enrich` → Legacy | `adf/enrichment_pipeline.json:136` calls `Mapping.usp_merge_legacy_enriched`; the procedure merges into `dp_legacy.[<entity>].Legacy` (`sql/usp_merge_legacy_enriched.sql:29`, `:86`) | code |
+| e07 | Legacy → `/issues/json` | `adf/issues_pipeline.json:20`, posted at `:58` | code |
+| e09 | `/issues/json` → Legacy | `adf/issues_pipeline.json:89` calls `Mapping.usp_MergeLegacyIssues`; merge target `dp_legacy.[<entity>].Legacy` (`sql/usp_merge_legacy_issues.sql:38`, `:66`) | code |
+| e10 | Legacy → Validation | DS task `ProcessValidation`, `docs/thesis/CONTEXT-EXTERNAL.md:32`, `:352`; mapping configured separately for Legacy→Validation (`:343–345`) | [OBSERVED] |
+| e11 | Validation → `/api/dedup/cluster-block` | `adf/deduplication_pipeline.json:21`, posted at `:58` | code |
+| e13 | cluster response → Validation | `adf/deduplication_pipeline.json:89` calls `Mapping.usp_MergeValidationClusters`; merge target `dp_validation.[<entity>].Validation` (`sql/usp_merge_validation_clusters.sql:8`, `:33`, `:59`) | code |
+| e14 | Validation → `/api/dedup/score` | `adf/scoring_pipeline.json:21`, posted at `:58` | code |
+| e16 | score response → Validation | `adf/scoring_pipeline.json:89` calls `Mapping.usp_MergeValidationScores`; merge target `dp_validation.[<entity>].Validation` (`sql/usp_merge_validation_scores.sql:8`, `:33`, `:59`) | code |
+| e17 | Validation → DS views | Issues view `docs/thesis/CONTEXT-EXTERNAL.md:362–385`; deduplication view `:387–401`; rules configured against the Validation table alias `W` (`:356`) | [OBSERVED] |
+| e18 | DS views → steward | "Review issues in the DS issues view; assign to a data steward" (`docs/thesis/CONTEXT-EXTERNAL.md:426`); "Review clusters in the DS deduplication view" (`:428`) | [AUTHOR] |
+| e19 | steward → Validation | `Leading Code` selector, `Assign for`, `Apply Leading Code` action (`docs/thesis/CONTEXT-EXTERNAL.md:395–398`). No ADF pipeline and no repository code performs this write; `POST /api/dedup/approve` (`api/routes.py:1488`) is stateless and persists nothing (`api/routes.py:1494–1495`) | [OBSERVED] + code |
+| e20 | Validation → load file | `docs/thesis/CONTEXT-EXTERNAL.md:343` | [OBSERVED] |
+| e21 | load file → SAP | `docs/thesis/CONTEXT-EXTERNAL.md:343` names the load file as the terminus; the SAP load itself is not evidenced in this repository | ⚠ UNVERIFIED |
+| e22 | Function App → App Insights | `host.json:3–9` enables Application Insights with `samplingSettings.isEnabled: true` and `excludedTypes: "Request"`; instance named `mdm-pipeline-insights` at `README.md:3430` | code |
 
-This is the spine of the chapter. The steps are tabulated in `CONTEXT-EXTERNAL.md:416-429`
-[AUTHOR]; the executing component, inputs, outputs, and human-in-loop status below are drawn
-from that table cross-referenced with the ADF exports (§2/§3 of the context file) and the
-service code. "Artefact" is where the executing logic lives.
+Edges e08, e12 and e15 are not used: the Web activity and its Lookup are one hop in this
+model, already carried by e07, e11 and e14.
 
-| # | Step | Executing component | Artefact | Inputs | Outputs | Human in loop |
-|---|------|---------------------|----------|--------|---------|---------------|
-| 1 | Preprocess source file to processable schema; exclude ZFI records | preprocessing script | ⚠ not located (`CONTEXT-EXTERNAL.md:418,444`) | SAP extract | preprocessed file | yes |
-| 2 | Create group code; import preprocessed file into DATAshaper | DS import | DS Import table (bronze), `test_77` schema | preprocessed file | Import rows under group code | yes |
-| 3 | Process legacy (Import→Legacy mapping) | ADF → DS stored procedure | DS legacy mapping proc (`CONTEXT-EXTERNAL.md:348-352`) | Import table | Legacy rows (coded) | no |
-| 4 | Call `/enrich` reading from Legacy | ADF Enrichment Pipeline | `Enrichment Pipeline` (`CONTEXT-EXTERNAL.md:41-186`); `enrich_records` (`api/routes.py:88`) | 50-row Legacy pages | enriched record JSON | no |
-| 5 | Write enrichment results back to Legacy | `usp_merge_legacy_enriched` | stored proc (`CONTEXT-EXTERNAL.md:161,325`) | `/enrich` response string | updated Legacy rows | no |
-| 6 | Address validation; auto write-back above 80% confidence | ADF | ⚠ pipeline not exported (`CONTEXT-EXTERNAL.md:423,442`) | Legacy rows | validated addresses | no |
-| 7 | Call `/issues`; write issues column back to Legacy | ADF | ⚠ pipeline not exported (`CONTEXT-EXTERNAL.md:424,443`); detector `enrichment/issue_detection.py` | Legacy rows | Issues column | no |
-| 8 | Process validation; DS rules read the issues column and apply their own | ADF → DS stored procedure | `ProcessValidation` (`CONTEXT-EXTERNAL.md:425,354-361`) | Legacy rows + Issues column | Validation rows + issue/warning flags | no |
-| 9 | Review issues in the DS issues view; assign to a data steward | DS Studio | issues view (`CONTEXT-EXTERNAL.md:364-386`) | Validation issues | steward assignments / fixes | yes |
-| 10 | Call `/api/dedup/cluster-block`; write clusters to Validation | ADF Deduplication Pipeline | `Deduplication Pipeline` (`CONTEXT-EXTERNAL.md:203-303`); `cluster_blocks` (`dedup/adjudicator.py:933`) | Validation projection | cluster ids + reasons | no |
-| 11 | Review clusters in the DS deduplication view | DS Studio | dedup view (`CONTEXT-EXTERNAL.md:388-401`) | clustered rows | steward inspection | yes |
-| 12 | Golden-record election proposes a leading code; a steward approves | scoring endpoint + DS Studio | `elect_golden_records` (`dedup/scoring.py:1033`) + Apply Leading Code (`CONTEXT-EXTERNAL.md:395-399`) | scored Validation rows | proposed then approved leading code | yes |
+## 2.2 ADF orchestration, from JSON only
 
-**Standalone `/issues` baseline.** `/issues` may also be run against the raw file (before
-enrichment) to produce a before-enrichment issue baseline for evaluation; the detector is
-pure and deterministic and the same rule set runs on a raw input file and on a post-pipeline
-output file (`enrichment/issue_detection.py:9-16`). `/issues/compare` produces the before/after
-reduction report from two uploads (`compare_file_issues`, `api/routes.py:628-631`). ⚠ Whether
-this baseline path runs in ADF or is executed manually is unconfirmed
-(`CONTEXT-EXTERNAL.md:431-432`).
+Four pipeline definitions are exported. No dataset, linked-service, trigger or integration-runtime
+JSON is tracked (`git ls-files | grep -i 'dataset\|linkedservice\|trigger\|integrationruntime'`
+returns nothing), so the objects the pipelines reference by name cannot be resolved here.
 
----
+### 2.2.1 Shape common to all four
 
-## 4 · Runtime sequences (with failure branches)
+Every pipeline is `Lookup → WebActivity → SqlServerStoredProcedure`, chained on `Succeeded`.
 
-### 4.1 Enrichment run
+| property | value | evidence |
+|---|---|---|
+| Parameters | `chrEntity` and `chrGroupCode`, both `{"type": "string"}` | `adf/deduplication_pipeline.json:106–113`, `adf/enrichment_pipeline.json:156–163`, `adf/issues_pipeline.json:106–113`, `adf/scoring_pipeline.json:106–113` |
+| Activity policy | `timeout` `0.12:00:00`, `retry` **0**, `retryIntervalInSeconds` 30, `secureInput` false, `secureOutput` false | e.g. `adf/deduplication_pipeline.json:9–15`, `:44–50`, `:80–86` |
+| Lookup source | `"type": "SqlMISource"`, `"partitionOption": "None"`, `"firstRowOnly": false` | e.g. `adf/deduplication_pipeline.json:18–30` |
+| Web activity | `POST`, header `Content-Type: application/json`, `httpRequestTimeout` `00:10:00`, `connectVia` `AutoResolveIntegrationRuntime`, **no `authentication` block** | e.g. `adf/deduplication_pipeline.json:52–67` |
+| Stored-proc parameter | exactly one, `payload`, type `String`, value `@string(activity('Web1').output)` | e.g. `adf/deduplication_pipeline.json:90–98` |
+
+The parameter names are `chrEntity` and `chrGroupCode`, not `Entity` and `Groupcode`.
+
+**Retry is 0 on every activity in every pipeline.** A Web activity that returns non-2xx, or
+exceeds `httpRequestTimeout` of ten minutes, fails the pipeline; nothing is retried. The
+`0.12:00:00` value is the activity `timeout`, which bounds the activity as a whole; the HTTP
+call itself is bounded by the ten-minute `httpRequestTimeout`.
+
+### 2.2.2 Group-code predicate — present in all four Lookups
+
+The predicate is identical in every Lookup, quoted verbatim:
+
+```
+WHERE [code] LIKE '@{pipeline().parameters.chrGroupCode}\_%' ESCAPE '\'
+```
+
+| pipeline | Lookup | predicate present | file:line |
+|---|---|---|---|
+| Deduplication Pipeline | `Lookup1` | yes | `adf/deduplication_pipeline.json:21` |
+| Enrichment Pipeline | `Lookup2` (offset driver) | yes | `adf/enrichment_pipeline.json:21` |
+| Enrichment Pipeline | `Lookup1` (page read, in `ForEach1`) | yes | `adf/enrichment_pipeline.json:68` |
+| Issues Pipeline | `Lookup1` | yes | `adf/issues_pipeline.json:21` |
+| Scoring Pipeline | `Lookup1` | yes | `adf/scoring_pipeline.json:21` |
+
+The predicate matches the record-code convention `<groupcode>_<sourcekey>`
+(`sql/usp_merge_legacy_enriched.sql:26`; observed codes `TEST7_41000009`, `TEST10_42000001`,
+`TEST10_44000003` at `docs/thesis/CONTEXT-EXTERNAL.md:34–35`), and is the same predicate the
+merge procedures apply on the write side (§2.4).
+
+### 2.2.3 Per pipeline
+
+| pipeline | file | `lastPublishTime` | dataset | merge linked service | route |
+|---|---|---|---|---|---|
+| Deduplication Pipeline | `adf/deduplication_pipeline.json:2` | `2026-07-29T12:09:37Z` (`:115`) | `AzureSqlMITable3` (`:27`) | `ls_sqlmi_validation` (`:101`) | `/api/dedup/cluster-block` (`:58`) |
+| Enrichment Pipeline | `adf/enrichment_pipeline.json:2` | `2026-09-06T16:49:32Z` (`:165`) | `AzureSqlMITable1` (`:27`, `:74`) | `ls_sqlmi_legacy` (`:148`) | `/enrich` (`:105`) |
+| Issues Pipeline | `adf/issues_pipeline.json:2` | **absent** | `AzureSqlMITable1` (`:27`) | `ls_sqlmi_legacy` (`:101`) | `/issues/json` (`:58`) |
+| Scoring Pipeline | `adf/scoring_pipeline.json:2` | `2026-07-31T18:27:48Z` (`:115`) | `AzureSqlMITable3` (`:27`) | `ls_sqlmi_validation` (`:101`) | `/api/dedup/score` (`:58`) |
+
+`adf/issues_pipeline.json` carries no `lastPublishTime` key, while the other three do. On the
+evidence in this repository the issues pipeline has been authored but not published to the
+factory. See §2.7 (⚠-25).
+
+**Request bodies.** Each Web activity wraps the Lookup output in one JSON key:
+
+| pipeline | body expression | file:line |
+|---|---|---|
+| Enrichment | `@json(concat('{"records":', string(activity('Lookup1').output.value), '}'))` | `adf/enrichment_pipeline.json:111` |
+| Issues | `@json(concat('{"records":', string(activity('Lookup1').output.value), '}'))` | `adf/issues_pipeline.json:64` |
+| Deduplication | `@json(concat('{"rows":', string(activity('Lookup1').output.value), '}'))` | `adf/deduplication_pipeline.json:64` |
+| Scoring | `@json(concat('{"rows":', string(activity('Lookup1').output.value), '}'))` | `adf/scoring_pipeline.json:64` |
+
+These match the request models: `EnrichmentRequest.records` (`api/models.py:311`),
+`IssueDetectionRequest.records` (`api/models.py:899`), `DedupRequest.rows`
+(`dedup/models.py:74`), `ScoringRequest.rows` (`dedup/scoring.py:262`).
+
+**ForEach batching — enrichment only.** `ForEach1` (`adf/enrichment_pipeline.json:34–35`)
+iterates `@activity('Lookup2').output.value` (`:46–49`) with `"isSequential": true` (`:50`) and
+**no `batchCount`**. `Lookup2` emits one row per 30-record offset:
+
+```
+SELECT (n.rn - 1) AS offset
+FROM (
+    SELECT ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS rn
+    FROM dp_legacy.[@{pipeline().parameters.chrEntity}].Legacy
+    WHERE [code] LIKE '@{pipeline().parameters.chrGroupCode}\_%' ESCAPE '\'
+) n
+WHERE (n.rn - 1) % 30 = 0
+```
+
+and the inner `Lookup1` pages with `ORDER BY [code] OFFSET @{item().offset} ROWS FETCH NEXT 30
+ROWS ONLY` (`adf/enrichment_pipeline.json:68`). The ordering column in `Lookup2` is
+`ORDER BY (SELECT NULL)` while the page read orders by `[code]`; the two orderings are not the
+same, but because the offsets are a fixed arithmetic series over a stable row count and only
+the page read's ordering determines which rows land in a page, the partition is still a
+disjoint cover of the group code. The other three pipelines have no `ForEach` and post their
+whole Lookup result in one call.
+
+The batch size 30 is set only in the ADF JSON. The service's own concurrency default is
+separate: `EnrichmentOptions.max_concurrency` defaults to 5 (`api/routes.py:703` for the file
+route) and bounds in-flight records inside one call
+(`enrichment/orchestrator.py:4312`).
+
+### 2.2.4 `Entity_BasicFlow`
+
+⚠ NOT EXPORTED. No file in the repository defines it. `grep -rn 'Entity_BasicFlow' .` returns
+hits only in the pass specifications (`docs/thesis-doc-prompt-v2.md:78`, `:270`). No exported
+pipeline contains an `ExecutePipeline` activity — `grep -rn 'ExecutePipeline' adf/` returns
+nothing — so at this commit no pipeline invokes another, and the order in which the four run
+is not expressed anywhere in this repository. The production order is stated only by the
+author (`docs/thesis/CONTEXT-EXTERNAL.md:412–432`).
+
+### 2.2.5 Pipelines referenced but not exported
+
+| pipeline | referenced by | status |
+|---|---|---|
+| `Entity_BasicFlow` | `docs/thesis-doc-prompt-v2.md:78`, `:270` | ⚠ NOT EXPORTED |
+| Address validation / auto write-back above 80% confidence (workflow step 6) | `docs/thesis/CONTEXT-EXTERNAL.md:423`, open item `:442` | ⚠ NOT EXPORTED |
+| Consolidation (`POST /api/preprocess/consolidate/file`, first step of the production sequence) | `README.md:3441` | ⚠ NOT EXPORTED |
+| DS process invocations (`LegacyMapping`, `MigrateData`, `ProcessValidation`) as ADF stored-procedure activities | `docs/thesis/CONTEXT-EXTERNAL.md:349–352` | ⚠ NOT EXPORTED |
+| Referenced ADF objects `AzureSqlMITable1`, `AzureSqlMITable3`, `ls_sqlmi_legacy`, `ls_sqlmi_validation`, `AutoResolveIntegrationRuntime` | the four pipelines above | ⚠ NOT EXPORTED |
+
+## 2.3 Sequence diagrams
+
+### 2.3.1 Enrichment run
 
 ```mermaid
 sequenceDiagram
-    participant ADF as ADF Enrichment Pipeline
-    participant MI as Azure SQL MI (Legacy)
-    participant API as mdm-pipeline-api /enrich
-    participant EXT as ROR/GLEIF/SERP/LLM
-    ADF->>MI: Lookup2 — generate 50-row offsets over Legacy
-    loop ForEach1 (isSequential:true), per offset
-        ADF->>MI: Lookup1 — FETCH NEXT 50 ROWS
-        ADF->>API: Web1 POST /enrich {records:[…50]}
-        API->>EXT: per-record external calls
-        EXT-->>API: results / failures (fail-open per tier)
-        API-->>ADF: 200 EnrichmentResponse
-        ADF->>MI: Merge Back usp_merge_legacy_enriched (committed)
+    participant ADF as Enrichment Pipeline
+    participant SQL as dp_legacy Legacy
+    participant API as Function App
+    participant EXT as Registries and AI Foundry
+    ADF->>SQL: Lookup2 offsets, step 30
+    loop ForEach1 sequential, one offset per iteration
+        ADF->>SQL: Lookup1 OFFSET n FETCH NEXT 30
+        ADF->>API: POST /enrich records
+        API->>EXT: tier ladder per record
+        EXT-->>API: registry and model answers
+        API-->>ADF: results plus summary
+        ADF->>SQL: Mapping.usp_merge_legacy_enriched payload
     end
-    Note over ADF,MI: Failure branch — Web1 or Merge Back fails on batch N
-    Note over ADF,MI: retry:0 → iteration N fails → sequential ForEach stops
-    Note over MI: batches 1…N-1 already committed to Legacy
-    Note over ADF,MI: rerun re-selects ALL Legacy rows → 1…N-1 re-enriched (repeat LLM+SERP spend)
 ```
 
-Failure behaviour is read from the export: every activity has `retry: 0` and a 12-hour timeout
-(`CONTEXT-EXTERNAL.md:124-130,192`), and `ForEach1` is sequential
-(`CONTEXT-EXTERNAL.md:88 "isSequential": true`). Consequently, when a later batch's `Web1` or
-`Merge Back` fails, the earlier iterations' `usp_merge_legacy_enriched` writes are already
-committed to `Legacy` and persist; the sequential ForEach stops at the failing iteration and
-does not process subsequent offsets. Because `Lookup1` selects rows by offset with no
-enrichment watermark (`CONTEXT-EXTERNAL.md:106`), a rerun re-selects and re-enriches the
-already-merged rows, repeating their LLM and SERP spend.
+Evidence: `adf/enrichment_pipeline.json:21` (offsets), `:46–49` and `:50` (ForEach,
+sequential), `:68` (page read), `:105` and `:111` (POST and body), `:136` (merge back);
+service side `api/routes.py:107` → `enrichment/orchestrator.py:4290`; merge
+`sql/usp_merge_legacy_enriched.sql:86`. The merge runs **inside** the loop, once per 30-row
+page, so a failure at page *k* leaves pages 1…*k*−1 already written.
 
-An `enriched_at` watermark is to be added to Legacy so `Lookup1` selects only unenriched rows,
-making reruns resumable and avoiding repeat LLM and SERP spend.
-<!-- VERIFY-BY-FREEZE: enriched_at watermark on Legacy; enrichment Lookup1 filters to unenriched rows -->
-A retry policy above 0 is to be set on the `Web1` and `Merge Back` activities.
-<!-- VERIFY-BY-FREEZE: retry > 0 on enrichment Web1 and Merge Back activities -->
+### 2.3.2 Issues run — baseline and post-enrichment
 
-### 4.2 Deduplication run
+Both runs are the same pipeline and the same endpoint. Nothing in the pipeline distinguishes
+them: the Lookup is unconditioned on enrichment state
+(`adf/issues_pipeline.json:21` reads every row of the group code), and `@target_column` is
+never passed, so both write the same column.
 
 ```mermaid
 sequenceDiagram
-    participant ADF as ADF Deduplication Pipeline
-    participant MI as Azure SQL MI (Validation)
-    participant API as mdm-pipeline-api /api/dedup/cluster-block
-    participant LLM as dedup LLM
-    ADF->>MI: Lookup1 — projection of test_77.Validation (whole table, unbatched)
-    ADF->>API: Web1 POST /api/dedup/cluster-block {rows:[…all]}
-    API->>LLM: Mode A / Mode B / residue adjudication per block
-    LLM-->>API: cluster ids + reasons
-    API-->>ADF: 200 DedupResponse
-    ADF->>MI: Merge Back usp_merge_validation_clusters
-    Note over ADF,API: Near-term: iterate distinct block_id through a ForEach
-    Note over ADF,MI: sequential per-block ForEach: an earlier block's clusters are committed before a later block fails
+    participant ADF as Issues Pipeline
+    participant SQL as dp_legacy Legacy
+    participant API as Function App
+    ADF->>SQL: Lookup1 SELECT star, group code, ORDER BY code
+    ADF->>API: POST /issues/json records
+    API-->>ADF: results record_id and issues
+    ADF->>SQL: Mapping.usp_MergeLegacyIssues payload
+    Note over SQL: target_column defaults to Issues
 ```
 
-As exported the deduplication pipeline issues **one** unbatched Lookup over the whole
-`Validation` table and a single `Web1` call (`CONTEXT-EXTERNAL.md:224-264`). Deduplication is
-to be batched by `block_id` through a ForEach, replacing the single unbatched Lookup over the
-whole Validation table.
-<!-- VERIFY-BY-FREEZE: deduplication batched by block_id via ForEach, replacing the whole-table Lookup -->
-Once batched sequentially, the same already-committed-earlier-batch behaviour as §4.1 applies:
-a block whose `Merge Back` has run is committed to `Validation` before a later block fails, and
-with `retry: 0` (`CONTEXT-EXTERNAL.md:216,245,272`) a failure stops the ForEach.
+**Is the baseline `/issues` run orchestrated by ADF or executed manually?**
 
-### 4.3 Election and approval (step 12)
+On the evidence at this commit it is **not orchestrated by ADF, and no ADF path can produce a
+baseline/post pair**. Three facts, each from a file:
+
+1. An ADF pipeline for `/issues` exists (`adf/issues_pipeline.json`) but carries no
+   `lastPublishTime`, unlike the other three (§2.2.3) — it has been authored, not published.
+2. `usp_MergeLegacyIssues` admits two target columns, `N'Issues Before'` and `N'Issues'`
+   (`sql/usp_merge_legacy_issues.sql:14`), and defaults to `N'Issues'` (`:5`). The pipeline
+   passes only `payload` (`adf/issues_pipeline.json:90–99`), so every run writes `Issues`.
+   A second run overwrites the first; the two counts cannot coexist in the table.
+3. The pipeline reads the Legacy table (`adf/issues_pipeline.json:21`), which is populated by
+   DS `LegacyMapping`/`MigrateData` — not the raw source file.
+
+The before/after mechanism the repository actually implements is the file route
+`POST /issues/compare` (`api/routes.py:917`), which takes two workbooks — `original` and
+`enriched` (`:918–919`) — audits both (`:932–933`) and returns a delta report (`:943`). No
+ADF pipeline calls it (`grep -rn 'issues/compare' adf/` returns nothing), and it is a
+multipart file endpoint, so it is driven by a person with two files. That matches the
+author's own note that the baseline path "may also be run standalone against the raw file"
+and that "⚠ Whether that path is in ADF or manual is unconfirmed"
+(`docs/thesis/CONTEXT-EXTERNAL.md:431–432`). It is manual. See §2.7 (⚠-26).
+
+### 2.3.3 Deduplication cluster run
 
 ```mermaid
 sequenceDiagram
-    participant DS as DS deduplication view (steward)
-    participant SCORE as /api/dedup/score
-    participant APPROVE as /api/dedup/approve
-    DS->>SCORE: POST scored Validation rows
-    SCORE->>SCORE: elect_golden_records — one proposal per cluster
-    SCORE-->>DS: rows with proposed_golden_id, election_status ∈ {proposed, manual_review, unique}
-    Note over DS: steward inspects; is_golden_record left EMPTY for manual_review
-    DS->>APPROVE: POST {cluster_id, decision, approver, rows} (Apply Leading Code)
-    APPROVE->>APPROVE: apply_approval — on "approved" promote proposed winner into golden fields
-    APPROVE-->>DS: echoed rows; approval_status set
-    Note over APPROVE: stateless — persistence out of scope (durable approval store is future)
+    participant ADF as Deduplication Pipeline
+    participant SQL as dp_validation Validation
+    participant API as Function App
+    participant AOAI as AI Foundry
+    ADF->>SQL: Lookup1 eleven column projection, group code
+    ADF->>API: POST /api/dedup/cluster-block rows
+    API->>API: build_blocks then per block signatures
+    API->>AOAI: Mode A or Mode B adjudication
+    AOAI-->>API: verdicts
+    API->>API: split guards then Link ID
+    API-->>ADF: rows plus summary
+    ADF->>SQL: Mapping.usp_MergeValidationClusters payload
 ```
 
-### 4.4 Timeout ceiling and per-batch duration
+Evidence: `adf/deduplication_pipeline.json:21`, `:58`, `:64`, `:89`; service side
+`api/routes.py:1331` → `dedup/adjudicator.py:1450`, blocks `dedup/signatures.py:260`, modes
+`dedup/adjudicator.py:1349`/`:1352`, guards `:1375`/`:1379`, `Link ID`
+`dedup/adjudicator.py:1518–1523`; merge `sql/usp_merge_validation_clusters.sql:59`.
 
-The Azure Functions HTTP timeout ceiling depends on the hosting plan, which is
-`CONTEXT-EXTERNAL.md:446` open item 6; `host.json` sets no `functionTimeout`
-(`host.json:1-20`), so the platform default for the (unknown) plan applies. ⚠ The ceiling must
-not be stated until the plan is confirmed — do not guess. Note that the ADF `Web1` activity's
-own 12-hour timeout (`CONTEXT-EXTERNAL.md:126`) far exceeds any Functions ceiling, so the
-Functions plan ceiling, not the ADF timeout, bounds a single `/enrich` call.
+The projection the Lookup sends is eleven columns (`adf/deduplication_pipeline.json:21`);
+`DedupRow` is the request model (`dedup/models.py:74`).
 
-The per-batch duration for a 50-row `/enrich` batch is unmeasured
-(`CONTEXT-EXTERNAL.md:447`). ⚠ MEASUREMENT REQUIRED — time one batch end to end, e.g. against a
-50-row fixture: `time curl -s -X POST "$API/enrich" -H 'Content-Type: application/json' -d
-@batch50.json -o /dev/null`, or read the `total_latency_ms` the service already logs per
-request (`api/routes.py` request logging; cf. the scoring handler's `total_latency_ms` at
-`api/routes.py:940`).
+### 2.3.4 Scoring run
+
+```mermaid
+sequenceDiagram
+    participant ADF as Scoring Pipeline
+    participant SQL as dp_validation Validation
+    participant API as Function App
+    ADF->>SQL: Lookup1 twenty four column projection, group code
+    ADF->>API: POST /api/dedup/score rows
+    API->>API: load_weights then per row score_row
+    API->>API: cluster maxima, tie break, election
+    API-->>ADF: rows, summary, issues
+    ADF->>SQL: Mapping.usp_MergeValidationScores payload
+```
+
+Evidence: `adf/scoring_pipeline.json:21`, `:58`, `:64`, `:89`; service side
+`api/routes.py:1438` → `dedup/scoring.py:1151`, weights `dedup/scoring.py:1173` over
+`dedup/weights.json`, election `dedup/scoring.py:1231`, `:1243`; merge
+`sql/usp_merge_validation_scores.sql:59`. No LLM call is made (`api/routes.py:1444`).
+
+The response also carries `issues` — `DedupIssue` values from `dedup/scoring.py:485`,
+returned at `api/routes.py:1475`. `usp_MergeValidationScores` parses `$.rows` only
+(`sql/usp_merge_validation_scores.sql:49`) and never reads `$.issues`, so the scoring
+diagnostics are computed and discarded at the write-back boundary. See §2.7 (⚠-28).
+
+### 2.3.5 Steward approval
+
+```mermaid
+sequenceDiagram
+    participant STE as Data steward
+    participant DS as DS deduplication view
+    participant VAL as dp_validation Validation
+    participant API as Function App
+    STE->>DS: open cluster, inspect Reason
+    STE->>DS: select Leading Code then Apply Leading Code
+    DS->>VAL: write leading code
+    Note over API: POST /api/dedup/approve exists and is stateless
+    Note over API: no ADF pipeline and no procedure calls it
+```
+
+Evidence: the DS side is [OBSERVED] — `docs/thesis/CONTEXT-EXTERNAL.md:395–398`. The service
+side is code: `POST /api/dedup/approve` (`api/routes.py:1488`) applies the decision to rows
+supplied in the request and echoes them back; "Persistence is intentionally out of scope — a
+durable approval store is a future step" (`api/routes.py:1494–1495`). No `adf/*.json` names
+the route (`grep -rn 'dedup/approve' adf/` returns nothing). `usp_MergeValidationScores`
+does write `approval_status` (`sql/usp_merge_validation_scores.sql:59`), so a column exists
+for the outcome, but no exported orchestration reaches it through the endpoint. See §2.7
+(⚠-27).
+
+## 2.4 Merge-back procedures
+
+All four share one shape: two guards, an `OPENJSON … WITH` parse into `#src`, one dynamic
+`MERGE` executed through `sp_executesql`, then `DROP TABLE #src`. `WHEN MATCHED` only — no
+`WHEN NOT MATCHED` clause exists in any of the four, so a merge never inserts a row.
+
+| procedure | target table | key match | columns written | file:line |
+|---|---|---|---|---|
+| `usp_MergeLegacyEnriched` | `N'dp_legacy.' + QUOTENAME(@chrEntity) + N'.Legacy'` (`:29`) | `tgt.Customer = src.Customer` | 31 | `sql/usp_merge_legacy_enriched.sql:86` |
+| `usp_MergeLegacyIssues` | `N'dp_legacy.' + QUOTENAME(@chrEntity) + N'.Legacy'` (`:38`) | `tgt.[Customer] = src.[record_id]` | 1, named by `QUOTENAME(@target_column)` | `sql/usp_merge_legacy_issues.sql:66` |
+| `usp_MergeValidationClusters` | `QUOTENAME(@db) + N'.' + QUOTENAME(@chrEntity) + N'.Validation'`, `@db = N'dp_validation'` (`:8`, `:33`) | `tgt.Customer = src.row_id` | 6 | `sql/usp_merge_validation_clusters.sql:59` |
+| `usp_MergeValidationScores` | `QUOTENAME(@db) + N'.' + QUOTENAME(@chrEntity) + N'.Validation'`, `@db = N'dp_validation'` (`:8`, `:33`) | `tgt.Customer = src.Customer` | 21 | `sql/usp_merge_validation_scores.sql:59` |
+
+### 2.4.1 Group-code guard
+
+Identical in all four. The pattern is built once and applied twice — as a pre-flight count and
+inside the `MERGE` join:
+
+```
+DECLARE @pat NVARCHAR(60) = LTRIM(RTRIM(@chrGroupCode)) + N'\_%';
+DECLARE @esc NCHAR(1) = N'\';
+```
+
+(`sql/usp_merge_legacy_enriched.sql:27–28`, `sql/usp_merge_legacy_issues.sql:36–37`,
+`sql/usp_merge_validation_clusters.sql:31–32`, `sql/usp_merge_validation_scores.sql:31–32`.)
+
+Inside the dynamic `MERGE`, quoted from `sql/usp_merge_legacy_enriched.sql:86`:
+
+```
+ON tgt.Customer = src.Customer
+AND tgt.[code] LIKE @pat ESCAPE @esc
+```
+
+The `\` escape makes the `_` literal, so `TEST8\_%` matches `TEST8_41000009` and not
+`TEST81000009`. The guard is therefore a genuine prefix test on the group code, not a
+substring test.
+
+Two guards precede it in every procedure:
+
+| guard | test | error | file:line (enriched) |
+|---|---|---|---|
+| Guard 1 | entity exists as a schema | `THROW 50001` | `sql/usp_merge_legacy_enriched.sql:13–17` |
+| Guard 2a | group code non-blank | `THROW 50002` | `:22–25` |
+| Guard 2b | group code has ≥1 row in the target | `THROW 50003` | `:31–37` |
+
+`usp_MergeLegacyIssues` adds Guard 0 — `@target_column` must be `N'Issues Before'` or
+`N'Issues'`, else `THROW 50000` (`sql/usp_merge_legacy_issues.sql:14–17`). The two Validation
+procedures reach Guard 1 through dynamic SQL because the database is a variable
+(`sql/usp_merge_validation_clusters.sql:15–17`), where the two Legacy procedures test
+`dp_legacy.sys.schemas` directly (`sql/usp_merge_legacy_enriched.sql:13`).
+
+`THROW` is used throughout; `RAISERROR` appears nowhere in `sql/`.
+
+### 2.4.2 Dynamic-SQL pattern
+
+The same discipline in all four: **identifiers are spliced, values are parameterised.**
+
+- Spliced into the statement text: `@tgt` only — the database, schema and table, built with
+  `QUOTENAME` on the caller-supplied entity (`sql/usp_merge_legacy_enriched.sql:29`), plus
+  `QUOTENAME(@target_column)` in the issues procedure
+  (`sql/usp_merge_legacy_issues.sql:66`), which Guard 0 has already restricted to two literals.
+- Passed as parameters to `sp_executesql`, never concatenated: `@pat` and `@esc`
+  (`sql/usp_merge_legacy_enriched.sql:87`), and `@c`/`@x` as `OUTPUT` in the pre-flight counts
+  (`:32`).
+- `@payload` is never spliced. It is read by `OPENJSON` in **static** SQL
+  (`sql/usp_merge_legacy_enriched.sql:45`), before any dynamic text is built.
+- `SPACE(0)` stands in for a quoted empty string so the dynamic text carries no nested quotes
+  — stated at `sql/usp_merge_legacy_enriched.sql:83–84`.
+
+### 2.4.3 Blank-handling asymmetry in the enrichment merge
+
+26 of the 31 columns use `COALESCE(NULLIF(LTRIM(RTRIM(src.[col])), SPACE(0)), tgt.[col])` — a
+blank or whitespace-only enriched value leaves the target unchanged. Five do not, and
+overwrite unconditionally:
+
+| column | assignment | effect |
+|---|---|---|
+| `[Record Type]` | `LTRIM(RTRIM(src.[Record Type]))` | a blank clears the target |
+| `[ROR ID]` | `LTRIM(RTRIM(src.[ROR ID]))` | a blank clears the target |
+| `[LEI ID]` | `LTRIM(RTRIM(src.[LEI ID]))` | a blank clears the target |
+| `[Flag for Review]` | `src.[Flag for Review]` | direct |
+| `[Flag Reason]` | `src.[Flag Reason]` | direct |
+
+All five at `sql/usp_merge_legacy_enriched.sql:86`. The asymmetry is deliberate for the two
+flag columns — a run that clears a flag must be able to clear it — and is a behaviour worth
+stating for the three identity columns: a record that resolved on run 1 and missed on run 2
+loses its stored `ROR ID`. See §2.7 (⚠-29).
+
+## 2.5 Write-back coverage against the API contract
+
+The response models and the `OPENJSON` paths agree everywhere they overlap. Every one of the
+32 JSON paths in `usp_MergeLegacyEnriched` is a declared response column: comparing the
+`N'$."…"'` paths in `sql/usp_merge_legacy_enriched.sql:47–78` against `RESPONSE_COLUMNS`
+(`api/output_columns.py`) leaves no unmatched path. `ScoringResultRow` serialises under the
+same aliases the scores procedure reads — `Customer`, `score_final`, `Company_Code_Count` …
+(`dedup/scoring.py:302–312` against `sql/usp_merge_validation_scores.sql:51–72`) — and
+`DedupResultRow` field names match the clusters procedure's paths
+(`dedup/models.py:74` block against `sql/usp_merge_validation_clusters.sql:51–57`).
+
+The gap is in the other direction: **37 of the 69 response columns are never merged back.**
+
+| group | columns not written back |
+|---|---|
+| Provenance (Scheme B) | `Name 1 Provenance`, `Name 2 Provenance`, `Domain Provenance`, `Record Type Provenance`, `ROR ID Provenance`, `LEI ID Provenance` |
+| Flags | `Flag Codes`, `Flagged Fields` |
+| Page-read outputs | `Operating Name`, `Operating Name Provenance` |
+| Steward-facing | `Suggested Name`, `Suggestion Source` |
+| Name block | `Name 5` |
+| Diagnostics | `Error` |
+| Pass-through SAP columns | 24 further columns, including `Country/Region Key`, `Postal Code`, `City`, `Region`, `Tax Jurisdiction` |
+
+The pass-through columns are unproblematic — the pipeline echoes them unchanged, so not
+writing them back is correct. Two of the others are architecturally load-bearing:
+
+- **`Flag Codes` is the input to six issue codes.** `FLAG_CODE_ISSUES`
+  (`enrichment/issue_detection.py:1515–1559`) maps 13 flag tokens onto 7 codes, three of which
+  (`G3-NAME-006`, `G6-CONFIRM-001`, `G7-UNCHANGED-001`) have no content detector at all and can
+  be raised only from that column. The Issues Pipeline reads the Legacy table
+  (`adf/issues_pipeline.json:21`), the enrichment merge never writes `Flag Codes`
+  (`sql/usp_merge_legacy_enriched.sql:47–78`), and `/issues/json` reads the columns the request
+  carries (`api/routes.py:781`, `:784`). A post-enrichment issues run driven by ADF therefore
+  cannot raise those three codes. See §2.7 (⚠-30).
+- **`Operating Name` and `Operating Name Provenance`** are known-pending by the author:
+  "the write-back side is not, and is deliberately left to Bernd/Bert", with the four steps
+  listed (`README.md:3466–3476`). This pass confirms the state from code rather than from the
+  note.
+
+`link_id` is a third case, on the Validation side: `DedupResultRow.link_id`
+(`dedup/models.py` block at `:74`, field declared with the "Same ORGANISATION, not the same
+record" comment) is produced per row by `dedup/adjudicator.py:1518–1525`, and
+`usp_MergeValidationClusters` parses `row_id, block_id, cluster_id, routing, signature_id,
+confidence, reasoning` (`sql/usp_merge_validation_clusters.sql:51–57`) — `link_id` is not
+among them. See §2.7 (⚠-31).
+
+## 2.6 Security posture at this commit
+
+Facts only; no assessment.
+
+| aspect | state | evidence |
+|---|---|---|
+| Function App HTTP auth | `AuthLevel.ANONYMOUS` on the single catch-all binding | `function_app.py:12`, route `:15` |
+| Caller authentication | The four Web activities send no credential: header block is `Content-Type` only and there is no `authentication` property on any of them | `adf/deduplication_pipeline.json:54–56`, `adf/enrichment_pipeline.json:101–103`, `adf/issues_pipeline.json:54–56`, `adf/scoring_pipeline.json:54–56` |
+| Route-level auth | None. No dependency, middleware or decorator performs authentication or authorisation; the only middleware is `RequestLoggingMiddleware` (`api/app.py:28`), which logs and times | `api/middleware.py:18–21`; `api/routes.py` declares no `Security`/`Depends` auth |
+| Transport | ADF calls the public endpoint over HTTPS | `https://mdm-pipeline-api.azurewebsites.net/…` in all four `adf/*.json`; "reached from ADF over the public endpoint" `docs/thesis/CONTEXT-EXTERNAL.md:405–408` [AUTHOR] |
+| Outbound TLS trust | `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` are overwritten at import when they point at a non-existent path, preferring `AZURE_OPENAI_CA_BUNDLE` when it is a real file and `certifi.where()` otherwise | `config.py:27–64`, invoked `config.py:67` |
+| Model and API keys | Read from environment only; no key is committed. `.env.example` carries placeholders (`AZURE_OPENAI_API_KEY=your-azure-key-here` `.env.example:2`, `SERPAPI_KEY=your-serpapi-key-here` `:56`). In production they arrive as Azure Application Settings, not a `.env` file | `config.py:213–218`; `README.md:3430` |
+| Startup validation | `validate_env()` warns and does not raise, so the app starts without `AZURE_OPENAI_API_KEY` and fails at call time | `config.py:180–193`, `REQUIRED_VARS` `config.py:95–98`, called `api/app.py:15` |
+| Key exposure through the API | `/diag/llm` returns the endpoint, the deployment name, whether a key is set and its **length** (`api/routes.py:1584–1589`); `/diag/dedup-llm` returns the endpoint, the dedup deployment, the API version, the reasoning effort and whether a key is set (`:1617–1623`). `/diag/llm` also returns the exception type and message on failure (`:1600–1605`); `/diag/dedup-llm` returns the adjudicator's own `error` field and the API version in use (`:1632–1639`). Both are `GET` with no auth | `api/routes.py:1576`, `:1608` |
+| Secure input/output in ADF | `secureInput: false` and `secureOutput: false` on every activity, so payloads and responses appear in ADF run history | e.g. `adf/deduplication_pipeline.json:13–14`, `:48–49`, `:84–85` |
+| SQL injection surface | Identifiers spliced through `QUOTENAME`; values parameterised through `sp_executesql`; `@payload` never spliced (§2.4.2) | `sql/usp_merge_legacy_enriched.sql:29`, `:87`, `:45` |
+| Telemetry | Application Insights enabled in `host.json` with request sampling excluded; structured logs carry `request_id`, method, path, status, duration | `host.json:3–9`; `api/middleware.py:22–35` |
+| Network approvals, firewall rules, private endpoints, managed identity | ⚠ UNVERIFIED — no file in the repository records any of these. `grep -n -i 'firewall\|private endpoint\|vnet\|managed identity' README.md` returns nothing relevant, and no linked-service or networking JSON is tracked | — |
+
+## 2.7 Discrepancies raised in this pass
+
+**Numbering note.** Pass 00 at this commit raises ⚠-1 … ⚠-14. Pass 01 was generated at an
+earlier commit and numbers its own items ⚠-13 … ⚠-23, so ⚠-13 and ⚠-14 currently name two
+different things across the set (recorded in the closing note of `01_TRACEABILITY.md`). This
+pass continues from Pass 01's highest, ⚠-23, and does not reuse anything below ⚠-24. Pass 08
+must renumber the whole set.
+
+| id | severity | statement | code side | other side |
+|---|---|---|---|---|
+| ⚠-24 | medium | `docs/thesis/CONTEXT-EXTERNAL.md` quotes ADF JSON that the files at this commit contradict on three points. | `adf/deduplication_pipeline.json:21` is parameterised on `chrEntity` and carries the group-code predicate; `adf/deduplication_pipeline.json:89` names `Mapping.usp_MergeValidationClusters`; `adf/enrichment_pipeline.json:21`, `:68` batch in 30s | `docs/thesis/CONTEXT-EXTERNAL.md:226` quotes `FROM test_77.Validation` — hard-coded entity, no predicate; `:281` quotes `dbo.usp_merge_validation_clusters`; `:188` states "50-row offsets". The exported files supersede the quotation; the external document has not been re-observed since 2026-08-16 (`:15`). |
+| ⚠-25 | medium | Three pipelines carry a `lastPublishTime` and the issues pipeline does not. | `adf/deduplication_pipeline.json:115`, `adf/enrichment_pipeline.json:165`, `adf/scoring_pipeline.json:115` | `adf/issues_pipeline.json` has no such key. On repository evidence the issues pipeline is authored but unpublished, so the `/issues` leg of the production workflow (`docs/thesis/CONTEXT-EXTERNAL.md:424`, marked "ADF ⚠ pipeline not exported") is exported but not demonstrably live. ⚠ UNVERIFIED against the factory. |
+| ⚠-26 | high | No ADF path can produce a before/after issue pair, so the reduction metric the evaluation rests on has no orchestrated source. | `usp_MergeLegacyIssues` defaults `@target_column` to `N'Issues'` (`sql/usp_merge_legacy_issues.sql:5`) and the pipeline passes only `payload` (`adf/issues_pipeline.json:90–99`), so a second run overwrites the first. `POST /issues/compare` (`api/routes.py:917`) is the only before/after mechanism and is a two-file multipart endpoint no pipeline calls | `docs/thesis/CONTEXT-EXTERNAL.md:431–432`: "`/issues` may also be run standalone against the raw file … ⚠ Whether that path is in ADF or manual is unconfirmed." This pass answers: manual. |
+| ⚠-27 | medium | The steward approval step has no orchestrated write-back path. | `POST /api/dedup/approve` (`api/routes.py:1488`) is stateless — "Persistence is intentionally out of scope" (`:1494–1495`) — and no `adf/*.json` names the route | `usp_MergeValidationScores` writes `approval_status` (`sql/usp_merge_validation_scores.sql:59`), so the target column exists. The approval observed in DS Studio (`docs/thesis/CONTEXT-EXTERNAL.md:395–398`) is a DATAshaper action, not a call to this endpoint. The two approval mechanisms are unconnected. |
+| ⚠-28 | medium | Scoring diagnostics are computed and discarded at the write-back boundary. | `/api/dedup/score` returns `issues` — `DedupIssue` values from `dedup/scoring.py:485`, attached at `api/routes.py:1475` | `usp_MergeValidationScores` parses `$.rows` only (`sql/usp_merge_validation_scores.sql:49`); no path reads `$.issues` and no column receives them. |
+| ⚠-29 | medium | Three identity columns are overwritten unconditionally by the enrichment merge, so a run that fails to resolve clears a value an earlier run established. | `sql/usp_merge_legacy_enriched.sql:86`: `tgt.[Record Type] = LTRIM(RTRIM(src.[Record Type]))`, `tgt.[ROR ID] = LTRIM(RTRIM(src.[ROR ID]))`, `tgt.[LEI ID] = LTRIM(RTRIM(src.[LEI ID]))` | The other 26 value columns in the same statement use `COALESCE(NULLIF(…), tgt.[col])` and preserve the incumbent on a blank. The asymmetry is not stated in any comment; the only comment on the statement concerns `SPACE(0)` (`:83–84`). |
+| ⚠-30 | high | `Flag Codes` is never written back, and three issue codes can be raised from nothing else. | `sql/usp_merge_legacy_enriched.sql:47–78` lists 32 `OPENJSON` paths; `Flag Codes` is not among them. `FLAG_CODE_ISSUES` (`enrichment/issue_detection.py:1515–1559`) is the only route to `G3-NAME-006`, `G6-CONFIRM-001` and `G7-UNCHANGED-001` | `api/output_columns.py` declares `Flag Codes` as a response column, and `api/routes.py:784` passes it to `detect_issues` when the request carries it. An ADF-driven post-enrichment issues run reads Legacy (`adf/issues_pipeline.json:21`), which never received the column, so those three codes cannot fire on that path. They can fire on the file path, where the enriched workbook still carries the column. |
+| ⚠-31 | medium | `link_id` has no write-back path. | `DedupResultRow.link_id` is produced for every row (`dedup/adjudicator.py:1518–1525`) and serialised by the response model (`dedup/models.py:74` block) | `usp_MergeValidationClusters` parses seven fields (`sql/usp_merge_validation_clusters.sql:51–57`) and `link_id` is not one; the `MERGE` writes six columns (`:59`) and none is a link. The "same organisation, not the same record" outcome the field exists to express is dropped at the boundary. |
+| ⚠-32 | low | Every ADF activity has `retry: 0`, so a single transient HTTP failure fails the run. | `retry` is `0` and `retryIntervalInSeconds` is `30` on all thirteen policy-carrying activities across the four pipelines (`ForEach1` carries none) (e.g. `adf/deduplication_pipeline.json:11–12`) | The enrichment pipeline merges inside its `ForEach` (`adf/enrichment_pipeline.json:136`), so a failure part-way leaves earlier pages committed and later pages not — a partially written group code with no compensating action. |
+| ⚠-33 | low | The two enrichment Lookups order by different keys. | `Lookup2` counts rows with `ROW_NUMBER() OVER (ORDER BY (SELECT NULL))` (`adf/enrichment_pipeline.json:21`); `Lookup1` pages with `ORDER BY [code]` (`:68`) | The offsets are a fixed arithmetic series and only the page read's ordering assigns rows to pages, so the cover stays disjoint. Recorded because the two orderings read as if they were meant to agree. |
+| ⚠-34 | low | The referenced ADF datasets, linked services and integration runtime are not exported, so the database each pipeline actually reads cannot be resolved from this repository. | `AzureSqlMITable1` (`adf/enrichment_pipeline.json:27`), `AzureSqlMITable3` (`adf/deduplication_pipeline.json:27`), `ls_sqlmi_legacy` (`adf/issues_pipeline.json:101`), `ls_sqlmi_validation` (`adf/deduplication_pipeline.json:101`), `AutoResolveIntegrationRuntime` (`:60`) | None is tracked. This is what leaves ⚠-12 (Pass 00) unresolvable here: the Validation-side Lookups carry no database prefix, and the default comes from the unexported linked service. |
+
+Eleven items, ⚠-24 … ⚠-34, carried to `08_GAPS.md` in Pass 08.
 
 ---
 
-## 5 · Issues column contract (consumed by DATAshaper)
-
-The Issues column is an external integration contract: the DS validation step reads it
-(`CONTEXT-EXTERNAL.md:354-361`).
-
-**Exact format, read from the code that builds it.** `/issues` echoes the uploaded sheet with
-one appended column named `Issues`; for each row the cell value is the detected codes joined by
-`"; "` (semicolon + space), and it is the empty string when the row is clean
-(`api/routes.py:366,368-370` — `ws.append([*values, "; ".join(codes)])`). The codes come from
-`detect_issues`, which returns a list of catalogue codes in `ISSUE_CATALOGUE` key order
-(`enrichment/issue_detection.py:504-510`); the catalogue is the 36-code G1–G5 dictionary at
-`enrichment/issue_detection.py:75-118`.
-
-**The column encodes the code only — not the field, not the description.** `detect_issues`
-returns bare codes (`enrichment/issue_detection.py:488-510`); `_build_issues_xlsx` writes only
-those codes (`api/routes.py:354,370`). There is no field token and no human description in the
-cell. This is confirmed from the code, not inferred from the DS rendering.
-
-**Reconciliation with the DS drill-down.** The DS issues view drills code → affected field →
-description (`CONTEXT-EXTERNAL.md:364-386`). Because the column carries only codes, that
-field-and-description structure is reconstructed **DS-side**, not carried in the column: in
-DATAshaper every validation rule is bound to a specific field and carries its own description
-(`Datashaper-Tutorial-Part2.txt:794-820`; validation alias `W`,
-`Datashaper-Tutorial-Part2.txt:812-818`), so DS maps each incoming code to its own
-field-scoped rule to render the drill-down. ⚠ Code↔context note: the service's catalogue name
-for a code (e.g. `G2-VAL-007` → "Search Term 1 Missing",
-`enrichment/issue_detection.py:95`) matches the DS view's rendered text
-(`CONTEXT-EXTERNAL.md:369`), but the mapping from code to field lives in the DS rule
-configuration, not in the transmitted column.
-
-**Which DS rules consume the column vs which are independent.** DS rules that read the Issues
-column consume the service's G-series codes (`CONTEXT-EXTERNAL.md:354-357`). DS additionally
-applies rules independent of that column (`CONTEXT-EXTERNAL.md:357-361`): type-derived
-automatic rules (e.g. a field typed as email, `Datashaper-Tutorial-Part2.txt:760-772`),
-reference-table validations (US state codes, SAP language table T002, sales-organisation
-lists — `Datashaper-Tutorial-Part2.txt:836-914,974-988`), and data-type/length checks applied
-during Legacy→Validation processing (`Datashaper-Tutorial-Part2.txt:483-486`). ⚠ The precise
-list of DS rules bound to the Issues column is configured in the DS SaaS interface and is not
-a repository artefact (`CONTEXT-EXTERNAL.md:337-339`).
-
-Two catalogue codes, `G1-ADDR-009` and `G4-ADDR-025`, are declared in the catalogue but never
-emitted by the deterministic detector (`enrichment/issue_detection.py:88,112` — "LLM-only —
-never emitted"); they therefore never appear in the column.
-
----
-
-## 6 · Scoring integration (step 12 wiring)
-
-**Who calls the election.** `POST /api/dedup/score` handler `dedup_score` calls
-`elect_golden_records` (`api/routes.py:926`); the election scores every row and elects one
-golden record per cluster (`dedup/scoring.py:1033-1052`). It is deterministic — no external
-calls (Pass 0 §3.3).
-
-**Where the proposed leading code is written.** Every election is a proposal, never
-auto-committed (`dedup/scoring.py:1046-1047`). For a real cluster the winner's `row_id` is
-written to each member's `proposed_golden_id` and `election_status` is set to `proposed`, or
-`manual_review` when clustering already flagged uncertainty, every member is blocked, or merge
-confidence is below threshold (`dedup/scoring.py:1100-1119`). A `manual_review` row leaves
-`is_golden_record`/`golden_record_id` empty so nothing acting on `is_golden_record` alone can
-touch an unreviewed row (`dedup/scoring.py:262-264`). The proposed winner is the "leading code"
-the steward sees.
-
-**How "Apply Leading Code" relates to `/api/dedup/approve`.** The DS "Apply Leading Code"
-action (`CONTEXT-EXTERNAL.md:395-399`) corresponds to `POST /api/dedup/approve`, handled by
-`dedup_approve` → `apply_approval` (`api/routes.py:946-964`; `dedup/scoring.py:574`). On an
-"approved" decision the proposed winner is promoted into the golden fields
-(`is_golden_record`, `golden_record_id` ← `proposed_golden_id`) so Phase 3 can act uniformly
-(`dedup/scoring.py:597-600`); on "rejected" the golden fields are left as-is
-(`dedup/scoring.py:584`). Phase 3 consumes only rows with `approval_status == "approved"` or
-`election_status == "unique"` (`api/routes.py:954-955`; `dedup/scoring.py:266-268`).
-
-**The approval gate is a deliberate control.** The design intent is that the system proposes
-and a human approves: "the system proposes, a steward confirms"
-(`CONTEXT-EXTERNAL.md:398-399`); in code every election is a proposal
-(`dedup/scoring.py:1047`) and approve/reject are set only later by the human endpoint
-(`api/models.py`-side lifecycle documented at `dedup/scoring.py:294-297`). This is the control,
-not incomplete automation. ⚠ The approval endpoint is stateless — a durable approval store is
-explicitly out of scope (`api/routes.py:952-954`; `dedup/scoring.py:555`).
-
-**ADF does not currently invoke `/api/dedup/score`.** Stated plainly: neither exported ADF
-pipeline calls `/api/dedup/score` — the deduplication pipeline's only Web activity targets
-`/api/dedup/cluster-block` (`CONTEXT-EXTERNAL.md:253-255`), and the enrichment pipeline targets
-`/enrich` (`CONTEXT-EXTERNAL.md:135`). Whether election runs elsewhere (a further pipeline, a
-DS process, or a manual call) is `CONTEXT-EXTERNAL.md:445` open item 5.
-
----
-
-## 7 · Deployment topology
-
-| Component | Runs on | Binding evidence |
-|-----------|---------|------------------|
-| DATAshaper (SaaS) | Tillit tenant | `CONTEXT-EXTERNAL.md:405-406` [AUTHOR]; SaaS, no file export (`CONTEXT-EXTERNAL.md:337-339`) |
-| Azure Data Factory | Tillit tenant | `CONTEXT-EXTERNAL.md:405-406` [AUTHOR] |
-| Function App `mdm-pipeline-api` (this repo) | Bruker Azure spoke | `CONTEXT-EXTERNAL.md:405-408` [AUTHOR]; public endpoint `https://mdm-pipeline-api.azurewebsites.net` (`CONTEXT-EXTERNAL.md:135,255` [EXPORT]) |
-| AI Foundry (Azure OpenAI) | Bruker Azure spoke | `CONTEXT-EXTERNAL.md:406-407` [AUTHOR]; endpoint/key/deployment from `AZURE_OPENAI_ENDPOINT`/`_API_KEY`/`_DEPLOYMENT` (`config.py:78-84,155-157`) |
-| Azure SQL Managed Instance (Legacy, Validation; DS Import/admin/load-file databases) | (tenant ⚠ not stated) | linked services `ls_sqlmi_legacy`, `ls_sqlmi_validation`; datasets `AzureSqlMITable1`/`AzureSqlMITable3` (`CONTEXT-EXTERNAL.md:70,172,232,292`); DS stores each layer in a separate database (`Datashaper-Tutorial-Part1.txt:131-137`) |
-| Application Insights | (Azure) | `host.json:3-10` |
-
-**Configuration that binds them.** The service is deployed as an Azure Functions v2 ASGI app
-wrapping the shared FastAPI app behind a catch-all route with `ANONYMOUS` auth
-(`function_app.py:12-19`); `host.json` sets an empty route prefix and the App Insights sampling
-(`host.json:11-15,3-10`). External-service endpoints and secrets are read from environment
-variables with defaults (`config.py:78-119,150-252`): Azure OpenAI (`config.py:78-84`), ROR
-(`config.py:85,171-173`), GLEIF (`config.py:88-89,186-188`), SerpAPI key (`config.py:160`).
-For the TLS-inspecting corporate VPN, a corp CA bundle `AZURE_OPENAI_CA_BUNDLE` overrides bogus
-`SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE` at startup (`config.py:27-67`).
-
-**Tenant boundary.** ADF (Tillit) reaches the Function App (Bruker spoke) over the **public**
-endpoint `https://mdm-pipeline-api.azurewebsites.net` via `AutoResolveIntegrationRuntime`
-(`CONTEXT-EXTERNAL.md:135-139,255-259`). This is a cross-tenant hop (Tillit → Bruker) and
-carries the network and approval constraints: the two exported pipelines both traverse it, and
-the SQL Managed Instance sits on the DS/ADF side reached through the `ls_sqlmi_*` linked
-services. ⚠ The tenant hosting the Managed Instance is not stated in the context file; that it
-is reached by ADF linked services (`CONTEXT-EXTERNAL.md:172,292`) places it on the Tillit-side
-network, but this should be confirmed.
-
----
-
-## 8 · State and idempotency
-
-The DS `code` (group-code prefix + source key) is the stable identity carried unchanged across
-Import → Legacy → Validation → load file (`Datashaper-Tutorial-Part1.txt:1379-1403`); it is the
-idempotency key for every merge-back.
-
-| Step | Persisted | On re-run | Idempotent? |
-|------|-----------|-----------|-------------|
-| 2 Import (bronze) | source rows as-is under group code | re-import can create a new table or overwrite the existing one (`Datashaper-Tutorial-Part1.txt:739-746`) | overwrite → yes by code; new-table → no |
-| 3 Legacy mapping | Legacy rows keyed by code | recomputed from Import; deterministic SQL mapping | yes |
-| 4–5 Enrichment merge-back | enriched columns overwritten in place per code via `usp_merge_legacy_enriched` (`CONTEXT-EXTERNAL.md:161`) | ⚠ **not idempotent as exported** — `Lookup1` re-selects all rows (`CONTEXT-EXTERNAL.md:106`) so every row is re-enriched, re-billing LLM/SERP; non-deterministic tiers (SERP/LLM) may yield different values. The `enriched_at` watermark (§4.1) is what makes it resumable/idempotent <!-- VERIFY-BY-FREEZE: enriched_at watermark makes enrichment merge-back idempotent/resumable --> |
-| 6 Address validation | validated address written back above 80% confidence (`CONTEXT-EXTERNAL.md:423`) | ⚠ pipeline not exported — behaviour unverified | ⚠ unknown |
-| 7 Issues column | `Issues` column overwritten per row | deterministic detector (`enrichment/issue_detection.py:9-16`) → same output for same input | yes |
-| 8 Validation | Validation rows recomputed by Legacy→Validation mapping + rules | overwrites (gold rebuilt from silver) | yes |
-| 10 Cluster merge-back | cluster ids/reasons written via `usp_merge_validation_clusters` | LLM adjudication is non-deterministic → clusters may differ across runs | no |
-| 12 Election | `proposed_golden_id`/`election_status` (proposal); on approval `golden_record_id` | election deterministic over `weights.json`; approval is stateless (not persisted by the service) | election yes; approval ⚠ not persisted (`api/routes.py:952-954`) |
-
-Overwrite vs append: the enrichment and issues steps **overwrite** columns in place on the
-Legacy row (keyed by code); Import is **append/overwrite** depending on the re-import choice;
-Validation is rebuilt (overwrite) from Legacy each processing run.
-
----
-
-## 9 · Boundary rationale
-
-For each boundary: why it exists, with evidence where the repository carries it.
-
-**`/enrich` vs `/issues` (enrichment vs deterministic audit).** Separate cost profile and
-failure domain: `/issues` is pure and deterministic — regex/string checks only, no enrichment,
-LLM, or network I/O — so the same rule set runs on a raw input file and on a post-pipeline
-output file, and the count delta is the intended story
-(`enrichment/issue_detection.py:9-16`). `/enrich` by contrast fans out to ROR/GLEIF/SERP/page/
-LLM (Pass 0 §3.1). Different cadence (issues can run standalone as a baseline), different cost
-(zero external spend vs per-record spend), different failure domain (no network).
-
-**`/enrich` vs `/api/dedup/cluster-block` (Phase 1 vs Phase 2).** Different input granularity
-and cadence: enrichment operates per record within a 50-row page of `Legacy`
-(`CONTEXT-EXTERNAL.md:106`); clustering operates per address-gated block of `Validation` with a
-precomputed `[Block ID]` (`CONTEXT-EXTERNAL.md:224-310`). Different failure domain (enrichment
-external APIs vs dedup LLM) and different table (Legacy vs Validation).
-
-**`/api/dedup/cluster-block` vs `/api/dedup/score` (clustering vs election).** Directly
-evidenced in code: "Separate from /api/dedup/cluster-block on purpose: clustering and election
-have different inputs, cadences, and cost profiles — election is pure arithmetic over
-dedup/weights.json and can be re-run on retuned weights without paying for LLM adjudication
-again" (`api/routes.py:900-903`). So election is separated to make weight retuning cheap and
-LLM-free.
-
-**`/api/dedup/score` vs `/api/dedup/approve` (proposal vs human sign-off).** Separate ownership
-and control: the machine proposes (`dedup/scoring.py:1047`) and a human owns the commit
-(`api/routes.py:948-955`; `CONTEXT-EXTERNAL.md:398-399`). Keeping approval a distinct endpoint
-is the approval gate documented in §6.
-
-These four endpoints are therefore four rather than fewer because each pair above differs in at
-least cost profile, cadence, or failure domain, and the two most consequential splits (issues
-vs enrich; cluster vs score) carry explicit in-code rationale.
-
-**External boundaries without repo-side rationale.** Why address validation (step 6) is a
-separate ADF pipeline, and why the `/issues` call (step 7) is a separate pipeline rather than
-folded into enrichment, is not evidenced in code, comments, commit messages, or the context
-files — ⚠ RATIONALE NOT IN REPO — author to supply. Why ZFI records are excluded (step 1) is
-stated as Bernd Schnurrer's instruction with the rationale not recorded
-(`CONTEXT-EXTERNAL.md:434-435`) — ⚠ RATIONALE NOT IN REPO — author to supply.
-
----
-
-## 10 · Data-volume limits
-
-ADF Lookup activities are bounded to 5,000 rows and 4 MB of output per activity. Where each
-pipeline sits relative to those ceilings, given enrichment batches at 50 rows through a
-sequential ForEach:
-
-| Lookup | What it returns | Row-count headroom | Payload headroom |
-|--------|-----------------|--------------------|------------------|
-| Enrichment `Lookup2` (`CONTEXT-EXTERNAL.md:60-74`) | one offset row per 50 Legacy rows: `ceil(COUNT(Legacy)/50)` rows | hits the 5,000-row cap at ~250,000 Legacy rows | tiny (one integer per row) — 4 MB not binding |
-| Enrichment `Lookup1` (`CONTEXT-EXTERNAL.md:102-116`) | exactly 50 full Legacy rows (`FETCH NEXT 50`) | 50 ≪ 5,000 — safe | 50 wide rows; 4 MB binds only if a row averages > ~80 KB — unlikely |
-| Dedup `Lookup1` (`CONTEXT-EXTERNAL.md:210-236`) | **the entire `test_77.Validation` table** in one Lookup (`firstRowOnly:false`, no batching) | ⚠ at risk — exceeds 5,000 rows once Validation grows past that; the row/payload ceiling truncates or fails the activity | ⚠ at risk on 4 MB for large Validation tables |
-
-⚠ MEASUREMENT REQUIRED — the Legacy and Validation row counts are not in the repository; read
-them with `SELECT COUNT(*) FROM test_77.Legacy` and `SELECT COUNT(*) FROM test_77.Validation`
-to locate each pipeline against the caps.
-
-The dedup Lookup is the one that sits against the ceiling; batching deduplication by `block_id`
-through a ForEach removes the whole-table Lookup and keeps each Lookup to one block.
-<!-- VERIFY-BY-FREEZE: block_id ForEach keeps the dedup Lookup under the 5,000-row / 4 MB ceiling -->
-
----
-
-## 11 · Cross-references to design-rationale sources
-
-Passes 9 (decisions) and later reuse the two root PDFs, which Pass 0 excluded as generated
-output but which carry design rationale:
-
-- `Domain_DeptDomain_SearchTerm_Logic.pdf` — precedence and guards for `website_url`, the
-  registrable `domain`, `department_domain`, and `search_term_1/2`; notes that the public
-  "Domain" output column is `website_url` and the bare `domain` is internal, that
-  `DEPT_PROBE_CROSS_DOMAIN` defaults on despite a comment calling stage 3 off-by-default (cf.
-  `config.py:114` default `"false"` — ⚠ discrepancy to reconcile in `08_GAPS.md`), and that
-  `derive_department_domain` in `search_terms.py` is dead code.
-- `Website_Trace_Findings.pdf` — the `WEBSITE_TRACE` diagnostic run: for two of three failing
-  companies the company's own site never appeared in the SERP result set (a retrieval miss,
-  not a guard rejection), and the SERP result sets have drifted since the records were
-  characterized.
-
-These inform Pass 3 (algorithms) and Pass 9 (decisions); they are recorded here only as the
-architectural note that the domain/website/search-term/department-domain computation is one
-finalisation stage inside `/enrich`.
-
-Stop.
+**Pass 02 summary.** Recorded the architecture as two planes over 21 shared edges, each with
+its evidence class; read all four exported ADF pipelines from JSON alone — one shape
+(`Lookup → Web → stored procedure`), both parameters on all four, the group-code predicate
+present and quoted in all five Lookups, `retry: 0` throughout, and 30-row sequential batching
+in the enrichment pipeline only; found `Entity_BasicFlow` and four further pipelines
+⚠ NOT EXPORTED and no `ExecutePipeline` activity anywhere, so no run order is expressed in the
+repository; drew five sequence diagrams and answered the baseline `/issues` question — it is
+manual, because the one exported issues pipeline always writes the same column and the only
+before/after mechanism is the two-file `POST /issues/compare`; documented all four merge
+procedures down to the quoted group-code guard and the identifier-spliced,
+value-parameterised dynamic-SQL pattern; established that the write-back is lossy in three
+load-bearing places (`Flag Codes`, `link_id`, scoring `issues`); and recorded the security
+posture as anonymous auth end to end with unauthenticated diagnostic endpoints that disclose
+deployment names and key length. Eleven ⚠ items raised (⚠-24 … ⚠-34).

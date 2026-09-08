@@ -1,0 +1,16 @@
+%% fig-18 — POST /api/dedup/score and /approve call graph
+%% Source: docs/thesis/00_INVENTORY.md §0.5.6 (lines 689-704)
+flowchart TD
+    A[dedup_score] --> B[coerce_weights]
+    A --> C[load_weights]
+    A --> D[elect_golden_records]
+    D --> E[_resolve_confidence_threshold]
+    D --> F[weights_version]
+    D --> G[_cluster_year_maxima]
+    D --> H[score_row]
+    D --> I[_tiebreak_key]
+    D --> J[_cluster_merge_confidence]
+    D --> K[_build_result]
+    A --> L[build_summary]
+    A --> M[detect_issues]
+    N[dedup_approve] --> O[apply_approval]

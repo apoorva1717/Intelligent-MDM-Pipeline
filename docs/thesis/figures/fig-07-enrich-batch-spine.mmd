@@ -1,0 +1,14 @@
+%% fig-07 — POST /enrich batch spine call graph
+%% Source: docs/thesis/00_INVENTORY.md §0.5.1 (lines 451-464)
+flowchart TD
+    A[enrich_records] --> B[_get_orchestrator]
+    A --> C[Orchestrator.enrich_batch]
+    C --> D[clear_ror_cache]
+    C --> E[clear_lei_cache]
+    C --> F[reset_consistency_counters]
+    C --> G[_enrich_single]
+    G --> H[_init_result]
+    C --> I[normalise_output_fields]
+    C --> J[apply_batch_consensus]
+    C --> K[_build_summary]
+    K --> L[EnrichmentResponse]

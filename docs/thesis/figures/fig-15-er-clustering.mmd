@@ -1,0 +1,26 @@
+%% fig-15 — Clustering detail ER
+%% Source: docs/thesis/05_DATA_MODEL.md §9.2 (lines 916-941)
+erDiagram
+    DEDUP_ROW {
+        string row_id PK
+        string block_id
+        string name1
+        string name2
+        string ror_id
+        string lei_id
+    }
+    SIGNATURE {
+        string signature_id
+        string norm_name1
+        string norm_name2
+    }
+    DEDUP_RESULT_ROW {
+        string row_id PK
+        string cluster_id
+        string link_id
+        string routing
+        float confidence
+    }
+    DEDUP_ROW }o--|| SIGNATURE : "collapses on (norm_name1, norm_name2)"
+    SIGNATURE ||--|{ DEDUP_RESULT_ROW : "assigns"
+    DEDUP_RESULT_ROW ||--|| VALIDATION_ROW : "usp_MergeValidationClusters, 6 columns"

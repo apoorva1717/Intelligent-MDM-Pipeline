@@ -1,0 +1,18 @@
+%% fig-02 — Processing plane component diagram
+%% Source: docs/thesis/02_ARCHITECTURE.md §2.1b (lines 56-73)
+flowchart TD
+    EP[Enrichment Pipeline] -->|e03| FA[Function App mdm-pipeline-api]
+    IP[Issues Pipeline] -->|e07| FA
+    DP[Deduplication Pipeline] -->|e11| FA
+    SP[Scoring Pipeline] -->|e14| FA
+    FA -->|e04| AOAI[AI Foundry gpt-5.4]
+    FA -->|e05| ROR[ROR]
+    FA -->|e05| LEI[GLEIF]
+    FA -->|e05| WD[Wikidata]
+    FA -->|e05| SERP[SerpAPI or DuckDuckGo]
+    FA -->|e05| PAGE[Page fetch]
+    FA -->|e22| AI[App Insights mdm-pipeline-insights]
+    EP -->|e06| M1[usp_MergeLegacyEnriched]
+    IP -->|e09| M2[usp_MergeLegacyIssues]
+    DP -->|e13| M3[usp_MergeValidationClusters]
+    SP -->|e16| M4[usp_MergeValidationScores]

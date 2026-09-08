@@ -1,0 +1,11 @@
+%% fig-05 — Issues run sequence
+%% Source: docs/thesis/02_ARCHITECTURE.md §2.3.2 (lines 254-264)
+sequenceDiagram
+    participant ADF as Issues Pipeline
+    participant SQL as dp_legacy Legacy
+    participant API as Function App
+    ADF->>SQL: Lookup1 SELECT star, group code, ORDER BY code
+    ADF->>API: POST /issues/json records
+    API-->>ADF: results record_id and issues
+    ADF->>SQL: Mapping.usp_MergeLegacyIssues payload
+    Note over SQL: target_column defaults to Issues

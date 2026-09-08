@@ -1,0 +1,16 @@
+%% fig-20 — Coupling exemplar: three layers, one pair
+%% Source: docs/thesis/03b_EXEMPLARS.md §3b.7.5 (lines 861-876)
+flowchart TD
+    R1["13130303 raw: Nova Southeastern University / SW 33RD ST"]
+    R2["13351065 raw: NSU / SW 33RD STREET"]
+    R1 --> B1[v1 block blk-b2c932577e07]
+    R2 --> B2[v1 block blk-7ada6a4c4171]
+    B1 -.never compared.- B2
+    R1 --> S[standardisation: street type normalised]
+    R2 --> S
+    S --> E[enrichment: NSU to Nova Southeastern University, ROR 042bbge36]
+    E --> B[one block, two signatures]
+    B --> G[name gate refuses the Name 2 rewrite: different_entity]
+    G --> L[Mode A adjudication, has_name2 True on both]
+    L --> C[cluster c_dee9fe44214e, confidence 0.94]
+    C --> V[election: golden 13351065, status proposed]

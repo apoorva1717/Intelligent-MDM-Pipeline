@@ -1,0 +1,12 @@
+%% fig-13 — Scoring run sequence
+%% Source: docs/thesis/02_ARCHITECTURE.md §2.3.4 (lines 317-328)
+sequenceDiagram
+    participant ADF as Scoring Pipeline
+    participant SQL as dp_validation Validation
+    participant API as Function App
+    ADF->>SQL: Lookup1 twenty four column projection, group code
+    ADF->>API: POST /api/dedup/score rows
+    API->>API: load_weights then per row score_row
+    API->>API: cluster maxima, tie break, election
+    API-->>ADF: rows, summary, issues
+    ADF->>SQL: Mapping.usp_MergeValidationScores payload

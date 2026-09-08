@@ -1,0 +1,16 @@
+%% T6 — Component view
+flowchart LR
+    SAP[SAP customer master] -->|extract| DS[DATAshaper]
+    DS -->|load file| SAP
+    DS <-->|review and decide| ST[Data steward]
+    ADF[Azure Data Factory] -->|read and merge back| DS
+    ADF -->|invoke| SVC[Enrichment and dedup service]
+    subgraph EXT [External services]
+        REG[Registry APIs]
+        WEB[Web search and pages]
+        LLM[Language model]
+    end
+    SVC --> REG
+    SVC --> WEB
+    SVC --> LLM
+    SVC --> TEL[Telemetry]

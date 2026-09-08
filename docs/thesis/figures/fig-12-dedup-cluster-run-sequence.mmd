@@ -1,0 +1,15 @@
+%% fig-12 — Deduplication cluster run sequence
+%% Source: docs/thesis/02_ARCHITECTURE.md §2.3.3 (lines 291-305)
+sequenceDiagram
+    participant ADF as Deduplication Pipeline
+    participant SQL as dp_validation Validation
+    participant API as Function App
+    participant AOAI as AI Foundry
+    ADF->>SQL: Lookup1 eleven column projection, group code
+    ADF->>API: POST /api/dedup/cluster-block rows
+    API->>API: build_blocks then per block signatures
+    API->>AOAI: Mode A or Mode B adjudication
+    AOAI-->>API: verdicts
+    API->>API: split guards then Link ID
+    API-->>ADF: rows plus summary
+    ADF->>SQL: Mapping.usp_MergeValidationClusters payload

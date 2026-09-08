@@ -1,4 +1,4 @@
-Generated: 2026-09-07 · Commit: ea6f9d92168d3de949d369ed54a58b5a745a59b7 · Branch: feature/llm-fixes · Pass: 01
+Generated: 2026-09-07 · Commit: 86d173b8a4d715a619b0a2656986c145da7fa81e · Branch: feature/llm-fixes · Pass: 01
 
 # Pass 01 — Requirements traceability
 
@@ -225,3 +225,5 @@ and the four merge procedures), and raised eleven discrepancies (⚠-13 … ⚠-
 writing to the same array, that two withdrawn codes carry a prefix contradicting their
 declared group so a per-group census is ambiguous, and that Tier 2B ships complete and tested
 but unwired.
+
+**Carried forward.** The body of this pass was generated at `ea6f9d92168d3de949d369ed54a58b5a745a59b7` and is re-headed, not re-derived, at `86d173b8a4d715a619b0a2656986c145da7fa81e`; `git diff --stat` between the two touches no Python source — four `adf/*.json` (one line each), four `sql/*.sql` (whitespace-only reformatting) and two `docs/thesis/*.md` — so every citation above addresses the same bytes at both commits. ⚠ The ⚠ numbering above no longer joins up: §1.5 continues from "Pass 00 (⚠-1 … ⚠-12)", and Pass 00 at this commit raises fourteen, so ⚠-13 and ⚠-14 name one thing in `00_INVENTORY.md` and another here. Pass 08 must renumber, or this pass must be re-run.

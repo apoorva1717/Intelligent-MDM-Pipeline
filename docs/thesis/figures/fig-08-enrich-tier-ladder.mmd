@@ -1,0 +1,19 @@
+%% fig-08 — POST /enrich tier ladder call graph
+%% Source: docs/thesis/00_INVENTORY.md §0.5.2 (lines 488-506)
+flowchart TD
+    A[_enrich_single] --> B[run_overflow_check_block]
+    A --> C[preprocess_record]
+    A --> D[_resolve_person_affiliation]
+    D --> E[run_person_affiliation]
+    A --> F[RORClient.call]
+    A --> G[_run_lei_lookup]
+    A --> H[_wikidata_crosswalk]
+    A --> I[run_lab_resolver]
+    A --> J[run_company_canonical]
+    A --> K[run_tier2_canonical]
+    A --> L[run_tier2a]
+    L --> M[_apply_tier2a]
+    A --> N[run_grounded_resolver]
+    A --> O[run_tier3]
+    O --> P[_apply_tier3]
+    A --> Q[_finalise_and_return]

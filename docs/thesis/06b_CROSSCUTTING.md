@@ -1,1347 +1,1152 @@
-Generated: 2026-08-17 · Commit: 515cc7c1a84f55f817d63b4f3f094ce47d57f7fd · Branch: diag/website-trace
+Generated: 2026-09-07 · Commit: 86d173b8a4d715a619b0a2656986c145da7fa81e · Branch: feature/llm-fixes · Pass: 06b
 
-# Pass 6b — Cross-cutting Concerns: CI/CD, Observability, Cost, Security
+# Pass 06b — Cross-cutting concerns
 
-Scope: the four concerns that cut across every component documented in Passes 0–6 — how the
-code reaches the Function App, what can be seen while it runs, what a run costs, and what
-protects it. Sources are this repository at the commit above, plus the external-system context
-recorded in `CONTEXT-EXTERNAL.md`.
+Six concerns that belong to no single stage: what the pipeline records about itself, what makes
+a re-run reproduce a prior run, what it does when something fails, whether a merge can be run
+twice, how a written value is attributed, and how a confidence is arrived at.
 
----
+Scope is the v2 pass specification (`docs/thesis-doc-prompt-v2.md:132–135`). CI/CD, cost and
+network security are **not** in this pass at v2; the deployment surface is in
+`02_ARCHITECTURE.md` §2.6, external-service cost is in `06_EXTERNAL_DEPS.md` §7–§8.
 
-## 0 · Conventions and evidence rules
+## 6b.0 Method
 
-- Every behavioural claim carries `path/file:LINE`. Claims about systems outside this
-  repository cite `CONTEXT-EXTERNAL.md`, which records its own provenance as `[EXPORT]`,
-  `[OBSERVED]`, or `[AUTHOR]`.
-- **Absence is a finding and is evidenced like any other claim.** Where this document states
-  that a control or artefact does not exist, the evidence is a reproducible search whose
-  command is given, not an assertion.
-- `⚠ MEASUREMENT REQUIRED` marks a number that is needed but not present in the repository;
-  each occurrence names the script, query, or dashboard that would produce it.
-- `⚠ NOT EVIDENCED` marks a fact that exists somewhere (typically in Azure resource
-  configuration) but is not a repository artefact and therefore cannot be cited.
-- **The branch is not `main`.** `HEAD` (`515cc7c`) is one commit ahead of `main`, whose tip is
-  `8d07acb` (`git log --oneline main -3`). Every citation in this document is to the working
-  tree at `515cc7c`.
+Counts in this pass are produced by walking the Python AST of every tracked `.py` file outside
+`tests/`, not by grep. The walk, and its verbatim output, are in Appendix A; every count below
+is reproducible from it. "Service path" means `api/`, `enrichment/`, `dedup/`, `llm/`,
+`search/`, `utils/`, `config.py` and `function_app.py` — the code that runs behind an HTTP
+endpoint. `scripts/`, `tools/` and `eval/` are the harness and are counted separately.
 
----
+    $ git status --porcelain
+     M docs/thesis/00_INVENTORY.md
+     M docs/thesis/01_TRACEABILITY.md
+     M docs/thesis/02_ARCHITECTURE.md
+     M docs/thesis/03_ALGORITHMS.md
+     M docs/thesis/03b_EXEMPLARS.md
+     M docs/thesis/04_PARAMETERS.md
+     M docs/thesis/05_DATA_MODEL.md
+     M docs/thesis/06_EXTERNAL_DEPS.md
+     M docs/thesis/07_EVALUATION.md
+     M docs/thesis/08_GAPS.md
+     M docs/thesis/09_DECISIONS.md
 
-# (a) CI/CD
-
-## a.1 · The finding, stated first
-
-**There is no continuous-integration and no continuous-deployment configuration in this
-repository.** No workflow file, no pipeline definition, no build script, no container
-definition, no infrastructure-as-code file, and no git hook exists. Nothing runs on push.
-Nothing runs on pull request. There is no test gate and no lint gate. Deployment is manual,
-performed from a developer workstation.
-
-This is not an inference from missing documentation; it is the result of the following
-searches, all run at `515cc7c`:
-
-| Search | Result |
-|--------|--------|
-| `ls .github` | `No such file or directory` |
-| `git ls-files` | 74 tracked files; none under `.github/`, none named `*.yml` or `*.yaml` |
-| `find . -maxdepth 2 \( -name '*.yml' -o -name '*.yaml' -o -name 'Dockerfile*' -o -name '*.bicep' -o -name '*.tf' -o -name 'Makefile' -o -name '*.sh' -o -name '*.ps1' -o -name '*.toml' -o -name '*.cfg' -o -name '*.ini' \) -not -path './.venv/*' -not -path './.git/*'` | one hit: `./pytest.ini` |
-| `git log --all --oneline -- .github azure-pipelines.yml` | empty — no such file has ever been committed on any ref |
-| `ls .git/hooks \| grep -v '.sample'` | empty — no active git hook |
-
-The complete set of tracked build-adjacent configuration is therefore five files:
-`pytest.ini` (3 lines), `host.json` (20 lines), `.funcignore` (20 lines), `requirements.txt`
-(14 lines), and `requirements-dev.txt` (5 lines), plus four `.vscode/*.json` files.
-
-The README lists "CI/CD pipelines" as a use case for mock mode (`README.md:1749`). That is the
-only occurrence of the term in the repository, and it refers to a hypothetical consumer of
-`MOCK_EXTERNAL_CALLS`, not to a pipeline that exists.
-
-## a.2 · What runs on push and on pull request
-
-| Trigger | What runs | Evidence |
-|---------|-----------|----------|
-| `git push` to any branch | nothing | no workflow file (§a.1); no server-side automation artefact in the repository |
-| pull request opened / updated | nothing | as above; no `.github/workflows/`, no required status check artefact |
-| merge to `main` | nothing | as above |
-| local commit | nothing | `.git/hooks` contains only the unmodified `*.sample` files (§a.1) |
-
-The remote is a GitHub repository (`git remote -v` → `https://github.com/apoorva1717/Intelligent-MDM-Pipeline.git`).
-GitHub-side settings — branch protection rules, required reviewers, required status checks —
-are account configuration rather than repository artefacts and cannot be read from the working
-tree. ⚠ NOT EVIDENCED. What *can* be read from the repository is the consequence: the history
-contains **zero merge commits across all refs** (`git log --all --merges --oneline | wc -l` →
-`0`) over 51 commits (`git rev-list --count --all` → `51`), so no pull request has ever been
-merged into any branch of this repository. See §d.5.
-
-## a.3 · Test gate
-
-There is no gate. There is a test suite, invoked manually.
-
-**Configuration.** `pytest.ini:1-3` is the whole of it:
-
-```
-[pytest]
-asyncio_mode = strict
-testpaths = tests
-```
-
-`asyncio_mode = strict` requires every async test to carry an explicit `@pytest.mark.asyncio`;
-`testpaths = tests` scopes collection to `tests/`. No coverage threshold, no `--strict-markers`,
-no minimum-version pin, no `addopts` of any kind.
-
-**Dependencies.** `requirements-dev.txt:1-5` layers the test tooling over the runtime
-requirements: `pytest>=8.0.0`, `pytest-asyncio>=0.23.0`, `pytest-cov>=5.0.0`, `httpx>=0.27.0`.
-`pytest-cov` is installed but no coverage invocation is configured anywhere.
-
-**Documented invocation.** `README.md:1758-1759` gives `pytest tests/ -v`. `README.md:1749`
-notes mock mode (`MOCK_EXTERNAL_CALLS=true`) as the way to run tests without API keys.
-
-**Suite status at this commit.** Run with the project virtualenv
-(`.venv/Scripts/python.exe -m pytest -q`):
-
-```
-3 failed, 1019 passed, 12 warnings in 29.97s
-```
-
-The three failures are in `tests/test_orchestrator.py`
-(`test_tier1_full_resolution`, `test_web_search_fallback_for_name1`,
-`test_web_search_determines_record_type`) and match the failures recorded in Pass 0
-(`00_INVENTORY.md:336-343`), so they are stable and pre-existing rather than introduced by the
-current branch. **A red suite is therefore the steady state at `HEAD`** — which is possible
-precisely because no gate consumes the result.
-
-The 54 test modules and what each covers are tabulated in `00_INVENTORY.md:350-408`; that
-inventory is not repeated here.
-
-**Deployment does not run the tests.** `.funcignore:11-12` excludes `tests` and `scripts` from
-the deployment package, and `.funcignore:20` excludes `requirements-dev.txt`, so the deployed
-Function App has neither the tests nor pytest installed. The test suite cannot run
-post-deployment even as a smoke check.
-
-## a.4 · Lint gate
-
-There is no lint gate and no linter configuration.
-`grep -rln "ruff|flake8|black|mypy|pylint"` over `*.txt`, `*.ini`, `*.toml`, `*.cfg` outside
-`.venv` returns nothing, and §a.1 established that no `pyproject.toml`, `setup.cfg`,
-`.flake8`, or `ruff.toml` exists.
-
-The application code nonetheless contains **15 `# noqa` suppression directives** across
-`api/`, `dedup/`, `enrichment/`, `llm/`, `search/`, and `utils/`
-(`grep -rn "noqa" --include=*.py … | wc -l` → `15`), predominantly `# noqa: BLE001`
-(blind-except), for example `api/routes.py:828`, `api/routes.py:873`,
-`api/routes.py:1057`, `dedup/llm.py:197`, `llm/openai_client.py:209`-adjacent handlers.
-`BLE001` is a Ruff rule code. The code is therefore written against a linter that the
-repository does not configure and no gate runs — the suppressions are inert.
-
-## a.5 · Deployment mechanism to the Function App
-
-**Mechanism: the VS Code Azure Functions extension, invoked by hand.** The evidence is the
-committed workspace configuration.
-
-`.vscode/settings.json:1-9`:
-
-| Key | Value | Meaning |
-|-----|-------|---------|
-| `azureFunctions.deploySubpath` | `"."` | the repository root is the deployment package root |
-| `azureFunctions.scmDoBuildDuringDeployment` | `true` | dependencies are built **remotely**, on the Function App's Kudu/Oryx build service, from `requirements.txt` — the local `.venv` is not shipped |
-| `azureFunctions.pythonVenv` | `".venv"` | the local virtualenv used by the `func: host start` task |
-| `azureFunctions.projectLanguage` | `"Python"` | |
-| `azureFunctions.projectRuntime` | `"~4"` | Functions host runtime v4 |
-| `azureFunctions.projectLanguageModel` | `2` | Python programming model v2 (decorator-based), matching `function_app.py:12-19` |
-
-`.vscode/extensions.json:3-4` recommends `ms-azuretools.vscode-azurefunctions` and
-`ms-python.python`. `.vscode/tasks.json:4-11` defines only a local-run task
-(`func: host start`, depending on a `pip install -r requirements.txt` task at `:12-25`), and
-`.vscode/launch.json:4-13` only attaches a debugger to that local host on port 9091. **No task
-or launch configuration performs a deployment** — the deploy action is the extension's own
-command, driven from the VS Code UI. There is consequently no scripted, reviewable, or
-repeatable deployment artefact in the repository.
-
-**What is deployed.** `.funcignore:1-20` defines the exclusions: `.git*`, `.vscode`, `.venv`,
-`__pycache__`, `.pytest_cache`, `tests`, `scripts`, `htmlcov`, `.coverage`,
-`local.settings.json`, `.env`, `.env.example`, `*.md`, `README*`, `requirements-dev.txt`. The
-exclusion of `local.settings.json:15` and `.env:16` is the mechanism that keeps development
-secrets out of the deployment package (§d.1).
-
-**What is deployed to.** The Function App is `mdm-pipeline-api`, reached at
-`https://mdm-pipeline-api.azurewebsites.net` (`CONTEXT-EXTERNAL.md:135`, `:255` — both
-`[EXPORT]` from the ADF pipeline JSON), running on the Bruker Azure spoke
-(`CONTEXT-EXTERNAL.md:405-408` `[AUTHOR]`). The Azure resource group, subscription, and
-hosting plan are ⚠ NOT EVIDENCED in the repository; the hosting plan specifically is
-`CONTEXT-EXTERNAL.md:446` open item 6.
-
-**Runtime shape of the deployed unit.** `function_app.py:12` creates
-`func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)`; `function_app.py:15-19`
-registers a single catch-all route `{*route}` that hands every request to
-`AsgiMiddleware(fastapi_app)`. `host.json:11-15` sets `routePrefix` to `""`, so FastAPI paths
-are served verbatim with no injected `/api` segment. All 13 routes (`00_INVENTORY.md:153-167`)
-are therefore one Azure Function. The consequences for observability are in §b.6 and for
-authentication in §d.4.
-
-**Configuration delivery.** Environment variables reach the deployed app as Azure Application
-Settings, not files: `config.py:1-5` ("In production (Azure Functions), environment variables
-are set via Application Settings"), restated at `README.md:1836`. `load_dotenv()` is called
-unconditionally at `config.py:22` and silently no-ops when `.env` is absent, which it is in the
-deployment package (`.funcignore:16`).
-
-**Is deployment manual or automated? Manual.** Three independent pieces of evidence: no
-automation artefact exists (§a.1); the only deployment configuration is a VS Code UI-driven
-extension setting (`.vscode/settings.json:2-3`); and no deployment credential, publish profile,
-service principal, or federated-credential reference appears anywhere in the repository
-(§d.1). There is no staging slot, no environment promotion, and no rollback procedure evidenced.
-
-## a.6 · The other half of the pipeline: ADF change control
-
-The Function App is one of five deployed components (`02_ARCHITECTURE.md:384-391`). The
-orchestration that calls it is deployed separately and is **not** version-controlled in this
-repository.
-
-- The two ADF pipelines are published from ADF Studio on the Tillit tenant. Both carry
-  `"lastPublishTime": "2026-07-29T12:09:37Z"` (`CONTEXT-EXTERNAL.md:182`, `:299`), which is the
-  ADF publish action, not a git operation.
-- Their JSON exists in this repository only as a transcribed `[EXPORT]` inside
-  `CONTEXT-EXTERNAL.md:43-186` and `:205-303`, for documentation. It is not deployable
-  artefact: no ARM template, no `factory.json`, no linked-service or dataset definition is
-  tracked.
-- Whether the ADF factory is git-integrated on the Tillit side is ⚠ NOT EVIDENCED.
-- The DATAshaper configuration — table mappings, processes, validation rules — has **no file
-  export at all**; it is configured through a SaaS web interface
-  (`CONTEXT-EXTERNAL.md:337-339`). It cannot be version-controlled from this side.
-
-**Consequence for the deployed system.** A change to `/enrich`'s response contract is deployed
-by one manual action (VS Code publish) while the ADF activity and the stored procedure that
-consume it are changed by two other manual actions in a different tenant, with no shared
-version, no atomic release, and no automated compatibility check. Three of the five components
-in `02_ARCHITECTURE.md:384-391` have no deployment artefact in any repository.
-
-## a.7 · CI/CD summary
-
-| Concern | State | Evidence |
-|---------|-------|----------|
-| Build | remote, on deploy, from `requirements.txt` | `.vscode/settings.json:3` |
-| On push | nothing | §a.1 |
-| On pull request | nothing | §a.1 |
-| Test gate | none; suite is manual and currently red (3 failed / 1019 passed) | `pytest.ini:1-3`; `README.md:1758-1759`; run at §a.3 |
-| Lint gate | none; 15 `noqa` directives with no configured linter | §a.4 |
-| Type checking | none | §a.4 |
-| Security scanning | none | §a.1 (no workflow exists to host one) |
-| Dependency pinning | none — all 14 runtime requirements are `>=` floors | `requirements.txt:1-14` |
-| Deployment | manual, VS Code Azure Functions extension | `.vscode/settings.json:1-9` |
-| Environments | one; no staging slot evidenced | ⚠ NOT EVIDENCED |
-| Rollback | none evidenced | ⚠ NOT EVIDENCED |
-| ADF / DATAshaper change control | outside this repository | §a.6 |
+Every modified path is a `docs/thesis/*.md` output of this documentation run; no source, SQL,
+ADF or fixture file is modified, so the commit every citation addresses is intact. This pass
+regenerates the file `08_GAPS.md` D-2 records as missing from the set.
 
 ---
 
-# (b) Observability
+## 6b.1 Logging and telemetry
 
-## b.1 · The logging apparatus
+### 6b.1.1 The apparatus
 
-One configuration function serves both deployments. `api/app.py:11-12` reads settings and
-calls `configure_logging(settings.log_level, settings.log_file)` at import time, before the
-`FastAPI` object is constructed — so it is in force for the local `uvicorn` entry point
-(`main.py:8`) and the Azure Functions ASGI entry point (`function_app.py:10`) alike.
+| Element | Value | Evidence |
+|---|---|---|
+| Configuration entry point | `configure_logging(log_level, log_file)` | `api/middleware.py:74` |
+| Level | `LOG_LEVEL`, default `INFO` | `config.py:620`, declared `config.py:165` |
+| Handlers | `StreamHandler` always; `RotatingFileHandler` when a log file resolves | `api/middleware.py:93`, `:102–106` |
+| File path | argument → `LOG_FILE` env → `logs/enrichment_api.log`; `LOG_FILE=""` disables | `api/middleware.py:97–100`, documented `:80–83` |
+| Rotation | 10 MB, 5 backups, UTF-8 | `api/middleware.py:104` |
+| Format string | `"%(asctime)s %(levelname)s %(name)s [%(funcName)s] %(message)s"` | `api/middleware.py:87–91` |
+| Root configuration | `logging.basicConfig(level=level, handlers=handlers, force=True)` | `api/middleware.py:117` |
+| uvicorn loggers | handlers cleared, `propagate = True`, so access lines land in the same file | `api/middleware.py:122–125` |
+| Quietened libraries | `httpx`, `httpcore`, `openai`, `urllib3` set to `WARNING` | `api/middleware.py:130–133` |
+| Request correlation | `request_id = str(uuid.uuid4())[:8]`, set on `request.state` and returned as `X-Request-ID` | `api/middleware.py:22`, `:27`, `:58` |
+| Request timing | `X-Duration-MS` response header | `api/middleware.py:59` |
 
-`configure_logging` (`api/middleware.py:75-135`) does five things:
+`logs/` is excluded from the repository (`.gitignore:21`), so no log record is a committed
+artefact — the constraint `08_GAPS.md` G-12 records.
 
-1. Resolves the level from the `log_level` argument, defaulting to `INFO` when the string does
-   not name a level (`api/middleware.py:85`). The value comes from `LOG_LEVEL`, default
-   `"INFO"` (`config.py:113`, `:244`).
-2. Installs a `StreamHandler` (console) and, unless disabled, a `RotatingFileHandler`
-   (`api/middleware.py:93`, `:105-107`).
-3. Resolves the file path: explicit argument → `LOG_FILE` env var → `logs/enrichment_api.log`
-   under the project root; `LOG_FILE=""` disables file logging entirely
-   (`api/middleware.py:97-102`; documented `.env.example:89-92`).
-4. Re-parents `uvicorn`, `uvicorn.access`, and `uvicorn.error` onto the root handlers
-   (`api/middleware.py:123-126`), so local access lines land in the same file.
-5. Raises `httpx`, `httpcore`, `openai`, and `urllib3` to `WARNING`
-   (`api/middleware.py:132-135`).
+### 6b.1.2 Three logging idioms, and what the formatter renders
 
-Rotation is 10 MB × 5 backups, UTF-8 (`api/middleware.py:105-107`). Handler installation uses
-`logging.basicConfig(level=level, handlers=handlers, force=True)` (`api/middleware.py:118`) —
-`force=True` discards any handler the Azure Functions worker installed before the app module
-was imported. ⚠ UNVERIFIED — whether this displaces the worker's own App Insights handler in
-the deployed app is not determinable from the repository; it is the single highest-value item
-to verify against a live run (§b.7).
+The service uses three different call shapes. The count is over every `logger.<level>(…)` call
+in the service path and the harness (Appendix A.2):
 
-**Step 5 is load-bearing for what is *not* observable.** Every outbound HTTP call in the
-system goes through `httpx`, `requests` (`urllib3`), or the `openai` SDK. Raising those three
-loggers to `WARNING` means no successful outbound request to ROR, GLEIF, SerpAPI, an arbitrary
-web host, or Azure OpenAI produces a log line of its own. External-call visibility exists only
-where the application code logs it explicitly (§b.3).
-
-## b.2 · What is logged, and at what level
-
-Counted from source at `515cc7c`, excluding `tests/` and `scripts/`
-(per-file counts of `logger.debug|info|warning|error|exception`):
-
-| Module | debug | info | warning | error | exception | total |
-|--------|------:|-----:|--------:|------:|----------:|------:|
-| `enrichment/orchestrator.py` | 0 | 41 | 4 | 2 | 2 | 49 |
-| `api/routes.py` | 0 | 15 | 1 | 0 | 0 | 16 |
-| `enrichment/tier1_ror.py` | 0 | 11 | 0 | 1 | 1 | 13 |
-| `dedup/adjudicator.py` | 0 | 3 | 6 | 2 | 0 | 11 |
-| `enrichment/tier1_lei.py` | 0 | 8 | 0 | 1 | 1 | 10 |
-| `enrichment/website_resolver.py` | 0 | 10 | 0 | 0 | 0 | 10 |
-| `enrichment/tier2a_contact.py` | 0 | 8 | 0 | 0 | 1 | 9 |
-| `config.py` | 0 | 1 | 4 | 0 | 0 | 5 |
-| `enrichment/tier2_canonical.py` | 0 | 5 | 0 | 0 | 0 | 5 |
-| `enrichment/tier2b_dept.py` | 0 | 5 | 0 | 0 | 0 | 5 |
-| `enrichment/tier3_llm.py` | 0 | 4 | 0 | 0 | 1 | 5 |
-| `llm/openai_client.py` | 0 | 2 | 2 | 1 | 0 | 5 |
-| `dedup/llm.py` | 0 | 1 | 2 | 1 | 0 | 4 |
-| `enrichment/company_canonical.py` | 0 | 3 | 1 | 0 | 0 | 4 |
-| `enrichment/lab_resolver.py` | 0 | 4 | 0 | 0 | 0 | 4 |
-| `enrichment/person_affiliation.py` | 0 | 2 | 0 | 0 | 2 | 4 |
-| `api/middleware.py` | 0 | 2 | 0 | 0 | 1 | 3 |
-| `enrichment/overflow_check.py` | 0 | 3 | 0 | 0 | 0 | 3 |
-| `search/page_fetcher.py` | 2 | 0 | 1 | 0 | 0 | 3 |
-| `dedup/scoring.py` | 0 | 0 | 2 | 0 | 0 | 2 |
-| `dedup/scoring_xlsx.py` | 0 | 0 | 2 | 0 | 0 | 2 |
-| `enrichment/address_processing.py` | 0 | 2 | 0 | 0 | 0 | 2 |
-| `enrichment/preprocess.py` | 0 | 2 | 0 | 0 | 0 | 2 |
-| `search/duckduckgo_client.py` | 0 | 0 | 0 | 0 | 1 | 1 |
-| `search/serpapi_client.py` | 0 | 0 | 0 | 0 | 1 | 1 |
-| **Total** | **2** | **132** | **25** | **8** | **11** | **178** |
-
-Reproduce with:
-`for f in $(git ls-files "*.py" | grep -vE "^(tests|scripts)/"); do grep -c "logger\.info" "$f"; done`
-(and the analogous counts per level).
-
-**Level discipline.** The system is effectively single-level. 132 of 178 call sites are `INFO`
-(74%), and only two are `DEBUG` — both in `search/page_fetcher.py`. Per-record tier decisions,
-per-candidate website scoring, and every department-probe step are all `INFO`
-(`enrichment/orchestrator.py:1021-1024`, `:1119-1122`, `:1166-1169`, `:1216-1220`,
-`:1262-1265`, `:1320-1323`, `:1327-1331`). Lowering `LOG_LEVEL` to `WARNING` therefore removes
-essentially all pipeline visibility at once — there is no intermediate verbosity. Conversely,
-`LOG_LEVEL=DEBUG` adds only the two page-fetch lines.
-
-**Level semantics.** `WARNING` is used both for genuine degradation (`config.py:141-145`
-SerpAPI key absent; `dedup/adjudicator.py:587-590` candidate cap exceeded;
-`llm/openai_client.py:111-115` TLS verification disabled) and for ordinary rejections
-(`enrichment/orchestrator.py:713-717` Tier 3 identity-guard rejection). `ERROR` and
-`EXCEPTION` are used for caught-and-continued failures, never for request failure — every
-external dependency is fail-open at the request boundary (`06_EXTERNAL_DEPS.md:748-753`). An
-alert rule keyed on `ERROR` would fire on normal degraded operation.
-
-## b.3 · The two logging idioms, and what the formatter destroys
-
-The codebase uses two mutually incompatible structured-logging idioms, and the formatter
-supports only one of them.
-
-**The formatter.** `api/middleware.py:87-91`:
-
-```
-"%(asctime)s %(levelname)s %(name)s [%(funcName)s] %(message)s"
-```
-
-It renders five fields. It does **not** render any key passed via `extra=`.
-
-**Idiom 1 — `extra=` keyword dictionary.** Used by the request middleware and by all Phase 2
-and scoring telemetry:
-
-| Site | Message | Keys passed via `extra=` |
-|------|---------|--------------------------|
-| `api/middleware.py:28-35` | `request_start` | `request_id`, `method`, `path` |
-| `api/middleware.py:61-70` | `request_complete` | `request_id`, `method`, `path`, `status`, `duration_ms` |
-| `api/middleware.py:41-49` | `request_error` | `request_id`, `method`, `path`, `duration_ms` |
-| `dedup/adjudicator.py:812-824` | `dedup_llm_call` | `block_id`, `mode`, `latency_ms`, `prompt_tokens`, `completion_tokens`, `decisions`, `model_version`, `prompt_version` |
-| `dedup/adjudicator.py:883-899` | `dedup_block` | `block_id`, `rows_in`, `distinct_signatures`, `mode`, `llm_calls`, `clusters`, `rows_manual_review`, `errors`, `candidates_generated`, `candidates_by_rule`, `rejected_with_reasoning`, `candidate_cap_exceeded` |
-| `dedup/adjudicator.py:995-1011` | `dedup_request` | `summary`, `total_prompt_tokens`, `total_completion_tokens`, `total_tokens`, `total_latency_ms`, `prompt_version`, `candidates_generated`, `candidates_by_rule`, `rejected_candidates_with_reasoning`, `candidate_cap_exceeded_blocks` |
-| `api/routes.py:935-942` | `scoring_request` | `summary`, `issues`, `total_latency_ms` |
-| `api/routes.py:1013-1021` | `scoring_request` | `summary`, `upload_name`, `total_latency_ms` |
-
-**In the console and in the rotating log file, every one of these keys is dropped.** The
-rendered line is the bare message — `dedup_llm_call` with no block id, no latency, no token
-count; `request_complete` with no status and no duration. The richest telemetry in the system,
-including the only token accounting that exists anywhere (§c.4), is invisible in the file
-handler that `api/middleware.py:105-107` installs.
-
-The fields survive only if a handler that serialises `LogRecord` attributes consumes them —
-i.e. the Application Insights path (§b.6). ⚠ UNVERIFIED — whether these `extra` keys arrive as
-App Insights `customDimensions` is a property of the Azure Functions Python worker's logging
-integration, not of this repository, and must be confirmed against a live run.
-
-**Idiom 2 — dict-as-message.** Phase 1 passes a dictionary as the log *message* itself, so
-`%(message)s` renders `str(dict)` and the content survives the formatter. Examples:
-`enrichment/orchestrator.py:1519-1525` (`person_affiliation_confirmed`),
-`:1540-1546` (`person_affiliation_unresolved`), `:1659-1669` (`tier1_lei`),
-`:1731-1736` (`uc0_overflow_flagged`), `:1784-1789` (`preprocess`),
-`:1948-1953` (`tier1_name1_cleaned`), `:1963-1974` (`tier1_ror_parent`),
-`:2092-2099` (`tier1_child_local_match_*`), `:2116-2121` (`tier1_ror_miss`),
-`:2203-2210` (`tier1_lei_typo_recovered`), `:2309-2316` (`uc13_lab_resolver_result`),
-`:2390-2396` (`tier2_canonical_result_*`).
-
-The output is a Python `repr` of a dict — single-quoted keys, `None` rather than `null` — not
-JSON. It is not machine-parseable as JSON without a repair step, and it is not indexable as
-App Insights custom dimensions because the payload is inside the message string.
-
-**Net effect.** Phase 1's structured records are readable in the file but not queryable; Phase
-2's structured records are queryable in App Insights but absent from the file. No single sink
-holds both. The module docstring at `api/middleware.py:1` calls this "structured JSON logging";
-neither idiom emits JSON. Code wins → recorded in §e.
-
-## b.4 · Identifiers, and the end-to-end traceability chain
-
-### b.4.1 What identifiers exist
-
-| Identifier | Generated / sourced at | Scope | Appears in |
+| Idiom | Shape | Calls | Where |
 |---|---|---|---|
-| `request_id` | `str(uuid.uuid4())[:8]` — `api/middleware.py:22` | one HTTP request | three middleware log lines (`:31`, `:44`, `:64`); response headers `X-Request-ID` (`:58`) |
-| `X-Duration-MS` | `api/middleware.py:59` | one HTTP request | response header only |
-| `record_id` | `EnrichmentRecord.record_id` = `customer or ecc_customer_number` — `api/models.py:230-231`; alias-bound to the SAP `Customer` column — `api/models.py:43-47` | one record | Phase 1 log lines (`enrichment/orchestrator.py:399-403`, `:812-815`, and the dict-message sites in §b.3); response field `record_id` (`api/models.py:324`) |
-| `block_id` | read from the request row (`[Block ID]`, precomputed by the DATAshaper address gate — `CONTEXT-EXTERNAL.md:309-310`) | one dedup block | `dedup_llm_call` (`dedup/adjudicator.py:813`), `dedup_block` (`:884`), and the cap warning (`:587-590`) |
-| `row_id` | ← `Customer` in the ADF Validation projection (`CONTEXT-EXTERNAL.md:226`) | one dedup row | response rows; **not logged** |
-| `cluster_id` | assigned by clustering; opaque `c_`-prefixed hash (`CONTEXT-EXTERNAL.md:392-393`) | one cluster | response rows; logged only by `dedup_approve` (`api/routes.py:957-960`) |
-| `signature_id` | `dedup/signatures.py` | one signature | response rows; Mode B warnings (`dedup/adjudicator.py:460-462`, `:491-493`) |
-| `prompt_version` | `dedup/prompts.py` `PROMPT_VERSION` | build | `dedup_llm_call`, `dedup_request` |
-| `model_version` | `getattr(response, "model", …)` — `dedup/llm.py:194` | one LLM call | `dedup_llm_call` |
+| (a) event name + `extra=` | `logger.info("request_complete", extra={…})` | 10 | `api/routes.py` ×4, `api/middleware.py` ×3, `dedup/adjudicator.py` ×3 |
+| (b) dict as the message | `logger.info({"record_id": …, "step": …})` | 86 | `enrichment/orchestrator.py` ×68, `grounded_resolver.py` ×8, `name_gate.py` ×4, `flags.py` ×3, `address_processing.py`, `person_affiliation.py`, `provenance.py` ×1 each |
+| (c) printf-style | `logger.info("…%s", value)` | 208 | everywhere else |
 
-### b.4.2 The one chain that actually closes
+The formatter renders `%(message)s` and nothing else. A `LogRecord` attribute supplied through
+`extra=` is attached to the record and is **not** in the format string, so **idiom (a) emits the
+event name and discards every structured field it carries**. Idiom (b) survives, because the
+dict *is* the message — rendered by `str()`, so it emits a Python dict repr with single quotes
+and `None`, not JSON. Demonstrated by running the repository's own `configure_logging`
+(Appendix A.3):
 
-**`Customer` is the only identifier that traverses the whole system.** It is the DS `code`
-(group-code prefix plus source key) that DATAshaper carries unchanged across Import → Legacy →
-Validation → load file (`02_ARCHITECTURE.md:415-417`, citing
-`Datashaper-Tutorial-Part1.txt:1379-1403`), and it is the idempotency key for every merge-back.
-Its path:
+    2026-09-07 23:05:16,187 INFO demo [<module>] request_complete
+    2026-09-07 23:05:16,187 INFO demo [<module>] {'record_id': '13162559', 'step': 'tier1_ror_miss', 'reason': 'no_candidate'}
 
-```
-test_77.Legacy.Customer
-  → ADF Lookup1: SELECT * FROM test_77.Legacy … FETCH NEXT 50   (CONTEXT-EXTERNAL.md:106)
-  → /enrich request body, JSON key "Customer"                    (api/models.py:43-47)
-  → EnrichmentRecord.record_id                                   (api/models.py:230-231)
-  → Phase 1 log lines "[record_id] …" / {"record_id": …}         (orchestrator.py:1519-1525 et al.)
-  → EnrichmentResult.record_id in the response                   (api/models.py:324)
-  → usp_merge_legacy_enriched(payload)                           (CONTEXT-EXTERNAL.md:161-170)
-  → test_77.Legacy row, keyed by code
-```
+The first line is the whole of what a `request_complete` record emits: `request_id`, `method`,
+`path`, `status` and `duration_ms` (`api/middleware.py:62–69`) are all dropped. `api/middleware.py:1`
+describes the middleware as "structured JSON logging"; neither half of that is true of what is
+written — see §6b.7, G-93.
 
-For Phase 2 the analogous chain is `Validation.Customer → row_id → response row`
-(`CONTEXT-EXTERNAL.md:226`), but `row_id` is never written to a log line, so the Phase 2 chain
-closes through the **response payload only**, not through logs. `block_id` is logged and
-therefore is the only Phase 2 log-side join key — one level coarser than the row.
+The ten idiom-(a) records are the ones that carry the request correlation id and the Phase 2
+token counts. All ten lose their payload.
 
-### b.4.3 Where the chain breaks
+### 6b.1.3 The event vocabulary
 
-**Break 1 — `request_id` is generated and then abandoned.** `api/middleware.py:26` sets
-`request.state.request_id` with the comment "Attach request_id for downstream correlation". A
-repository-wide search for the symbol
-(`grep -rn "request_id" --include=*.py`, excluding `tests/`) returns **seven hits, all inside
-`api/middleware.py`** (`:22`, `:26`, `:31`, `:44`, `:58`, `:64`). No route handler, no
-orchestrator method, and no dedup function ever reads `request.state.request_id`. The
-correlation hook is dead code.
+Idiom (b) is the pipeline's real telemetry. Every one of the 86 records carries a `step` key;
+85 of 86 carry `record_id`. There are **73 distinct `step` values** and 123 distinct keys
+across the set. The most frequent keys (Appendix A.2):
 
-The consequence is precise: given a `dedup_llm_call` line, nothing identifies which HTTP
-request produced it; given a `[TEST8_41000009] tier1_ror_parent` line, nothing identifies which
-of the ~N/50 `/enrich` batches it belonged to. Within a single-concurrency run the batch can be
-recovered by timestamp ordering, but `/enrich` fans records out with
-`asyncio.gather` at `DEFAULT_MAX_CONCURRENCY=5` (`config.py:216-218`) and the dedup adjudicator
-runs blocks at `DEDUP_MAX_CONCURRENCY=5` (`.env.example:38-39`), so lines from different
-records and different blocks interleave with no key to separate them.
-
-**Break 2 — no inbound correlation is accepted.** `RequestLoggingMiddleware.dispatch`
-(`api/middleware.py:21-72`) reads `request.method` and `request.url.path` and nothing else from
-the inbound request. It does not read `traceparent`, `Request-Id`, `x-ms-correlation-request-id`,
-or any custom header. The ADF pipeline run id and activity run id are therefore not carried
-into the service under any name, and the ADF `Web1` activity sends only
-`{"Content-Type": "application/json"}` (`CONTEXT-EXTERNAL.md:134`, `:254` `[EXPORT]`) — it
-supplies no correlation header either. **An ADF run cannot be joined to a service log line by
-any identifier.** ⚠ Whether the Azure Functions host injects and honours W3C `traceparent`
-independently of application code is platform behaviour, not a repository artefact —
-⚠ UNVERIFIED.
-
-**Break 3 — the return path is header-only.** `request_id` and `duration_ms` leave the service
-as response headers `X-Request-ID` / `X-Duration-MS` (`api/middleware.py:58-59`), not in the
-response body. The ADF `Merge Back` activity passes `@string(activity('Web1').output)` to the
-stored procedure (`CONTEXT-EXTERNAL.md:165-166`). ⚠ UNVERIFIED — whether ADF's Web-activity
-`output` object includes `ADFWebActivityResponseHeaders`, and therefore whether `X-Request-ID`
-reaches `usp_merge_legacy_enriched` inside the payload string, is not determinable from the
-export; it would be settled by inspecting one activity run's output JSON in ADF monitoring.
-
-**Break 4 — the database side is opaque.** The stored procedures
-`dbo.usp_merge_legacy_enriched` and `dbo.usp_merge_validation_clusters` are known only by name
-and signature; their bodies are not exported (`CONTEXT-EXTERNAL.md:318-333`). Whether they log,
-whether they record a run stamp, and what they do with a partially-formed payload are all
-unknown. There is no `enriched_at` watermark in the pipeline as exported — it is a planned
-change (`CONTEXT-EXTERNAL.md:194-197` `[AUTHOR]`), so a row currently carries no evidence of
-*when* or *whether* it was enriched.
-
-### b.4.4 Traceability verdict
-
-| Question an operator would ask | Answerable? | Why |
-|---|---|---|
-| Which records did this ADF run process? | **no** | no run id anywhere in the service (Break 2) |
-| What did the service decide for customer `TEST8_41000009`? | **yes** | `record_id` in Phase 1 logs and in the response (§b.4.2) |
-| Which HTTP request produced this log line? | **no** for every line except the three middleware lines (Break 1) |
-| How long did record X take? | **no** | only the batch total is timed (`orchestrator.py:838-841`) |
-| How many tokens did record X cost? | **no** for Phase 1 (§c.4); **yes per block** for Phase 2 (`dedup/adjudicator.py:812-824`) |
-| Did this row get written back to Legacy? | **no** | no watermark, no merge-side logging (Break 4) |
-| Which prompt version produced this cluster? | **yes** | `prompt_version` on `dedup_llm_call` / `dedup_request` |
-
-## b.5 · Health and diagnostic surfaces
-
-`GET /health` (`api/routes.py:75-85`) returns `status="healthy"` **as a literal**
-(`api/routes.py:80`) together with `version`, `env`, `mock_mode`, and `tiers_available=[1,2,3]`.
-It performs no dependency check: it does not call ROR, GLEIF, SERP, or Azure OpenAI, and it does
-not verify that `AZURE_OPENAI_API_KEY` is set. It returns `healthy` from an app whose LLM calls
-will all fail — `validate_env` only warns (`config.py:122-135`), by design, "allows the app to
-start so health checks still work". As a monitoring signal it reports process liveness only.
-
-`GET /diag/llm` (`api/routes.py:1034-1063`) and `GET /diag/dedup-llm`
-(`api/routes.py:1066-1102`) are the real diagnostic surface, and they exist because the log
-sink was not trusted: "Use this on Azure when you can't see logs — the actual exception string
-is returned in the HTTP response body" (`api/routes.py:1038-1039`). Each makes one live LLM
-call and returns the raw outcome plus an environment snapshot. Their security and cost
-consequences are in §d.4 and §c.6.
-
-`GET /tiers` (`api/routes.py:1105-1118`) returns the running threshold configuration —
-`ror_confidence_threshold`, `fuzzy_match_threshold`, `max_page_content_chars`,
-`page_fetch_timeout_seconds`, `default_max_concurrency`, the resolved `serp_provider`, and
-`mock_mode`. It is the only way to confirm from outside which configuration a deployed instance
-actually loaded, which matters given the `.env.example`-vs-code default divergences recorded in
-`04_PARAMETERS.md:266-305`.
-
-## b.6 · What reaches Application Insights
-
-**Enablement.** `host.json:3-10` is the only Application Insights configuration in the
-repository:
-
-```json
-"logging": { "applicationInsights": { "samplingSettings": {
-    "isEnabled": true, "excludedTypes": "Request" } } }
-```
-
-**No SDK.** `grep -i "applicationinsights|opencensus|opentelemetry|azure.monitor"` over the
-repository excluding `.venv/` and `docs/` returns exactly one hit: `host.json:4`.
-`requirements.txt:1-14` declares no telemetry package. Telemetry therefore travels the Azure
-Functions host's built-in logging integration only — stated in the code at
-`dedup/adjudicator.py:8-9` ("Azure Functions ships them to the `mdm-pipeline-insights`
-Application Insights instance") and at `README.md:1836`, `README.md:1299`,
-`README.md:2034`. The instance name `mdm-pipeline-insights` appears only in prose; the
-connection string / instrumentation key is an Application Setting, ⚠ NOT EVIDENCED.
-
-**Sampling.** `isEnabled: true` turns on adaptive sampling; `excludedTypes: "Request"` exempts
-Request telemetry from it. Traces (all 178 application log lines), dependencies, and exceptions
-are therefore **subject to being sampled away under load**, while request telemetry is retained
-in full. This is the opposite of what the system's own diagnostics need: the request lines carry
-almost nothing (§b.3), and the traces carry everything.
-
-**Operation granularity.** Because `function_app.py:15` registers one catch-all route for all
-13 endpoints, the Function App has exactly one function name, `http_app_func`
-(`function_app.py:16`), and `host.json:13` strips the route prefix. ⚠ UNVERIFIED — whether App
-Insights Request telemetry consequently reports a single operation name for `/enrich`,
-`/issues`, and `/api/dedup/cluster-block` alike is platform behaviour; if it does, the
-per-endpoint latency and failure breakdown that Requests would normally give is lost, and the
-`path` field on `request_complete` (`api/middleware.py:66`) becomes the only per-route
-discriminator — a field the console formatter drops (§b.3).
-
-**Retention.** ⚠ NOT EVIDENCED — the App Insights retention setting is Azure resource
-configuration. Local file retention is bounded by rotation only: 10 MB × 5 backups, with **no
-time-based expiry and no deletion policy** (`api/middleware.py:105-107`;
-`05_DATA_MODEL.md:1104-1105`). Given that the same files carry unredacted person names
-(§d.6), this is a data-protection finding, not only an operations one.
-
-## b.7 · What is not observable
-
-Stated as a list, because each item is a specific blind spot rather than a general shortfall.
-
-1. **Phase 1 token consumption — at all.** `call_openai` returns
-   `response.choices[0].message.content` and discards `response.usage`
-   (`llm/openai_client.py:198-208`). Every Phase 1 LLM call — overflow check, plain-name
-   classification, company canonicalisation, Tier 2 canonicalisation, Tier 2A, Tier 2B, Tier 3,
-   website Path C, person affiliation, address residual classification — is unmeasured. Phase 2
-   does capture it (`dedup/llm.py:188-195`), so the asymmetry is a two-line omission, not a
-   design constraint.
-2. **Per-record latency and per-record cost in Phase 1.** Only the batch total is timed
-   (`enrichment/orchestrator.py:838-841`: total, enriched, failed, `batch_ms`). No per-record
-   or per-tier timing exists.
-3. **Which tier resolved a record, as a queryable field.** The escalation path is reconstructible
-   only by reading the sequence of dict-message lines for that `record_id` (§b.3, idiom 2);
-   there is no `tier_resolved` counter, dimension, or summary field.
-4. **Cache effectiveness.** `BatchCache.stats` exists (`utils/cache.py:109-111`, returning
-   `ror_entries` / `serp_entries`) and is never called by any logging site. Cache hit rate —
-   which directly determines SERP spend (§c.3) — is unmeasured.
-5. **Structured fields in the file and console sinks.** All `extra=` keys are dropped by the
-   formatter (§b.3), including every token count and every latency.
-6. **The correlation between an ADF run and a service log line** (§b.4.3, Break 2).
-7. **Whether a Legacy row was enriched, and when.** No watermark exists in the pipeline as
-   exported (`CONTEXT-EXTERNAL.md:194-197`).
-8. **The database and DATAshaper side.** No stored-procedure body, no DS process log, no
-   validation-run record is available to this system (`CONTEXT-EXTERNAL.md:318-333`,
-   `:337-339`).
-9. **Sampled-away traces.** Under load, an unknown fraction of application logs never reaches
-   App Insights (§b.6), and the fraction itself is not recorded on the surviving records.
-10. **External dependency health.** No circuit breaker, no failure counter, no availability
-    metric. A total ROR outage manifests as every record silently escalating to Tier 2/3 with
-    higher spend and lower confidence (`06_EXTERNAL_DEPS.md:723`) — visible only by reading
-    individual `tier1_ror_miss` lines (`enrichment/orchestrator.py:2116-2121`).
-11. **Any metric, counter, or gauge.** The system emits logs only. There is no custom metric,
-    no percentile, and no dashboard definition in the repository.
-12. **Alerting.** No alert rule, action group, or notification artefact exists in the repository.
-
-**⚠ MEASUREMENT REQUIRED — the observability items a live run would settle**, with the exact
-means for each:
-
-| Unknown | How to obtain it |
+| Key | Records carrying it |
 |---|---|
-| Whether `extra=` keys arrive as App Insights `customDimensions` | run one `/api/dedup/cluster-block` against the deployed app, then query `traces \| where message == "dedup_llm_call" \| project customDimensions` |
-| Whether `basicConfig(force=True)` (`api/middleware.py:118`) displaces the worker's App Insights handler | same query — an empty `traces` table for application messages is the positive result |
-| Whether App Insights reports one operation name for all 13 routes | `requests \| summarize count() by name, url` |
-| Effective sampling rate | `traces \| summarize sum(itemCount), count()` — `itemCount > 1` quantifies what was sampled away |
-| Whether `X-Request-ID` reaches the merge-back payload | inspect one ADF `Web1` activity run's output JSON in ADF monitoring |
-| App Insights retention (days) | the Application Insights resource blade for `mdm-pipeline-insights` |
-| Per-batch `/enrich` duration | already logged as `batch_ms` (`enrichment/orchestrator.py:838-841`) — read it from one 50-row run; this is `CONTEXT-EXTERNAL.md:447` open item 7 |
+| `step` | 86 |
+| `record_id` | 85 |
+| `field` | 22 |
+| `registry` | 17 |
+| `value` | 10 |
+| `reason` | 9 |
+| `query`, `name1`, `confidence`, `candidate` | 7 each |
+| `supplied`, `lei_id`, `qid` | 6 each |
+| `official_name`, `domain`, `ror_id` | 5 each |
+
+The one record with no `record_id` is `enrichment/person_affiliation.py:180`, whose keys are
+`step`, `contact`, `query`, `institution`, `department`, `confidence`. It is the only telemetry
+record that writes a person's name to the log, and it is the only one that cannot be joined
+back to the record it describes — see §6b.7, G-101.
+
+Representative `step` values by stage, each cited at its emission site:
+
+| Stage | `step` values | First emission site |
+|---|---|---|
+| Preprocessing / UC 0 | `preprocess`, `uc0_overflow_merged`, `uc0_repack_dropped` | `enrichment/orchestrator.py:7855`, `:7779`, `:2378` |
+| Tier 1 ROR | `tier1_name1_cleaned`, `tier1_ror_parent`, `tier1_ror_miss`, `tier1_ror_match_demoted_different_entity` | `enrichment/orchestrator.py:8088`, `:8114`, `:8334`, `:8154` |
+| Tier 1 GLEIF | `tier1_lei`, `tier1_lei_typo_recovered` | `enrichment/orchestrator.py:7660`, `:8485` |
+| Tier 1 retry | `tier1_retry`, `tier1_retry_hit`, `tier1_retry_type_conflict` | `enrichment/orchestrator.py:5908`, `:6097`, `:5931` |
+| Wikidata crosswalk | `wikidata_crosswalk_hit`, `wikidata_crosswalk_ror_miss`, `wikidata_crosswalk_lei_miss`, `wikidata_entity_superseded`, `wikidata_website_retained`, `wikidata_domain_check` | `enrichment/orchestrator.py:6315`, `:6266`, `:6360`, `:6192`, `:6506`, `:6551` |
+| Name gate | `name_gate_different_entity`, `name_gate_country_conflict`, `name_gate_no_country_fuzzy_refused`, `name_gate_registry_verdict_deferred_no_geography` | `enrichment/name_gate.py:295`, `:220`, `:234`, `:285` |
+| Grounded lane | `grounded_start`, `grounded_result`, `grounded_adopted`, `grounded_confirmed_input`, `grounded_degraded`, `grounded_guard_dropped`, `grounded_registry_hit`, `grounded_registry_country_mismatch`, `grounded_registry_same_entity_as_name1`, `grounded_fallthrough`, `grounded_proposal_refused` | `enrichment/orchestrator.py:9136`; `enrichment/grounded_resolver.py:795`, `:785`, `:763`, `:574`, `:683`, `:745`, `:500`, `:514`; `enrichment/orchestrator.py:7009`, `:5626` |
+| Domain / page | `unverified_domain_refused_by_page`, `unverified_domain_shipped`, `domain_witness_revoked`, `domain_withdrawn_by_page_read`, `page_extract_feeds_retry`, `dept_domain_from_registry` | `enrichment/orchestrator.py:1852`, `:1980`, `:1913`, `:7512`, `:7392`, `:999` |
+| Department block | `dept_block_normalised`, `dept_input_confirmed`, `dept_fallthrough`, `dept_registry_match_unanchored`, `dept_registry_match_region_contradicted`, `dept_unit_construction_restored` | `enrichment/orchestrator.py:2991`, `:5592`, `:6851`, `:3724`, `:3751`, `:3836` |
+| Contact / Tier 2A | `tier_contact_decision`, `tier_contact_result`, `tier_contact_rejected_scope`, `tier_contact_canonicalised`, `tier_contact_canonical_rejected_scope` | `enrichment/orchestrator.py:9033`, `:9056`, `:9073`, `:9097`, `:9091` |
+| Person affiliation | `person_affiliation`, `person_affiliation_confirmed`, `person_affiliation_unresolved` | `enrichment/person_affiliation.py:180`; `enrichment/orchestrator.py:5316`, `:5326` |
+| Tier 3 | `tier3_start` | `enrichment/orchestrator.py:9168` |
+| Address | `address_stage1` | `enrichment/address_processing.py:1274` |
+| Flags | `flags_computed`, `flag_raised_late`, `flags_retracted` | `enrichment/flags.py:1432`, `:964`, `:1049` |
+| Provenance | `inadmissible_value_reverted` | `enrichment/provenance.py:1250` |
+| Failure | `orchestrator_error` | `enrichment/orchestrator.py:9264` |
+
+### 6b.1.4 The batch summary
+
+`EnrichmentSummary` (`api/models.py:697`) carries **80 counters** and ships in the `/enrich`
+response body. It is the only aggregate telemetry that is not a log line, and the only place a
+per-run call volume is recorded. Grouped by field-name prefix (Appendix A.4):
+
+| Group | Counters | First field |
+|---|---|---|
+| `wikidata_*` | 16 | `wikidata_queried` `api/models.py:753` |
+| `page_*` | 11 | `page_reads_attempted` `:729` |
+| `liveness_*` | 6 | `liveness_checked` `:772` |
+| `lei_*` | 5 | `lei_attempts` `:709` |
+| `evidence_*` | 5 | `evidence_cache_frozen` `:806` |
+| `domain_from_*` | 5 | `domain_from_registry` `:834` |
+| `consensus_*` | 5 | `consensus_groups` `:858` |
+| `tier1_retry_*` | 3 | `tier1_retry_attempts` `:717` |
+| `unchanged_*` | 3 | `unchanged_verified` `:724` |
+| `tier1_*` | 2 | `tier1_resolved` `:706` |
+| `registry_*` | 2 | `registry_location_unconfirmed` `:822` |
+| `tier2a_*` | 2 | `tier2a_population_count` `:848` |
+| `contact_lookup_*` | 2 | `contact_lookup_attempted` `:852` |
+| `tier2b_count`, `tier3_count`, `domain_rejected_unverified` | 1 each | `:850`, `:851`, `:847` |
+| ungrouped | 10 | `total` `:699`, `enriched` `:700`, `verified` `:701`, `unresolved` `:702`, `failed` `:703`, `research_institution_count` `:704`, `company_count` `:705`, `routing_type_mismatch_count` `:795`, `cache_hits_after_normalisation` `:798`, `processing_time_ms` `:865` |
+
+The five evidence-cache counters are the determinism instrumentation and are read by
+`tools/run_diff.py` (§6b.2.3): `evidence_cache_frozen` (`:806`), `evidence_network_calls`
+(`:807`), `evidence_network_calls_by_namespace` (`:810`), `evidence_frozen_misses` (`:813`),
+`evidence_cache_hits` (`:814`).
+
+`summary.tier2b_count` (`:850`) is structurally always zero — `08_GAPS.md` G-18.
+
+### 6b.1.5 What is not recorded
+
+| Absent | Evidence |
+|---|---|
+| Phase 1 token usage | `llm/openai_client.py:345` returns `response.choices[0].message.content` only; `response.usage` is discarded. Phase 2 captures it (`dedup/llm.py:244–245`). `08_GAPS.md` G-57 |
+| Any correlation between the HTTP `request_id` and a per-record telemetry event | `request_id` lives on `request.state` (`api/middleware.py:27`) and appears in no idiom-(b) record; the 86 records key on `record_id` instead, and the one record that emits `request_id` (`api/middleware.py:62–69`) drops it at the formatter (§6b.1.2) |
+| Any custom Application Insights telemetry | `host.json:3–10` enables platform App Insights logging with sampling on (`"isEnabled": true`, `"excludedTypes": "Request"`), so the host ships the stdout/stderr stream and its own request traces. No application code emits a custom metric or event — a case-insensitive search for `applicationinsights`, `opencensus`, `azure.monitor`, `opentelemetry` and `instrumentation_key` across the tree hits `host.json:4` and nothing else (command and output in Appendix A.4). `enrichment/provenance.py:36–38` states the policy — "nothing here writes to Application Insights — App Insights stays operational monitoring" |
+| Which of the three `DEDUP_V2_*` flags were set on a run | not written to any output column (`08_GAPS.md` G-79) |
 
 ---
 
-# (c) Cost
+## 6b.2 Determinism
 
-## c.1 · What the repository contains, and what it does not
+### 6b.2.1 What the repository claims, and where the claim is pinned
 
-**No monetary figure, unit price, plan tier, credit balance, or billing reference appears
-anywhere in this repository.** This was established in Pass 6 by searching for `cost`,
-`pricing`, `price`, `$0.`, `per 1k`, `credits`, and `quota` outside `docs/`
-(`06_EXTERNAL_DEPS.md:640-651`), and it holds at this commit. The `Cost` column of
-`README.md:82-90` (`Zero` / `Low` / `Low-Medium` / `Medium`) is an ordinal design-time ranking
-used to justify the tier-escalation order — "start with the cheapest, most reliable method and
-escalate only when cheaper methods fail" (`README.md:80`) — and carries no unit
-(`06_EXTERNAL_DEPS.md:653-657`).
+`tests/test_determinism.py:1–23` states the problem the machinery exists for: "Two runs of the
+identical 101-row chemspeed batch, on the identical codebase, produced seven substantively
+different records." Four properties are pinned, one class per fix, 90 tests, all passing at
+this commit (Appendix A.5):
 
-**Every unit price in §c.5 is therefore a symbol, and every symbol is ⚠ MEASUREMENT REQUIRED.**
-What the repository *does* determine is the *structure* of the cost: which stages can incur
-charges at all, and how many chargeable calls each can make. That structure is what this
-section establishes.
-
-## c.2 · Free and deterministic versus paid
-
-A stage is **free and deterministic** here if it makes no network call and its output is a pure
-function of its input — the same input yields the same output, at zero marginal cost, on every
-re-run.
-
-### c.2.1 Free and deterministic
-
-| Stage | Endpoint(s) | Evidence |
+| Fix | Property | Enforced at |
 |---|---|---|
-| Issue detection | `POST /issues`, `POST /issues/compare` | regex and string checks only, no enrichment, LLM, or network I/O (`enrichment/issue_detection.py:9-16`); confirmed no external calls (`00_INVENTORY.md:290-294`) |
-| Golden-record election | `POST /api/dedup/score`, `/score/file` | "pure arithmetic over `dedup/weights.json` … can be re-run on retuned weights without paying for LLM adjudication again" (`api/routes.py:900-903`); `elect_golden_records` (`dedup/scoring.py:1033-1052`) |
-| Approval application | `POST /api/dedup/approve` | `apply_approval` copies rows and sets fields (`dedup/scoring.py:574-603`); no external call |
-| STEP A signature collapse | inside `/api/dedup/cluster-block` | deterministic; survives a total LLM outage — "Deterministic STEP A signature collapse still runs, so exact duplicates are still collapsed" (`06_EXTERNAL_DEPS.md:745`) |
-| Residue candidate **nomination** | inside `/api/dedup/cluster-block` | similarity arithmetic in `dedup/candidates.py`; "Nomination never merges — the LLM verdict decides" (`config.py:104-106`). Nomination is free; the adjudication it triggers is not (§c.4) |
-| Search-term derivation | inside `/enrich` | deterministic string derivation (`enrichment/search_terms.py`); no call site in the external-call inventory (`06_EXTERNAL_DEPS.md:679-700`) |
-| Address processing **except** residual classification | inside `/enrich` | the address stage survives a total LLM outage apart from residual classification (`06_EXTERNAL_DEPS.md:740-742`) |
-| Workbook I/O | all `/…/file` endpoints | `openpyxl` parse and emit; no network |
+| A | Every decision-gating LLM call is sent at `temperature=0.0`, `top_p=1.0`, `seed=42` | `llm/openai_client.py:102`, `:103`, `:108`; request built `:308–322` |
+| B | Cache keys are pure functions of the request; entries are immutable and dated; `CACHE_FROZEN` turns a miss into a recorded unavailability | `utils/cache.py:1–60` |
+| C | Candidate selection is a total order independent of API response order; a near-tie is a no-match | `dedup`/`enrichment` rank keys, catalogued in `03_ALGORITHMS.md` §3.18 |
+| D | No record ships two contradictory identities; `Search Term 1` comes from the identity that survived | `enrichment/search_terms.py`, consistency checks |
 
-Three of the system's ten POST endpoints — `/issues`, `/api/dedup/score`,
-`/api/dedup/approve` — make **no external call whatsoever** and are consequently both free and
-immune to any outage (`06_EXTERNAL_DEPS.md:753-756`, citing `00_INVENTORY.md:283`, `:287-294`).
-The architectural rationale for that separation is recorded in code: election is a separate
-endpoint from clustering specifically so weights can be retuned without re-paying for LLM
-adjudication (`api/routes.py:900-903`).
+### 6b.2.2 The evidence cache
 
-**A deterministic stage is not automatically re-runnable for free at the pipeline level.** As
-the Enrichment pipeline is currently exported, `Lookup1` re-selects all rows
-(`CONTEXT-EXTERNAL.md:106`), so a re-run re-enriches every row and re-incurs the *paid* Phase 1
-cost — the merge-back is not idempotent in cost terms (`02_ARCHITECTURE.md:423`). The
-`enriched_at` watermark that would fix this is planned, not present
-(`CONTEXT-EXTERNAL.md:194-197`).
+One directory per source, one JSON file per key (`utils/cache.py:25–37`):
 
-### c.2.2 Free but networked (non-deterministic, unpriced)
-
-| Service | Repository's claim | Cited |
+| Namespace | Directory | Key |
 |---|---|---|
-| ROR v2 | "Low (free public API)" | `README.md:85` |
-| GLEIF / LEI | "Low (free public API)"; "the free GLEIF API" | `README.md:86`; `enrichment/tier1_lei.py:4-5` |
-| DuckDuckGo | "free fallback when no SerpAPI key"; "no API key required" | `search/duckduckgo_client.py:1`, `:17` |
-| Arbitrary web hosts (page fetch) | no charge to this system beyond egress | `06_EXTERNAL_DEPS.md:672` |
+| `page` | `page_reads/` | registrable domain |
+| `wikidata` | `wikidata/` | `search:<normalised query>` / `entity:<QID>` |
+| `serp` | `serp/` | normalised query + quoted-flag + country |
+| `fetch` | `fetch/` | the URL (or host) requested |
+| `llm` | `llm/` | digest of deployment + sampling params + both prompts |
+| `ror` | `registry/` | normalised name + country |
+| `gleif` | `registry/` | normalised name + country |
 
-These cost nothing but are **not deterministic**: a re-run may return different results, and
-none of the three publishes an enforceable free-tier bound inside this repository. Their
-"free" status is a repository assertion, not a cited term of use
-(`06_EXTERNAL_DEPS.md:665-668`).
+The property that makes a second run hit is stated at `utils/cache.py:42–45`: "**No key contains
+a run id, a batch id, a date or a record id** — that is the property that makes a second run hit
+rather than miss, and `tests/test_determinism.py` asserts it structurally rather than by
+inspection." The normaliser is `dedup.signatures.normalize_key`, reused rather than
+reimplemented (`utils/cache.py:57–60`), and deliberately does not strip legal forms.
 
-### c.2.3 Paid
+`CACHE_FROZEN` (`utils/cache.py:15–21`) turns a miss into a traced `evidence-unavailable-frozen`
+rather than a network call, "the analogue of freezing `dedup/weights.json` before an
+evaluation". Per-namespace instrumentation is at `utils/cache.py:428–432`
+(`_entries`, `_memory_hits`, `_disk_hits`, `_recorded`, `_frozen_misses`) and the batch roll-up
+at `api/models.py:806–814`.
 
-| Cost driver | Unit | Where it is incurred |
+Two limits, both already in the gap register:
+
+- The switch covers Phase 1 only. `dedup/llm.py` participates in no namespace and has its own
+  opt-in record/replay store (`dedup/cache.py:1–33`), gated on `DEDUP_FIXTURE_CACHE_DIR` and
+  **off by default** — `08_GAPS.md` G-55.
+- Four of the six namespaces a frozen replay needs are gitignored and absent —
+  `08_GAPS.md` G-13.
+
+`dedup/cache.py:19–24` defines two modes: `record` (serve a hit, else call and write) and
+`replay` (serve a hit, else **refuse, loudly**) — "a miss means the prompt changed, and silently
+calling the model would quietly re-measure something else while reporting it under the old run's
+name". Errored calls are never cached (`:26–28`), and concurrent duplicate writes are left
+unlocked deliberately (`:30–33`).
+
+### 6b.2.3 `tools/run_diff.py` — the reproducibility gate
+
+| Property | Value | Evidence |
 |---|---|---|
-| **SerpAPI** | one search | six Phase 1 stages (§c.3) |
-| **Azure OpenAI — Phase 1** | prompt + completion tokens on `AZURE_OPENAI_DEPLOYMENT` | ten Phase 1 stages (§c.3) |
-| **Azure OpenAI — Phase 2** | prompt + completion tokens on `AOAI_DEPLOYMENT_DEDUP` | dedup adjudication (§c.4) |
-| **Azure Functions compute** | plan-dependent | every request; plan unknown (`CONTEXT-EXTERNAL.md:446` open item 6) |
-| **Azure egress** | GB | page fetches to arbitrary hosts (`06_EXTERNAL_DEPS.md:672`) |
-| **Azure Data Factory** | activity runs + integration-runtime hours | `Lookup2` + N/50 × (`Lookup1` + `Web1` + `Merge Back`) per enrichment run (`CONTEXT-EXTERNAL.md:43-186`) — outside this repository, Tillit tenant |
-| **Azure SQL Managed Instance / DATAshaper** | licence and instance cost | outside this repository |
+| Inputs | two `scripts/run_batch.py --json` artefacts. The enriched XLSX is "deliberately NOT accepted — it carries only the *output* Name 1, and the join key has to be input-side" | `tools/run_diff.py:14–18` |
+| Join key | `(name1_original, city)`, normalised for case and whitespace only | `tools/run_diff.py:75`, `:78–83` |
+| Why not `Search Term 1` | it is pipeline-written, so "two runs that disagree about a record can fail to line that record up at all" | `tools/run_diff.py:24–32` |
+| How the input name is recovered | `EnrichmentResult` marks `*_original` `exclude=True`, so the artefact carries a parallel `inputs` array joined by position within one run | `tools/run_diff.py:86–99` |
+| Columns compared | every column of `api.output_columns.RESPONSE_COLUMNS` — nothing excluded, whitelisted or normalised away | `tools/run_diff.py:34–41`, `:246` |
+| Folding applied | `None` ≡ `""`, and lists compared by contents. Nothing else: "a case change, a spacing change or a reordered list is a real difference and this tool exists to see it" | `tools/run_diff.py:124–138` |
+| Excluded | `duration_ms` — not in the schema, "the one output that SHOULD differ" | `tools/run_diff.py:43–45` |
+| Grammar guard | refuses to compare a Scheme A artefact against a Scheme B one, exit `2`, and names `tools/provenance_invariance.py` instead | `tools/run_diff.py:196–228`, `:340–366` |
+| Warm-run evidence | prints `summary2["evidence_network_calls"]`, because "a second run that went to the network is not comparing the same evidence the first one saw" | `tools/run_diff.py:378–383` |
+| Exit codes | `0` identical; `1` any differing row or any row present in one run only; `2` incomparable grammars | `tools/run_diff.py:386–393`, `:344`, `:366` |
+| Encoding | stdout/stderr reconfigured to UTF-8 — "a diff that crashes on the character set of its own evidence is not a gate" | `tools/run_diff.py:65–72` |
 
-## c.3 · Phase 1 call volume — the structural bounds
+The gate has no test of its own (`08_GAPS.md` G-71), and `tools/run_diff.py:203–205` states
+"Seven of the sixty-seven columns are provenance" while `RESPONSE_COLUMNS` holds **69** at this
+commit — see §6b.7, G-95.
 
-Call *sites* are known exactly; call *counts* per record depend on which tier resolves the
-record and on cache hits. The table below is transcribed from the call-site inventory in Pass 6
-(`06_EXTERNAL_DEPS.md:679-700`), which cites each site directly.
+### 6b.2.4 The two companion tools
 
-| Stage | SERP calls | LLM calls | Page fetches | Site |
+| Tool | Purpose | Evidence |
+|---|---|---|
+| `tools/provenance_invariance.py` | compares behaviour across the Scheme A → Scheme B provenance migration by partitioning the columns instead of refusing | 248 LOC; named as the escape hatch at `tools/run_diff.py:363–365` |
+| `tools/shuffle_evidence.py` | reorders recorded evidence to test that selection does not depend on the order a source answered in (Fix C) | 115 LOC |
+
+### 6b.2.5 Residual non-determinism
+
+Per-stage determinism is tabulated in `03_ALGORITHMS.md` §3.18 and is not repeated here. Three
+cross-cutting residuals belong to this pass:
+
+1. **The seed can be dropped silently, process-wide.** If the deployment rejects `seed`,
+   `_SEED_SUPPORTED` is set `False` once "for the life of the process", a `WARNING` is logged and
+   every later call goes out without it (`llm/openai_client.py:296–298`, `:324–344`). The
+   warning's own text concedes the consequence: "Byte-identical re-runs are no longer guaranteed
+   by the service." Nothing records the latch in the response, the summary or any output column,
+   so a run that lost its seed is indistinguishable from one that kept it — see §6b.7, G-96.
+   `dedup/llm.py:66`, `:265–270` carries the same latch for `seed` and for `temperature`.
+2. **Phase 2 sampling is conditional.** `dedup/llm.py:223–237` sends `top_p` always, `seed` when
+   supported, and `temperature` only when `reasoning_effort` is not in play — "gpt-5.4 rejects
+   any temperature but its default" (`dedup/llm.py:9–14`).
+3. **The cache is the determinism mechanism, and it is not in the repository.** G-13.
+
+---
+
+## 6b.3 Error handling — every fail-open `except`
+
+### 6b.3.1 Method and counts
+
+A handler is **fail-open** here when no `raise` statement appears anywhere inside its body: the
+exception is absorbed and control continues. A handler that re-raises, or that converts to an
+`HTTPException`, is not fail-open and is excluded. Derived by AST walk (Appendix A.6):
+
+| Measure | Count |
+|---|---|
+| `except` handlers in production code (all tracked `.py` outside `tests/`) | 150 |
+| …containing a `raise` anywhere in the handler | 20 |
+| **…fail-open** | **130** |
+| of those, in the service path | 115 |
+| of those, in `scripts/` · `tools/` · `eval/` | 15 |
+| fail-open handlers whose body is exactly `pass` | 11 |
+| fail-open handlers that log anything at all | 64 |
+
+**Sixty-six of the 130 fail-open handlers log nothing.** Of the 115 in the service path, **81
+catch bare `Exception`**:
+
+| Exception caught | Handlers (service path) |
+|---|---|
+| `Exception` | 81 |
+| `(TypeError, ValueError)` | 7 |
+| `ValueError` | 6 |
+| `RegistryUnavailableFrozen` | 5 |
+| `httpx.HTTPStatusError` | 4 |
+| `WikidataUnavailable` | 3 |
+| `ValidationError` | 2 |
+| `(json.JSONDecodeError, ValueError)` | 2 |
+| `ProvenanceGrammarError` | 2 |
+| `OSError`, `RuntimeError`, `SearchUnavailable` | 1 each |
+
+The `disposition` column in the tables below is the mechanical shape of the handler body, in
+statement order: `pass`, `continue`, `log`, `assign`, `return <expr>`, `call`, `if`, `try`,
+`loop`.
+
+### 6b.3.2 The 115 fail-open handlers in the service path
+
+| Site | Exception | Enclosing function | Disposition |
+|---|---|---|---|
+| `api/middleware.py:39` | `Exception` | `dispatch` | assign → log → return <expr> |
+| `api/middleware.py:109` | `OSError` | `configure_logging` | log |
+| `api/routes.py:315` | `ValidationError` | `_rows_to_records` | call |
+| `api/routes.py:339` | `Exception` | `_copy_extra_sheets` | return None |
+| `api/routes.py:1181` | `ValidationError` | `_rows_to_dedup_rows` | call |
+| `api/routes.py:1356` | `Exception` | `dedup_cluster_block` | log |
+| `api/routes.py:1401` | `Exception` | `dedup_file` | log |
+| `api/routes.py:1598` | `Exception` | `diag_llm` | return <expr> |
+| `dedup/adjudicator.py:130` | `(TypeError, ValueError)` | `_confidence_to_float` | return None |
+| `dedup/adjudicator.py:1429` | `ValueError` | `pick` | log |
+| `dedup/llm.py:42` | `Exception` | `<module>` | assign |
+| `dedup/llm.py:78` | `(TypeError, ValueError)` | `_is_retryable` | return False |
+| `dedup/llm.py:110` | `(json.JSONDecodeError, ValueError)` | `parse_json_object` | assign → assign → if |
+| `dedup/llm.py:117` | `(json.JSONDecodeError, ValueError)` | `parse_json_object` | return None |
+| `dedup/llm.py:186` | `Exception` | `aclose` | pass |
+| `dedup/llm.py:250` | `Exception` | `adjudicate` | assign → if → if → if → if → log → break |
+| `dedup/scoring.py:258` | `(TypeError, ValueError)` | `_floatify_confidence` | return None |
+| `dedup/scoring.py:685` | `(TypeError, ValueError)` | `coerce_weights` | return <expr> |
+| `dedup/scoring.py:755` | `ValueError` | `_coerce_int` | pass |
+| `dedup/scoring.py:839` | `ValueError` | `_match_numeric_band` | log |
+| `dedup/scoring.py:1130` | `ValueError` | `_resolve_confidence_threshold` | log |
+| `dedup/scoring.py:1332` | `ValueError` | `_parses_as_int` | return False |
+| `enrichment/address_processing.py:775` | `Exception` | `_classify_residual` | log → return (None, 0.0) |
+| `enrichment/address_processing.py:782` | `(TypeError, ValueError)` | `_classify_residual` | assign |
+| `enrichment/company_canonical.py:84` | `Exception` | `run_company_canonical` | log → return result |
+| `enrichment/grounded_resolver.py:324` | `(TypeError, ValueError)` | `_index` | return None |
+| `enrichment/grounded_resolver.py:389` | `Exception` | `_gather_evidence` | log → assign |
+| `enrichment/grounded_resolver.py:474` | `Exception` | `_re_verify` | log → continue |
+| `enrichment/grounded_resolver.py:599` | `Exception` | `run_grounded_resolver` | log → assign → assign → return result |
+| `enrichment/issue_detection.py:1619` | `ProvenanceGrammarError` | `provenance_is_low` | return False |
+| `enrichment/lab_resolver.py:115` | `Exception` | `run_lab_resolver` | log → continue |
+| `enrichment/liveness.py:282` | `RegistryUnavailableFrozen` | `probe_ror_status` | log → return (None, None, 0.0) |
+| `enrichment/liveness.py:285` | `Exception` | `probe_ror_status` | log → return (None, None, 0.0) |
+| `enrichment/liveness.py:305` | `Exception` | `probe_ror_status` | continue |
+| `enrichment/orchestrator.py:4440` | `Exception` | `enrich_batch` | log |
+| `enrichment/orchestrator.py:4607` | `Exception` | `_resolve_final_url_cached` | assign |
+| `enrichment/orchestrator.py:4783` | `Exception` | `_host_of` | return None |
+| `enrichment/orchestrator.py:4851` | `Exception` | `_probe_department_url` | log → assign |
+| `enrichment/orchestrator.py:4872` | `Exception` | `_probe_department_url` | assign |
+| `enrichment/orchestrator.py:4906` | `Exception` | `_probe_department_url` | log → assign |
+| `enrichment/orchestrator.py:4921` | `Exception` | `_probe_department_url` | assign |
+| `enrichment/orchestrator.py:4962` | `Exception` | `_probe_department_url` | continue |
+| `enrichment/orchestrator.py:5039` | `Exception` | `_probe_department_url` | log → assign |
+| `enrichment/orchestrator.py:5115` | `Exception` | `_verify_candidate_url` | return False |
+| `enrichment/orchestrator.py:5206` | `Exception` | `_resolve_person_affiliation` | log → assign |
+| `enrichment/orchestrator.py:5293` | `Exception` | `_resolve_person_affiliation` | log |
+| `enrichment/orchestrator.py:5760` | `Exception` | `_site_qualifier_retry` | log → assign |
+| `enrichment/orchestrator.py:5950` | `Exception` | `_retry_tier1_after_canonicalisation` | log → assign |
+| `enrichment/orchestrator.py:6045` | `Exception` | `_retry_tier1_after_canonicalisation` | assign → assign → log → return None |
+| `enrichment/orchestrator.py:6156` | `Exception` | `_wikidata_crosswalk` | assign → log → return False |
+| `enrichment/orchestrator.py:6258` | `Exception` | `_crosswalk_to_ror` | log → return False |
+| `enrichment/orchestrator.py:6352` | `Exception` | `_crosswalk_to_gleif` | log → return False |
+| `enrichment/orchestrator.py:6493` | `Exception` | `_retain_wikidata_website` | assign → log → return None |
+| `enrichment/orchestrator.py:6589` | `Exception` | `_check_liveness` | log |
+| `enrichment/orchestrator.py:6884` | `Exception` | `_dept_fallthrough` | log → continue |
+| `enrichment/orchestrator.py:7041` | `Exception` | `_grounded_fallthrough` | log → return None |
+| `enrichment/orchestrator.py:7551` | `ProvenanceGrammarError` | `_emit_retry_trace` | assign |
+| `enrichment/orchestrator.py:7613` | `Exception` | `_run_address_stage` | log → return None |
+| `enrichment/orchestrator.py:7652` | `Exception` | `_run_lei_lookup` | assign → log → return False |
+| `enrichment/orchestrator.py:9263` | `Exception` | `_enrich_single` | log → assign → assign → return <expr> |
+| `enrichment/overflow_check.py:127` | `Exception` | `run_overflow_check` | log → return result |
+| `enrichment/page_corroborator.py:364` | `Exception` | `read_page` | log → return None |
+| `enrichment/person_affiliation.py:134` | `Exception` | `run_person_affiliation` | log → continue |
+| `enrichment/person_affiliation.py:166` | `Exception` | `run_person_affiliation` | log → return PersonAffiliation() |
+| `enrichment/preprocess.py:1783` | `Exception` | `_extract_contact_from_field` | log → assign |
+| `enrichment/preprocess.py:3349` | `Exception` | `llm_classify_plain_names_async` | log → continue |
+| `enrichment/search_terms.py:320` | `Exception` | `unit_domain_or_path` | return None |
+| `enrichment/tier1_lei.py:688` | `RegistryUnavailableFrozen` | `call_lei` | log → return <expr> |
+| `enrichment/tier1_lei.py:695` | `httpx.HTTPStatusError` | `call_lei` | log → return <expr> |
+| `enrichment/tier1_lei.py:701` | `Exception` | `call_lei` | log → return <expr> |
+| `enrichment/tier1_lei.py:767` | `Exception` | `_fuzzy_lookup` | log → continue |
+| `enrichment/tier1_lei.py:856` | `RegistryUnavailableFrozen` | `call_lei_by_id` | log → return <expr> |
+| `enrichment/tier1_lei.py:860` | `httpx.HTTPStatusError` | `call_lei_by_id` | assign → if → log → return <expr> |
+| `enrichment/tier1_lei.py:871` | `Exception` | `call_lei_by_id` | log → return <expr> |
+| `enrichment/tier1_ror.py:1593` | `RegistryUnavailableFrozen` | `call_ror` | log → return <expr> |
+| `enrichment/tier1_ror.py:1599` | `httpx.HTTPStatusError` | `call_ror` | log → return _no_match() |
+| `enrichment/tier1_ror.py:1605` | `Exception` | `call_ror` | log → return _no_match() |
+| `enrichment/tier1_ror.py:1690` | `RegistryUnavailableFrozen` | `call_ror_by_id` | log → return <expr> |
+| `enrichment/tier1_ror.py:1693` | `httpx.HTTPStatusError` | `call_ror_by_id` | log → return <expr> |
+| `enrichment/tier1_ror.py:1698` | `Exception` | `call_ror_by_id` | log → return <expr> |
+| `enrichment/tier2_canonical.py:201` | `Exception` | `run_tier2_canonical` | log → return result |
+| `enrichment/tier2a_contact.py:151` | `Exception` | `run_tier2a` | log → continue |
+| `enrichment/tier2b_dept.py:95` | `Exception` | `run_tier2b` | log → continue |
+| `enrichment/tier2b_dept.py:145` | `(TypeError, ValueError)` | `run_tier2b` | assign |
+| `enrichment/tier3_llm.py:121` | `Exception` | `run_tier3` | log → assign → assign → return result |
+| `enrichment/website_resolver.py:563` | `Exception` | `_root_url` | pass |
+| `enrichment/website_resolver.py:651` | `Exception` | `_assemble_path_b_trace` | assign |
+| `enrichment/website_resolver.py:948` | `Exception` | `_run` | log → if → return WebsiteResolution() |
+| `enrichment/website_resolver.py:1002` | `Exception` | `_looks_like_url` | return False |
+| `enrichment/website_resolver.py:1065` | `Exception` | `infer_website_via_llm` | log → call → return WebsiteResolution() |
+| `enrichment/wikidata.py:674` | `Exception` | `_backoff` | assign |
+| `enrichment/wikidata.py:679` | `ValueError` | `_backoff` | pass |
+| `enrichment/wikidata.py:899` | `WikidataUnavailable` | `resolve` | assign → return _finish(outcome) |
+| `enrichment/wikidata.py:908` | `WikidataUnavailable` | `resolve` | assign → return _finish(outcome) |
+| `enrichment/wikidata.py:963` | `WikidataUnavailable` | `resolve` | assign → return _finish(outcome) |
+| `llm/openai_client.py:53` | `RuntimeError` | `install_httpx_aclose_noise_filter` | return None |
+| `llm/openai_client.py:355` | `Exception` | `call_openai` | pass |
+| `llm/openai_client.py:401` | `Exception` | `aclose` | pass |
+| `llm/test_connection.py:26` | `Exception` | `test` | log |
+| `search/page_fetcher.py:205` | `Exception` | `_live` | call → assign |
+| `search/page_fetcher.py:242` | `Exception` | `_sync_fetch_result` | call → return <expr> |
+| `search/page_fetcher.py:273` | `Exception` | `_live` | call → assign |
+| `search/page_fetcher.py:298` | `Exception` | `_live` | assign |
+| `search/page_fetcher.py:318` | `Exception` | `_live` | assign |
+| `search/page_fetcher.py:346` | `Exception` | `_sync_resolve_final_url` | return None |
+| `search/page_fetcher.py:358` | `Exception` | `_sync_subdomain_exists` | return False |
+| `search/page_fetcher.py:384` | `Exception` | `_live` | call → assign |
+| `search/page_fetcher.py:420` | `Exception` | `_sync_fetch_outgoing_links` | continue |
+| `utils/cache.py:334` | `Exception` | `get_entry` | call → return None |
+| `utils/cache.py:345` | `Exception` | `get_entry` | assign |
+| `utils/cache.py:422` | `Exception` | `set` | pass |
+| `utils/cache.py:701` | `Exception` | `_serp_geo_enabled` | return True |
+| `utils/cache.py:753` | `SearchUnavailable` | `cached_serp` | return [] |
+| `utils/domain_resolver.py:137` | `Exception` | `canonicalise_host` | return None |
+| `utils/text_utils.py:52` | `Exception` | `extract_domain` | return None |
+### 6b.3.3 The 15 fail-open handlers in the harness
+
+Not on any request path. Listed for completeness; a swallowed failure here mis-reports a
+measurement rather than shipping a wrong value.
+
+| Site | Exception | Enclosing function | Disposition |
+|---|---|---|---|
+| `eval/dedup_eval.py:93` | `ValueError` | `_as_float` | return None |
+| `scripts/fix_reports.py:75` | `ProvenanceGrammarError` | `_state` | return None |
+| `scripts/test_local.py:66` | `requests.ConnectionError` | `wait_for_health` | pass |
+| `scripts/test_local.py:92` | `requests.RequestException` | `run_fixture` | return <expr> |
+| `scripts/trace_website.py:74` | `Exception` | `emit` | pass |
+| `scripts/trace_website.py:192` | `Exception` | `_main` | pass |
+| `scripts/verify_fixes.py:44` | `Exception` | `run` | log → assign |
+| `scripts/verify_fixes.py:89` | `Exception` | `run` | log → assign |
+| `scripts/verify_fixes.py:117` | `Exception` | `run` | log → assign |
+| `scripts/verify_fixes.py:138` | `Exception` | `run` | log → assign |
+| `scripts/verify_fixes.py:167` | `Exception` | `run` | log → assign |
+| `scripts/verify_fixes.py:223` | `Exception` | `run` | log → log → assign |
+| `scripts/wikidata_lane_report.py:106` | `ValueError` | `_traces` | continue |
+| `scripts/wikidata_warm_fixtures.py:79` | `Exception` | `_main` | log → continue |
+| `tools/run_diff.py:71` | `Exception` | `<module>` | pass |
+### 6b.3.4 What the pattern means
+
+Of the 115 service-path fail-open handlers, **34 carry a `# noqa: BLE001` marker on the `except`
+line and 35 carry any inline comment at all**; the remaining 80 catch and continue with no note
+on the line (Appendix A.6). The commented ones read as a deliberate policy with a stated reason
+— `utils/cache.py:334` "a corrupt fixture is a miss", `utils/cache.py:422` "a fixture we cannot
+write is not fatal", `api/routes.py:1356` and `enrichment/orchestrator.py:4440` releasing an
+HTTP client on the way out. The uncommented ones are not distinguishable, from the line alone,
+from an oversight.
+
+Four handlers set the shape of the whole pipeline's failure behaviour:
+
+| Site | What it absorbs | What ships instead |
+|---|---|---|
+| `enrichment/orchestrator.py:9263` | any exception from any stage of one record's enrichment | the record is not dropped and the batch is not failed: `enrichment_status = "failed"`, `error = str(exc)`, and the record still goes through `_finalise_and_return` (`:9264–9273`). It is counted in `EnrichmentSummary.failed` by the `else` branch at `api/models.py`-side aggregation (`enrichment/orchestrator.py:9290`). This is the deliberate per-record bulkhead, and it is the reason a single bad record cannot take down a 100-row batch |
+| `enrichment/provenance.py` admissibility gate | not an `except` — the same policy expressed as a check: a scoped field with no provenance event has its value **reverted to the input** and the record is flagged, rather than the batch being failed (`enrichment/provenance.py:1227–1234`) | "shipping the original input is strictly better than failing the batch, and strictly better than shipping an unattributable value" |
+| `enrichment/issue_detection.py:1619` | a `ProvenanceGrammarError` on a cell that is not a provenance string | `provenance_is_low` returns `False` — the audit "reports what it can read and never guesses" (`:1610–1612`). A malformed provenance cell therefore raises no issue code |
+| `utils/cache.py:753` | `SearchUnavailable` from a SERP call | `return []` — an empty candidate list, indistinguishable downstream from a search that legitimately found nothing |
+
+The counterweight is that failure is not silent at the record level: `orchestrator_error`
+(`enrichment/orchestrator.py:9264`) is one of the 73 telemetry steps, and `enrichment_status`
+and `error` are both output columns. Failure **inside** a stage is a different matter — a
+swallowed registry call, page fetch or LLM call leaves the record looking merely unresolved,
+and the 66 fail-open handlers that log nothing leave no record that anything was attempted.
+The tier-route question this raises is `08_GAPS.md` G-12.
+
+---
+
+## 6b.4 Idempotency of the merge procedures
+
+All four procedures are `UPDATE`-only. There is no `INSERT`, no `DELETE`, no `WHEN NOT MATCHED`
+clause of either kind, no `OUTPUT` clause and no explicit transaction anywhere in `sql/`
+(Appendix A.7). Nothing accumulates: no column is written as `col = col + …`, and every
+assignment is a total function of the payload and the incumbent.
+
+**Result: all four are idempotent under repetition of an identical payload.** Running the same
+merge twice writes the same values the second time as the first.
+
+| Procedure | Assignment form | Idempotent under repeat | Convergent (target made equal to payload) |
+|---|---|---|---|
+| `usp_MergeLegacyEnriched` | 31 assignments: 26 as `COALESCE(NULLIF(LTRIM(RTRIM(src.[c])), SPACE(0)), tgt.[c])`, and 5 unconditional — `Record Type`, `ROR ID`, `LEI ID` (`LTRIM(RTRIM(src.[c]))`) plus `Flag for Review` and `Flag Reason` assigned directly (`sql/usp_merge_legacy_enriched.sql:86`; counts in Appendix A.7) | yes | no |
+| `usp_MergeLegacyIssues` | one column, `tgt.<@target_column> = src.[issues_csv]` where `issues_csv` is `STRING_AGG(x.[value], N'; ') WITHIN GROUP (ORDER BY CAST(x.[key] AS INT))` (`sql/usp_merge_legacy_issues.sql:52–61`, `:66`) | yes — the aggregate is ordered, so the joined string is stable | no |
+| `usp_MergeValidationClusters` | six columns assigned directly from `#src` (`sql/usp_merge_validation_clusters.sql:63`) | yes | no |
+| `usp_MergeValidationScores` | 21 columns assigned directly from `#src` (`sql/usp_merge_validation_scores.sql:78`) | yes | no |
+
+Five properties qualify that result.
+
+**1. Unmatched payload rows vanish.** The join is `ON tgt.Customer = src.<id> AND tgt.[code] LIKE
+@pat ESCAPE @esc` and there is no `WHEN NOT MATCHED BY TARGET`, so a payload row whose customer
+number is not in the group code's slice is dropped with no error and no count
+(`sql/usp_merge_legacy_enriched.sql:86`, `usp_merge_legacy_issues.sql:66`,
+`usp_merge_validation_clusters.sql:63`, `usp_merge_validation_scores.sql:78`). `08_GAPS.md`
+G-86 is the special case where the id is empty.
+
+**2. Stale target rows are never cleared.** There is no `WHEN NOT MATCHED BY SOURCE`, so a row
+in the group that the payload does not mention keeps whatever a previous run wrote. The
+procedures are idempotent but not convergent: after two runs the target holds the union of both,
+per column, not the second payload.
+
+**3. `usp_MergeValidationScores` overwrites a recorded approval.** `tgt.[approval_status] =
+src.approval_status` is unconditional (`sql/usp_merge_validation_scores.sql:78`), and
+`elect_golden_records` sets `approval_status` to exactly `"proposed"` for every member of a
+`proposed`/`manual_review` cluster and `None` for a `unique` row (`dedup/scoring.py:1308`,
+`:1322`). The only value that can carry `"approved"` or `"rejected"` comes from
+`apply_approval` (`dedup/scoring.py:628`), reached through `POST /api/dedup/approve`, which is
+stateless and which no pipeline calls (`08_GAPS.md` G-29). **Any re-run of the scoring pipeline
+therefore resets `Validation.[approval_status]` to `proposed` or `NULL`, discarding a steward
+decision recorded in that column.** See §6b.7, G-97.
+
+**4. The guards are outside any transaction, and so is the merge.** Each procedure runs three or
+four guards, then `SELECT … INTO #src`, then one `EXEC sp_executesql` (`… clusters.sql:14–41`,
+`:46–58`, `:63–64`). The `MERGE` is a single statement and is therefore atomic on its own, but
+nothing wraps guard + parse + merge, there is no `TRY`/`CATCH`, and every ADF activity has
+`retry: 0` (`08_GAPS.md` G-72). The enrichment merge runs **inside** the pipeline's `ForEach`
+(`adf/enrichment_pipeline.json:136`), so a mid-run failure leaves earlier pages committed and
+later pages not, with no compensating action.
+
+**5. `#src` is re-entrant.** Each procedure opens with `IF OBJECT_ID(N'tempdb..#src') IS NOT NULL
+DROP TABLE #src;` and closes with `DROP TABLE #src;` (`…clusters.sql:46`, `:65`). A failure
+between the two skips the closing drop, and the opening drop makes the next call safe.
+
+The guards themselves are idempotent and are the same four in every procedure, raising with
+`THROW` rather than `RAISERROR`: `50000` target column not permitted (issues only,
+`usp_merge_legacy_issues.sql:16`), `50001` entity schema absent (`…clusters.sql:20`), `50002`
+group code missing (`:28`), `50003` group code has no rows in the entity (`:40`).
+
+---
+
+## 6b.5 Provenance, origin, and the origin invariant
+
+Two distinct mechanisms share the word "origin" and must not be conflated:
+
+- **Provenance** — *which source produced this value, and under what warrant.* Six write-locked
+  fields, an event log, seven shipped columns. `enrichment/provenance.py`, `enrichment/confidence.py`.
+- **`_slot_origin`** — *how did this value get into this slot.* Seven values, name-block slots
+  only, working state that never ships. `enrichment/dept_block.py:81–105`.
+
+The **origin invariant** governs the second.
+
+### 6b.5.1 The write lock
+
+`enrichment/provenance.py:1–39` states the principle: "Every value the system writes must be
+attributable after the fact to the source that produced it and the confidence under which it was
+produced. A written value whose origin cannot be reconstructed is not admissible."
+
+The enforcement is structural rather than conventional. Six fields are **write-locked**:
+
+    SCOPED_FIELDS = ("name1_enriched", "name2_enriched", "domain",
+                     "record_type", "ror_id", "lei_id")
+                                            — enrichment/provenance.py:70-77
+
+`EnrichedRecord.__setitem__` raises `UnattributedWriteError` on any direct assignment to one
+(`enrichment/provenance.py:1159–1166`), and `setdefault` is refused whether or not the key is
+present, "because `setdefault` states an intent to write, and a reader of the call site cannot
+tell which branch it will take" (`:1168–1173`). The only route in is
+`EnrichedRecord.write(field, value, evidence)`, which requires a structured `Evidence`
+(`enrichment/provenance.py:283`). `api.models.EnrichmentResult` carries the same guard for the
+post-finalisation stage — `__setattr__` raising `UnattributedWriteError` at `api/models.py:656–658`, with `write` recording the event at `:676–681`, which is what covers batch consensus.
+
+Scope is six fields and not more for a stated reason: they are "the fields where a wrong value
+causes a wrong merge in Phase 2, and they carry no personal data, which keeps the provenance
+store clear of a data-protection question. `contact`, `care_of` and `email` are deliberately
+excluded for that reason" (`enrichment/provenance.py:19–24`).
+
+### 6b.5.2 The admissibility gate
+
+`enforce_admissibility` (`enrichment/provenance.py:1227`) checks that every non-null scoped
+field carries at least one provenance event. A field that does not is **reverted to its input
+value** — `INPUT_VALUE_KEYS` (`:93–100`) for `name1`/`name2`, `INPUT_VALUE_DEFAULTS` (`:102–107`)
+for the other four — the record is flagged, and `inadmissible_value_reverted` is logged with the
+dropped and restored values (`:1250–1256`). The record is not failed: "shipping the original
+input is strictly better than failing the batch, and strictly better than shipping an
+unattributable value" (`:1230–1233`). `assert_admissible` (`:1261`) is the same condition as a
+hard assertion for tests.
+
+### 6b.5.3 What ships
+
+| Artefact | Provenance content | Evidence |
+|---|---|---|
+| `/enrich` JSON response | the full event log `provenance`, the guard-refused candidates `provenance_rejected`, and the per-field over-cap counts `provenance_rejected_omitted` | `api/models.py:550`, `:556`, `:557` |
+| The enriched XLSX / `RESPONSE_COLUMNS` | the **seven derived scalars only** | `api/output_columns.py:116–121`, `:46` |
+| `dp_legacy.<entity>.Legacy` via `usp_MergeLegacyEnriched` | **nothing** — `grep -ci provenance sql/usp_merge_legacy_enriched.sql` returns `0`, and no `sql/*.sql` file mentions provenance at all (Appendix A.8) | — |
+
+`api/models.py:546–549` states the boundary deliberately: the event log is "NOT a file column …
+It is part of the API response, not telemetry: Application Insights stays operational
+monitoring, and ADF decides what, if anything, to store." What ADF in fact stores is nothing:
+the whole attribution apparatus dies at the write-back boundary, alongside `Flag Codes`
+(`08_GAPS.md` G-04), the scoring diagnostics (G-30) and `link_id` (G-32). See §6b.7, G-99.
+
+The seven columns are `PROVENANCE_COLUMNS` (`enrichment/orchestrator.py:2051–2054`) — the six
+`DERIVED_SCALAR_FIELDS` (`enrichment/provenance.py:110–117`) plus `operating_name_provenance`.
+They are regenerated from the event log on every write by `_scoped_scalars`
+(`enrichment/orchestrator.py:2057`), never assigned.
+
+**The grammar assertion.** At finalisation, every provenance string the record will ship is
+validated and an invalid one **raises**:
+
+    validate_provenance_strings(
+        result.get(column) for column in PROVENANCE_COLUMNS
+    )                              — enrichment/orchestrator.py:3278-3280
+
+The reason is at `:3270–3274`: "An invalid string is raised, not logged: a provenance column
+that does not parse is worse than an empty one, because a consumer reads it as an attribution."
+`operating_name` is in scope even though it is not write-locked, "the grammar is a property of
+the COLUMN, not of the write path" (`:3275–3277`).
+
+### 6b.5.4 The origin invariant
+
+`_slot_origin` is a per-slot map over the name block, holding one of seven values
+(`enrichment/dept_block.py:81–95`):
+
+| Origin | Meaning |
+|---|---|
+| `input` | the record stated it, in this slot, and nothing has rewritten it |
+| `preprocess:split` | UC 16 lifted it out of Name 1 |
+| `preprocess:street` | the street→name router lifted it out of a street slot |
+| `preprocess:moved` | preprocessing moved it within the name block (UC 14 leftward pack, or any slot shift) |
+| `registry` | ROR or GLEIF spelled it |
+| `llm` | a model produced it (Tier 2 canonicalisation, Tier 3 suggestion) |
+| `grounded` | the grounded resolver produced it |
+
+Two derived sets: `RESOLVED_ORIGINS = {registry, llm, grounded}` — "an AUTHORITY has already
+answered for this slot" (`enrichment/dept_block.py:96–99`) — and `_RELOCATED_ORIGINS =
+{preprocess:street, preprocess:split, preprocess:moved}` (`enrichment/orchestrator.py:1654–1657`).
+`ORIGINS` (`dept_block.py:102–107`) exists "to reject a typo'd origin at the door rather than let
+it silently read as 'not resolved'".
+
+The origin is recorded in one place, `_write` (`enrichment/orchestrator.py:1711`), rather than at
+each of the department block's 27 write sites, and the reason is stated as a completeness
+argument: "Recording the origin HERE makes completeness structural: a new lane that writes a
+department slot records its origin by construction, and one that bypasses the funnel is the
+single exception, called out where it happens" (`:1702–1709`).
+
+**The invariant itself**, verbatim:
+
+    # THE ORIGIN INVARIANT: an origin may change only when the VALUE
+    # changes.
+                                       — enrichment/orchestrator.py:1731-1732
+
+and the guard that enforces it:
+
+    if origin is not None and not _same_value_folded(value, incumbent):
+        result.setdefault("_slot_origin", {})[
+            field[: -len("_enriched")]
+        ] = origin
+                                       — enrichment/orchestrator.py:1750-1753
+
+The argument for it, at `:1733–1750`: `_origin_for` answers "who performed this write", and for a
+write that changes nothing that is a different question from where the value came from — "a
+passthrough that declares `producer="input"` was overwriting the record of where the value came
+from with a claim about who last touched it". The measured effect is quoted in the code:
+"seven records lost `relocated-unverified` this way, five of them dropping out of review
+entirely, with their Name 2 byte-identical on both sides (13333471, 13335858, 13140896,
+13333600, 13335245, 13335676, 13340639). The doubt was not answered — the fact it was derived
+from was destroyed."
+
+The equality used is `_same_value_folded` (`enrichment/orchestrator.py:1756`): whitespace runs
+and case only, and **deliberately not** `normalize_key`, "which folds legal forms and would read
+'Delta Analytical Inc' and 'Delta Analytical LLC' as one value". Two values differing by a
+period or comma are different values here and rightly re-attribute.
+
+A transform is exempt by construction: `_origin_for` returns `None` for
+`evidence.kind == "transform"` (`enrichment/orchestrator.py:1244–1245`), because "casing,
+abbreviation expansion and the packing rules reshape or relocate a value, they do not produce
+one, and the origin follows the VALUE" (`:1238–1243`).
+
+**What the invariant is for.** `_stated_name` (`enrichment/orchestrator.py:1659`, the test at `:1704`) uses
+`_RELOCATED_ORIGINS` to decide what the record *states* for a slot, so that the name gate judges
+a candidate against the value the slot holds rather than a value preprocessing removed. The
+worked case is in its docstring at `:1687–1697`: record `13336873` supplied "ALLEGIANCE HEALTH"
+in both Name 1 and Name 2; UC 12 deleted the Name 2 duplicate; the street router refilled the
+slot from Street 2; and without the origin the gate judged the grounded lane's proposal against
+the deleted duplicate and returned `different_entity` — "right about the two strings and wrong
+about the question".
+
+**`_slot_origin` never ships.** It is popped before pydantic validation
+(`enrichment/orchestrator.py:3287`), along with the other transient keys. So the invariant
+governs a field that appears in no response, no workbook and no table, and its effect is
+observable only through the values and flags it changes. See §6b.7, G-100.
+
+---
+
+## 6b.6 Confidence fields, and how they are computed
+
+Three different quantities are called confidence in this repository, on three different scales,
+computed in three different places. They are not comparable and the code says so.
+
+### 6b.6.1 Phase 1 — the shipped provenance confidence
+
+**The grammar.** `enrichment/confidence.py:33–37`, verbatim:
+
+    provenance := source ":" confidence ( "+" witness )?
+    source     := "input" | "ror" | "gleif" | "wikidata" | "web:" domain | "llm"
+    confidence := "verified" | "provisional" | "low"
+    witness    := "web" | "wikidata" | "llm" | "registry" | "domain" | "dba"
+
+compiled as one anchored expression at `enrichment/confidence.py:113–119`. The confidence
+vocabulary is exactly three tokens (`CONFIDENCES`, `:56`), the witness vocabulary exactly six
+(`WITNESSES`, `:97–100`).
+
+**The one decision.** `compute_confidence(evidence) -> (confidence, witness | None)`
+(`enrichment/confidence.py:187`) is the sole authority: "Every lane's provenance passes through
+here and nothing else assigns a confidence, which is what makes the column mean the same thing
+in every row of it" (`:190–193`). Its input is an `EvidenceSituation`
+(`enrichment/confidence.py:133`), a frozen dataclass of eight booleans and one optional witness
+that "deliberately contains no lane names, no tiers and no scores" (`:143–146`).
+
+The table, in the precedence the code applies (`enrichment/confidence.py:228–245`):
+
+| Order | Situation | Confidence | Witness |
+|---|---|---|---|
+| 1 | `contradicted` **or** `ambiguous` | `low` | never |
+| 2 | `registry_authored` | `verified` | `+wikidata` iff `via_wikidata_crosswalk`, else none |
+| 3 | a witness that is not in `NON_CORROBORATING_WITNESSES` | `verified` | that witness, required |
+| 4 | `has_source` **and** `canonical_proposal_equals_input` | `provisional` | `+llm` |
+| 5 | `has_source` | `provisional` | none |
+| 6 | otherwise (no source) | `low` | never |
+
+Contradiction and ambiguity are checked **first**, before the registry row, and the reason is
+stated at `:220–224`: "A registry hit that a consistency check refused is not a verified value
+that happens to be flagged — it is a value the pipeline decided against".
+
+**Two hard rules, enforced in the function and re-checked on the way out** (`validate`,
+`enrichment/confidence.py:290`):
+
+1. `llm` as source or witness can never produce or contribute to `verified`
+   (`NON_CORROBORATING_WITNESSES = {llm}`, `:104`; raised at `:300–310`). This "is the rule the
+   old scheme's `self_high` band quietly broke" (`:210–212`).
+2. A witness-less `verified` is legal only for `REGISTRY_SOURCES = {ror, gleif, wikidata}`
+   (`:73–76`; raised at `:313–318`).
+
+Hard rule 3 — rejected evidence never appears in provenance — "is not checkable from the string
+alone … it is enforced at the adapter and asserted by the per-state fixtures"
+(`enrichment/confidence.py:294–296`).
+
+`render` validates on the way out rather than only at finalisation, "so an invalid combination
+fails at the site that built it, where the stack trace still names the lane"
+(`enrichment/confidence.py:260–264`). `parse` (`:274`) exists because `web:acme.com:provisional`
+contains two colons and "the naive split puts the domain in the confidence slot".
+
+### 6b.6.2 Phase 1 — the nine confidence *scales* on the event
+
+The shipped column carries a three-token confidence. The **event** carries the raw number and
+the scale it is on, because "0.85 from a ROR rescore, 0.85 from a RapidFuzz ratio and 0.85 from
+a model's assertion about its own output mean three different things, and thresholding them with
+one number is not sound" (`enrichment/provenance.py:121–127`).
+
+| Scale | Constant | Range / meaning | Evidence |
+|---|---|---|---|
+| `ror_local` | `ROR_LOCAL` | ROR's local rescore, `token_sort_ratio`, normalised 0.0–1.0 | `enrichment/provenance.py:131` |
+| `fuzzy_ratio` | `FUZZY_RATIO` | RapidFuzz similarity 0–100 | `:134` |
+| `llm_self_reported` | `LLM_SELF_REPORTED` | "a model's assertion about its own output. Not a probability of anything … must never be read as a measurement" | `:135–138` |
+| `deterministic` | `DETERMINISTIC` | 1.0 by construction: "this rule matched", not "100% likely" | `:139–142` |
+| `registry_exact` | `REGISTRY_EXACT` | "not scored, they are returned" | `:143–145` |
+| `inherited` | `INHERITED` | copied from a batch donor; "only as good as the donor's scale" | `:146–149` |
+| `input_corroborated` | `INPUT_CORROBORATED` | input kept **and** independently corroborated; 1.0 by construction | `:150–156` |
+| `input_self_consistent` | `INPUT_SELF_CONSISTENT` | input kept **and** an independent canonicalisation proposal reproduced it under `normalize_key` | `:157–163` |
+| `none` | `NO_SCALE` | no confidence attaches to this write | `:164–165` |
+
+`comparable(a, b)` is "the whole of Step 3 in one function" and returns true only when the two
+scales are equal (`enrichment/provenance.py:188–197`): "A caller that needs to rank across
+scales has to rank the KIND of evidence, not the floats." The self-report rendering
+`{"high": 0.9, "medium": 0.7, "low": 0.4, "none": 0.0}` (`:176–179`) is "Documented, fixed, and
+NOT a calibration" — it exists so the event carries a sortable number beside the label, which is
+preserved verbatim in `evidence_ref["self_reported"]` (`:173–175`).
+
+`confidence_band(scale, value)` (`enrichment/provenance.py:214`) renders one `(scale, value)`
+pair into a scale-namespaced band. It is **off the export path**: "Nothing in the pipeline calls
+it, and nothing should call it to decide anything" (`:210–212`). It was the third component of
+the old derived scalar, and was removed because "a slot holding `self_high` for one producer and
+`exact` for another is not a confidence, it is three vocabularies sharing a column"
+(`:201–205`). It is retained for diagnostics and for the tests that pin its thresholds.
+
+### 6b.6.3 Phase 2 — merge confidence
+
+Phase 2 uses the opposite convention, and this is the sharpest cross-cutting contrast in the
+system.
+
+| Property | Value | Evidence |
+|---|---|---|
+| Source | the adjudicating model's self-reported merge confidence | `dedup/adjudicator.py:233`, `:527`, `:673`, `:708`, `:943` |
+| Coercion | `float(value)`, clamped to `[0.0, 1.0]`, `None` on failure | `dedup/adjudicator.py:124–136` |
+| When surfaced | only for a genuine merge (≥2 signatures) or an uncertain row — "never for a pure identical-collapse or a distinct verdict, where a spurious confidence would wrongly trip the election confidence gate" | `dedup/adjudicator.py:1249–1260` |
+| Cluster roll-up | the **lowest** non-`None` member confidence; all-`None` returns `None` and never gates | `dedup/scoring.py:1138–1148` |
+| Threshold | `DEFAULT_CONFIDENCE_MERGE_THRESHOLD = 0.95`, overridable by `CONFIDENCE_MERGE_THRESHOLD` | `dedup/scoring.py:50`, resolved `:1122–1135` |
+
+So Phase 1 forbids a model's self-report from carrying a value to `verified` (hard rule 1) and
+refuses to compare it against any other scale (`comparable`), while Phase 2 takes the same kind
+of number, clamps it, takes a per-cluster minimum and thresholds it at `0.95` to gate a merge.
+Both are defensible in their own terms — Phase 2's is a conservative gate on a decision a human
+still reviews — but the word `confidence` names two incommensurable quantities across the two
+phases, and nothing in the code maps one onto the other. This is the same shape of problem as
+the two issue vocabularies (`08_GAPS.md` G-23). See §6b.7, G-102.
+
+`03_ALGORITHMS.md` §3.8 records the separate Tier 2A Mode B defect, where two scales are
+compared **within** Phase 1 (`08_GAPS.md` G-36).
+
+### 6b.6.4 The record-level triple
+
+`result["confidence"]` (assigned at `enrichment/orchestrator.py:3861`, `:3920`, `:5254`, `:5636`, `:5652`, `:5655` among others) is a third
+thing: a record-level `"high"`/`"medium"`/`"low"` label carried alongside `source` and
+`tier_used`. `enrichment/provenance.py:9–16` records why it is not sufficient — it "collapses a
+record whose Name 1 came from ROR, whose Name 2 came from a SERP→fetch→LLM chain and whose
+department domain came from Tier 2B into a single label, and it cannot represent a field that
+was written twice". It survives as an output column; the per-field scalars are what a consumer
+should read.
+
+---
+
+## 6b.7 Discrepancies raised by this pass
+
+`08_GAPS.md` numbers the collected set `G-01 … G-92` and records at D-2 that this pass was
+missing from it. The items below are new and continue that sequence as **`G-93 … G-102`**; each
+names both sides. Items this pass merely re-evidences (G-04, G-12, G-13, G-18, G-23, G-29,
+G-30, G-32, G-36, G-55, G-57, G-71, G-72, G-79, G-86) are cited in place above and not
+re-raised.
+
+| # | Sev | Statement | Side A — the code at `86d173b` | Side B — the artefact that contradicts it, or the absence |
 |---|---|---|---|---|
-| Overflow check (UC 0) | — | 1 | — | `enrichment/orchestrator.py:1724` |
-| Plain-name person classification | — | 1 **per suspicious plain-name candidate** across Name 1–4 | — | `enrichment/orchestrator.py:1763`; loop `enrichment/preprocess.py:2319-2324` |
-| Tier 1 ROR | — | — | 1–4 HTTP (free) | `enrichment/tier1_ror.py:620`, `:708`, `:730`, `:740` |
-| Tier 1 GLEIF | — | — | 1–7 HTTP (free) | `enrichment/tier1_lei.py:268`, `:328`, `:340-352` |
-| Company canonicalisation | — | 1 | — | `enrichment/orchestrator.py:2164` |
-| Lab resolver (UC 13) | 1 | ≤3 | ≤3 | `enrichment/lab_resolver.py:83`, `:118` |
-| Tier 2 canonicalisation | — | 1 | — | `enrichment/orchestrator.py:2384`, `:2508` |
-| Tier 2A (contact) | 1 **per query** | ≤3 | ≤3 | `enrichment/tier2a_contact.py:330`, `:110`, `:142` |
-| Tier 2B (department) | 1 **per query** | ≤3 | ≤3 | `enrichment/tier2b_dept.py:227`, `:89`, `:97` |
-| Tier 3 | — | 1 | — | `enrichment/orchestrator.py:2543` |
-| Website Path B | 1, +1 on the unquoted retry | — | — | `enrichment/website_resolver.py:492`, `:522-529` |
-| Website Path C | — | 1 | — | `enrichment/orchestrator.py:907` → `website_resolver.py:598` |
-| Department-domain probe | 1, **+1 only when `DEPT_PROBE_CROSS_DOMAIN`** | — | 1 homepage + subdomain HEAD probes | `enrichment/orchestrator.py:1131`, `:1109-1115`, `:1182`, `:1277`, `:1296` |
-| Person affiliation (Stage 2b) | ≤1 **per query variant** | 1 (+1 free ROR confirm) | — | `enrichment/person_affiliation.py:124`, `:148`; `orchestrator.py:1455` |
-| Address residual classification | — | 1 **per non-empty secondary street slot** (`street_2`…`street_5`, so ≤4) | — | `enrichment/address_processing.py:718-724` |
+| **G-93** | high | The logging formatter renders none of the structured fields the middleware attaches, and the module docstring calls it structured JSON. | `api/middleware.py:87–91` sets the format to `"%(asctime)s %(levelname)s %(name)s [%(funcName)s] %(message)s"`. Demonstrated by executing the repository's own `configure_logging`: a `logger.info("request_complete", extra={"request_id": …, "status": 200, "duration_ms": 42})` emits `… request_complete` and nothing else (Appendix A.3). | `api/middleware.py:1`: "FastAPI middleware for structured JSON logging, request timing, and error handling." All ten idiom-(a) call sites lose their payload, including the three that carry the request correlation id (`api/middleware.py:30–34`, `:41–48`, `:62–69`) and the three that carry the Phase 2 token counts (`dedup/adjudicator.py:1301`, `:1402`, `:1534`). The surviving idiom-(b) records are a Python `dict` repr, not JSON. |
+| **G-94** | medium | The HTTP request id and the per-record telemetry cannot be joined. | `request_id` is generated and stored at `api/middleware.py:22`, `:27` and returned as `X-Request-ID` (`:58`). | None of the 86 idiom-(b) telemetry records carries it (Appendix A.2); they key on `record_id`. The one place it is logged is an idiom-(a) record, so it is dropped at the formatter (G-93). A batch cannot be traced from an HTTP call to the records it processed. |
+| **G-95** | medium | `tools/run_diff.py` states a column count that is two short. | `len(api.output_columns.RESPONSE_COLUMNS)` is **69** at this commit (Appendix A.4); `PROVENANCE_COLUMNS` is 7. | `tools/run_diff.py:203–205`: "Seven of the sixty-seven columns are provenance". The number is stale; the ratio the argument rests on is unaffected. |
+| **G-96** | medium | A dropped `seed` degrades reproducibility silently and permanently, and leaves no trace in any artefact. | `llm/openai_client.py:324–344`: on a deployment rejecting `seed`, `_SEED_SUPPORTED = False` "for the life of the process", a `WARNING` is logged, and every later call omits it. `dedup/llm.py:66`, `:265–270` carries the same latch for `seed` and `temperature`. | The warning's own text: "Byte-identical re-runs are no longer guaranteed by the service." The latch is not in `EnrichmentSummary` (`api/models.py:697–865`), not in `RESPONSE_COLUMNS`, and not in any provenance event, so a run that lost its seed is indistinguishable from one that kept it — including to `tools/run_diff.py`, whose whole purpose is to decide whether two runs agree. |
+| **G-97** | high | Re-running the scoring pipeline discards a steward decision recorded in `Validation.[approval_status]`. | `sql/usp_merge_validation_scores.sql:78` assigns `tgt.[approval_status] = src.approval_status` with no guard. `elect_golden_records` sets that field to `"proposed"` for every member of a `proposed`/`manual_review` cluster (`dedup/scoring.py:1322`) and `None` for a `unique` row (`:1308`). | The only source of `"approved"`/`"rejected"` is `apply_approval` (`dedup/scoring.py:628`) behind `POST /api/dedup/approve`, which is stateless and which no ADF pipeline calls (`08_GAPS.md` G-29). The column the four-eyes control depends on is therefore writable by an unattended re-run, and the twenty other columns in the same statement are legitimately overwritten by a rescore, so the fix cannot be to skip the statement. |
+| **G-98** | medium | The merge procedures are idempotent but not convergent, and silently drop payload rows that do not join. | No `WHEN NOT MATCHED BY TARGET` and no `WHEN NOT MATCHED BY SOURCE` in any of the four (Appendix A.7); the `MERGE` is `UPDATE`-only in all four (`usp_merge_legacy_enriched.sql:86`, `usp_merge_legacy_issues.sql:66`, `usp_merge_validation_clusters.sql:63`, `usp_merge_validation_scores.sql:78`). | A payload row whose customer number is outside the group-code slice is discarded with no error and no count, and a target row the payload does not mention keeps whatever a previous run wrote. Neither outcome is reported to the caller: the procedures return no row count and ADF's activity has no output assertion. |
+| **G-99** | medium | The whole provenance apparatus is dropped at the write-back boundary. | Six write-locked fields, an event log, a guard-rejection log and seven validated columns are produced for every record (`enrichment/provenance.py:70–77`, `api/models.py:550–557`, `enrichment/orchestrator.py:2051–2054`, `:3278–3280`). | `grep -ci provenance` over each of the four merge procedures returns `0` (Appendix A.8). `api/models.py:546–549` anticipates this — "ADF decides what, if anything, to store" — and the answer at this commit is nothing. On the ADF path a value in Legacy carries no attribution at all, which is exactly the condition `enrichment/provenance.py:5–8` declares inadmissible. |
+| **G-100** | low | The origin invariant governs a field that never ships, so its effect is unauditable from any output. | `_slot_origin` is maintained at one funnel (`enrichment/orchestrator.py:1711`, invariant at `:1731–1732`, guard at `:1750–1753`) and popped before serialisation (`:3287`). | No response field, workbook column or table carries it. The seven records the invariant's own comment names as having lost `relocated-unverified` (`:1743–1747`) could only be identified by instrumenting a run, not by reading an output. Related to `08_GAPS.md` G-12. |
+| **G-101** | low | One telemetry record writes a person's name and cannot be joined to a record. | `enrichment/person_affiliation.py:180` logs `{"step", "contact", "query", "institution", "department", "confidence"}`. | It is the only one of the 86 idiom-(b) records with no `record_id` (Appendix A.2), and the only one that puts a contact name in the log. `enrichment/provenance.py:19–24` states the opposite policy for the provenance store: `contact`, `care_of` and `email` are excluded from scope precisely so the store carries no personal data. |
+| **G-102** | medium | Phase 1 forbids thresholding a model's self-report and Phase 2 thresholds one, and nothing maps the two onto each other. | Phase 1: hard rule 1 bars `llm` from `verified` in both `compute_confidence` (`enrichment/confidence.py:236–238`) and `validate` (`:300–310`); `comparable(a, b)` returns true only for equal scales (`enrichment/provenance.py:188–197`); `llm_self_reported` "must never be read as a measurement" (`:135–138`). | Phase 2: the adjudicator's self-reported merge confidence is coerced to `[0, 1]` (`dedup/adjudicator.py:124–136`), reduced per cluster to the member minimum (`dedup/scoring.py:1138–1148`) and thresholded at `DEFAULT_CONFIDENCE_MERGE_THRESHOLD = 0.95` (`dedup/scoring.py:50`) to gate a merge. Both are defensible in their own terms; the shipped word `confidence` names two incommensurable quantities across the two phases, and no code maps one onto the other — the shape of `08_GAPS.md` G-23. |
 
-Two observations that bear directly on the formula:
-
-- **The tiers are an escalation ladder, not a sum.** A record resolved by ROR at Tier 1 never
-  reaches Tier 2A, 2B, or 3. Adding the column is therefore a ceiling that no single record
-  attains, and the mean is the quantity that matters. ⚠ MEASUREMENT REQUIRED.
-- **Three counts in the table are unbounded by any constant in the repository**: SERP calls "per
-  query" in Tier 2A and Tier 2B, and "per query variant" in person affiliation. The number of
-  queries is determined at runtime by the query-construction code, not by a configured cap.
-
-**Two configuration values move the total materially, and both are set inconsistently:**
-
-| Parameter | Code default | `.env.example` | Effect |
-|---|---|---|---|
-| `DEPT_PROBE_CROSS_DOMAIN` | `"false"` (`config.py:114`) | `true` (`.env.example:61`) | doubles the SERP calls of the department probe for unresolved departments (`04_PARAMETERS.md:289-305`) |
-| `MAX_PAGE_CONTENT_CHARS` | effective `1500` (`config.py:209`) | `3000` (`.env.example:81`) | doubles the page slice pasted into every Tier 2A / 2B / lab-resolver prompt, i.e. doubles those prompt-token counts (`04_PARAMETERS.md:266-287`) |
-
-`config.py:93` lists `MAX_PAGE_CONTENT_CHARS` as `"3000"` in `OPTIONAL_VARS_WITH_DEFAULTS`
-while the dataclass field at `config.py:209` defaults to `"1500"` — the dataclass is what
-executes. Both divergences are cost-bearing and both are recorded in
-`04_PARAMETERS.md`.
-
-## c.4 · Phase 2 call volume — the one stage the code already measures
-
-Per block `b` with `n_b` input rows collapsing to `g_b` distinct signatures after the free
-STEP A pass:
-
-| Regime | Condition | LLM calls |
-|---|---|---|
-| Mode A | `g_b ≤ SIG_PARTITION_THRESHOLD` (default `12`, `dedup/adjudicator.py:36`; `.env.example:37`) | ≤ 2 — one partition call per `has_name2` bucket that holds ≥2 signatures; a singleton bucket becomes an entity with no call (`dedup/adjudicator.py:286-298`, `:315`) |
-| Mode B | `g_b > SIG_PARTITION_THRESHOLD` | ≤ `g_b − 1` — one incremental assignment call per signature after the first; a signature with no `has_name2`-compatible canonical starts a new entity with **no** call (`dedup/adjudicator.py:416-428`, `:453`) |
-| Residue | both modes | one call per nominated candidate pair, skipping pairs already merged transitively (`dedup/adjudicator.py:621-639`) |
-
-The residue term has a hard cap with an important cost property: when
-`len(candidates) > MAX_CANDIDATES_PER_BLOCK` (default `50`, `dedup/adjudicator.py:40`), the
-whole block is routed to `manual_review` and the function **returns before making any candidate
-call** (`dedup/adjudicator.py:585-601`). Exceeding the cap therefore costs *zero* extra tokens,
-not `50`. So `c_b ≤ 50`, and `c_b = 0` whenever the cap is exceeded.
-
-**This is the only stage in the system whose token cost is already instrumented.**
-`DedupLLMResult` carries `prompt_tokens`, `completion_tokens`, `latency_ms`, and `model_version`
-(`dedup/llm.py:188-195`); they are accumulated per block (`dedup/adjudicator.py:803-809`),
-logged per call as `dedup_llm_call` (`:812-824`), per block as `dedup_block` (`:883-899`), and
-per request as `dedup_request` with `total_prompt_tokens`, `total_completion_tokens`, and
-`total_tokens` (`:995-1011`). Note two limits: the totals are **log-only** — they are not
-returned in `DedupResponse` (`dedup/adjudicator.py:1014`) — and, as §b.3 establishes, they are
-dropped by the console/file formatter, so they are readable **only** in Application Insights,
-and only when not sampled away (§b.6).
-
-## c.5 · The cost formula for a full run over N records
-
-### c.5.1 Symbols
-
-*Volumes (from the repository):*
-
-| Symbol | Meaning | Source |
-|---|---|---|
-| `N` | records in the run = `COUNT(*) FROM test_77.Legacy` for the group code | ⚠ MEASUREMENT REQUIRED — `02_ARCHITECTURE.md:491-493` |
-| `B` | enrichment batches = `⌈N / 50⌉` | `FETCH NEXT 50 ROWS ONLY` (`CONTEXT-EXTERNAL.md:106`) |
-| `M` | rows entering deduplication = `COUNT(*) FROM test_77.Validation` | ⚠ MEASUREMENT REQUIRED — `02_ARCHITECTURE.md:491-493` |
-| `K` | distinct `block_id` values over those `M` rows | ⚠ MEASUREMENT REQUIRED |
-| `s_i` | SERP calls for record `i` | §c.3 — bounded by call sites, unbounded per query |
-| `t^{in}_i`, `t^{out}_i` | Phase 1 prompt / completion tokens for record `i` | **not captured** — `llm/openai_client.py:198-208` |
-| `L_b` | Phase 2 LLM calls for block `b` | §c.4 |
-| `τ^{in}_b`, `τ^{out}_b` | Phase 2 prompt / completion tokens for block `b` | **captured** — `dedup/adjudicator.py:995-1011` |
-
-*Unit prices (all ⚠ MEASUREMENT REQUIRED — none appears in this repository):*
-
-| Symbol | Meaning | Where the number lives |
-|---|---|---|
-| `p_serp` | price per SerpAPI search | the SerpAPI account plan and usage dashboard for the key in `SERPAPI_KEY` (`config.py:160`) — neither plan, allowance, nor price is recorded here (`06_EXTERNAL_DEPS.md:669`) |
-| `p^{in}_1`, `p^{out}_1` | price per 1k prompt / completion tokens on `AZURE_OPENAI_DEPLOYMENT` | Azure pricing for the deployment at `AZURE_OPENAI_ENDPOINT` (`config.py:156-157`) |
-| `p^{in}_2`, `p^{out}_2` | price per 1k prompt / completion tokens on `AOAI_DEPLOYMENT_DEDUP` | as above for `.env.example:28` |
-| `p_fn` | Function App compute price per unit | plan unknown — `CONTEXT-EXTERNAL.md:446` open item 6 |
-| `p_adf` | ADF activity-run and IR price | Tillit tenant, outside this repository |
-| `p_egress` | Azure egress price per GB | Azure Cost Management for the Function App |
-
-### c.5.2 The formula
-
-```
-C_total(N)  =  C_enrich(N)  +  C_issues(N)  +  C_dedup(M)  +  C_score(M)
-                            +  C_compute    +  C_egress    +  C_orchestration
-
-C_issues(N)  =  0                       (free, deterministic — §c.2.1)
-C_score(M)   =  0                       (free, deterministic — §c.2.1)
-C_approve    =  0                       (free, deterministic — §c.2.1)
-
-                 N
-C_enrich(N)  =   Σ  [ s_i · p_serp  +  (t^in_i / 1000) · p^in_1  +  (t^out_i / 1000) · p^out_1 ]
-                i=1
-
-              =  N · [ s̄ · p_serp  +  (t̄^in / 1000) · p^in_1  +  (t̄^out / 1000) · p^out_1 ]
-
-                 K
-C_dedup(M)   =   Σ  [ (τ^in_b / 1000) · p^in_2  +  (τ^out_b / 1000) · p^out_2 ]
-                b=1
-
-              =  (T^in / 1000) · p^in_2  +  (T^out / 1000) · p^out_2
-                 where T^in, T^out are the request totals already logged as
-                 total_prompt_tokens / total_completion_tokens
-                 (dedup/adjudicator.py:1000-1002)
-
-C_compute    =  p_fn · (execution units over B enrichment requests + ⌈K/…⌉ dedup requests)
-                                                             ⚠ plan unknown
-
-C_egress     =  p_egress · (bytes fetched from arbitrary hosts, bounded per page by
-                            MAX_PAGE_CONTENT_CHARS only after fetch, not before)
-
-C_orchestration = p_adf · (1 Lookup2 + B · (Lookup1 + Web1 + Merge Back)
-                           + dedup: 1 Lookup1 + 1 Web1 + 1 Merge Back)
-                                       (CONTEXT-EXTERNAL.md:43-186, :205-303)
-```
-
-`C_enrich` is **linear in N** with a constant of proportionality that the repository cannot
-supply. `C_dedup` is **not** linear in `M`: it is driven by `K` and by the signature
-distribution within each block, and Mode B makes it super-linear in `g_b` for large blocks
-(§c.4). `C_issues`, `C_score`, and `C_approve` are exactly zero and stay zero on every re-run —
-which is the practical payoff of the boundary rationale recorded at `api/routes.py:900-903`.
-
-### c.5.3 The per-record means, and how to obtain them
-
-Reducing `C_enrich` to `N · (…)` requires three means. None exists; each has a precise remedy.
-
-| Quantity | Status | ⚠ MEASUREMENT REQUIRED — how to obtain it |
-|---|---|---|
-| `s̄` (mean SERP calls per record) | not captured | instrument `SerpAPIClient.search` (`search/serpapi_client.py:22`) with a counter, or read the SerpAPI dashboard's search count for a run of known `N`. `BatchCache.stats` (`utils/cache.py:109-111`) already exposes `serp_entries` but is never logged — logging it at the end of `enrich_batch` (`enrichment/orchestrator.py:838`) gives distinct-query volume per batch for free |
-| `t̄^in`, `t̄^out` (mean Phase 1 tokens per record) | **not captured at all** | (a) record `response.usage` in `call_openai` (`llm/openai_client.py:198-208`), mirroring `dedup/llm.py:188-195` — a two-line change; or (b) read Azure Monitor / Cost Management metrics for the `AZURE_OPENAI_DEPLOYMENT` deployment over a run of known `N` |
-| `T^in`, `T^out` (Phase 2 tokens) | **already captured** | read `total_prompt_tokens` / `total_completion_tokens` from the `dedup_request` App Insights trace (`dedup/adjudicator.py:1000-1002`); note §b.3 — these are not in the log file |
-| `N`, `M`, `K` | not in the repository | `SELECT COUNT(*) FROM test_77.Legacy`; `SELECT COUNT(*) FROM test_77.Validation`; `SELECT COUNT(DISTINCT [Block ID]) FROM test_77.Validation` |
-| Function App compute | plan unknown | confirm the hosting plan (`CONTEXT-EXTERNAL.md:446` open item 6), then Azure Cost Management for `mdm-pipeline-api` |
-| Per-batch duration (drives compute cost) | unmeasured | `batch_ms` is already logged (`enrichment/orchestrator.py:838-841`); read it from one 50-row run — `CONTEXT-EXTERNAL.md:447` open item 7 |
-
-**A single instrumented run over a known `N` settles every Phase 1 unknown at once**, provided
-`response.usage` is captured first. That is the smallest experiment that makes the formula
-numeric.
-
-## c.6 · Cost controls present in the code
-
-The repository does contain deliberate spend controls, and they are worth recording as such:
-
-| Control | Value | Effect | Cited |
-|---|---|---|---|
-| Tier escalation ordering | — | cheapest, most reliable method first; escalate only on failure | `README.md:80` |
-| `BatchCache` | per-batch, ROR + SERP | de-duplicates repeated ROR and SERP queries within one 50-row batch | `utils/cache.py:101-111` |
-| `DEPT_PROBE_CROSS_DOMAIN=false` | code default | caps the department probe at one SERP call per record — "the common case stays at one SERP call per record" | `config.py:161-168` |
-| `MAX_CANDIDATES_PER_BLOCK` | `50` | over the cap the block is routed to manual review **with zero LLM calls** | `dedup/adjudicator.py:40`, `:585-601` |
-| `SIG_PARTITION_THRESHOLD` | `12` | small blocks use ≤2 calls instead of `g_b − 1` | `dedup/adjudicator.py:36` |
-| Transitive-merge skip | — | a candidate pair already unified is not re-asked | `dedup/adjudicator.py:624-625` |
-| `has_name2` deterministic split | — | the empty-vs-populated Name 2 decision is never sent to the LLM | `dedup/adjudicator.py:278-281`, `:422-428` |
-| Election separated from clustering | — | weights can be retuned without re-paying for adjudication | `api/routes.py:900-903` |
-| `MOCK_EXTERNAL_CALLS` | `false` | substitutes mocks for ROR, search, page fetch, LLM — **but not GLEIF** | `api/routes.py:57-70`; gap at `06_EXTERNAL_DEPS.md:757-763` |
-
-**Two cost exposures run the other way:**
-
-1. **`GET /diag/dedup-llm` makes a real, billable LLM call on every request**
-   (`api/routes.py:1085-1089`) and is reachable **without authentication** (§d.4). So is
-   `GET /diag/llm` (`api/routes.py:1051-1055`). Both are GET requests, so any crawler,
-   link-preview fetcher, or scanner that reaches the public hostname spends Azure OpenAI
-   tokens. There is no rate limit anywhere in the application.
-2. **Re-running the Enrichment pipeline re-pays for every row.** `Lookup1` selects all rows
-   with no watermark (`CONTEXT-EXTERNAL.md:106`), so a re-run is a full re-spend, and the
-   non-deterministic tiers may return different answers on the second pass
-   (`02_ARCHITECTURE.md:423`).
+**A defect in an earlier pass, found here.** `01_TRACEABILITY.md:185` states of the four merge
+procedures: "Each file is one physical line, so no statement inside them is separately citable".
+At this commit each file is 66–89 lines (`wc -l sql/*.sql`, Appendix A.7) — commit `86d173b`'s
+own message is "sql: reformat merge procs; adf: parameterised pipelines". The same pass records
+at `:229` that the `86d173b` diff includes "four `sql/*.sql` (whitespace-only reformatting)",
+so the two statements contradict each other within one document. Every SQL citation in this pass
+is to a line number in the reformatted files. Pass 01 needs the sentence removed;
+`08_GAPS.md` D-3 already records that Pass 01 was re-headed rather than re-derived.
 
 ---
 
-# (d) Security and Compliance
+## 6b.8 Summary
 
-## d.1 · Secret handling
-
-### d.1.1 What the secrets are, and where they are read
-
-| Secret | Read at | Consumed by |
-|---|---|---|
-| `AZURE_OPENAI_API_KEY` | `config.py:155`; `llm/openai_client.py:147` | `AsyncAzureOpenAI(api_key=…)` — `llm/openai_client.py:170` |
-| `AZURE_OPENAI_ENDPOINT` | `config.py:156`; `llm/openai_client.py:148` | `AsyncAzureOpenAI(azure_endpoint=…)` — `llm/openai_client.py:171` |
-| `SERPAPI_KEY` | `config.py:160` | `GoogleSearch({"api_key": …})` — `search/serpapi_client.py:20`, `:42` |
-
-Every secret is read from the process environment. No secret is hard-coded in tracked source:
-`AZURE_OPENAI_API_KEY` and `SERPAPI_KEY` appear in tracked files only as `os.getenv` lookups
-and as placeholders in `.env.example:2` (`your-azure-key-here`) and `.env.example:56`
-(`your-serpapi-key-here`).
-
-ROR, GLEIF, DuckDuckGo, and page fetch are unauthenticated public endpoints — no credential
-exists for them (`06_EXTERNAL_DEPS.md:32-51`).
-
-### d.1.2 Delivery
-
-| Environment | Mechanism | Evidence |
-|---|---|---|
-| Local development | `.env`, loaded by `load_dotenv()` unconditionally at import | `config.py:17-22` |
-| Local Functions host | `local.settings.json` `Values` block | `local.settings.json:3-25` |
-| Deployed Function App | Azure Application Settings | `config.py:1-5`; `README.md:1836`, `:1639` |
-
-Both local files are excluded from version control (`.gitignore:9` `.env`; `.gitignore:23`
-`local.settings.json`) **and** from the deployment package (`.funcignore:16` `.env`;
-`.funcignore:15` `local.settings.json`). Corporate CA bundles are excluded too
-(`.gitignore:10-12`: `certs/`, `*.pem`).
-
-**The exclusion has held.** `git log --all --oneline --name-only --diff-filter=A -- .env
-local.settings.json certs` returns nothing: neither file has ever been added on any ref, so no
-secret needs rotating on account of git history.
-
-**But the working tree holds live credentials in plaintext.** `local.settings.json:8` and
-`:12` contain what are, by their form and length, real Azure OpenAI and SerpAPI keys rather
-than placeholders, alongside the live endpoint at `:9` and deployment name at `:10`. They are
-correctly ignored and correctly func-ignored, so this is a workstation-hygiene exposure, not a
-repository one — but it is an unencrypted secret at rest on a developer machine, and
-`.env` (untracked, present) is the same situation.
-
-### d.1.3 What is not used
-
-**No Azure Key Vault, no managed identity, no `azure-identity`.** A repository-wide search
-(`keyvault|key_vault|DefaultAzureCredential|ManagedIdentity|azure.identity`, case-insensitive,
-excluding `.venv/` and `docs/`) returns **no matches**. `requirements.txt:1-14` declares no
-identity package. Authentication to Azure OpenAI is therefore a long-lived API key
-(`llm/openai_client.py:170`) rather than a workload identity, with no rotation mechanism, no
-expiry, and no per-caller attribution — despite the Function App and the AI Foundry deployment
-sitting on the same Bruker spoke (`CONTEXT-EXTERNAL.md:406-407`), which is the topology in
-which managed identity is available.
-
-### d.1.4 Secret leakage surfaces
-
-| Surface | Leaks? | Detail |
-|---|---|---|
-| Log lines | **no key value** | `config.py:137-145` logs only whether `SERPAPI_KEY` is set; `config.py:128-135` logs only the *names* of missing variables |
-| `GET /diag/llm` response | **metadata, unauthenticated** | returns `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT`, `AZURE_OPENAI_API_KEY_present`, and `AZURE_OPENAI_API_KEY_length` (`api/routes.py:1043-1048`). The value is never returned; **the length is**, which narrows a brute-force space and confirms which credential form is in use |
-| `GET /diag/dedup-llm` response | **metadata, unauthenticated** | returns endpoint, `AOAI_DEPLOYMENT_DEDUP`, `AOAI_API_VERSION_DEDUP`, `DEDUP_REASONING_EFFORT`, key presence (`api/routes.py:1076-1082`), plus `llm._api_version` and `llm._use_reasoning_effort` (`:1097-1098`) |
-| `GET /diag/*` on error | **provider error strings** | returns `error_type` and `error_message` verbatim from the exception (`api/routes.py:1058-1062`) — by design, "the actual exception string is returned in the HTTP response body" (`:1038-1039`) |
-| `GET /tiers` | **configuration** | thresholds and the active search provider (`api/routes.py:1110-1117`) |
-| `500` handler | no | returns a fixed `{"detail":"Internal server error"}` body; the traceback goes to the log, not the response (`api/middleware.py:41-55`) |
-
-The three GET endpoints together disclose the Azure OpenAI resource hostname, both deployment
-names, the API version, the reasoning-effort setting, the credential length, and the running
-thresholds — to any unauthenticated caller (§d.4).
-
-### d.1.5 The TLS escape hatch
-
-`resolve_tls_verify()` (`llm/openai_client.py:93-127`) resolves the outbound `verify` setting
-in three steps: `LLM_SSL_VERIFY=false` disables certificate verification entirely; otherwise a
-configured CA bundle (`AZURE_OPENAI_CA_BUNDLE` / `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE`) is
-used if the file exists; otherwise certifi.
-
-Step 1 is a deliberate, documented insecure mode. It is guarded by a loud warning —
-"TLS certificate verification is DISABLED for LLM calls. This is insecure"
-(`llm/openai_client.py:111-115`) — and `.env.example:16-17` labels it "Last resort only
-(insecure — disables certificate verification for LLM calls)". Two properties matter for
-compliance: **it is env-var controlled**, so it can be enabled in the deployed Function App
-through an Application Setting with no code change and no review; and **the only trace it
-leaves is a `WARNING` log line**, which is not surfaced by `/health` (§b.5) or `/tiers`
-(`api/routes.py:1110-1117`), so an operator cannot tell from outside whether a running
-instance is verifying certificates on the path that carries personal data to Azure OpenAI
-(§d.6).
-
-A related, milder mechanism runs at import: `_sanitize_ssl_env()` (`config.py:27-67`) rewrites
-`SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` when they point at a non-existent path, substituting the
-corp bundle if configured and certifi otherwise, and logs a warning (`config.py:61-64`). This
-*restores* verification rather than removing it.
-
-## d.2 · Tenant boundaries between Tillit and Bruker
-
-Component placement, from `02_ARCHITECTURE.md:384-391`, itself sourced from
-`CONTEXT-EXTERNAL.md:405-408` `[AUTHOR]`:
-
-| Component | Tenant | Evidence |
-|---|---|---|
-| DATAshaper (SaaS) | **Tillit** | `CONTEXT-EXTERNAL.md:405-406`; SaaS with no file export (`:337-339`) |
-| Azure Data Factory | **Tillit** | `CONTEXT-EXTERNAL.md:405-406` |
-| Azure SQL Managed Instance (`test_77.Legacy`, `test_77.Validation`) | ⚠ **not stated** | reached by ADF linked services `ls_sqlmi_legacy` / `ls_sqlmi_validation` (`CONTEXT-EXTERNAL.md:172`, `:292`), which places it Tillit-side on the network, but the hosting tenant is not recorded (`02_ARCHITECTURE.md:407-409`) |
-| Function App `mdm-pipeline-api` | **Bruker** spoke | `CONTEXT-EXTERNAL.md:405-408` |
-| AI Foundry / Azure OpenAI | **Bruker** spoke | `CONTEXT-EXTERNAL.md:406-407`; endpoint from `AZURE_OPENAI_ENDPOINT` (`config.py:156`) |
-| Application Insights | Azure — tenant ⚠ not stated | `host.json:3-10`; instance named only in prose (`README.md:1836`) |
-
-**Bruker's customer master data crosses the tenant boundary on every batch.** The flow is:
-Tillit-side SQL MI → ADF (Tillit) → HTTPS POST → Function App (Bruker) → Azure OpenAI (Bruker)
-and SerpAPI (third party, public internet) → HTTPS response → ADF (Tillit) → stored procedure →
-Tillit-side SQL MI.
-
-That crossing carries personal data. `05_DATA_MODEL.md:1060-1069` enumerates it: `Contact`,
-`Email`, `Care Of`, `Name 1`–`Name 4` (which can hold a natural person — UC 7 extracts one out
-of Name 1 into Contact), `Created By` (an SAP user id), and the full postal address. There is
-no field-level filter, minimisation, or pseudonymisation at the boundary: the ADF `Lookup1`
-issues `SELECT * FROM test_77.Legacy` (`CONTEXT-EXTERNAL.md:106`), so **every column of every
-row** is posted to the Bruker-side service, whether the enrichment needs it or not.
-
-**Controls at the boundary — what exists:**
-
-- Transport is HTTPS to `https://mdm-pipeline-api.azurewebsites.net`
-  (`CONTEXT-EXTERNAL.md:135`, `:255`).
-- The service is stateless with respect to record data: it holds no database, and the only
-  persistence it performs is the rotating log file (`api/middleware.py:105-107`).
-
-**Controls at the boundary — what does not exist:**
-
-- No authentication (§d.4).
-- No IP allow-list, private endpoint, or VNet integration evidenced (§d.3).
-- No field-level minimisation (above).
-- No data-processing agreement, transfer record, or DPIA artefact in the repository —
-  ⚠ NOT EVIDENCED.
-- No group-code scoping on the current pipeline: `Lookup1` and `Lookup2` have no group-code
-  predicate as exported (`CONTEXT-EXTERNAL.md:64`, `:106`), so a run over `test_77.Legacy`
-  spans **all imports under the entity**, not just the intended one. Adding that predicate is a
-  planned pre-freeze change (`CONTEXT-EXTERNAL.md:194-197`). Until then, the blast radius of a
-  run is the whole entity.
-
-## d.3 · Network path from ADF to the Function App
-
-Read from the `[EXPORT]` pipeline JSON (`CONTEXT-EXTERNAL.md:119-145` for enrichment,
-`:238-265` for deduplication):
-
-| Property | Value | Line |
-|---|---|---|
-| Activity type | `WebActivity` | `CONTEXT-EXTERNAL.md:120`, `:240` |
-| Method | `POST` | `:133`, `:253` |
-| Headers | `{"Content-Type": "application/json"}` — **and nothing else** | `:134`, `:254` |
-| URL | `https://mdm-pipeline-api.azurewebsites.net/enrich` and `…/api/dedup/cluster-block` | `:135`, `:255` |
-| Integration runtime | `AutoResolveIntegrationRuntime` | `:136-139`, `:256-259` |
-| Authentication | **absent from the activity definition** | `:132-144`, `:252-264` |
-| Timeout | `0.12:00:00` (12 hours) | `:126`, `:246` |
-| Retry | `0` | `:127`, `:247` |
-| `secureInput` / `secureOutput` | `false` / `false` | `:129-130`, `:249-250` |
-
-**The path is the public internet.** `AutoResolveIntegrationRuntime` is the Azure-managed,
-multi-tenant runtime: it egresses from Microsoft-owned address space in an auto-selected
-region, not from a customer network. There is no self-hosted integration runtime, no managed
-private endpoint, and no VNet-integrated runtime in either export. On the receiving side, the
-Function App is addressed by its default `*.azurewebsites.net` hostname, which is
-internet-facing by default. Whether inbound access restrictions (an IP allow-list, a private
-endpoint, or `WEBSITE_*` networking settings) are configured on the Azure resource is
-⚠ NOT EVIDENCED — no such artefact exists in the repository, and none would; it is resource
-configuration. **It is the single most consequential unknown in this section**, because it is
-the only thing that could compensate for §d.4.
-
-Two further properties of the path bear recording:
-
-- **`secureInput: false` and `secureOutput: false`** mean ADF records the activity's input and
-  output — the full 50-record request body and the full enriched response, both containing
-  personal data — in ADF's own monitoring store in cleartext, retained under ADF's retention
-  policy, and visible to anyone with ADF monitoring access on the Tillit tenant.
-  Setting both to `true` is the ADF-side control that suppresses this; it is not set.
-- **`retry: 0` with `isSequential: true`** (`CONTEXT-EXTERNAL.md:88`) means one transient
-  failure stops the enrichment run at that offset and no later offsets are processed
-  (`06_EXTERNAL_DEPS.md:766-773`). Because the service is fail-open and returns 200 with
-  degraded content on any external outage (`06_EXTERNAL_DEPS.md:748-753`), the ADF failure path
-  does **not** trip on quality degradation — only on transport failure. There is no quality gate
-  between the two.
-
-## d.4 · Authentication on the service endpoints
-
-**There is none.**
-
-`function_app.py:12`:
-
-```python
-azure_app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
-```
-
-`function_app.py:15-19` registers one catch-all route `{*route}` that forwards everything to
-the FastAPI app, and `host.json:13` sets `routePrefix` to `""`. Consequently **all 13 routes
-share the single `ANONYMOUS` auth level** — the README says so explicitly and names the
-remedy: "all endpoints — including `POST /api/dedup/cluster-block` — share the same auth level
-(`ANONYMOUS` here; switch to `FUNCTION` and supply a function key to require one). There is no
-per-route auth in application code" (`README.md:1825`).
-
-Confirmed independently at the application layer: a search of `api/` for
-`Depends(|HTTPBearer|Security(|verify_token|authenticat|x-functions-key|api[_-]?key.*header`
-returns **no matches**. `api/routes.py` declares no security dependency on any of its 13
-route decorators (`api/routes.py:75`, `:88`, `:518`, `:580`, `:628`, `:802`, `:832`, `:896`,
-`:946`, `:977`, `:1034`, `:1066`, `:1105`).
-
-What is reachable without a credential by anyone who knows the hostname:
-
-| Route | Effect of an anonymous call |
+| Concern | State at `86d173b` |
 |---|---|
-| `POST /enrich` | submits up to 50 arbitrary records for enrichment; spends SERP and LLM budget; returns enriched data |
-| `POST /enrich/file`, `/issues`, `/issues/compare`, `/api/dedup/file`, `/api/dedup/score/file` | accept arbitrary XLSX uploads |
-| `POST /api/dedup/cluster-block` | spends adjudicator LLM budget |
-| `POST /api/dedup/approve` | **records an approval decision under any `approver` string** (§d.5) |
-| `GET /diag/llm`, `GET /diag/dedup-llm` | spend LLM budget per call and disclose configuration (§d.1.4, §c.6) |
-| `GET /tiers`, `GET /health` | disclose configuration |
-
-There is additionally **no CORS policy, no rate limit, no request-size limit, and no
-input-size cap** in the application: `api/app.py:17-29` adds exactly one middleware
-(`RequestLoggingMiddleware`) and the router. `EnrichmentRequest` places no maximum on
-`records` — the 50-row batching is an ADF convention (`CONTEXT-EXTERNAL.md:106`), not a service
-constraint.
-
-**Enforced in code:** nothing. **Enforced by platform configuration:** unknown — an Azure-side
-IP restriction would change this picture entirely, and is ⚠ NOT EVIDENCED (§d.3). **The
-remedy is one enum:** `AuthLevel.ANONYMOUS` → `AuthLevel.FUNCTION` at `function_app.py:12`,
-plus the function key on the ADF Web activity headers.
-
-## d.5 · The four-eyes approval control on merges
-
-The request names "merges", which in this system denotes two distinct things. Both are
-documented, because the control has a different status in each.
-
-### d.5.1 Record merges — the duplicate-merge approval gate
-
-This is the four-eyes control the system was designed around: *the machine proposes, a human
-confirms* (`CONTEXT-EXTERNAL.md:398-399`; `02_ARCHITECTURE.md:366-372`).
-
-**Enforced in code:**
-
-| Control | Mechanism | Cited |
-|---|---|---|
-| Election never auto-commits | every election is a proposal; the winner's `row_id` goes to `proposed_golden_id`, not to the golden fields | `dedup/scoring.py:1046-1047`, `:1100-1119` |
-| Unreviewed rows cannot be acted on by accident | a `manual_review` row leaves `is_golden_record` and `golden_record_id` **empty**, so nothing keyed on `is_golden_record` alone can touch it | `dedup/scoring.py:262-264` |
-| Low-confidence merges are demoted | a merge whose adjudication confidence is below `CONFIDENCE_MERGE_THRESHOLD` (`0.95`) enters election as `manual_review` | `config.py:100`, `:223-225`; `dedup/scoring.py:1100-1119` |
-| Blocked and uncertain clusters are demoted | `manual_review` when clustering flagged uncertainty or every member is blocked | `dedup/scoring.py:1100-1119` |
-| Candidate-cap blow-outs are demoted | over `MAX_CANDIDATES_PER_BLOCK` the **whole block** routes to manual review | `dedup/adjudicator.py:585-601` |
-| Promotion happens only on an explicit approval | `apply_approval` promotes `proposed_golden_id` into the golden fields **only** when `decision == "approved"`; on `"rejected"` the golden fields are untouched | `dedup/scoring.py:597-600`, `:584` |
-| Approval is a separate endpoint from election | `POST /api/dedup/approve` ≠ `POST /api/dedup/score` — a distinct call, distinct input, distinct handler | `api/routes.py:946-947` vs `:896-897` |
-| The downstream contract is explicit | Phase 3 consumes **only** `approval_status == "approved"` or `election_status == "unique"` | `api/routes.py:954-955`; `dedup/scoring.py:266-268`; `README.md:1103` |
-| An approver must be named | `approver: str = Field(..., min_length=1)` — a non-empty string is required to submit | `dedup/scoring.py:560` |
-
-**Not enforced in code — enforced by process, or not at all:**
-
-| Gap | Detail | Cited |
-|---|---|---|
-| The approver is not authenticated | the endpoint is `ANONYMOUS` (§d.4); `approver` is a free-text string with no identity backing it. Any caller can post `approver: "anyone"` | `function_app.py:12`; `dedup/scoring.py:560` |
-| The approver is **not used by the logic at all** | `apply_approval(rows, cluster_id, decision)` does not take `approver` as a parameter. It is read in the route only to be logged (`api/routes.py:957-960`) and echoed in the response (`:971`). It is written to **no row field** | `dedup/scoring.py:574-578`; `api/routes.py:962-964` |
-| **Separation of duties is not checked** | nothing compares the approver against the person who ran the election, imported the group code, or approved the sibling cluster. There is no proposer/approver distinction in code — the "four eyes" are two roles that the code cannot tell apart | absence across `dedup/scoring.py:574-603` |
-| No approval is persisted | the endpoint is stateless: the caller submits the rows, the decision is applied in memory, the rows are echoed back. "Persistence is intentionally out of scope — a durable approval store is a future step" | `api/routes.py:950-955`; `dedup/scoring.py:553-555` |
-| Therefore no audit trail exists | the only record that an approval happened is one `INFO` log line (`api/routes.py:957-960`) with cluster, decision, approver, and row count — in a file rotated at 10 MB × 5 backups (`api/middleware.py:105-107`) and in App Insights subject to sampling (§b.6). There is no immutable, queryable approval record | as cited |
-| The decision can be replayed or forged wholesale | because the caller supplies **both** the decision and the rows it applies to, a caller can submit any row set with `decision="approved"` and receive promoted golden fields back | `dedup/scoring.py:574-603` |
-
-**Where the control actually lives: in DATAshaper, by process.** The human step is the
-DS deduplication view's `Leading Code` selector and `Apply Leading Code` action
-(`CONTEXT-EXTERNAL.md:389-399` `[OBSERVED]`), which is where a steward reviews the proposed
-cluster and the adjudicator's free-text `Reason`. `/api/dedup/approve` is the API counterpart of
-that button (`02_ARCHITECTURE.md:357-364`). Whatever identity, authorisation, and audit exist
-for the approval are **DATAshaper's**, in the Tillit tenant, and are not repository artefacts —
-⚠ NOT EVIDENCED. Whether ADF even invokes the scoring and approval endpoints is open item 5
-(`CONTEXT-EXTERNAL.md:445`): neither exported pipeline calls `/api/dedup/score` or
-`/api/dedup/approve` (`02_ARCHITECTURE.md:374-378`).
-
-**Verdict.** The *decision structure* is enforced in code and enforced well: nothing is
-auto-committed, unreviewed rows are structurally inert, and the downstream consumption contract
-is explicit. The *four-eyes property itself* — that a second, distinct, identified human
-approved — is enforced nowhere in this repository. It rests entirely on the DATAshaper UI and
-on process.
-
-### d.5.2 Code merges — pull-request review
-
-Read literally as source-control merges, the answer is that no such control is evidenced:
-
-| Control | State | Evidence |
-|---|---|---|
-| Merge commits | **zero**, across all refs | `git log --all --merges --oneline \| wc -l` → `0`, over 51 commits (`git rev-list --count --all`) |
-| Pull-request template | absent | `git ls-files \| grep -icE "codeowners\|pull_request\|contributing\|SECURITY"` → `0` |
-| `CODEOWNERS` | absent | as above |
-| Required status checks | impossible — no CI exists to be required | §a.1 |
-| Committer identities | two: `Suzu <spoorvaaajay@gmail.com>` (27 commits) and `Ajay <Apoorva.Ajay@bruker.com>` (24) | `git shortlog -sne --all` |
-| Commit signing | not evidenced | no `.gitattributes`, no signing configuration tracked |
-| Branch state | `HEAD` = `diag/website-trace` is one commit ahead of `main` | `git log --oneline main -3` |
-
-Every commit reached its branch directly. Whether GitHub-side branch protection requires review
-on `main` is account configuration, ⚠ NOT EVIDENCED — but the absence of any merge commit in
-51 commits shows that no reviewed pull request has been merged in this repository's history.
-Combined with §a.5 (deployment is a manual VS Code action from a workstation), **there is no
-point in the path from a code change to production at which a second person is required.**
-
-## d.6 · Compliance: personal data, redaction, and retention
-
-Pass 5 established the data-protection position in detail (`05_DATA_MODEL.md:1056-1128`). The
-compliance-relevant consequences:
-
-**No redaction exists anywhere.** A repository-wide search for
-`redact|mask|anonymi|pii|GDPR` returns no logging filter, formatter, or scrubber; the only
-`mask` hits are an unrelated text heuristic (`05_DATA_MODEL.md:1076-1079`, citing
-`enrichment/preprocess.py:1963`). Log records are emitted verbatim.
-
-**Full person names reach the logs at four or more sites** — `enrichment/person_affiliation.py:126`,
-`:134`, `:152`; `enrichment/preprocess.py:2326`; `search/serpapi_client.py:35` and
-`search/duckduckgo_client.py:28` (the query embeds the quoted name); plus Tier 3 identity-guard
-rejections (`enrichment/orchestrator.py:713-717`) and every website-resolution line
-(`enrichment/website_resolver.py:474-477`, `:494`, `:505-508`, `:602-604`, `:619-621`) when
-Name 1 holds a person (`05_DATA_MODEL.md:1081-1094`).
-
-**Those logs have no retention policy.** Rotation bounds *size* — 10 MB × 5 backups
-(`api/middleware.py:105-107`) — not *age*. There is no expiry and no deletion procedure
-(`05_DATA_MODEL.md:1104-1105`). App Insights retention is ⚠ NOT EVIDENCED (§b.6).
-
-**Personal data leaves the trust boundary without minimisation.** SERP providers receive the
-person's full name in quotes (`enrichment/person_affiliation.py:86-89`); Azure OpenAI receives
-the name, the location, and SERP snippets in the affiliation prompt (`:141-150`), and the
-original name1/name2 pairs in the dedup prompts (`dedup/adjudicator.py:642-646`). Neither call
-site applies minimisation or pseudonymisation (`05_DATA_MODEL.md:1116-1127`). The email address
-itself is *not* sent — only its domain, and only when it is not a freemail domain
-(`enrichment/person_affiliation.py:62-66`, `:83-86`) — which is the one deliberate minimisation
-in the system and is worth citing as such.
-
-**The request bodies themselves are never logged** (`api/middleware.py:28-70` logs method,
-path, status, and duration only), which materially limits the exposure — the leakage is via
-specific per-field log statements, not via a blanket body dump.
-
-**No compliance artefact exists in the repository:** no data-processing agreement, no
-records-of-processing entry, no DPIA, no retention schedule, no `SECURITY.md`, no
-`CONTRIBUTING.md` (§d.5.2). ⚠ NOT EVIDENCED — if these exist they live outside version control.
-
-## d.7 · Enforced in code versus enforced by process
-
-The summary the request asks for, stated as a single table.
-
-| Control | Enforced in code | Enforced by process / platform | Not enforced |
-|---|---|---|---|
-| Secrets kept out of git | ✅ `.gitignore:9,23`; verified clean across all history (§d.1.2) | | |
-| Secrets kept out of the deployment package | ✅ `.funcignore:15-16` | | |
-| Secrets read from environment only | ✅ `config.py:155-160`; `llm/openai_client.py:147-148` | | |
-| Secret rotation / vaulting | | | ❌ no Key Vault, no managed identity (§d.1.3) |
-| Secret values never logged or returned | ✅ `config.py:137-145`; key value never in a response (§d.1.4) | | ⚠ key *length* is returned (`api/routes.py:1047`) |
-| TLS on outbound LLM calls | ✅ default (`llm/openai_client.py:118-127`) | | ❌ defeatable by `LLM_SSL_VERIFY=false` App Setting, no external indicator (§d.1.5) |
-| TLS on the ADF→service hop | ✅ HTTPS URL (`CONTEXT-EXTERNAL.md:135`) | | |
-| Authentication on service endpoints | | ⚠ unknown — Azure inbound restrictions ⚠ NOT EVIDENCED | ❌ `ANONYMOUS`, all 13 routes (`function_app.py:12`) |
-| Rate limiting / request-size limits | | | ❌ none (`api/app.py:17-29`) |
-| Tenant-boundary data minimisation | | | ❌ `SELECT *` crosses whole (`CONTEXT-EXTERNAL.md:106`) |
-| Group-code scoping of a run | | ⚠ planned pre-freeze (`CONTEXT-EXTERNAL.md:194-197`) | ❌ absent from the exported pipelines |
-| ADF activity input/output masking | | | ❌ `secureInput/secureOutput: false` (`CONTEXT-EXTERNAL.md:129-130`) |
-| Nothing auto-commits a duplicate merge | ✅ `dedup/scoring.py:1046-1047` | | |
-| Unreviewed rows structurally inert | ✅ `dedup/scoring.py:262-264` | | |
-| Downstream consumption contract | ✅ `api/routes.py:954-955`; `dedup/scoring.py:266-268` | | |
-| An approver must be named | ✅ `dedup/scoring.py:560` (non-empty string) | | |
-| The approver is a *real, distinct* person | | ⚠ DATAshaper UI (`CONTEXT-EXTERNAL.md:395-399`) — ⚠ NOT EVIDENCED | ❌ not authenticated, not compared, not persisted (§d.5.1) |
-| Approval audit trail | | | ❌ stateless; one rotating log line (`api/routes.py:950-955`) |
-| Four-eyes on code merges | | ⚠ GitHub branch protection ⚠ NOT EVIDENCED | ❌ zero merge commits in 51 (§d.5.2) |
-| Four-eyes on deployment | | | ❌ manual VS Code publish (§a.5) |
-| Log redaction of personal data | | | ❌ none (`05_DATA_MODEL.md:1076-1079`) |
-| Log retention limit | ✅ size only — 10 MB × 5 (`api/middleware.py:105-107`) | ⚠ App Insights retention ⚠ NOT EVIDENCED | ❌ no time-based expiry |
-| Email minimisation before SERP | ✅ domain only, non-freemail only (`enrichment/person_affiliation.py:62-66`) | | |
+| Logging | one formatter, three call idioms, and the most structured of the three loses its structure (G-93). 73 telemetry event types, 80 batch counters, none of it committed (G-12) |
+| Determinism | four properties pinned by 90 passing tests; the cache that implements them is not in the repository (G-13), covers Phase 1 only (G-55), and the seed can be dropped without trace (G-96) |
+| Error handling | 130 fail-open handlers, 115 on the service path, 81 catching bare `Exception`, 66 logging nothing. The per-record bulkhead at `enrichment/orchestrator.py:9263` is deliberate and reports itself; stage-level absorption does not |
+| Merge idempotency | all four `UPDATE`-only and idempotent under repeat; none convergent; unmatched rows dropped silently (G-98); a rescore overwrites a steward's approval (G-97) |
+| Provenance | structurally enforced at the write — locked fields, required evidence, an admissibility gate, a grammar assertion that raises — and dropped entirely at write-back (G-99) |
+| Origin invariant | one funnel, one rule ("an origin may change only when the VALUE changes"), enforced on every department-slot write, observable in no output (G-100) |
+| Confidence | one authority and three tokens on the export path; nine scales on the event, never compared across; and a fourth, incommensurable quantity in Phase 2 thresholded at 0.95 (G-102) |
 
 ---
 
-# (e) Findings for `08_GAPS.md`
+## Appendix A — commands and verbatim output
 
-Factual statements, each cited above, for the limitations and future-work sections.
+All read-only over local files. No command in this pass writes to Azure, DATAshaper or SQL.
 
-1. No CI/CD configuration of any kind exists in the repository; nothing runs on push or on
-   pull request (§a.1).
-2. The test suite is red at `HEAD` — 3 failed, 1019 passed — and no gate consumes the result
-   (§a.3).
-3. Fifteen `# noqa` directives suppress a linter that the repository does not configure and no
-   gate runs (§a.4).
-4. All 14 runtime dependencies are declared as `>=` floors with no lock file
-   (`requirements.txt:1-14`), and the build is performed remotely at deploy time
-   (`.vscode/settings.json:3`), so two deployments of the same commit can install different
-   library versions.
-5. Deployment is a manual VS Code UI action with no scripted artefact, no staging slot, and no
-   rollback procedure (§a.5).
-6. Three of the five deployed components — ADF, DATAshaper, and the stored procedures — have no
-   deployment artefact in any repository, so a contract change cannot be released atomically
-   (§a.6).
-7. `RequestLoggingMiddleware` sets `request.state.request_id` "for downstream correlation"
-   (`api/middleware.py:26`) and nothing ever reads it; the identifier appears in three
-   middleware lines and one response header, and in no per-record or per-block log line
-   (§b.4.3).
-8. No inbound correlation header is read, and ADF sends none, so an ADF pipeline run cannot be
-   joined to any service log line (§b.4.3).
-9. The log formatter (`api/middleware.py:87-91`) renders no `extra=` key, so every structured
-   field on `request_complete`, `dedup_llm_call`, `dedup_block`, `dedup_request`, and
-   `scoring_request` — including all token counts and all latencies — is absent from the
-   console and file sinks (§b.3).
-10. `api/middleware.py:1` describes the middleware as "structured JSON logging"; neither
-    logging idiom in the codebase emits JSON (§b.3). Code↔doc discrepancy.
-11. Phase 1 discards `response.usage` (`llm/openai_client.py:198-208`) while Phase 2 captures it
-    (`dedup/llm.py:188-195`), so the more expensive phase is the unmeasured one (§b.7, §c.5.3).
-12. `BatchCache.stats` (`utils/cache.py:109-111`) is never called, so cache effectiveness — the
-    main determinant of SERP spend — is unmeasured (§b.7).
-13. `configure_logging` calls `logging.basicConfig(…, force=True)` (`api/middleware.py:118`),
-    which discards pre-existing root handlers; whether this displaces the Azure Functions
-    worker's App Insights handler is ⚠ UNVERIFIED and would, if true, mean the deployed app
-    ships no application telemetry at all (§b.1, §b.7).
-14. App Insights sampling is enabled with only `Request` excluded (`host.json:5-7`), so the
-    trace stream that carries all 178 application log statements is sampled while the request
-    stream that carries almost no information is retained in full (§b.6).
-15. `GET /health` returns the literal `"healthy"` (`api/routes.py:80`) with no dependency check
-    and will report healthy on an app whose LLM credentials are absent (§b.5).
-16. No monetary figure exists anywhere in the repository; the README `Cost` column is an ordinal
-    design ranking, not a measurement (§c.1).
-17. `MAX_PAGE_CONTENT_CHARS` is `"3000"` in `config.py:93` and `1500` in the executing dataclass
-    field `config.py:209`, with `.env.example:81` setting `3000` — a cost-bearing three-way
-    divergence (§c.3).
-18. `DEPT_PROBE_CROSS_DOMAIN` defaults to `false` in code (`config.py:114`) and `true` in
-    `.env.example:61`, doubling SERP calls for unresolved departments when the example file is
-    copied as-is (§c.3).
-19. Re-running the Enrichment pipeline re-pays for every row: `Lookup1` has no watermark
-    predicate (`CONTEXT-EXTERNAL.md:106`) and the non-deterministic tiers may return different
-    answers on the second pass (§c.6).
-20. Every endpoint is `ANONYMOUS` (`function_app.py:12`) with no application-layer
-    authentication, no CORS policy, no rate limit, and no request-size limit (§d.4).
-21. Two unauthenticated GET endpoints make a billable Azure OpenAI call per request
-    (`api/routes.py:1051-1055`, `:1085-1089`) and disclose endpoint, deployment names, API
-    version, and the API key's length (§d.1.4, §c.6).
-22. No Key Vault and no managed identity: Azure OpenAI is reached with a long-lived API key with
-    no rotation mechanism, on a topology where workload identity is available (§d.1.3).
-23. `LLM_SSL_VERIFY=false` disables TLS verification for the calls that carry personal data,
-    is settable as an Application Setting with no code change, and leaves no indicator on
-    `/health` or `/tiers` (§d.1.5).
-24. Both ADF Web activities set `secureInput: false` and `secureOutput: false`
-    (`CONTEXT-EXTERNAL.md:129-130`, `:249-250`), so full request and response bodies containing
-    personal data are retained in cleartext in ADF monitoring on the Tillit tenant (§d.3).
-25. The ADF `Lookup1` issues `SELECT *` (`CONTEXT-EXTERNAL.md:106`), so every column of every
-    row crosses the Tillit→Bruker tenant boundary regardless of what enrichment needs (§d.2).
-26. `approver` is required by the model (`dedup/scoring.py:560`) but is not a parameter of
-    `apply_approval` (`:574-578`), is written to no row field, is never authenticated, and is
-    never compared to any other actor — the four-eyes property is not enforced in code (§d.5.1).
-27. `/api/dedup/approve` is stateless (`api/routes.py:950-955`), so no durable audit trail of
-    any approval exists; the sole record is one log line in a size-rotated file (§d.5.1).
-28. Because the approve endpoint accepts both the decision and the rows it applies to, an
-    unauthenticated caller can obtain promoted golden fields for an arbitrary row set
-    (§d.4, §d.5.1).
-29. The repository history contains zero merge commits across 51 commits, and no `CODEOWNERS`,
-    pull-request template, or `SECURITY.md` exists — no four-eyes control on code changes is
-    evidenced (§d.5.2).
-30. No log redaction exists anywhere, and the rotating log file has no time-based retention or
-    deletion policy while carrying unredacted person names (§d.6).
-31. Neither exported ADF pipeline carries a group-code predicate, so a run spans all imports
-    under entity `test_77` rather than the intended import (`CONTEXT-EXTERNAL.md:64`, `:106`;
-    §d.2).
+### A.1 Commit and branch
 
----
+    $ git rev-parse HEAD
+    86d173b8a4d715a619b0a2656986c145da7fa81e
 
-# (f) Open items this pass could not close
+    $ git rev-parse --abbrev-ref HEAD
+    feature/llm-fixes
 
-Each requires an artefact or a live run outside this repository. Items 1–4 extend
-`CONTEXT-EXTERNAL.md:439-448`; items 5–9 are new to this pass.
+    $ date -I
+    2026-09-07
 
-| # | Item | What would settle it |
-|---|------|----------------------|
-| 1 | Azure Functions hosting plan and HTTP timeout ceiling | the Function App resource blade — `CONTEXT-EXTERNAL.md:446` open item 6 |
-| 2 | Measured per-batch duration for a 50-row `/enrich` call | already logged as `batch_ms` (`enrichment/orchestrator.py:838-841`) — read one run; `CONTEXT-EXTERNAL.md:447` open item 7 |
-| 3 | Whether ADF invokes `/api/dedup/score` and `/api/dedup/approve` | the ADF pipeline list on the Tillit tenant — `CONTEXT-EXTERNAL.md:445` open item 5 |
-| 4 | The stored-procedure bodies (`usp_merge_legacy_enriched`, `usp_merge_validation_clusters`) | SQL MI — `CONTEXT-EXTERNAL.md:441` open item 1 |
-| 5 | Whether GitHub branch protection requires review on `main` | the repository's GitHub settings |
-| 6 | Whether Azure inbound access restrictions constrain who can reach `mdm-pipeline-api` | the Function App networking blade — **the highest-value item in this document**, since it is the only thing that could compensate for §d.4 |
-| 7 | Whether `extra=` keys arrive as App Insights `customDimensions`, and whether `basicConfig(force=True)` suppresses telemetry entirely | one deployed request, then the two KQL queries in §b.7 |
-| 8 | Application Insights retention period for `mdm-pipeline-insights` | the App Insights resource blade |
-| 9 | Whether DATAshaper authenticates and records the steward who presses `Apply Leading Code` | the DS Studio administration interface — determines whether the four-eyes control exists anywhere at all |
+### A.2 The logging idioms and the telemetry vocabulary
 
----
+The walk classifies every `logger.<level>(…)` call in tracked `.py` files outside `tests/` by
+its first positional argument and whether it passes `extra=`.
 
-**Pass 6b complete.** CI/CD: absent — no automation artefact exists on any ref, deployment is a
-manual VS Code publish, the suite is red at `HEAD` and ungated. Observability: 178 log
-statements, 74% at `INFO`, split across two idioms of which the formatter renders only one;
-`Customer` is the sole identifier that closes end to end, and no ADF run can be joined to a
-service log line. Cost: structurally determined, numerically empty — every unit price is
-⚠ MEASUREMENT REQUIRED, and the one already-instrumented quantity (Phase 2 tokens) is readable
-only in Application Insights. Security: secrets are correctly excluded from git and from the
-deployment package and are never logged, but every endpoint is anonymous, two of them spend
-money per unauthenticated call, and the four-eyes control on merges is enforced as a decision
-*structure* in code and as an *identity* nowhere in this repository.
+    $ python3 - <<'PY'
+    import ast, subprocess
+    from collections import Counter
+    files=[f for f in subprocess.check_output(['git','ls-files','*.py']).decode().split()
+           if not f.startswith('tests/')]
+    dictcall=[]; extracall=[]; pctcall=[]
+    for f in files:
+        tree=ast.parse(open(f,encoding='utf-8').read())
+        for n in ast.walk(tree):
+            if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr in ('debug','info','warning','error','exception','critical')
+                and isinstance(n.func.value, ast.Name)
+                and n.func.value.id in ('logger','logging','log')):
+                has_extra = any(k.arg=='extra' for k in n.keywords)
+                first = n.args[0] if n.args else None
+                if isinstance(first, ast.Dict): dictcall.append((f,n.lineno))
+                elif has_extra:                 extracall.append((f,n.lineno))
+                else:                           pctcall.append((f,n.lineno))
+    print('idiom (b) dict-as-message :', len(dictcall))
+    for f,c in Counter(f for f,_ in dictcall).most_common(): print(f'    {c:4d}  {f}')
+    print('idiom (a) event + extra=  :', len(extracall))
+    for f,c in Counter(f for f,_ in extracall).most_common(): print(f'    {c:4d}  {f}')
+    print('idiom (c) printf-style    :', len(pctcall))
+    PY
+    idiom (b) dict-as-message : 86
+          68  enrichment/orchestrator.py
+           8  enrichment/grounded_resolver.py
+           4  enrichment/name_gate.py
+           3  enrichment/flags.py
+           1  enrichment/address_processing.py
+           1  enrichment/person_affiliation.py
+           1  enrichment/provenance.py
+    idiom (a) event + extra=  : 10
+           4  api/routes.py
+           3  api/middleware.py
+           3  dedup/adjudicator.py
+    idiom (c) printf-style    : 208
+
+The key census over the 86 idiom-(b) records, and the record that lacks `record_id`:
+
+    distinct dict keys across the 86 records: 123
+        86  step
+        85  record_id
+        22  field
+        17  registry
+        10  value
+         9  reason
+         7  query
+         7  name1
+         7  confidence
+         7  candidate
+         6  supplied
+         6  lei_id
+         6  qid
+         5  official_name
+         5  domain
+         5  ror_id
+
+    distinct "step" values: 73
+
+    (records with no record_id)
+    enrichment/person_affiliation.py:180  keys=['step', 'contact', 'query', 'institution', 'department', 'confidence']
+
+### A.3 What the formatter actually renders
+
+    $ python3 - <<'PY'
+    import logging, io, sys
+    sys.path.insert(0,'.')
+    from api.middleware import configure_logging
+    buf=io.StringIO()
+    configure_logging("INFO", log_file="")
+    root=logging.getLogger()
+    root.handlers=[logging.StreamHandler(buf)]
+    root.handlers[0].setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s [%(funcName)s] %(message)s"))
+    log=logging.getLogger("demo")
+    log.info("request_complete", extra={"request_id":"abc12345","status":200,"duration_ms":42})
+    log.info({"record_id":"13162559","step":"tier1_ror_miss","reason":"no_candidate"})
+    print(buf.getvalue())
+    PY
+    2026-09-07 23:05:16,187 INFO demo [<module>] request_complete
+    2026-09-07 23:05:16,187 INFO demo [<module>] {'record_id': '13162559', 'step': 'tier1_ror_miss', 'reason': 'no_candidate'}
+
+The format string is copied verbatim from `api/middleware.py:87–91`; `configure_logging` is the
+repository's own.
+
+### A.4 Schema sizes, summary counters, and the App Insights search
+
+    $ python3 -c "
+    import sys; sys.path.insert(0,'.')
+    from api.output_columns import RESPONSE_COLUMNS
+    from enrichment.orchestrator import PROVENANCE_COLUMNS
+    print('RESPONSE_COLUMNS:', len(RESPONSE_COLUMNS))
+    print('PROVENANCE_COLUMNS:', len(PROVENANCE_COLUMNS), PROVENANCE_COLUMNS)
+    from enrichment.provenance import GUARDS, SCOPED_FIELDS, CONFIDENCE_SCALES
+    print('GUARDS:', len(GUARDS), GUARDS)
+    print('SCOPED_FIELDS:', len(SCOPED_FIELDS))
+    print('CONFIDENCE_SCALES:', len(CONFIDENCE_SCALES))
+    from enrichment.confidence import CONFIDENCES, WITNESSES, REGISTRY_SOURCES, NON_CORROBORATING_WITNESSES
+    print('CONFIDENCES:', CONFIDENCES); print('WITNESSES:', WITNESSES)
+    print('REGISTRY_SOURCES:', sorted(REGISTRY_SOURCES))
+    print('NON_CORROBORATING:', sorted(NON_CORROBORATING_WITNESSES))
+    "
+    RESPONSE_COLUMNS: 69
+    PROVENANCE_COLUMNS: 7 ('name1_provenance', 'name2_provenance', 'domain_provenance', 'record_type_provenance', 'ror_id_provenance', 'lei_id_provenance', 'operating_name_provenance')
+    GUARDS: 6 ('ror_country', 'distinctive_token', 'identifier_token', 'domain_ownership', 'gleif_name_verification', 'page_identity')
+    SCOPED_FIELDS: 6
+    CONFIDENCE_SCALES: 9
+    CONFIDENCES: ('verified', 'provisional', 'low')
+    WITNESSES: ('web', 'wikidata', 'llm', 'registry', 'domain', 'dba')
+    REGISTRY_SOURCES: ['gleif', 'ror', 'wikidata']
+    NON_CORROBORATING: ['llm']
+
+`EnrichmentSummary`, counted from the AST and grouped by field-name prefix:
+
+    total fields: 80
+       16  wikidata_
+       11  page_
+       10  (ungrouped)
+        6  liveness_
+        5  lei_
+        5  evidence_
+        5  domain_from
+        5  consensus_
+        3  tier1_retry
+        3  unchanged_
+        2  tier1_
+        2  registry_
+        2  tier2a_
+        2  contact_lookup
+        1  domain_rejected
+        1  tier2b_
+        1  tier3_
+
+    ungrouped: ['total', 'enriched', 'verified', 'unresolved', 'failed',
+                'research_institution_count', 'company_count',
+                'routing_type_mismatch_count', 'cache_hits_after_normalisation',
+                'processing_time_ms']
+
+Custom telemetry to Application Insights:
+
+    $ grep -rn -i 'applicationinsights\|opencensus\|azure.monitor\|opentelemetry\|instrumentation_key\|APPINSIGHTS' \
+        --include='*.py' --include='*.txt' --include='*.json' .
+    host.json:4:    "applicationInsights": {
+
+The single hit is the Function host's own logging configuration, not application code.
+
+### A.5 The determinism and provenance suites
+
+    $ python3 -m pytest tests/test_determinism.py -q
+    ........................................................................ [ 80%]
+    ..................                                                       [100%]
+    90 passed, 1 warning in 0.19s
+
+    $ python3 -m pytest tests/test_provenance.py tests/test_provenance_scheme_b.py -q
+    ............................................sssss......                  [100%]
+    122 passed, 5 skipped, 1 warning in 0.43s
+
+(The one warning in each is `urllib3`'s `NotOpenSSLWarning` about the local LibreSSL build; it is
+unrelated to the suites.)
+
+### A.6 The fail-open `except` walk
+
+A handler counts as fail-open when `ast.walk` over its body finds no `ast.Raise`.
+
+    $ python3 - <<'PY'
+    import ast, subprocess
+    from collections import Counter
+    files=[f for f in subprocess.check_output(['git','ls-files','*.py']).decode().split()
+           if not f.startswith('tests/')]
+    rows=[]
+    for f in files:
+        tree=ast.parse(open(f,encoding='utf-8').read())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ExceptHandler):
+                body=node.body
+                has_raise=any(isinstance(s, ast.Raise)
+                              for s in ast.walk(ast.Module(body=body, type_ignores=[])))
+                logs=any('log' in ast.unparse(s) for s in body)
+                only_pass=len(body)==1 and isinstance(body[0], ast.Pass)
+                rows.append((f, node.lineno,
+                             'BARE' if node.type is None else ast.unparse(node.type),
+                             has_raise, logs, only_pass))
+    print('total except handlers in production code:', len(rows))
+    print('with any raise anywhere in the handler:', sum(1 for r in rows if r[3]))
+    fo=[r for r in rows if not r[3]]
+    print('FAIL-OPEN:', len(fo))
+    print('  body is exactly `pass`:', sum(1 for r in fo if r[5]))
+    print('  log something:', sum(1 for r in fo if r[4]))
+    PY
+    total except handlers in production code: 150
+    with any raise anywhere in the handler: 20
+    FAIL-OPEN: 130
+      body is exactly `pass`: 11
+      log something: 64
+
+Split by path, and the exception types on the service path:
+
+    service path (api/ enrichment/ dedup/ llm/ search/ utils/ config.py function_app.py): 115
+    scripts/ tools/ eval/                                                               :  15
+
+        81  Exception
+         7  (TypeError, ValueError)
+         6  ValueError
+         5  RegistryUnavailableFrozen
+         4  httpx.HTTPStatusError
+         3  WikidataUnavailable
+         2  ValidationError
+         2  (json.JSONDecodeError, ValueError)
+         2  ProvenanceGrammarError
+         1  OSError
+         1  RuntimeError
+         1  SearchUnavailable
+
+How many carry a marker on the `except` line:
+
+    service-path fail-open handlers: 115
+      whose except line carries a `# noqa` marker: 34
+      whose except line carries any inline comment: 35
+      with a bare except line, no comment: 80
+
+The per-handler tables in §6b.3.2 and §6b.3.3 are emitted by the same walk, with the enclosing
+function resolved as the innermost `FunctionDef`/`AsyncFunctionDef` whose span contains the
+handler.
+
+### A.7 The merge procedures
+
+    $ wc -l sql/*.sql
+          89 sql/usp_merge_legacy_enriched.sql
+          69 sql/usp_merge_legacy_issues.sql
+          66 sql/usp_merge_validation_clusters.sql
+          81 sql/usp_merge_validation_scores.sql
+         305 total
+
+    $ grep -n -i 'when not matched\|insert\|delete\|begin tran\|commit\|rollback\|try' sql/*.sql
+    (no output — the only matches for `output` are the sp_executesql OUTPUT parameters of the
+     row-count guards, listed below)
+
+    $ grep -n -i 'OUTPUT' sql/*.sql
+    sql/usp_merge_legacy_issues.sql:41:    EXEC sp_executesql @chk, N'@pat NVARCHAR(60), @esc NCHAR(1), @c INT OUTPUT', ...
+    sql/usp_merge_validation_clusters.sql:16:    EXEC sp_executesql @schk, N'@e SYSNAME, @x INT OUTPUT', ...
+    sql/usp_merge_validation_clusters.sql:36:    EXEC sp_executesql @chk, N'@pat NVARCHAR(60), @esc NCHAR(1), @c INT OUTPUT', ...
+    sql/usp_merge_legacy_enriched.sql:32:    EXEC sp_executesql @chk, N'@pat NVARCHAR(60), @esc NCHAR(1), @c INT OUTPUT', ...
+    sql/usp_merge_validation_scores.sql:16:    EXEC sp_executesql @schk, N'@e SYSNAME, @x INT OUTPUT', ...
+    sql/usp_merge_validation_scores.sql:36:    EXEC sp_executesql @chk, N'@pat NVARCHAR(60), @esc NCHAR(1), @c INT OUTPUT', ...
+
+Assignment counts inside each `WHEN MATCHED THEN UPDATE SET`:
+
+    sql/usp_merge_legacy_enriched.sql     31 assignments, 26 COALESCE-guarded
+      unconditional: ['Record Type', 'ROR ID', 'LEI ID', 'Flag for Review', 'Flag Reason']
+    sql/usp_merge_validation_scores.sql   21 assignments
+    sql/usp_merge_validation_clusters.sql  6 assignments
+    sql/usp_merge_legacy_issues.sql        1 assignment (the spliced @target_column)
+
+### A.8 Provenance at the write-back boundary
+
+    $ grep -ci provenance sql/usp_merge_legacy_enriched.sql
+    0
+
+    $ grep -i -l provenance sql/*.sql
+    (no output)

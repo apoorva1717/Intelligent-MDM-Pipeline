@@ -1,0 +1,20 @@
+%% T5 — Taxonomy: two roots over the DQ dimensions over the issue groups
+flowchart TD
+    R1[Standardisation and enrichment]
+    R2[Entity resolution]
+    subgraph DIMS [Data-quality dimensions]
+        D1[placement]
+        D2[completeness]
+        D3[uniqueness]
+        D4[consistency]
+        D5[validity]
+        D6[accuracy]
+    end
+    R1 -->|every dimension · 33 codes| DIMS
+    R2 -->|every dimension · 27 codes| DIMS
+    D1 --> G[Seven issue groups]
+    D2 --> G
+    D3 --> G
+    D4 --> G
+    D5 --> G
+    D6 --> G

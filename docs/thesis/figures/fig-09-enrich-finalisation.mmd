@@ -1,0 +1,21 @@
+%% fig-09 — POST /enrich finalisation call graph
+%% Source: docs/thesis/00_INVENTORY.md §0.5.3 (lines 541-561)
+flowchart TD
+    A[_finalise_and_return] --> B[_grounded_fallthrough]
+    A --> C[_dept_fallthrough]
+    A --> D[_name_post_checks]
+    A --> E[_retry_tier1_after_canonicalisation]
+    A --> F[_site_qualifier_retry]
+    A --> G[_retain_wikidata_website]
+    A --> H[_maybe_resolve_website_bc]
+    A --> I[_apply_domain]
+    A --> J[_corroborate_domain_from_wikidata]
+    A --> K[_corroborate_domain]
+    A --> L[_probe_department_url]
+    A --> M[_check_liveness]
+    A --> N[_run_address_stage]
+    N --> O[process_address]
+    A --> P[finalise]
+    P --> Q[compute_flags]
+    P --> R[derive_search_terms]
+    A --> S[_emit_retry_trace]

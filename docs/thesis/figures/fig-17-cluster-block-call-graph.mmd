@@ -1,0 +1,19 @@
+%% fig-17 — POST /api/dedup/cluster-block call graph
+%% Source: docs/thesis/00_INVENTORY.md §0.5.5 (lines 641-659)
+flowchart TD
+    A[dedup_cluster_block] --> B[_get_dedup_llm]
+    A --> C[cluster_blocks]
+    C --> D[_resolve_candidate_config]
+    C --> E[build_blocks]
+    C --> F[_process_block]
+    F --> G[parse_address]
+    F --> H[build_signatures]
+    F --> I[_mode_a]
+    F --> J[_mode_b]
+    F --> K[_adjudicate_residue]
+    F --> L[_enforce_address_split]
+    F --> M[_enforce_identity_split]
+    F --> N[_reasoning_disowns_membership]
+    F --> O[_institution_links]
+    F --> P[_emit_rows]
+    C --> Q[_merge_link_maps]

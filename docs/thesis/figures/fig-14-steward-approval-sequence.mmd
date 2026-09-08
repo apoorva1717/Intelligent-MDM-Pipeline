@@ -1,0 +1,12 @@
+%% fig-14 — Steward approval sequence
+%% Source: docs/thesis/02_ARCHITECTURE.md §2.3.5 (lines 342-353)
+sequenceDiagram
+    participant STE as Data steward
+    participant DS as DS deduplication view
+    participant VAL as dp_validation Validation
+    participant API as Function App
+    STE->>DS: open cluster, inspect Reason
+    STE->>DS: select Leading Code then Apply Leading Code
+    DS->>VAL: write leading code
+    Note over API: POST /api/dedup/approve exists and is stateless
+    Note over API: no ADF pipeline and no procedure calls it

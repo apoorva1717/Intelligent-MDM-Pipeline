@@ -1,0 +1,19 @@
+%% fig-01 — Data plane component diagram
+%% Source: docs/thesis/02_ARCHITECTURE.md §2.1a (lines 34-52)
+flowchart TD
+    SAP[SAP customer master] -->|e01| IMP[DS Import bronze]
+    IMP -->|e02| LEG[dp_legacy entity Legacy silver]
+    LEG -->|e03| ENR[/enrich read/]
+    ENR -->|e06| LEG
+    LEG -->|e07| ISS[/issues read/]
+    ISS -->|e09| LEG
+    LEG -->|e10| VAL[dp_validation entity Validation gold]
+    VAL -->|e11| CLU[cluster-block read]
+    CLU -->|e13| VAL
+    VAL -->|e14| SCO[score read]
+    SCO -->|e16| VAL
+    VAL -->|e17| VIEW[DS issues and dedup views]
+    VIEW -->|e18| STE[Data steward]
+    STE -->|e19| VAL
+    VAL -->|e20| LOAD[Load file]
+    LOAD -->|e21| SAP

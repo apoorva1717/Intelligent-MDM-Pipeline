@@ -1,10 +1,10 @@
-Generated: 2026-09-07 · Commit: ea6f9d92168d3de949d369ed54a58b5a745a59b7 · Branch: feature/llm-fixes · Pass: 00
+Generated: 2026-09-07 · Commit: 86d173b8a4d715a619b0a2656986c145da7fa81e · Branch: feature/llm-fixes · Pass: 00
 
 # Pass 00 — Inventory and call graph
 
 Tree state at generation: `git status --porcelain` produces no output (clean tree; no
 modified, staged or untracked non-ignored path). `git rev-parse HEAD` is
-`ea6f9d92168d3de949d369ed54a58b5a745a59b7`, branch `feature/llm-fixes`, date `2026-09-07`.
+`86d173b8a4d715a619b0a2656986c145da7fa81e`, branch `feature/llm-fixes`, date `2026-09-07`.
 Tracked file count: 1160 (`git ls-files | wc -l`). Every citation below is read at that
 commit.
 
@@ -135,10 +135,10 @@ prose documents). "Last touched" is `git log -1 --format=%ad --date=short -- <pa
 | `search/duckduckgo_client.py` | 62 | DuckDuckGo search client — free fallback when no SerpAPI key. | 2026-08-26 |
 | `search/page_fetcher.py` | 523 | Fetch web pages and extract structured/authoritative elements. | 2026-08-27 |
 | `search/serpapi_client.py` | 84 | SerpAPI search client implementation. | 2026-08-26 |
-| `sql/usp_merge_legacy_enriched.sql` | 1 | — | 2026-09-07 |
-| `sql/usp_merge_legacy_issues.sql` | 1 | — | 2026-09-07 |
-| `sql/usp_merge_validation_clusters.sql` | 1 | — | 2026-09-07 |
-| `sql/usp_merge_validation_scores.sql` | 1 | — | 2026-09-07 |
+| `sql/usp_merge_legacy_enriched.sql` | 89 | — | 2026-09-07 |
+| `sql/usp_merge_legacy_issues.sql` | 69 | — | 2026-09-07 |
+| `sql/usp_merge_validation_clusters.sql` | 66 | — | 2026-09-07 |
+| `sql/usp_merge_validation_scores.sql` | 81 | — | 2026-09-07 |
 | `tests/KNOWN_FAILURES.md` | 41 | — | 2026-09-03 |
 | `tests/__init__.py` | 0 | — | 2026-04-09 |
 | `tests/conftest.py` | 256 | Pytest fixtures: mock client injection, JSON fixture loaders, settings overrides. | 2026-08-25 |
@@ -165,11 +165,10 @@ prose documents). "Last touched" is `git log -1 --format=%ad --date=short -- <pa
 | `utils/text_utils.py` | 1893 | Text cleaning, domain extraction, and string normalisation helpers. | 2026-09-03 |
 | `wikidata_lane_report.md` | 273 | — | 2026-08-25 |
 
-The four files in `sql/` are each stored as **one physical line** — 8035, 3472, 3602 and
-6311 bytes with no line terminator anywhere in the file (`file sql/*.sql` reports "with no
-line terminators"). Their LOC of 1 is not a stub: each holds a complete `CREATE PROCEDURE`
-body. Every citation into `sql/` in this documentation set is therefore `:1`; see §0.9
-(⚠-8).
+Each of the four files in `sql/` holds one complete `CREATE PROCEDURE` body over multiple
+physical lines, so a statement inside them is citable by line: `sql/usp_merge_legacy_enriched.sql`
+89 lines, `sql/usp_merge_legacy_issues.sql` 69, `sql/usp_merge_validation_clusters.sql` 66,
+`sql/usp_merge_validation_scores.sql` 81.
 
 ## 0.3 Excluded directories
 
@@ -188,7 +187,7 @@ default — `tests/fixtures/serp/`, `tests/fixtures/registry/`, `tests/fixtures/
 `tests/fixtures/llm/`. ⚠ UNVERIFIED — the frozen evaluation set behind
 `determinism_findings.md` was measured against those four namespaces populated
 (`.gitignore:33–36`), and they are absent from this commit; a re-run of that measurement at
-this commit re-gathers rather than replays them. See §0.9 (⚠-9).
+this commit re-gathers rather than replays them. See §0.9 (⚠-8).
 
 ## 0.4 Entry points
 
@@ -276,28 +275,170 @@ the module imports `argparse`; the rest read positional `sys.argv` or take no ar
 module docstring but no `__main__` block and is imported by no module in the repository —
 see §0.6.
 
+
 ### 0.4.4 Which routes have an exported caller
 
-`adf/` holds four exported Azure Data Factory pipeline definitions at this commit. Each one
-is a Lookup → Web activity → stored-procedure chain against one route. The URLs are read
-from the JSON, not from the README.
+`adf/` holds four exported Azure Data Factory pipeline definitions at this commit. Each is a
+Lookup → Web activity → stored-procedure chain against exactly one route. Every value below
+is read from the JSON.
 
-| pipeline (`name`) | file | route called | merge-back stored procedure |
-|---|---|---|---|
-| Enrichment Pipeline | `adf/enrichment_pipeline.json:1` | `POST https://mdm-pipeline-api.azurewebsites.net/enrich` | `dbo.usp_merge_legacy_enriched` |
-| Issues Pipeline | `adf/issues_pipeline.json:1` | `POST https://mdm-pipeline-api.azurewebsites.net/issues/json` | `dbo.usp_merge_legacy_issues` |
-| Deduplication Pipeline | `adf/deduplication_pipeline.json:1` | `POST https://mdm-pipeline-api.azurewebsites.net/api/dedup/cluster-block` | `dbo.usp_merge_validation_clusters` |
-| Scoring Pipeline | `adf/scoring_pipeline.json:1` | `POST https://mdm-pipeline-api.azurewebsites.net/api/dedup/score` | `dbo.usp_merge_validation_scores` |
+| pipeline (`"name"`) | file:line | parameters | route | merge-back procedure |
+|---|---|---|---|---|
+| `Deduplication Pipeline` | `adf/deduplication_pipeline.json:2` | `chrEntity`, `chrGroupCode` (`:106`) | `POST …/api/dedup/cluster-block` (`:58`) | `Mapping.usp_MergeValidationClusters` (`:89`) |
+| `Enrichment Pipeline` | `adf/enrichment_pipeline.json:2` | `chrEntity`, `chrGroupCode` (`:156`) | `POST …/enrich` (`:105`) | `Mapping.usp_merge_legacy_enriched` (`:136`) |
+| `Issues Pipeline` | `adf/issues_pipeline.json:2` | `chrEntity`, `chrGroupCode` (`:106`) | `POST …/issues/json` (`:58`) | `Mapping.usp_MergeLegacyIssues` (`:89`) |
+| `Scoring Pipeline` | `adf/scoring_pipeline.json:2` | `chrEntity`, `chrGroupCode` (`:106`) | `POST …/api/dedup/score` (`:58`) | `Mapping.usp_MergeValidationScores` (`:89`) |
 
-All four declare the same two parameters, `chrEntity` and `chrGroupCode`, and the same Web
-activity timeout `0.12:00:00`. Only `adf/enrichment_pipeline.json` wraps its Web activity in
-a `ForEach`; the other three call the route once per pipeline run. The remaining twelve
-routes have no exported caller in this repository. Pass 02 reads these files in full; this
-pass records only which route each one addresses.
+Both parameters are declared `{"type": "string"}` in all four. The host is
+`https://mdm-pipeline-api.azurewebsites.net` in all four. Every Web activity is `POST`, with
+`"httpRequestTimeout": "00:10:00"` (`adf/deduplication_pipeline.json:57`,
+`adf/enrichment_pipeline.json:104`, `adf/issues_pipeline.json:57`,
+`adf/scoring_pipeline.json:57`) inside an activity `policy.timeout` of `"0.12:00:00"`. Every
+Lookup sets `"firstRowOnly": false`. Every stored-procedure activity passes exactly one
+parameter, named `payload`, of type `String`, valued `@string(activity('Web1').output)`.
+
+No pipeline carries a hard-coded entity or group code: `grep -rn 'test_77\|test77' adf/ sql/`
+returns nothing, and every Lookup interpolates
+`@{pipeline().parameters.chrEntity}` and `@{pipeline().parameters.chrGroupCode}`. All four
+Lookup queries carry the group-code predicate.
+
+**Lookup queries, verbatim.**
+
+`adf/deduplication_pipeline.json:20` (`Lookup1`):
+
+```
+SELECT
+    Customer               AS row_id,
+    [Block ID]             AS block_id,
+    [Name 1]               AS name1,
+    [Name 2]               AS name2,
+    [Street 1]             AS street,
+    [House Number]         AS house_no,
+    [Postal Code]          AS postal_code,
+    City                   AS city,
+    [Country/Region Key]   AS country,
+    [ROR ID]               AS ror_id,
+    [LEI ID]               AS lei_id
+FROM [@{pipeline().parameters.chrEntity}].Validation
+WHERE [code] LIKE '@{pipeline().parameters.chrGroupCode}\_%' ESCAPE '\'
+```
+
+`adf/enrichment_pipeline.json:20` (`Lookup2` — the batch-offset driver):
+
+```
+SELECT (n.rn - 1) AS offset
+FROM (
+    SELECT ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS rn
+    FROM dp_legacy.[@{pipeline().parameters.chrEntity}].Legacy
+    WHERE [code] LIKE '@{pipeline().parameters.chrGroupCode}\_%' ESCAPE '\'
+) n
+WHERE (n.rn - 1) % 30 = 0
+```
+
+`adf/enrichment_pipeline.json:67` (`Lookup1`, inside `ForEach1`):
+
+```
+SELECT * FROM dp_legacy.[@{pipeline().parameters.chrEntity}].Legacy WHERE [code] LIKE '@{pipeline().parameters.chrGroupCode}\_%' ESCAPE '\' ORDER BY [code] OFFSET @{item().offset} ROWS FETCH NEXT 30 ROWS ONLY
+```
+
+`adf/issues_pipeline.json:20` (`Lookup1`):
+
+```
+SELECT * FROM dp_legacy.[@{pipeline().parameters.chrEntity}].Legacy WHERE [code] LIKE '@{pipeline().parameters.chrGroupCode}\_%' ESCAPE '\' ORDER BY [code]
+```
+
+`adf/scoring_pipeline.json:20` (`Lookup1`):
+
+```
+SELECT
+    Customer                          AS row_id,
+    [Cluster ID]                      AS [Cluster ID],
+    [Confidence]                      AS Confidence,
+    [Routing]                         AS Routing,
+    [Reasoning]                       AS Reasoning,
+    Sales_Order_Last_Used,
+    Sales_Order_Total_Count,
+    Sales_Order_Partner_Last_Used,
+    Sales_Order_Partner_Total_Count,
+    Equipment_Total_Count,
+    SleepingCustomer,
+    CustomerStatus,
+    [Account group],
+    Company_Code_Consolidated,
+    Sales_Org_Consolidated,
+    SF_ID_Biosystems AS sf1,
+    SF_ID_AXS        AS sf2,
+    SF_ID_3          AS sf3,
+    SF_ID_4          AS sf4,
+    SF_ID_5          AS sf5,
+    SF_ID_6          AS sf6,
+    SF_ID_7          AS sf7,
+    SF_ID_8          AS sf8
+FROM [@{pipeline().parameters.chrEntity}].Validation
+WHERE [code] LIKE '@{pipeline().parameters.chrGroupCode}\_%' ESCAPE '\'
+```
+
+**Request bodies.** Each Web activity wraps the Lookup output in a single JSON key:
+`records` for `/enrich` (`adf/enrichment_pipeline.json:110`) and `/issues/json`
+(`adf/issues_pipeline.json:63`); `rows` for `/api/dedup/cluster-block`
+(`adf/deduplication_pipeline.json:63`) and `/api/dedup/score`
+(`adf/scoring_pipeline.json:63`). The expression is
+`@json(concat('{"<key>":', string(activity('Lookup1').output.value), '}'))`.
+
+**Batching.** Only `Enrichment Pipeline` batches: `ForEach1`
+(`adf/enrichment_pipeline.json:34–35`) iterates the offsets from `Lookup2` with
+`"isSequential": true` (`:50`) and no `batchCount`, and the inner Lookup pages 30 rows at a
+time (`OFFSET @{item().offset} ROWS FETCH NEXT 30 ROWS ONLY`, `:67`). The other three post
+their whole result set in one call.
+
+**Database qualification.** The two `dp_legacy` pipelines qualify the source database in the
+query (`dp_legacy.[…].Legacy`). The two Validation pipelines do not: they read
+`[@{pipeline().parameters.chrEntity}].Validation` with no database prefix
+(`adf/deduplication_pipeline.json:20`, `adf/scoring_pipeline.json:20`), while the procedures
+they call write to `QUOTENAME(@db) + N'.' + QUOTENAME(@chrEntity) + N'.Validation'` with
+`@db = N'dp_validation'` (`sql/usp_merge_validation_clusters.sql:33`,
+`sql/usp_merge_validation_scores.sql:33`). Read side and write side are resolved by different
+rules. See §0.9 (⚠-12).
+
+The remaining twelve routes have no exported caller in this repository. Pass 02 reads these
+files in full; this pass records what each one addresses.
 
 The `Issues Pipeline` calls `/issues/json`, not `/issues` — the JSON twin, not the file
 endpoint. Both run the same detection path (§0.5.4).
 
+### 0.4.5 Merge-back procedures
+
+Four `CREATE PROCEDURE` bodies, one per pipeline. All four take `@payload` — lower-case,
+matching the `payload` parameter every ADF stored-procedure activity passes (§0.4.4).
+
+| procedure | file:line | parameters | ADF `storedProcedureName` | name matches |
+|---|---|---|---|---|
+| `[Mapping].[usp_MergeLegacyEnriched]` | `sql/usp_merge_legacy_enriched.sql:1` | `@chrEntity SYSNAME` (`:2`), `@chrGroupCode NVARCHAR(50)` (`:3`), `@payload NVARCHAR(MAX)` (`:4`) | `Mapping.usp_merge_legacy_enriched` | **no** — schema agrees, identifier does not |
+| `[Mapping].[usp_MergeLegacyIssues]` | `sql/usp_merge_legacy_issues.sql:1` | `@chrEntity SYSNAME` (`:2`), `@chrGroupCode NVARCHAR(50)` (`:3`), `@payload NVARCHAR(MAX)` (`:4`), `@target_column SYSNAME = N'Issues'` (`:5`) | `Mapping.usp_MergeLegacyIssues` | yes |
+| `[Mapping].[usp_MergeValidationClusters]` | `sql/usp_merge_validation_clusters.sql:1` | `@chrEntity SYSNAME` (`:2`), `@chrGroupCode NVARCHAR(50)` (`:3`), `@payload NVARCHAR(MAX)` (`:4`) | `Mapping.usp_MergeValidationClusters` | yes |
+| `[Mapping].[usp_MergeValidationScores]` | `sql/usp_merge_validation_scores.sql:1` | `@chrEntity SYSNAME` (`:2`), `@chrGroupCode NVARCHAR(50)` (`:3`), `@payload NVARCHAR(MAX)` (`:4`) | `Mapping.usp_MergeValidationScores` | yes |
+
+The `payload` parameter name matches `@payload` in all four procedures. `@target_column` is
+declared with a default (`N'Issues'`) and is not passed by
+`adf/issues_pipeline.json:90–99`, so the issues merge always writes the `Issues` column and
+never `Issues Before` — the other value its Guard 0 admits
+(`sql/usp_merge_legacy_issues.sql:14`).
+
+**Unresolved `@db` markers.** Two procedures carry an author's marker on the declaration that
+names the validation database. Both are reported here and left in place.
+
+| file:line | line verbatim | `@db` resolves to |
+|---|---|---|
+| `sql/usp_merge_validation_clusters.sql:8` | `    DECLARE @db SYSNAME = N'dp_validation';  -- <<< confirm` | `dp_validation` |
+| `sql/usp_merge_validation_scores.sql:8` | `    DECLARE @db SYSNAME = N'dp_validation';  -- <<< confirm` | `dp_validation` |
+
+`@db` is read at three sites in each file: the schema-existence probe
+(`sql/usp_merge_validation_clusters.sql:15`, `sql/usp_merge_validation_scores.sql:15`), the
+error message (`:19`), and the merge target
+(`sql/usp_merge_validation_clusters.sql:33`, `sql/usp_merge_validation_scores.sql:33`). The
+other two procedures hard-code `dp_legacy` in the target instead and declare no `@db`
+(`sql/usp_merge_legacy_enriched.sql:29`, `sql/usp_merge_legacy_issues.sql:38`). See §0.9
+(⚠-13).
 ## 0.5 Call graphs per entry point
 
 Node labels carry function names only. Each diagram is followed by a numbered legend giving
@@ -683,6 +824,7 @@ split four ways:
 three-element tuple, `out, stats, entities` (`dedup/adjudicator.py:1417`); the caller unpacks
 three (`dedup/adjudicator.py:1496`). The annotation is wrong, not the code. See §0.9 (⚠-5).
 
+
 ## 0.7 Test inventory
 
 ### 0.7.1 `pytest -q` — invocation and verbatim tail
@@ -710,12 +852,12 @@ FAILED tests/test_orchestrator.py::TestOrchestrator::test_web_search_fallback_fo
 FAILED tests/test_orchestrator.py::TestOrchestrator::test_web_search_determines_record_type
 FAILED tests/test_orchestrator.py::TestTier2AVerificationMergeLayer::test_low_score_medium_confidence_keeps_record_value
 FAILED tests/test_orchestrator.py::TestTier2AVerificationMergeLayer::test_low_score_high_confidence_overwrites_record_value
-12 failed, 3857 passed, 12 skipped, 1 xfailed, 1 warning in 16.27s
+12 failed, 3857 passed, 12 skipped, 1 xfailed, 1 warning in 19.57s
 ```
 
 The one warning is `NotOpenSSLWarning` from `urllib3` (LibreSSL 2.8.3 under the system
-Python), not a test warning.
-
+Python), not a test warning. No test reads `adf/` or executes SQL, so the reformatting and
+the pipeline edits at this commit move no test result.
 ### 0.7.2 Failing test names
 
 Assertion sites are read from the tracebacks of the same run.
@@ -763,6 +905,7 @@ Failing at this commit and **not** in the manifest — five, all in `tests/test_
 No module in the repository references `tests/KNOWN_FAILURES.md`; the only reference is
 prose at `eval/out/RUNS.md:370`. ⚠ The asserting gate the manifest describes is not present
 in the code at this commit — see §0.9 (⚠-3).
+
 
 ### 0.7.4 Per-file test inventory
 
@@ -879,21 +1022,26 @@ line.
 
 ## 0.8 Structural observations made while building this inventory
 
-Recorded here as fact; the passes named take them up.
+Recorded here as fact against the tree at this commit; the passes named take them up.
 
 | observation | evidence | taken up by |
 |---|---|---|
-| `adf/` holds four exported pipelines — `Enrichment Pipeline`, `Issues Pipeline`, `Deduplication Pipeline`, `Scoring Pipeline` — each parameterised on `chrEntity` and `chrGroupCode` (§0.4.4). | `adf/enrichment_pipeline.json:1`, `adf/issues_pipeline.json:1`, `adf/deduplication_pipeline.json:1`, `adf/scoring_pipeline.json:1` | Pass 02 |
+| The deployment layer is complete in shape: four exported ADF pipelines and four merge procedures, one pair per stage. | `adf/` (4 files, §0.4.4); `sql/` (4 files, §0.4.5) | Pass 02, Pass 19 |
+| All four pipelines are parameterised. Each declares `chrEntity` and `chrGroupCode` as `{"type": "string"}` and interpolates both into its Lookup. No pipeline carries a hard-coded entity or group code. | `adf/deduplication_pipeline.json:106`, `adf/enrichment_pipeline.json:156`, `adf/issues_pipeline.json:106`, `adf/scoring_pipeline.json:106`; `grep -rn 'test_77\|test77' adf/ sql/` returns nothing | Pass 02 |
+| All four Lookup queries carry the group-code predicate `WHERE [code] LIKE '@{pipeline().parameters.chrGroupCode}\_%' ESCAPE '\'`. | Quoted in full at §0.4.4 from `adf/deduplication_pipeline.json:20`, `adf/enrichment_pipeline.json:20` and `:67`, `adf/issues_pipeline.json:20`, `adf/scoring_pipeline.json:20` | Pass 02 |
+| Three of the four ADF stored-procedure activities now name the procedure the corresponding `sql/` file creates. `adf/enrichment_pipeline.json:136` does not: it names `Mapping.usp_merge_legacy_enriched` where the file creates `[Mapping].[usp_MergeLegacyEnriched]`. The schema agrees in all four. | §0.4.5 table | Pass 02 (⚠-7) |
+| Only the enrichment pipeline batches. `ForEach1` walks 30-row offsets sequentially; the other three post their whole Lookup result in one call. | `adf/enrichment_pipeline.json:34–35`, `:50`, `:67` | Pass 02 |
+| The two Validation-side Lookups read `[<entity>].Validation` with no database prefix, while the procedures they call write to `dp_validation.[<entity>].Validation`. | `adf/deduplication_pipeline.json:20`, `adf/scoring_pipeline.json:20`; `sql/usp_merge_validation_clusters.sql:33`, `sql/usp_merge_validation_scores.sql:33` | Pass 02 (⚠-12) |
+| Both Validation procedures carry an unresolved `-- <<< confirm` marker on the `@db` declaration that names the database. | `sql/usp_merge_validation_clusters.sql:8`, `sql/usp_merge_validation_scores.sql:8` | Pass 02, Pass 19 (⚠-13) |
+| `usp_MergeLegacyIssues` accepts `@target_column SYSNAME = N'Issues'` and admits two values, `N'Issues Before'` and `N'Issues'`. The ADF activity passes only `payload`, so the parameter always takes its default and the `Issues Before` column is never written from this pipeline. | `sql/usp_merge_legacy_issues.sql:5`, `:14`; `adf/issues_pipeline.json:90–99` | Pass 02 (⚠-14) |
 | No pipeline JSON exists for the consolidation stage, although `README.md:3441` places `POST /api/preprocess/consolidate/file` first in the production sequence, before `/enrich`. | `git ls-files adf/` returns four files, none calling a `/api/preprocess/` URL | Pass 02, Pass 19 |
-| No `Entity_BasicFlow` pipeline JSON exists. The name appears in the repository only in the pass specifications (`docs/thesis-doc-prompt-v2.md:78`, `:270`), never in an exported definition or in code. | `grep -rn 'Entity_BasicFlow' .` | Pass 02, Pass 19 |
-| `sql/` contains all four merge procedures. Each declares schema `[Mapping]` and a PascalCase name: `[Mapping].[usp_MergeLegacyEnriched]`, `[Mapping].[usp_MergeLegacyIssues]`, `[Mapping].[usp_MergeValidationClusters]`, `[Mapping].[usp_MergeValidationScores]`. | `sql/usp_merge_legacy_enriched.sql:1`, `sql/usp_merge_legacy_issues.sql:1`, `sql/usp_merge_validation_clusters.sql:1`, `sql/usp_merge_validation_scores.sql:1` | Pass 02 |
-| The four ADF stored-procedure activities name schema `dbo` and the snake_case form: `dbo.usp_merge_legacy_enriched`, `dbo.usp_merge_legacy_issues`, `dbo.usp_merge_validation_clusters`, `dbo.usp_merge_validation_scores` — neither the schema nor the identifier casing of the `CREATE PROCEDURE` statements in `sql/`. | ADF: `"storedProcedureName"` in each of the four `adf/*.json`; SQL: the `CREATE PROCEDURE` clauses cited in the row above | Pass 02 (⚠-7) |
-| Two of the four procedures declare `DECLARE @db SYSNAME = N'dp_validation'; -- <<< confirm` — an unresolved marker carried in the shipped body. | `sql/usp_merge_validation_clusters.sql:1`, `sql/usp_merge_validation_scores.sql:1` | Pass 02 |
+| No `Entity_BasicFlow` pipeline JSON exists. The name appears in the repository only in the pass specifications (`docs/thesis-doc-prompt-v2.md:78`, `:270`), never in an exported definition or in code. Nothing in `adf/` invokes another pipeline: no activity has type `ExecutePipeline`. | `grep -rn 'Entity_BasicFlow' .`; `grep -rn 'ExecutePipeline' adf/` returns nothing | Pass 02, Pass 19 |
 | `weights.json` is at `dedup/weights.json`, not at the repository root. | `dedup/weights.json` (57 LOC, last touched 2026-09-05) | Pass 04 |
-| `data/eval/` holds sixteen workbooks: `S{1..5}_pre.xlsx` / `S{1..5}_post.xlsx`, `stress_200_pre.xlsx`, `stress_200_scored.xlsx`, `dedup_STRESS_200_v1-verified.xlsx`, `dedup_STRESS_200_v1_enriched_dedup.xlsx`, `test-all-100-original.xlsx`, `test-all-100-original_enriched (4).xlsx`. The last four moved into `data/eval/` from `docs/thesis/` at this commit. | `git ls-files data/eval/`; `git show --stat ea6f9d9` | Pass 07, Pass 18 |
+| `data/eval/` holds sixteen workbooks: `S{1..5}_pre.xlsx` / `S{1..5}_post.xlsx`, `stress_200_pre.xlsx`, `stress_200_scored.xlsx`, `dedup_STRESS_200_v1-verified.xlsx`, `dedup_STRESS_200_v1_enriched_dedup.xlsx`, `test-all-100-original.xlsx`, `test-all-100-original_enriched (4).xlsx`. | `git ls-files data/eval/` | Pass 07, Pass 18 |
 | Two Excel lock files remain tracked under `docs/thesis/`: `~$chemspeed_us_100.xlsx`, `~$dedup_STRESS_200_v1-verified.xlsx`. | `git ls-files docs/thesis/` | Pass 07 |
 | The superseded `docs/thesis/11_DELTA.md` carries header `Commit: d4fc46938514c9a7d249979c4aa9b4ae4cf3e564 · Branch: main` — that is the Pass 11 baseline. | `docs/thesis/11_DELTA.md:1` | Pass 11 |
-| No Python source file changed between the previous documentation run's commit (`eb924e6`) and this one. `git diff --stat eb924e6..HEAD` lists only `adf/*.json` (new), four `sql/*.sql`, four moved workbooks and three `docs/` files. Every code citation carried by this documentation set therefore addresses the same bytes at both commits. | `git diff --stat eb924e6..HEAD` | Pass 11 |
+| No Python source file has changed since `eb924e6`, two commits back. `git diff --stat eb924e6..HEAD` lists `adf/*.json`, `sql/*.sql`, four moved workbooks and `docs/` files only. Every code citation in this documentation set addresses the same bytes at all three commits. | `git diff --stat eb924e6..HEAD` | Pass 11 |
+| The four `sql/` files were reformatted from single-line to multi-line at this commit. The change is whitespace-only: `re.sub(r'\s+', ' ', text)` over each file is byte-identical before and after, so no token, literal or comment differs. | `git show ea6f9d9:sql/<file>` against the working file, normalised | Pass 02, Pass 11 |
 
 ## 0.9 Unknowns and discrepancies raised in this pass
 
@@ -905,22 +1053,25 @@ Recorded here as fact; the passes named take them up.
 | ⚠-4 | medium | Five `tests/test_dedup.py` failures are outside the recorded manifest and have no recorded explanation anywhere in the repository. | §0.7.2 rows 1–5; assertions at `tests/test_dedup.py:204`, `:240`, `:528`, `:682`, `:999` | `tests/KNOWN_FAILURES.md:41`: "None is a flake — each is a stable assertion failure at every commit tested" — a statement made about a manifest that does not include these five. |
 | ⚠-5 | low | `_process_block`'s return annotation is a 2-tuple and the function returns a 3-tuple. | `dedup/adjudicator.py:1326`: `-> tuple[List[DedupResultRow], BlockStats]`; `dedup/adjudicator.py:1417`: `return out, stats, entities`; unpacked as three at `dedup/adjudicator.py:1496` | — |
 | ⚠-6 | medium | Tier 2B ships as a complete module with tests and a registered prompt, but has no production call site, and its telemetry counter is unreachable. | `run_tier2b` `enrichment/tier2b_dept.py:48` is imported only by `tests/test_tier2b.py:13`. `tier2_mode` is written once, `enrichment/orchestrator.py:3854`, from `Tier2AResult.mode` ∈ {`"2A_population"`, `"2A_verification"`} (`enrichment/tier2a_contact.py:90`). `summary.tier2b_count` (`api/models.py:850`) increments only when `r.tier2_mode == "2B"` (`enrichment/orchestrator.py:9304–9305`) | `enrichment/orchestrator.py:8764–8766` names Tier 2B as a downstream option: "the record falls through to tier 2 canonical / 2A / 2B / 3, any of which may settle Name 2". Tier 2B is not among them at this commit. |
-| ⚠-7 | medium | The ADF stored-procedure activities and the `sql/` procedure definitions disagree on schema and identifier casing, so no exported pipeline names a procedure this repository defines. | `sql/*.sql:1` each declare `CREATE PROCEDURE [Mapping].[usp_Merge…]` | `adf/*.json` each set `"storedProcedureName"` to `dbo.usp_merge_…`. Resolution depends on the deployed database, which this repository does not record. |
-| ⚠-8 | low | The four `sql/` files are each stored as a single physical line with no line terminator, so no statement inside them can be cited by line. | `file sql/*.sql` → "ASCII text, with very long lines, with no line terminators"; byte lengths 8035, 3472, 3602, 6311 | — |
-| ⚠-9 | low | Four evidence-cache namespaces the frozen evaluation set depends on are absent from this commit. | `.gitignore:37–40` ignores `tests/fixtures/serp/`, `tests/fixtures/registry/`, `tests/fixtures/fetch/`, `tests/fixtures/llm/`; none is tracked | `.gitignore:33–36`: "the runs behind determinism_findings.md were measured against exactly that". |
-| ⚠-10 | low | Nine public functions are defined and referenced nowhere, including by tests. | §0.6 scan 2 | — |
-| ⚠-11 | low | `scripts/cache_state.py` is neither imported nor executable as a script. | `scripts/cache_state.py:1` (docstring), no `__main__` block, no importer | — |
-| ⚠-12 | medium | The repository is not pinned to a Python version and the only interpreter present is 3.9.6; no `python` executable exists on PATH. | `python3 -V` → `Python 3.9.6`; `which python` → not found | `requirements.txt` (14 LOC) declares no `python_requires`; there is no `pyproject.toml`, `setup.py`, `.python-version` or `runtime.txt` in `git ls-files`. |
+| ⚠-7 | medium | One ADF activity names a procedure no `sql/` file creates. | `sql/usp_merge_legacy_enriched.sql:1` creates `[Mapping].[usp_MergeLegacyEnriched]` | `adf/enrichment_pipeline.json:136` sets `"storedProcedureName": "Mapping.usp_merge_legacy_enriched"`. The two identifiers differ by more than letter case, so a case-insensitive collation does not reconcile them. The other three pipelines agree with their procedure (§0.4.5). |
+| ⚠-8 | low | Four evidence-cache namespaces the frozen evaluation set depends on are absent from this commit. | `.gitignore:37–40` ignores `tests/fixtures/serp/`, `tests/fixtures/registry/`, `tests/fixtures/fetch/`, `tests/fixtures/llm/`; none is tracked | `.gitignore:33–36`: "the runs behind determinism_findings.md were measured against exactly that". |
+| ⚠-9 | low | Nine public functions are defined and referenced nowhere, including by tests. | §0.6 scan 2 | — |
+| ⚠-10 | low | `scripts/cache_state.py` is neither imported nor executable as a script. | `scripts/cache_state.py:1` (docstring), no `__main__` block, no importer | — |
+| ⚠-11 | medium | The repository is not pinned to a Python version and the only interpreter present is 3.9.6; no `python` executable exists on PATH. | `python3 -V` → `Python 3.9.6`; `which python` → not found | `requirements.txt` (14 LOC) declares no `python_requires`; there is no `pyproject.toml`, `setup.py`, `.python-version` or `runtime.txt` in `git ls-files`. |
+| ⚠-12 | medium | On the Validation side, the ADF read and the procedure write resolve the database by different rules, so the pipeline can read one database and write another. | Read: `FROM [@{pipeline().parameters.chrEntity}].Validation` — no database prefix, resolved by the linked service's default (`adf/deduplication_pipeline.json:20`, `adf/scoring_pipeline.json:20`). Write: `QUOTENAME(@db) + N'.' + QUOTENAME(@chrEntity) + N'.Validation'` with `@db = N'dp_validation'` (`sql/usp_merge_validation_clusters.sql:33`, `sql/usp_merge_validation_scores.sql:33`) | The two `dp_legacy` pipelines have no such gap: both qualify the database in the query (`adf/enrichment_pipeline.json:20`, `:67`; `adf/issues_pipeline.json:20`) and in the procedure (`sql/usp_merge_legacy_enriched.sql:29`, `sql/usp_merge_legacy_issues.sql:38`). ⚠ UNVERIFIED — the linked service definition is not in this repository, so the default database cannot be read here. |
+| ⚠-13 | medium | The database both Validation procedures write to is marked unconfirmed by the author and the marker is unresolved. | `sql/usp_merge_validation_clusters.sql:8` and `sql/usp_merge_validation_scores.sql:8`, verbatim: `    DECLARE @db SYSNAME = N'dp_validation';  -- <<< confirm` | The value in force is `dp_validation`; nothing else in the repository names the validation database, so the marker cannot be resolved from repository evidence. |
+| ⚠-14 | low | `usp_MergeLegacyIssues` can write either of two columns and the pipeline can only ever select one. | `@target_column SYSNAME = N'Issues'` (`sql/usp_merge_legacy_issues.sql:5`); Guard 0 admits `N'Issues Before'` and `N'Issues'` (`:14`) | `adf/issues_pipeline.json:90–99` passes `payload` only, so `@target_column` always takes its default. No exported pipeline writes `Issues Before`, the column the before/after reduction metric would read. |
 
-All twelve are carried forward to `08_GAPS.md` in Pass 08.
+All fourteen are carried forward to `08_GAPS.md` in Pass 08.
 
 ---
 
 **Pass 00 summary.** Inventoried 1160 tracked files (138 source/config/prose files
 tabulated, 1025 excluded with reasons across seven groups), 16 HTTP routes on one
-anonymous-auth Azure Function binding plus 21 CLI entry points, four exported ADF pipelines
-naming four of those routes, seven call graphs with 109 cited nodes, two unreferenced
-modules and nine unreferenced public functions, and a 3882-case test suite running 12 failed
-/ 3857 passed / 12 skipped / 1 xfailed — a failing set that matches `tests/KNOWN_FAILURES.md`
-on seven of eight entries and adds five undocumented `tests/test_dedup.py` failures; twelve
-⚠ items raised for Pass 08.
+anonymous-auth Azure Function binding plus 21 CLI entry points, four parameterised ADF
+pipelines whose Lookup queries all carry the group-code predicate and four merge procedures
+all taking `@payload`, seven call graphs with 109 cited nodes, two unreferenced modules and
+nine unreferenced public functions, and a 3882-case test suite running 12 failed / 3857
+passed / 12 skipped / 1 xfailed — a failing set that matches `tests/KNOWN_FAILURES.md` on
+seven of eight entries and adds five undocumented `tests/test_dedup.py` failures; fourteen ⚠
+items raised for Pass 08.

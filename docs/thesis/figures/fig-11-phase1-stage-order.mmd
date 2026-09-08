@@ -1,0 +1,22 @@
+%% fig-11 — Phase 1 stage order
+%% Source: docs/thesis/03_ALGORITHMS.md §3.1 (lines 50-71)
+flowchart TD
+    A[UC 0 overflow check] --> B[preprocess_record]
+    B --> C{Name 1 person-only?}
+    C -->|yes| P[person affiliation, short-circuit]
+    C -->|no| D[Tier 1 ROR]
+    D -->|match, company| E[Tier 1 GLEIF]
+    D -->|miss, research| W[Wikidata crosswalk]
+    D -->|miss, company| E
+    E --> F[AP short-circuit]
+    F --> G[UC 13 lab resolver]
+    G --> H[Tier 2 canonical, per dept slot]
+    H --> I[Tier 2A contact lookup]
+    I --> J[grounded resolver]
+    J -->|degraded| K[Tier 3 LLM inference]
+    J --> L[finalise_and_return]
+    K --> L
+    P --> L
+    L --> M[website B/C, page read, dept URL probe]
+    M --> N[address stage]
+    N --> O[finalise: search terms, flags]
