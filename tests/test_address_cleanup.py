@@ -488,3 +488,121 @@ class TestPoBoxCarriedToOutput:
         """No PO Box anywhere invents one."""
         res = await _po_box()
         assert res.po_box_extracted is None
+
+
+# ---------------------------------------------------------------------------
+# The residual classifier is a READER, not an authority.
+#
+# `_extract_mail_code` is the deterministic owner of the Mail Code field. When
+# it declines a value, the residual LLM used to be able to label it MAIL_CODE
+# and PERFORM the placement — setting `mail_code` and blanking the street slot.
+# That is the model inventing a field assignment after the deterministic rule
+# already said no: "Dow 268" (a building and a room) was taken into Mail Code
+# at confidence 0.95 on row 13185613.
+#
+# The label may FLAG. It may not MOVE. The MAIL_CODE branch is detect-only:
+# the value stays in the slot it came from and Mail Code stays blank unless a
+# deterministic extractor filled it.
+# ---------------------------------------------------------------------------
+
+
+class _ScriptedResidualLLM:
+    """Minimal stand-in for OpenAIClient: every residual call returns the
+    same classification."""
+
+    def __init__(self, classification, confidence=0.95):
+        self._cls = classification
+        self._conf = confidence
+        self.calls = 0
+
+    async def extract_json(self, system, user, max_tokens=None):
+        self.calls += 1
+        return {"classification": self._cls, "confidence": self._conf}
+
+
+class TestResidualMailCodeIsDetectOnly:
+    @pytest.mark.asyncio
+    async def test_classifier_mail_code_does_not_move_the_value(self):
+        """Row 13185613. "Dow 268" stays in its street slot and Mail Code
+        stays blank, however confident the label is."""
+        llm = _ScriptedResidualLLM("MAIL_CODE", 0.95)
+        res = await process_address(
+            record_id="13185613", name1="Central Michigan University",
+            name2="Dept of Chemistry", name3=None,
+            street="EAST OTTAWA COURT", street_2="Dow 268", street_3=None,
+            city="MOUNT PLEASANT", state="MI", zip_code="48859", country="US",
+            po_box=None, care_of_enriched=None, llm_client=llm,
+        )
+        assert llm.calls == 1                     # the reader still runs
+        assert res.mail_code is None              # it just does not place
+        assert res.street_2_cleaned == "Dow 268"
+
+    @pytest.mark.asyncio
+    async def test_a_labelled_value_with_no_deterministic_shape_stays_put(self):
+        """A residual the regex declines and the classifier calls MAIL_CODE,
+        carrying no building/room shape either, simply stays in its slot."""
+        llm = _ScriptedResidualLLM("MAIL_CODE", 0.99)
+        res = await process_address(
+            record_id="x", name1="Some University", name2=None, name3=None,
+            street="100 Main St", street_2="FCDD-GVS-ES", street_3=None,
+            city="Tampa", state="FL", zip_code="33620", country="US",
+            po_box=None, care_of_enriched=None, llm_client=llm,
+        )
+        assert res.mail_code is None
+        assert res.street_2_cleaned == "FCDD-GVS-ES"
+
+    @pytest.mark.asyncio
+    async def test_deterministic_mail_stop_is_untouched(self):
+        """"MS 9161" is claimed by the deterministic mail-stop rule and never
+        reaches the classifier."""
+        llm = _ScriptedResidualLLM("MAIL_CODE", 0.99)
+        res = await process_address(
+            record_id="x", name1="Some University", name2=None, name3=None,
+            street="100 Main St", street_2="MS 9161", street_3=None,
+            city="Tampa", state="FL", zip_code="33620", country="US",
+            po_box=None, care_of_enriched=None, llm_client=llm,
+        )
+        assert res.mail_stop == "9161"
+        assert llm.calls == 0
+
+    @pytest.mark.asyncio
+    async def test_deterministic_bare_mail_code_is_untouched(self):
+        """The bare form carries no space ("MC1940"); `_extract_mail_code`
+        claims it in the secondary slots and the classifier never sees it."""
+        llm = _ScriptedResidualLLM("MAIL_CODE", 0.99)
+        res = await process_address(
+            record_id="x", name1="Some University", name2=None, name3=None,
+            street="100 Main St", street_2=None, street_3="MC1940",
+            city="Tampa", state="FL", zip_code="33620", country="US",
+            po_box=None, care_of_enriched=None, llm_client=llm,
+        )
+        assert res.mail_code == "MC1940"
+        assert llm.calls == 0
+
+    @pytest.mark.asyncio
+    async def test_explicit_marker_mail_code_is_untouched(self):
+        llm = _ScriptedResidualLLM("MAIL_CODE", 0.99)
+        res = await process_address(
+            record_id="x", name1="Some University", name2=None, name3=None,
+            street="100 Main St", street_2=None, street_3="MAIL CODE: SVC1039",
+            city="Tampa", state="FL", zip_code="33620", country="US",
+            po_box=None, care_of_enriched=None, llm_client=llm,
+        )
+        assert res.mail_code == "SVC1039"
+        assert llm.calls == 0
+
+    @pytest.mark.asyncio
+    async def test_department_branch_is_unchanged(self):
+        """Only the MAIL_CODE branch becomes detect-only. DEPARTMENT still
+        routes, so this change cannot be mistaken for a blanket ban on the
+        classifier acting."""
+        llm = _ScriptedResidualLLM("DEPARTMENT", 0.95)
+        res = await process_address(
+            record_id="x", name1="Some University", name2=None, name3=None,
+            street="100 Main St", street_2="Chemistry Annex", street_3=None,
+            city="Tampa", state="FL", zip_code="33620", country="US",
+            po_box=None, care_of_enriched=None, llm_client=llm,
+        )
+        assert res.department_addendum == "Chemistry Annex"
+        assert res.street_2_cleaned is None
+        assert "G1-ADDR-011" in res.address_issues

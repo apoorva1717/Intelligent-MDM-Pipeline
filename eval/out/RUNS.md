@@ -435,3 +435,26 @@ consciously not fixed there; each is its own branch.
    an artefact of any code change; it means the reproducibility gate has a live false
    positive on this column, and any A/B touching it must run a same-code control
    before attributing a delta. Every other column was stable across those runs.
+
+## Follow-ups opened by the MAIL_CODE detect-only change
+
+1. **The caser title-cases code-shaped tokens.** `normalise_output_fields` applies street
+   casing to every `_CASE_TEXT_FIELDS` value, so `FCDD-GVS-ES` ships as `FCDD-GVS-Es`,
+   `DLEB` as `Dleb`, `AP` as `Ap`, `ZIM A4-1` as `Zim A4-1`. This is not specific to
+   values returned by the change above — a value that reaches Street 2 directly, never
+   having met the classifier, is cased identically today. The caser should preserve
+   code-shaped tokens: all-caps carrying digits or hyphens, or four-or-fewer letters
+   all-caps. Its own gate; 14 values in the six evaluation files are affected.
+2. **`Rt` / `Rte` are missing from `_STREET_TYPE_WORD_RE`.** `_named_building_prefix_ok`
+   rejects a prefix whose token is a street type, but the pattern lists
+   `St|Street|Ave|…|Ter|Terrace` and not the route abbreviations, so `Rt 206` (Route 206,
+   a street) reads as a building name to any caller using that guard. Nothing ships wrong
+   today — the shape that would have consumed it was measured and dropped — but the gap
+   is real and the next guard built on `_named_building_prefix_ok` will inherit it.
+3. **A residual the classifier calls MAIL_CODE now stays in its slot with no code.** The
+   label no longer moves the value, and nothing else reports it: 31 rows across the six
+   files, `Dow 268` (S1 13185613) the clearest example — a building and a room that was
+   being placed into Mail Code at confidence 0.95. A bare-digit building/room shape was
+   measured as a flag and rejected: it was correct once in six and fired on five rows
+   outside the affected population. If these get a flag it should rest on a building-name
+   signal, not on a digit.

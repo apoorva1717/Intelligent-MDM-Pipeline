@@ -1052,9 +1052,47 @@ async def _apply_residual_llm(
         elif cls == "ORG_NAME":
             res.issue("G1-CROSS-002")
         elif cls == "MAIL_CODE":
-            if not res.mail_code:
-                res.mail_code = current.strip()
-            secondary[slot_name] = None
+            # DETECT-ONLY. The label may flag; it may not move.
+            #
+            # `_extract_mail_code` is the deterministic owner of Mail Code and
+            # it already ran on this slot and DECLINED the value. Letting the
+            # classifier then perform the placement is the model inventing a
+            # field assignment behind a rule that said no — "Dow 268" (a
+            # building and a room) was taken into Mail Code at 0.95 on row
+            # 13185613, and "Acct No. 44157", "AP" and "Mary Moody Northern
+            # CODE:" the same way. 31 rows across S1-S5 + dedup_STRESS_200_v1
+            # had a Mail Code no deterministic rule would produce.
+            #
+            # This also closes a silent data loss: the branch used to blank
+            # `secondary[slot_name]` even when `res.mail_code` was ALREADY set
+            # — the guard was only on the write, not on the clear — so a
+            # second labelled value was deleted outright rather than declined.
+            # Two records in the evaluation set were losing content this way:
+            # S4 13363820 (Mail Code already `MS1800`, `.262` deleted) and
+            # S5 13336204 (already `FM4819`, `325 MDG SGSL` deleted). They are
+            # invisible to a scan that looks for classifier-sourced Mail Code
+            # output, because they never produced any. Leaving the slot alone
+            # is what fixes them. Do NOT "re-optimise" the clear back in.
+            #
+            # The value stays where the record put it. No code is raised: a
+            # bare-digit building/room shape was measured as a flag that is
+            # right once in six and would fire on five rows outside this
+            # population, so it was dropped rather than shipped (RUNS.md).
+            #
+            # Two consequences a later diff reader will meet, both expected:
+            #
+            #   * A returning value LEFT-PACKS. Where Street 1 was empty it
+            #     lands there, not in Street 2-5 — existing, documented
+            #     behaviour (nothing is overwritten; the pack only fills
+            #     blanks). 5 rows in the gate run. Not a regression.
+            #   * A returning value is CASED. Street slots go through
+            #     `_CASE_TEXT_FIELDS`; `mail_code` does not, so "FCDD-GVS-ES"
+            #     comes back "FCDD-GVS-Es". That is the caser's existing
+            #     treatment of every street value — a value that reached
+            #     Street 2 without ever meeting the classifier is cased
+            #     identically today — so it is this branch EXPOSING a general
+            #     weakness, not introducing one. Tracked in RUNS.md.
+            pass
         elif cls == "LOGISTICS":
             if not res.unloading_point:
                 res.unloading_point = current.strip()
