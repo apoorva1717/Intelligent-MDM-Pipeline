@@ -44,11 +44,15 @@ async def test_marker_variants_route_to_mail_stop(street, expected):
 @pytest.mark.asyncio
 async def test_hyphenated_mail_stop_is_not_split_into_a_mail_code():
     """In a secondary slot the bare mail-code scan runs first. It must not
-    claim "RD45" out of "MS-RD45" and strand the marker."""
+    claim "RD45" out of "MS-RD45" and strand the marker.
+
+    Building is RE-PINNED ("7" → "Bldg 7"): the marker-first entry keeps its
+    marker word. Nothing else on this row moves — the mail stop, the suite and
+    the absent mail code are what this test is for."""
     r = await _addr("123 Main St", "Bldg 7 Suite 200 MS-RD45 Receiving Dept")
     assert r.mail_stop == "RD45"
     assert r.mail_code is None
-    assert r.building == "7"
+    assert r.building == "Bldg 7"
     assert r.suite == "200"
 
 

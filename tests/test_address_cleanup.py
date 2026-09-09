@@ -361,10 +361,12 @@ class TestNamedBuildingMoves:
 
     @pytest.mark.asyncio
     async def test_marker_first_building_id_is_unchanged(self):
-        """The existing marker-first rule ("Bldg 12" → Building=12) keeps
-        working exactly as before."""
+        """RE-PINNED (:263 keeps its marker). What is unchanged is the
+        ROUTING: "Bldg 12" has no prefix, so it is not a named building and
+        the marker-first entry still owns it. The VALUE now carries the
+        marker, like every marker-last building above."""
         res = await _named_building("Bldg 12")
-        assert res.building == "12"
+        assert res.building == "Bldg 12"
         assert res.room is None
         assert res.street_cleaned is None
 
@@ -398,11 +400,16 @@ class TestNamedBuildingLeavesAlone:
 
     @pytest.mark.asyncio
     async def test_house_number_and_street_type_keep_the_street(self):
-        """"123 Main St Building 4" is a street address. The existing
-        marker-first rule may take Building=4; the street must survive."""
+        """"123 Main St Building 4" is a street address. The marker-first
+        rule takes the building; the street must survive.
+
+        RE-PINNED (:263 keeps its marker), and TIGHTENED. The assertion was
+        `in (None, "4")` — written when it did not matter which of the two
+        happened, it now passes whatever :263 does and so checks nothing.
+        Pinned to the one value that ships."""
         res = await _named_building("123 Main St Building 4")
         assert res.street_cleaned == "123 Main St"
-        assert res.building in (None, "4")
+        assert res.building == "Building 4"
 
     @pytest.mark.asyncio
     async def test_mail_code_shape_still_goes_to_mail_code(self):
@@ -553,10 +560,15 @@ class TestCodeMarkerBoundsANamedBuilding:
 
     @pytest.mark.asyncio
     async def test_marker_first_form_is_unchanged(self):
-        """No prefix, nothing to name a building after: the marker-first entry
-        keeps the value exactly as today."""
+        """No prefix, nothing to name a building after, so the marker-first
+        entry owns it — that is what is unchanged here, and it is the control
+        for the row above, which has a prefix and goes to the named-building
+        path instead.
+
+        RE-PINNED (:263 keeps its marker): Building is now "Building L". Room
+        and the "CODE:" residual are untouched — neither came from :263."""
         res = await _named_building("Building L CODE: L14")
-        assert res.building == "L"
+        assert res.building == "Building L"
         assert res.room == "L14"
         assert res.street_cleaned == "CODE:"
 
@@ -593,11 +605,59 @@ class TestNamedBuildingSeparatorFormsUnchanged:
     @pytest.mark.asyncio
     async def test_marker_first_shape_is_untouched(self):
         """"Bldg 12" has no prefix before the marker, so it names no building.
-        It stays with the marker-first `Bldg <id>` entry, which owns it."""
+        It stays with the marker-first `Bldg <id>` entry, which owns it —
+        RE-PINNED (:263 keeps its marker) for the value it now stores."""
         res = await _named_building("Bldg 12")
-        assert res.building == "12"
+        assert res.building == "Bldg 12"
         assert res.room is None
         assert res.street_cleaned is None
+
+
+# ---------------------------------------------------------------------------
+# The marker-first building keeps its marker (:263).
+#
+# `_SUITE_PATTERNS`' marker-first `Bldg|Building <id>` entry stored the CAPTURE
+# GROUP — the bare identifier — so "Bldg 6" shipped Building="6" while the
+# marker-LAST form beside it ("Heroy Bldg", "Genomics Bldg 1219B-MA") has always
+# shipped the whole phrase. One field, two conventions, decided by which side of
+# the id the typist put the word: 39 rows across S1-S5 + dedup_STRESS_200_v1
+# ship a bare identifier that reads as a room number in SAP.
+#
+# The entry now stores `m.group(0)`, the marker plus the identifier. The capture
+# group is unchanged and still what `_is_identifier_like` gates on: the full
+# phrase always contains the alphabetic marker word, so gating on it would
+# accept "Building Annex" as a building.
+#
+# The residual is untouched by construction — the loop removes
+# `m.start():m.end()` from the working string whichever group it stores — which
+# is why the street half of "123 Main St Building 4" is asserted alongside.
+# ---------------------------------------------------------------------------
+
+
+class TestMarkerFirstBuildingKeepsItsMarker:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value,building", [
+        ("Bldg 6", "Bldg 6"),          # row 13150564 (S1)
+        ("Building 4", "Building 4"),  # the spelled-out marker, as row 13336741
+                                       # ("BUILDING 9033") writes it
+    ])
+    async def test_the_marker_word_is_part_of_the_value(self, value, building):
+        res = await _named_building(value)
+        assert res.building == building
+        # Marker-first is not a named building: nothing is left over, and the
+        # id does not double as a room.
+        assert res.room is None
+        assert res.street_cleaned is None
+
+    @pytest.mark.asyncio
+    async def test_the_gate_still_reads_the_identifier_not_the_phrase(self):
+        """`_is_identifier_like` is unchanged and still sees group 1. Were it
+        handed the whole match instead, "Building Annex" would contain no digit
+        but run to 14 characters — rejected today, and it must stay rejected
+        for the reason it always was: "Annex" is a word, not an id."""
+        res = await _named_building("Building Annex")
+        assert res.building is None
+        assert res.street_cleaned == "Building Annex"
 
 
 class TestNamedBuildingDetector:

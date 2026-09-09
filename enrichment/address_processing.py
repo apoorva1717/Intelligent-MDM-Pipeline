@@ -260,6 +260,21 @@ _MAIL_STOP_MARKER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# `:263` — the marker-FIRST building form ("Bldg 12", "Building 9033"). The
+# stored value is the WHOLE match, marker included, which is the convention
+# `_named_building_value` already uses for the marker-LAST form ("Heroy Bldg",
+# "Genomics Bldg 1219B-MA"): the marker is part of what the record wrote and is
+# what the steward sees in SAP.
+#
+# The capture group stays the BARE identifier, because `_is_identifier_like`
+# gates on group 1 and the full phrase always carries an alphabetic marker word
+# — gating on it would let "Building Annex" through as a building. Named here
+# rather than inline so the loop in `_extract_sublocations` can tell this one
+# entry apart; no other entry's value changes.
+_MARKER_FIRST_BUILDING_RE = re.compile(
+    r"\b(?:Bldg\.?|Building)\s+(\w[\w\-]*)\b", re.IGNORECASE,
+)
+
 # Sub-location markers. Order matters: most specific first so "Mail Stop"
 # wins over a bare "MS".
 _SUITE_PATTERNS = [
@@ -267,7 +282,7 @@ _SUITE_PATTERNS = [
     (re.compile(r"\b(Campus\s+Box\s+[\w\-]+)\b", re.IGNORECASE), "mail_stop"),
     (_MAIL_STOP_RE, "mail_stop"),
     (re.compile(r"\b(?:Suite|Ste\.?)\s+(\w[\w\-]*)\b", re.IGNORECASE), "suite"),
-    (re.compile(r"\b(?:Bldg\.?|Building)\s+(\w[\w\-]*)\b", re.IGNORECASE), "building"),
+    (_MARKER_FIRST_BUILDING_RE, "building"),
     # Marker-before-value ("Floor 3", "Fl. 3").
     (re.compile(r"\b(?:Floor|Fl\.?)\s+(\w[\w\-]*)\b", re.IGNORECASE), "floor"),
     # Value-before-marker ("7th Floor", "22nd Floor", "3 Fl"). The ordinal
@@ -356,6 +371,12 @@ def _extract_sublocations(text: str) -> tuple[str, dict[str, str], bool]:
             # pattern so the phrase stays in the residual.
             if not _is_identifier_like(captured):
                 break
+            # `:263` keeps its marker: the gate above read the identifier,
+            # the stored VALUE is the marker plus the identifier. The slice
+            # removed from the residual below is `m.start():m.end()` either
+            # way, so the street remainder is unaffected.
+            if pat is _MARKER_FIRST_BUILDING_RE:
+                captured = m.group(0).strip()
             if target not in found:
                 found[target] = captured
             work = work[: m.start()] + work[m.end():]
