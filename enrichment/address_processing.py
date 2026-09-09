@@ -222,8 +222,15 @@ def _trim_fragment(value: Any) -> str | None:
     return trimmed or None
 
 
+# The identifier accepts an UNSPACED hyphen between alphanumerics, so
+# "P.O. BOX V-38" keeps its tail instead of matching "P.O. BOX V" and leaving
+# "-38" behind for `_strip_residue` to turn into a bare "38" in a street slot
+# (13345790). A SPACED hyphen is still a separator, not part of the value:
+# "Box 3 - 5th Floor" is unaffected. The marker alternation is unchanged, and
+# so is the convention that the extracted value is the whole match.
 _PO_BOX_RE = re.compile(
-    r"\b(?:P\.?\s*O\.?\s*Box|POB|Post\s+Office\s+Box)\s+(\w+)\b",
+    r"\b(?:P\.?\s*O\.?\s*Box|POB|Post\s+Office\s+Box)"
+    r"\s+([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)\b",
     re.IGNORECASE,
 )
 

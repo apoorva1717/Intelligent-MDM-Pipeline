@@ -656,6 +656,80 @@ class TestPoBoxCarriedToOutput:
 
 
 # ---------------------------------------------------------------------------
+# Hyphenated PO Box identifiers ("P.O. BOX V-38").
+#
+# The identifier group in `_PO_BOX_RE` was `(\w+)`, and `\w` excludes "-", so
+# the match stopped at the first hyphen: 13345790 shipped `PO Box = "P.O. BOX
+# V"` with the orphaned "38" left in Street 1. The hyphen itself was then eaten
+# by `_strip_residue`, which cannot tell a split's own residue from a hyphen
+# that belongs to the value.
+#
+# The output convention is unchanged: the extracted value is the WHOLE match,
+# marker included and verbatim. The export caser still renders the marker as
+# "P.o. Box" — a separate, tracked concern, not touched here.
+# ---------------------------------------------------------------------------
+
+
+async def _po_box_street(street):
+    return await process_address(
+        record_id="pb", name1="Acme Corp", name2=None, name3=None,
+        street=street, street_2=None, street_3=None,
+        city="Tampa", state="FL", zip_code="33620", country="US",
+        po_box=None, care_of_enriched=None, llm_client=None,
+    )
+
+
+class TestHyphenatedPoBoxIdentifier:
+    @pytest.mark.asyncio
+    async def test_hyphenated_identifier_is_kept_whole(self):
+        """13345790. The whole identifier goes to the PO Box; nothing is left
+        behind in the street slot, and the spurious "box AND street" flag that
+        the orphan raised goes with it."""
+        res = await _po_box_street("P.O. BOX V-38")
+        assert res.po_box_extracted == "P.O. BOX V-38"
+        assert res.street_cleaned is None
+        assert "G3-ADDR-014" not in res.address_issues
+
+    @pytest.mark.asyncio
+    async def test_plain_numeric_identifier_is_unchanged(self):
+        res = await _po_box_street("PO Box 2000")
+        assert res.po_box_extracted == "PO Box 2000"
+        assert res.street_cleaned is None
+
+    @pytest.mark.asyncio
+    async def test_dotted_marker_plain_identifier_is_unchanged(self):
+        res = await _po_box_street("P.O. Box 750162")
+        assert res.po_box_extracted == "P.O. Box 750162"
+        assert res.street_cleaned is None
+
+    @pytest.mark.asyncio
+    async def test_hyphenated_identifier_with_a_remainder(self):
+        """The identifier is taken whole; whatever follows it is still handled
+        exactly as today — left in the slot for the downstream passes."""
+        res = await _po_box_street("PO Box A-12, Station Q")
+        assert res.po_box_extracted == "PO Box A-12"
+        assert res.street_cleaned == "Station Q"
+
+    @pytest.mark.asyncio
+    async def test_pob_marker_with_hyphenated_identifier(self):
+        """The bare "POB" marker is the same shape as the dotted one. Before
+        the widening this split into `POB 12` + a stray "B" in the street slot
+        — the 13345790 defect under a different marker, so it moves with it."""
+        res = await _po_box_street("POB 12-B")
+        assert res.po_box_extracted == "POB 12-B"
+        assert res.street_cleaned is None
+
+    @pytest.mark.asyncio
+    async def test_spaced_hyphen_is_not_part_of_the_identifier(self):
+        """A SPACED hyphen is a separator, not an identifier character. "Box 3"
+        is not a PO Box marker at all here, and the floor is read as today."""
+        res = await _po_box_street("Box 3 - 5th Floor")
+        assert res.po_box_extracted is None
+        assert res.street_cleaned == "Box 3"
+        assert res.floor == "5"
+
+
+# ---------------------------------------------------------------------------
 # The residual classifier is a READER, not an authority.
 #
 # `_extract_mail_code` is the deterministic owner of the Mail Code field. When
