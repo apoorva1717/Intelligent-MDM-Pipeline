@@ -829,8 +829,18 @@ _NAMED_BUILDING_TRAILING_ID_RE = re.compile(
 # Where a building segment ends and a sub-location begins: an explicit
 # separator, or a room/suite/floor marker that carries an identifier.
 _NAMED_BUILDING_SEPARATOR_RE = re.compile(r"\s*[/,]\s*|\s+-\s+")
+# "CODE:" is here and the rest of `_SUITE_PATTERNS` is not, deliberately.
+# Every other marker in that list is already bounded by the ONE-token rule in
+# `_NAMED_BUILDING_TRAILING_ID_RE` — "Enders Bldg Lab 649" and "Genentech Hall
+# S252 MC2140" are declined because a two-token tail is a marker plus a value.
+# "CODE:" is the only marker with no other bound: on "Mary Moody Northern
+# Building L CODE: L14" the tail is THREE tokens, so the one-token rule
+# declined the segment outright instead of bounding it, and the building's name
+# was lost (13348274). Do not "complete" this list — adding `Lab` turns
+# "Enders Bldg Lab 649" into Building + Room and breaks the fixture that exists
+# to prevent exactly that.
 _NAMED_BUILDING_SUBLOC_RE = re.compile(
-    r"\s+(?=(?:Rm|Room|Ste|Suite|Fl|Floor)\b\.?\s*"
+    r"\s+(?=(?:Rm|Room|Ste|Suite|Fl|Floor|CODE)\b\.?\s*"
     r"(?:number|no|nr)?\.?\s*[:#]?\s*\w*\d)",
     re.IGNORECASE,
 )
@@ -974,9 +984,17 @@ def _split_building_remainder(seg: str) -> tuple[str, str, str, str] | None:
         if not rest:
             return None
         m2 = _BUILDING_SUFFIX_SPLIT_RE.match(head)
-        if not m2:
+        if m2:
+            return head, rest, m2.group("marker"), m2.group("prefix")
+        # The head ends with the marker's own identifier rather than the
+        # marker word ("Mary Moody Northern Building L" | "CODE: L14"). That
+        # is the trailing-identifier shape, now BOUNDED — without this the
+        # marker added to `_NAMED_BUILDING_SUBLOC_RE` is inert, because the
+        # boundary fires and the head is then refused for ending in "L".
+        m3 = _NAMED_BUILDING_TRAILING_ID_RE.match(head)
+        if not m3:
             return None
-        return head, rest, m2.group("marker"), m2.group("prefix")
+        return head, rest, m3.group("marker"), m3.group("prefix")
 
     # No separator and no room word. The identifier that trails the marker
     # belongs to the building — "Genomics Bldg 1219B-MA" is one building, not

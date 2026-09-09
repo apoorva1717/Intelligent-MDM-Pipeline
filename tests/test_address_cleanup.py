@@ -479,12 +479,20 @@ class TestNamedBuildingStopsAtASublocationMarker:
         # "#" is shorthand for Suite and is glued to its value.
         ("Student Services Bldg #5380", None, None, "5380", None),
         ("Administration Bldg #514", None, None, "514", None),
-        # "CODE:" introduces a room. Note Building is "L", NOT "Mary Moody
-        # Northern Building L": the marker-first `Bldg <id>` entry takes the
-        # single character after "Building" (`_is_identifier_like` accepts a
-        # 1-2 character token), and that is the pre-existing behaviour this
-        # change is required to leave alone.
-        ("Mary Moody Northern Building L CODE: L14", "L", "L14", None, None),
+        # "CODE:" introduces a room. SUPERSEDED CONSTRAINT, re-pinned: this
+        # row asserted Building="L" because at the time NOTHING bounded
+        # "CODE:" — the marker was absent from `_NAMED_BUILDING_SUBLOC_RE`, so
+        # the segment failed the one-token test and the marker-first
+        # `Bldg <id>` entry took the single character after "Building",
+        # orphaning the building's name. That was the behaviour the previous
+        # branch was required to leave alone, not a verdict that "L" is the
+        # right Building. "CODE:" now bounds the segment, the trailing-id test
+        # sees only "L", and the prefix survives. Room is unchanged — it never
+        # came from "CODE:" but from the trailing-room-code shape.
+        (
+            "Mary Moody Northern Building L CODE: L14",
+            "Mary Moody Northern Building L", "L14", None, None,
+        ),
     ])
     async def test_sublocation_markers_bound_the_building(
         self, value, building, room, suite, mail_code,
@@ -494,6 +502,73 @@ class TestNamedBuildingStopsAtASublocationMarker:
         assert res.room == room
         assert res.suite == suite
         assert res.mail_code == mail_code
+
+
+# ---------------------------------------------------------------------------
+# "CODE:" bounds a named building (row 13348274).
+#
+# `_NAMED_BUILDING_SUBLOC_RE` listed six words — Rm/Room/Ste/Suite/Fl/Floor —
+# and "CODE:" was not among them, so on "Mary Moody Northern Building L CODE:
+# L14" no boundary fired at all. The segment then failed the ONE-trailing-token
+# test (three tokens follow the marker: "L", "CODE:", "L14"), so the named
+# building was declined outright rather than bounded, and the prefix was lost:
+# Building came from the marker-first `Bldg <id>` entry as "L" and "Mary Moody
+# Northern CODE:" was left as a street residual.
+#
+# With the boundary present the segment stops before "CODE:", the trailing-id
+# test sees only "L", and the building keeps its name.
+#
+# Two things this does NOT change, both confirmed by trace:
+#
+#   * Room="L14" comes from the TRAILING ROOM CODE entry matching the shape
+#     `[A-Za-z]\d{2,}$` in isolation — not from any handling of "CODE:", which
+#     no `_SUITE_PATTERNS` entry and no mail-code extractor claims. It is right
+#     for a reason unrelated to the marker, and it stays right.
+#   * The bare "CODE:" therefore survives as its own residual. It is pinned
+#     below as the behaviour that ships, not as the behaviour that is wanted.
+# ---------------------------------------------------------------------------
+
+
+class TestCodeMarkerBoundsANamedBuilding:
+    @pytest.mark.asyncio
+    async def test_named_building_keeps_its_prefix(self):
+        """Row 13348274. Building gains the full phrase; Room is untouched."""
+        res = await _named_building(
+            "Mary Moody Northern Building L CODE: L14",
+            name1="University of Texas",
+        )
+        assert res.building == "Mary Moody Northern Building L"
+        assert res.room == "L14"
+
+    @pytest.mark.asyncio
+    async def test_the_bare_marker_is_what_is_left(self):
+        """The orphan. "CODE:" is claimed by nothing, so once the prefix goes
+        to Building the marker alone is the residual — the slot does NOT empty.
+        Pinned so a later decision about stripping it is a visible change."""
+        res = await _named_building(
+            "Mary Moody Northern Building L CODE: L14",
+            name1="University of Texas",
+        )
+        assert res.street_cleaned == "CODE:"
+
+    @pytest.mark.asyncio
+    async def test_marker_first_form_is_unchanged(self):
+        """No prefix, nothing to name a building after: the marker-first entry
+        keeps the value exactly as today."""
+        res = await _named_building("Building L CODE: L14")
+        assert res.building == "L"
+        assert res.room == "L14"
+        assert res.street_cleaned == "CODE:"
+
+    @pytest.mark.asyncio
+    async def test_no_new_ambiguous_marker_issue(self):
+        """"Building" is not in `_NAMED_BUILDING_AMBIGUOUS_MARKERS`, so this
+        row raises no G1-ADDR-003 before or after."""
+        res = await _named_building(
+            "Mary Moody Northern Building L CODE: L14",
+            name1="University of Texas",
+        )
+        assert "G1-ADDR-003" not in res.address_issues
 
 
 class TestNamedBuildingSeparatorFormsUnchanged:
