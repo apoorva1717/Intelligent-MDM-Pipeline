@@ -284,3 +284,115 @@ class TestNameGateReadsThroughTheSiteQualifier:
         )
         assert decision.allow is False
         assert decision.verdict == DIFFERENT
+
+
+# ── The attention line that addresses a place ────────────────────────────────
+#
+# Dana-Farber 13190988 — Street 2 "Attn: Loading Dock". `_extract_care_of` runs
+# before `_extract_logistics` in the street-slot loop, so the marked payload was
+# taken as a care-of party and the record shipped `Care Of = "Loading Dock"`:
+# the dock named as the recipient, and Unloading Point — the field that exists
+# for exactly this — left blank. A BARE "Loading Dock" in the same slot has
+# always reached Unloading Point; only the marker diverted it.
+
+class TestLogisticsPayloadInAnAttentionLine:
+    """Street-slot path only. The name-slot path (UC 15) is pinned below."""
+
+    def _addr(self, street_2, unloading_seed=None):
+        # A seed goes in the EARLIER slot: the loop walks s1…s5 in order, so
+        # only a slot before the marked one has already claimed the field.
+        if unloading_seed:
+            street_2, street_3 = unloading_seed, street_2
+        else:
+            street_3 = None
+        return asyncio.run(process_address(
+            record_id="13190988", name1="Dana-Farber Cancer Inst Inc",
+            name2=None, name3=None, name4=None, name5=None,
+            street="LONGWOOD AVE", street_2=street_2, street_3=street_3,
+            street_4=None, street_5=None,
+            city="BOSTON", state="MA", zip_code="02215", country="US",
+            po_box=None, care_of_enriched=None, llm_client=None,
+        ))
+
+    @pytest.mark.parametrize("value", [
+        "Attn: Loading Dock",
+        "c/o Loading Dock",
+    ])
+    def test_a_marked_dock_reaches_unloading_point_not_care_of(self, value):
+        addr = self._addr(value)
+        assert addr.unloading_point == "Loading Dock"
+        assert not addr.care_of_enriched
+        assert addr.street_2_cleaned is None
+
+    def test_only_the_dock_routes_not_the_rest_of_the_logistics_vocabulary(self):
+        # Scope is the loading dock alone. Behind an Attn marker, "Receiving"
+        # and its neighbours read as the desk handling the delivery — a party
+        # — as often as a place, so they keep the Care Of behaviour they have.
+        # The BARE forms still reach Unloading Point via `_extract_logistics`;
+        # only the marked ones stay put.
+        for value in ("Attn: Receiving", "Attn: Shipping", "Attn: Warehouse"):
+            addr = self._addr(value)
+            assert addr.care_of_enriched == value.split(": ", 1)[1], value
+            assert not addr.unloading_point, value
+
+    def test_a_person_behind_the_marker_is_still_a_care_of(self):
+        # The guard is the logistics vocabulary, not the marker: an ordinary
+        # attention line keeps the behaviour it has.
+        addr = self._addr("Attn: Erin Murphy")
+        assert addr.care_of_enriched == "Erin Murphy"
+        assert not addr.unloading_point
+
+    def test_recg_is_not_in_the_logistics_vocabulary(self):
+        # The SAP receiving code normalises in the NAME slots (UC 6) and is not
+        # a street-stage logistics keyword. Unchanged from HEAD: still a c/o.
+        addr = self._addr("Attn: RECG")
+        assert addr.care_of_enriched == "RECG"
+        assert not addr.unloading_point
+
+    def test_a_bare_dock_is_unchanged(self):
+        addr = self._addr("Loading Dock")
+        assert addr.unloading_point == "Loading Dock"
+        assert not addr.care_of_enriched
+
+    def test_a_trailing_identifier_rides_along(self):
+        addr = self._addr("Attn: Loading Dock B")
+        assert addr.unloading_point == "Loading Dock B"
+        assert not addr.care_of_enriched
+
+    def test_an_occupied_unloading_point_does_not_consume_the_slot(self):
+        # Write and clear stand or fall together. With nowhere to put the
+        # payload the slot keeps its text — the alternative is deleting it.
+        addr = self._addr("Attn: Loading Dock", unloading_seed="Dock 7")
+        assert addr.unloading_point == "Dock 7"
+        # Still on the record, in a street slot. Which index is the slot
+        # compaction's business, not this rule's — what matters is that the
+        # text was not consumed into a field that refused to accept it.
+        streets = [
+            addr.street_cleaned, addr.street_2_cleaned, addr.street_3_cleaned,
+            addr.street_4_cleaned, addr.street_5_cleaned,
+        ]
+        assert "Attn: Loading Dock" in streets
+        assert not addr.care_of_enriched
+        assert "G3-ADDR-011" in addr.address_issues
+
+
+class TestTheNameSlotPathIsUntouched:
+    """UC 15 owns the name slots and is not in scope — pinned so it stays so."""
+
+    def _pre(self, name2):
+        return preprocess_record(
+            name1="Dana-Farber Cancer Inst Inc", name2=name2, name3=None,
+            contact=None, email=None,
+            street1="LONGWOOD AVE", street2=None, street3=None,
+            house_number="360", city="BOSTON", region="MA",
+        )
+
+    def test_a_dock_in_a_name_slot_is_still_a_care_of(self):
+        res = self._pre("Attn: Loading Dock")
+        assert res.care_of == "Loading Dock"
+        assert not res.contact
+
+    def test_a_person_in_a_name_slot_still_reaches_contact(self):
+        res = self._pre("Attn: Erin Murphy")
+        assert res.contact == "Erin Murphy"
+        assert res.care_of == "Erin Murphy"

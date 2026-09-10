@@ -443,6 +443,16 @@ _DEPARTMENT_PAYLOAD_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Payload after a c/o or Attn prefix that is the loading dock — an attention
+# line addressing a place rather than a party, so it belongs in
+# ``unloading_point``. Deliberately NARROWER than `_LOGISTICS_KEYWORD_RE`,
+# which the bare-value extractor uses: that one also takes Receiving,
+# Shipping, Gate and Warehouse, and behind an Attn marker those read as the
+# desk that handles the delivery — a party — as often as they name a place.
+# The dock is unambiguous, so it is the only one routed here. A trailing
+# identifier rides along ("Loading Dock B").
+_ATTN_LOADING_DOCK_RE = re.compile(r"^Loading\s+Dock\b", re.IGNORECASE)
+
 
 def _looks_like_department(value: str | None) -> bool:
     return bool(value and _DEPARTMENT_PAYLOAD_RE.search(value))
@@ -1764,11 +1774,35 @@ async def process_address(
         # c/o + ATTN. A payload that names a department/division goes to
         # the next empty name slot (handled by merge_into_result), not
         # to care_of_enriched.
+        before_co = work
         work, co = _extract_care_of(work)
         if co:
             if _looks_like_department(co):
                 if res.department_addendum is None:
                     res.department_addendum = co.strip()
+            elif _ATTN_LOADING_DOCK_RE.match(co.strip()):
+                # "Attn: Loading Dock" — the attention line addresses a place,
+                # not a party. The dock is where the delivery goes, so it is an
+                # unloading point; routing it to Care Of names the loading dock
+                # as the recipient (13190988 shipped exactly that).
+                #
+                # It has to be caught HERE rather than left to the logistics
+                # extractor below: `_extract_care_of` has already taken the
+                # payload out of `work`, so `_extract_logistics` would be
+                # handed the empty remainder and never see it. That ordering —
+                # care-of extraction before logistics extraction, a few lines
+                # below — is why a bare "Loading Dock" reaches Unloading Point
+                # today and a marked one does not.
+                if res.unloading_point:
+                    # Occupied. Consuming the payload with nowhere to write it
+                    # would delete it — the write and the clear have to stand
+                    # or fall together, the same asymmetry the mail-code and
+                    # PO-Box branches guard. Put the slot text back untouched
+                    # and report rather than drop.
+                    work = before_co
+                    res.issue("G3-ADDR-011")  # second unloading point, kept in slot
+                else:
+                    res.unloading_point = co.strip()
             elif res.care_of_enriched and res.care_of_enriched.strip():
                 if co.strip().lower() != res.care_of_enriched.strip().lower():
                     res.care_of_enriched = (
