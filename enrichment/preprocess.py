@@ -200,6 +200,37 @@ def _is_ap_reference(text: str) -> bool:
     return any(p.search(text) for p in _AP_PATTERNS)
 
 
+# ---------------------------------------------------------------------------
+# UC 6 — Receiving desk normalisation
+# ---------------------------------------------------------------------------
+
+#: The one spelling of the receiving desk. Deliberately carries no designator
+#: word: `expand_abbreviations` turns "Dept" into "Department" and
+#: `canonicalise_unit_name` inverts an "X Department" suffix, so a canonical
+#: "Receiving Dept" would ship as "Department of Receiving". "Receiving" is a
+#: fixed point of both passes — the same property that lets `AP_CANONICAL`
+#: hold — so nothing downstream has to restate an invariant to protect it.
+RECG_CANONICAL = "Receiving"
+
+#: The code as it arrives. The comparison is exact, so there is no pattern
+#: here to compile — the code is written one way and only one way.
+RECG_CODE = "recg"
+
+
+def _is_recg_reference(value: str) -> bool:
+    """True when *value* is the bare SAP receiving code and nothing else.
+
+    Whole field, exact, case-insensitive. NOT the accounts-payable detector's
+    substring match, and not for want of symmetry: "AP" earns a pattern list
+    because the desk is written a dozen ways ("A/P", "Accts Payable", "AP
+    Dept"), and pays for it with `_split_ap_suffix` and `_trailing_ap_phrase`
+    to undo the over-matching. "RECG" is written one way. Matching it inside a
+    field would rewrite "RECG Warehouse" — a named facility — into a desk, and
+    buy back nothing, because there is no second spelling to catch.
+    """
+    return bool(value) and value.strip().lower() == RECG_CODE
+
+
 #: A segment that is the accounts-payable desk and nothing else. A bare "AP"
 #: is too ambiguous to match anywhere in a name ("AP Moller", "AP Chemicals"),
 #: but a delimited segment of its own, sitting after a real organisation
@@ -1384,6 +1415,8 @@ def _is_department_payload(text: str) -> bool:
         return True
     if _is_ap_reference(text):
         return True
+    if _is_recg_reference(text):
+        return True
     if _TRAILING_SERVICES_RE.search(text):
         return True
     return False
@@ -2248,6 +2281,15 @@ def preprocess_record(
         if _is_ap_reference(val):
             setattr(res, field_name, "Accounts Payable")
             res.note(6, f"{field_name} normalised to Accounts Payable (was {val!r})")
+            continue
+        # The receiving desk. Whole-field only, so there is no organisation to
+        # rescue first and no suffix to split — the two cases above exist only
+        # because the AP detector matches inside a field, and this one cannot.
+        # Runs after the street router, so a code lifted out of a street slot
+        # normalises here in the name slot it landed in.
+        if _is_recg_reference(val):
+            setattr(res, field_name, RECG_CANONICAL)
+            res.note(6, f"{field_name} normalised to {RECG_CANONICAL} (was {val!r})")
 
     # ---------------------------------------------------------------
     # UC 8 — Email copy. Scan name and address fields for email addresses,
@@ -2500,7 +2542,8 @@ def preprocess_record(
         # contact, regardless of which pattern matched. The AP detector
         # catches "Accounts Payable", "A/P", "Accts Payable" and similar
         # variants that are department labels, not people.
-        if extracted and _is_ap_reference(extracted):
+        if extracted and (_is_ap_reference(extracted)
+                          or _is_recg_reference(extracted)):
             extracted = None
             remaining = val
             reason = None
@@ -2901,6 +2944,7 @@ def _street_is_department(value: str | None) -> bool:
         is_unit_construction(v)
         or is_granular_unit(v)
         or _is_ap_reference(v)
+        or _is_recg_reference(v)
         or _is_functional_dept(v)
     )
 
@@ -3070,6 +3114,7 @@ def _segment_is_org(seg: str) -> bool:
         or is_granular_unit(seg)
         or bool(_LEGAL_SUFFIX_RE.search(seg))
         or _is_ap_reference(seg)
+        or _is_recg_reference(seg)
     )
 
 
