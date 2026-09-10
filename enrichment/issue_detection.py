@@ -734,17 +734,28 @@ def _overflow_slots(record: EnrichmentRecord) -> set[str]:
 # "Inc" not inside "Incorporated" — in every case the expanded spelling is the
 # official form the rule is asking for, so it must not match).
 #
-# Abbreviated legal suffixes (Corp, Inc, Ltd) are in the set. They were absent
-# before, while "Co" was present, so "Smith Co." fired the rule and "Smith
-# Corp." did not — an inconsistency rather than a decision. The rule's semantics
-# are "the name is not in official/expanded form", and expanding a legal suffix
-# is exactly what the enrichment layer does downstream (see
-# ``collapse_legal_suffix`` / ``clean_passthrough_org_name``), so the suffix
-# forms belong here. Note the consequence before reading a count: most
-# commercial customers carry a legal suffix, so G5-NAME-001 volume rises
-# substantially on real data. That is the honest reading of the rule as
-# written; if the volume is unwanted the fix is to split legal suffixes into
-# their own code, not to go back to excluding them silently.
+# Abbreviated legal suffixes (Corp, Inc, Ltd) are in the set and STAY in it,
+# but they no longer report on their own. They were absent once, while "Co"
+# was present, so "Smith Co." fired the rule and "Smith Corp." did not — an
+# inconsistency rather than a decision. Adding them ended that inconsistency
+# in the wrong direction: it made the rule fire on the legal form itself,
+# which is not what G5 asks. "Pfizer Inc." is Pfizer's registered name; there
+# is no expanded spelling for the detector to prefer.
+#
+# The consequence was worst exactly where the pipeline works. Across the six
+# stratum workbooks the code raised on 107 enriched rows, and 75 of those — 70%
+# — were legal-suffix form: GLEIF having written the registered name, scored by
+# the detector as LESS canonical than the abbreviated input it replaced. All
+# thirteen S2 rows that raised on the enriched side but not on the input side
+# were of that shape, and all thirteen clear.
+#
+# The split named here as pending is therefore taken, and taken as a guard on
+# the MATCH rather than a removal from the set: see ``_LEGAL_SUFFIX_TOKENS``
+# and the trailing-run walk in ``_is_non_canonical_name``. A trailing suffix
+# is exempt; the same letters mid-name are not, because there the word is not
+# the entity's legal form. Nothing else in the lexicon changed, and no new
+# code was introduced — a row whose only defect was the suffix simply stops
+# raising.
 #
 # The clipped organisational words (Hosp, Grp, Fla, Uni) each have a witness in
 # the demo corpus: "BRIGHAM & WOMENS HOSP" (40000014), "Cardinal Research GRP"
@@ -781,6 +792,26 @@ _ORG_EXEMPT_TOKENS = frozenset({"inst"})
 _NONCANON_TOKENS_UNIT = _NONCANON_TOKENS - _UNIT_EXEMPT_TOKENS
 _NONCANON_TOKENS_ORG = _NONCANON_TOKENS - _ORG_EXEMPT_TOKENS
 
+# The legal-entity suffixes among the tokens above. Exempt when they TRAIL the
+# name and only then — "Pfizer Inc." is a legal form, while the "Inc" in
+# "Value Plastics Inc dba Nordson Medical" is a word in the middle of a name
+# and reports as before. Position is the entire distinction, which is why this
+# is a guard on the match and not a removal from the set: the letters are
+# identical in both cases, so a set cannot tell them apart.
+_LEGAL_SUFFIX_TOKENS = frozenset({"co", "corp", "inc", "ltd"})
+
+# The punctuated legal forms. None of these ever reached the token arm — they
+# are single letters, so only ``_DOTTED_ACRONYM_RE`` sees them, and that arm
+# does not read a token set at all. That was the sharpest edge of the old
+# behaviour: "Acme LLC" never raised and "Acme L.L.C." always did, for the
+# same company, decided by punctuation. Bare "LLC", "GmbH", "AG" and "PLC" are
+# absent from the lexicon entirely and need no entry here; only the dotted
+# spellings do.
+_LEGAL_DOTTED_FORMS = frozenset({
+    "SA", "SAS", "SPA", "LLC", "LLP", "LP", "BV", "NV", "AG", "CA", "PC",
+    "PLC",
+})
+
 
 @lru_cache(maxsize=None)
 def _abbrev_token_re(tokens: frozenset[str]) -> re.Pattern[str]:
@@ -803,6 +834,44 @@ _ABBREV_TOKEN_RE = _abbrev_token_re(_NONCANON_TOKENS)
 # which is what keeps "St. Louis" and "Ave. B" out of it.
 _DOTTED_ACRONYM_RE = re.compile(r"\b[A-Za-z](?:\.[A-Za-z]){1,}\.?(?![A-Za-z])")
 
+# What may sit between two suffixes in the trailing run, and after the last of
+# them: whitespace and the punctuation a name block ends on. "Merck & Co.,
+# Inc." is TWO trailing suffixes separated by a comma, not one suffix behind
+# one word — and it is GLEIF's registered form for that customer, so a walk
+# that absorbed only the last match would leave "Co." reporting on the very
+# row this exemption exists for.
+_TRAILING_FILLER = re.compile(r"[\s.,;:)\]]*")
+
+
+def _is_legal_suffix_match(text: str) -> bool:
+    """True when a matched span is a legal-entity suffix in either spelling —
+    the token form ("Inc", "Corp.") or the dotted form ("L.L.C.", "C.A.")."""
+    bare = text.rstrip(".").strip()
+    return (
+        bare.lower() in _LEGAL_SUFFIX_TOKENS
+        or bare.replace(".", "").upper() in _LEGAL_DOTTED_FORMS
+    )
+
+
+def _abbrev_spans(
+    value: str, tokens: frozenset[str],
+) -> list[tuple[int, int, str]]:
+    """Every mark of a non-official form in *value*, both arms, in position
+    order. The two arms are collected together because the trailing-suffix
+    walk has to see them interleaved: "Infineum USA L.P." ends on a dotted
+    form and "Merck & Co., Inc." on a token one, and a name can end on a run
+    that mixes the two.
+    """
+    spans = [
+        (m.start(), m.end(), m.group(0))
+        for m in _abbrev_token_re(tokens).finditer(value)
+    ]
+    spans += [
+        (m.start(), m.end(), m.group(0))
+        for m in _DOTTED_ACRONYM_RE.finditer(value)
+    ]
+    return sorted(spans)
+
 
 def _is_non_canonical_name(
     value: str | None, tokens: frozenset[str] = _NONCANON_TOKENS,
@@ -812,12 +881,32 @@ def _is_non_canonical_name(
 
     The dotted-acronym check does not vary with *tokens*: "U.C.L.A" is no more
     an official unit name than it is an official organisation name.
+
+    A legal-entity suffix in the name's trailing run is not such a mark and is
+    discarded — see ``_LEGAL_SUFFIX_TOKENS``. Both arms carry the exemption,
+    which is the point: the old behaviour let punctuation decide, raising on
+    "Acme L.L.C." and not on "Acme LLC".
     """
     if not value:
         return False
-    return bool(
-        _abbrev_token_re(tokens).search(value) or _DOTTED_ACRONYM_RE.search(value)
-    )
+    spans = _abbrev_spans(value, tokens)
+    if not spans:
+        return False
+    # Walk in from the end, absorbing legal-suffix matches separated only by
+    # filler, and stop at the first span that is not one. Everything from
+    # ``cut`` onwards is the trailing legal-form run; a match that starts
+    # before it is a mark of a non-official name and still reports. On
+    # "E.R. Squibb & Sons, L.L.C." the walk absorbs L.L.C., meets " Squibb &
+    # Sons, " and stops, so E.R. — a dotted acronym in the trade name —
+    # reports exactly as it did before.
+    cut = len(value)
+    for start, end, text in reversed(spans):
+        if end > cut or not _TRAILING_FILLER.fullmatch(value, end, cut):
+            break
+        if not _is_legal_suffix_match(text):
+            break
+        cut = start
+    return any(start < cut for start, _, _ in spans)
 
 # Company/organisation words that, when sitting in a Street field with no
 # street-type word, signal an org name in the address (heuristic for

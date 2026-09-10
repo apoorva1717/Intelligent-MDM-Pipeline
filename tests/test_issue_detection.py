@@ -1469,11 +1469,18 @@ def test_g1_addr_003_ignores_a_street_named_after_a_gate():
     "LOCKHEED MARTIN CORP.",    # 42000009
     "Coastal Diagnostics, Inc", # 42000019
 ])
-def test_g5_name_001_fires_for_an_abbreviated_legal_suffix(name1):
-    """"Co" was in the token set and "Corp"/"Inc" were not, so "Smith Co."
-    fired the rule and "Smith Corp." did not — an inconsistency, not a
-    design choice."""
-    assert "G5-NAME-001" in detect_issues(_record(**{"Name 1": name1}))
+def test_g5_name_001_does_not_fire_for_an_abbreviated_legal_suffix(name1):
+    """RE-PIN. This test used to assert the opposite.
+
+    The inconsistency it was written for was real — "Co" was in the token set
+    and "Corp"/"Inc" were not, so "Smith Co." fired and "Smith Corp." did not
+    — but it was ended in the wrong direction. Firing on all four made the
+    rule report the legal form itself, and G5 asks whether a name is in its
+    official form, which "APEX CORP" and "LOCKHEED MARTIN CORP." are. A
+    trailing legal suffix is now exempt from both arms; the four records still
+    stand as the witnesses, with their answer reversed.
+    """
+    assert "G5-NAME-001" not in detect_issues(_record(**{"Name 1": name1}))
 
 
 @pytest.mark.parametrize("name1", [
@@ -1504,12 +1511,172 @@ def test_g5_name_001_does_not_fire_on_an_expanded_name(name1):
 
 
 def test_g5_attribution_follows_the_slot_the_abbreviation_sits_in():
-    """40000012. The abbreviation is in Name 2, so this is -002 and not -001;
-    the answer key labels it -001."""
-    rec = _record(**{"Name 1": "ADAMS AIR", "Name 2": "HYDRAULICS INC"})
+    """RE-PIN of the witness, not of the mechanism.
+
+    Attribution by slot is unchanged. The record this was written on
+    (40000012, "ADAMS AIR" / "HYDRAULICS INC") no longer demonstrates it,
+    because its only mark was a trailing legal suffix and that is now exempt
+    in every slot — ``test_g5_name_002_carries_the_same_suffix_exemption``
+    pins the record's new answer. The witness here is S2 13128841, where
+    Name 1 is clean and Name 2 carries "Lab", a live token in the unit set.
+    """
+    rec = _record(**{"Name 1": "ExxonMobil", "Name 2": "Park St. Lab"})
     issues = detect_issues(rec)
     assert "G5-NAME-002" in issues
     assert "G5-NAME-001" not in issues
+
+
+# ---------------------------------------------------------------------------
+# G5 — a legal-entity suffix is not a non-canonical name
+# ---------------------------------------------------------------------------
+# "Inc", "Corp", "Ltd" and "Co" were added to the lexicon to end an
+# inconsistency ("Smith Co." fired, "Smith Corp." did not). Ending it that way
+# made the rule fire on the legal form itself, which is the opposite of what
+# G5 asks — and on the enriched side it fired hardest, because that is where
+# GLEIF has written the registered name. A trailing legal suffix is now
+# discarded from BOTH arms of ``_is_non_canonical_name``; a suffix that is not
+# trailing, and every other abbreviation, is untouched.
+#
+# Position is the whole of it. "Inc" in "Value Plastics Inc dba Nordson
+# Medical" is not the entity's legal form, it is a word in the middle of a
+# name, so it still raises.
+
+
+@pytest.mark.parametrize("name1", [
+    "Pfizer Inc.",
+    "Celgene Corp",
+    "Veracyte, Inc.",
+    "Dow Chemical Co",             # "Co" is exempt as a suffix; see below
+    "Merck & Co., Inc.",           # two suffixes in the trailing run
+    "ExxonMobil Research & Engineering Co.,",   # trailing punctuation
+])
+def test_g5_name_001_does_not_fire_on_a_trailing_legal_suffix(name1):
+    assert "G5-NAME-001" not in detect_issues(_record(**{"Name 1": name1}))
+
+
+@pytest.mark.parametrize("name1", [
+    "Infineum USA L.P.",
+    "CVG Ferrominera Orinoco, C.A.",
+    "E.R. Squibb & Sons, L.L.C.",   # the L.L.C. half only; E.R. still fires
+])
+def test_g5_name_001_does_not_fire_on_a_trailing_dotted_legal_suffix(name1):
+    """The dotted arm carries the same exemption as the token arm — a
+    punctuated legal form ("L.L.C.", "C.A.") is a legal form, not an
+    acronym in the trade name."""
+    from enrichment.issue_detection import (
+        _NONCANON_TOKENS_ORG, _is_non_canonical_name,
+    )
+    # the suffix alone must not be a mark of a non-official name
+    suffix = name1.rsplit(",", 1)[-1].strip() if "," in name1 else name1.split()[-1]
+    assert not _is_non_canonical_name(suffix, _NONCANON_TOKENS_ORG)
+
+
+@pytest.mark.parametrize("name1", [
+    "E.R. Squibb & Sons, L.L.C.",              # E.R. — dotted, mid-name
+    "J.M. Smucker Company",                    # J.M. — the suffix is expanded
+    "Harvard T.H. Chan School of Public Healt",  # T.H.
+    "U.C.L.A",                                 # not a legal form at all
+    "U.S.A.",
+])
+def test_g5_name_001_still_fires_on_a_dotted_acronym_in_the_trade_name(name1):
+    """The exemption is positional, not a blanket amnesty for dotted text: a
+    dotted acronym that is not a trailing legal suffix is still a mark of a
+    non-official name."""
+    assert "G5-NAME-001" in detect_issues(_record(**{"Name 1": name1}))
+
+
+@pytest.mark.parametrize("name1", [
+    "Univ of Texas",
+    "BRIGHAM & WOMENS HOSP",
+    "MAYO CLINIC FLA",
+    "Cardinal Research GRP",
+    "UNI STUTTGART",
+])
+def test_g5_name_001_still_fires_on_a_name_abbreviation(name1):
+    """Nothing outside the four legal-suffix tokens changed."""
+    assert "G5-NAME-001" in detect_issues(_record(**{"Name 1": name1}))
+
+
+@pytest.mark.parametrize("name1", [
+    "Value Plastics Inc dba Nordson Medical",
+    "JAMES ELECTRONICS, LTD DBA JAMECO E",
+    "E&S TECHNOLOGIES, INC. DBA HARRINGT",
+])
+def test_g5_name_001_still_fires_on_a_legal_suffix_that_is_not_trailing(name1):
+    """All three are DBA constructions. The suffix belongs to the first name
+    in the string and the string does not end on it, so it is not the legal
+    form of the thing this record names."""
+    assert "G5-NAME-001" in detect_issues(_record(**{"Name 1": name1}))
+
+
+def test_g5_name_001_leaves_a_name_that_is_exempt_by_design_alone():
+    """"Inst" is exempt in Name 1 by a deliberate decision
+    (``_ORG_EXEMPT_TOKENS``) — it heads an organisation in its own right. This
+    name therefore raises nothing before the suffix exemption and nothing
+    after it, and the fixture exists to pin that the change did not disturb
+    it."""
+    assert "G5-NAME-001" not in detect_issues(
+        _record(**{"Name 1": "Dallas County Inst Of"})
+    )
+
+
+def test_g5_name_002_carries_the_same_suffix_exemption():
+    """The unit-slot arm has the same defect for the same reason, so it takes
+    the same fix; ``HYDRAULICS INC`` is the attribution fixture's name and no
+    longer raises on the suffix alone."""
+    rec = _record(**{"Name 1": "ADAMS AIR", "Name 2": "HYDRAULICS INC"})
+    assert "G5-NAME-002" not in detect_issues(rec)
+
+
+def test_g5_name_002_still_fires_on_a_mid_name_suffix_in_a_unit_slot():
+    """"Div" is an accepted unit form and is exempt; "Corp" is a legal suffix
+    but sits mid-name, so the slot still raises."""
+    rec = _record(
+        **{"Name 1": "Acme Corporation",
+           "Name 2": "Div of Panasonic Corp of North America"}
+    )
+    assert "G5-NAME-002" in detect_issues(rec)
+
+
+def test_g5_name_002_known_gap_care_of_payload_in_a_name_slot():
+    """KNOWN AND FLAGGED, not a special case. "C/o Glover Systems, Inc." is a
+    Care Of payload sitting in a name slot; its only non-canonical mark was
+    the trailing "Inc.", so the suffix exemption clears -002 for it. The
+    misplacement is G1-CROSS-* territory and is reported there — G5 was never
+    the code that made this row visible."""
+    rec = _record(
+        **{"Name 1": "Acme Corporation", "Name 2": "C/o Glover Systems, Inc."}
+    )
+    assert "G5-NAME-002" not in detect_issues(rec)
+
+
+# The thirteen S2 rows where enrichment wrote the registered form and the
+# detector scored it as LESS canonical than the input — G5-NAME-001 raised on
+# the enriched side and not on the input side. Every one of them is a trailing
+# legal suffix, and every one clears.
+S2_POST_ONLY_ENRICHED_NAMES = [
+    ("13011411", "ExxonMobil Research & Engineering Co.,"),
+    ("13333439", "McKesson Medical-Surgical Inc."),
+    ("13333855", "McKesson Medical-Surgical Inc."),
+    ("13333415", "McKesson Medical-Surgical Inc."),
+    ("13338508", "McKesson Medical-Surgical Inc."),
+    ("13348125", "Veracyte, Inc."),
+    ("13348232", "Merck & Co., Inc."),
+    ("13017121", "San Francisco Bay Aggregates, Inc."),
+    ("13017225", "Marine Reef International, Inc."),
+    ("13162651", "CVG Ferrominera Orinoco, C.A."),
+    ("13336901", "Charles River Laboratories, Inc."),
+    ("13343511", "Varian Medical Systems, Inc."),
+    ("13035575", "Bayer Healthcare Pharmaceuticals Inc."),
+]
+
+
+@pytest.mark.parametrize(
+    "customer,name1", S2_POST_ONLY_ENRICHED_NAMES,
+    ids=[c for c, _ in S2_POST_ONLY_ENRICHED_NAMES],
+)
+def test_g5_name_001_clears_the_s2_post_only_raisers(customer, name1):
+    assert "G5-NAME-001" not in detect_issues(_record(**{"Name 1": name1}))
 
 
 def test_g2_name_012_fires_when_name_2_is_blank_and_the_department_is_lower():
