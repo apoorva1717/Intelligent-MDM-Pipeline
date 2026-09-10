@@ -3937,7 +3937,50 @@ def _apply_tier3(
             counts = result.get("_name_counts")
             if counts is not None:
                 counts["llm_returned_null"] += 1
-        if tier3.name1_suggestion and tier3.name1_suggestion.strip():
+        # THE ORIGIN INVARIANT, in the one slot `_write` does not cover.
+        #
+        # `_write` already refuses to re-attribute a DEPARTMENT slot whose
+        # value did not change ("an origin may change only when the VALUE
+        # changes"). Name 1 has no `_slot_origin` entry, so that guard never
+        # reaches it, and a suggestion identical to the value already in the
+        # slot still writes — replacing a registry producer with `llm_tier3`
+        # at confidence 0.7 for the same string.
+        #
+        # Measured on 13342217: GLEIF wrote "Merck Sharp & Dohme Corp." under
+        # `tier1-lei:name-verified` at confidence 1.0, Tier 3 proposed the
+        # identical string with verdict "same", and the record shipped
+        # `name1_provenance` = 'llm:provisional'. Nothing about the name was
+        # less certain than before — provenance simply reported the weaker of
+        # two sources, and a reviewer reading it would re-verify a name GLEIF
+        # had already verified.
+        #
+        # Compared against the value in the SLOT, not `name1_original`: the
+        # incumbent is whatever would be overwritten, which after a registry
+        # lane is the registry's spelling rather than the record's. Folded on
+        # whitespace and case only — `_same_value_folded`, the same predicate
+        # `_write` asks — so a real edit ("... Inc" -> "... Inc.") still
+        # writes and still re-attributes.
+        #
+        # Only the name1 write is declined. The department slots below are a
+        # separate question and are applied exactly as before.
+        name1_is_incumbent = bool(
+            tier3.name1_suggestion and tier3.name1_suggestion.strip()
+        ) and _same_value_folded(
+            tier3.name1_suggestion.strip(),
+            result.get("name1_enriched") or result.get("name1_original"),
+        )
+        if name1_is_incumbent:
+            logger.info(
+                "[%s] Tier 3: name1 suggestion matches the incumbent (%r) — "
+                "keeping it and its provenance",
+                result.get("record_id"),
+                result.get("name1_enriched") or result.get("name1_original"),
+            )
+        if (
+            tier3.name1_suggestion
+            and tier3.name1_suggestion.strip()
+            and not name1_is_incumbent
+        ):
             suggestion = tier3.name1_suggestion.strip()
             # §2 — the one gate. It used to be `canonical_preserves_identity`,
             # a boolean that collapsed "this is another entity" and "the
