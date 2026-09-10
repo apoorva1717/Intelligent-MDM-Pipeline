@@ -971,6 +971,126 @@ def raise_after(result: Any, code: str, fields: Iterable[str]) -> bool:
     return True
 
 
+def resettle_slots(
+    result: Any,
+    moved: dict[str, str],
+    continuations: Iterable[str],
+    truncated: dict[str, list[str]],
+) -> bool:
+    """Follow UC 0's name-block rewrite with the flags it left behind.
+
+    The third case rule 1 cannot cover, and it exists for a reason worth
+    stating plainly: ``compute_flags`` runs at ``orchestrator.py:3173`` and
+    ``_repack_merged_name_block`` at ``:3240``, so on a merged record every
+    flag was computed against the block as it stood BEFORE the rewrite. The
+    rewrite then moves values between slots and cuts them at the column edge,
+    and each flag stays pointing at the slot number it was given. Nothing is
+    wrong with the flag DECISIONS — they were taken against whole names,
+    which is the only way they can be taken — so this is not a re-judgement
+    and cannot raise anything. It moves, silences and annotates what already
+    stands, in that order, and each of the three answers one way the rewrite
+    made a true statement false:
+
+    *moved* — a value the rewrite put in another slot takes its flags with
+    it. The flag is about the value; the value is where it is. Without this a
+    reviewer reads "moved here from the address block" over ``Inc.`` while the
+    relocated value it was raised for sits one slot below, unflagged.
+
+    *continuations* — a slot holding a later piece of a value carries no flag
+    at all. Not because the doubt is resolved, but because the doubt was never
+    about this slot: it is about the value, and the value's flag is on its
+    head slot, where a reviewer reads it once instead of twice.
+
+    *truncated* — a head slot keeps every flag it has and gains one clause
+    saying the value runs on. This is the case that must NOT clear: the doubt
+    is real and the reviewer still has to act on it. What had gone wrong is
+    only that the prose named a value the slot no longer shows in full, and a
+    reviewer comparing the reason against the cell saw two different strings.
+
+    Returns whether anything changed.
+    """
+    read = (
+        result.get if callable(getattr(result, "get", None))
+        else (lambda key, default=None: getattr(result, key, default))
+    )
+    before_scopes = {
+        code: sorted(fields or ())
+        for code, fields in (read("flag_scopes", None) or {}).items()
+    }
+    before_low = sorted(read("flag_low_confidence", None) or ())
+    notes = dict(read("flag_notes", None) or {})
+    before_notes = dict(notes)
+
+    silenced = set(continuations or ())
+
+    def _resettle(fields: Iterable[str]) -> set[str]:
+        # Move first, then silence. A value that moved OFF a slot the rewrite
+        # then filled with a continuation piece is the ordinary case here
+        # (13332323, 13210802, 13163302 across the six workbooks), and the two
+        # steps in the other order would silence the flag before it had been
+        # carried to the slot its value actually went to.
+        carried = {moved.get(field, field) for field in fields or ()}
+        return carried - silenced
+
+    scopes: dict[str, Iterable[str]] = {}
+    for code, fields in before_scopes.items():
+        kept = _resettle(fields)
+        # A code whose ENTIRE scope was continuation slots goes with them; one
+        # that keeps a slot keeps the code. A record-level code (empty scope)
+        # is untouched, because no slot is in its scope to move or silence.
+        if kept or not fields:
+            scopes[code] = kept
+    low = sorted(_resettle(before_low))
+
+    # One clause per cut slot, on ONE code — the first in `_CODE_ORDER` that
+    # is scoped to it. The clause is a fact about the SLOT, not about any
+    # code's doubt, so a record carrying two codes over one cut slot would
+    # otherwise state it twice in one reason (13213617, `entity-superseded`
+    # and `unverified-inference` both on Name 1). The note names its head slot
+    # rather than relying on the code's leading scope clause, because a code
+    # can be scoped to two slots with only one of them cut.
+    for head, tail in (truncated or {}).items():
+        carrier = next(
+            (c for c in _CODE_ORDER if head in scopes.get(c, ())), None,
+        )
+        if carrier is None:
+            continue
+        clause = (
+            f"{FIELD_LABELS.get(head, head)} holds the first part only; the "
+            f"value continues in {_label(_sorted_fields(set(tail)))}"
+        )
+        existing = notes.get(carrier)
+        notes[carrier] = f"{existing}; {clause}" if existing else clause
+
+    if (
+        {c: sorted(f) for c, f in scopes.items()} == before_scopes
+        and low == before_low
+        and notes == before_notes
+    ):
+        return False
+
+    rendered = render(
+        scopes, dict(read("flag_details", None) or {}), notes, low,
+    )
+    if callable(getattr(result, "update", None)):
+        result.update(rendered)
+    else:
+        for key, value in rendered.items():
+            setattr(result, key, value)
+    logger.info({
+        "record_id": read("record_id", None),
+        "step": "flags_resettled_after_repack",
+        "moved": moved,
+        "silenced": _sorted_fields(silenced),
+        "truncated": {
+            head: _sorted_fields(set(tail))
+            for head, tail in (truncated or {}).items()
+        },
+        "flag_codes": rendered["flag_codes"],
+    })
+    return True
+
+
 def retract(result: Any, codes: Iterable[str], field: str) -> tuple[str, ...]:
     """Withdraw *codes* from *field*'s scope on an already-flagged result.
 

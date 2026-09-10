@@ -164,3 +164,56 @@ def repack_name_block(
         origin[index] = source
     dropped = [chunk for chunk, _ in pieces[len(NAME_SLOTS) :]]
     return packed, dropped, origin
+
+
+def classify_slots(
+    origin: dict[int, int],
+) -> tuple[dict[str, str], list[str], dict[str, list[str]]]:
+    """Read an origin map as three statements about what the rewrite did.
+
+    :func:`repack_name_block` records where every piece came from and nothing
+    more, because that is all its own job needs. Its caller needs the three
+    things the map implies, and each carries a different obligation:
+
+    ``moved``
+        source slot -> the slot its value's first piece landed in, for values
+        that changed slot. The value is the same value; per-field state
+        attached to it — its registry ownership, its review flag — belongs
+        where the value now is and not where it used to be.
+
+    ``continuations``
+        every slot holding a piece that is NOT the first of its source value.
+        A continuation slot is an artefact of the column width: no rule chose
+        its contents and no producer wrote them as a value. It is the second
+        half of a sentence, and the questions a name rule asks — is this the
+        official form of a unit's name, which department is this lab under —
+        have no answer for one, because it is not a name.
+
+    ``truncated``
+        head slot -> the continuation slots its value runs on into. A head IS
+        a real value's beginning and keeps everything said about it, but what
+        a reader sees in the slot is a fragment, and anything already said
+        about the whole has to say so.
+
+    Pure: reads the map and returns three derived views of it. A block the
+    rewrite left at one piece per slot yields empty everything, which is why
+    the caller needs no separate "did anything move" test.
+    """
+    first_seen: dict[int, int] = {}
+    continuations: list[str] = []
+    runs: dict[int, list[str]] = {}
+    for dest in sorted(origin):
+        source = origin[dest]
+        if source in first_seen:
+            continuations.append(NAME_SLOTS[dest])
+            runs.setdefault(first_seen[source], []).append(NAME_SLOTS[dest])
+        else:
+            first_seen[source] = dest
+
+    moved = {
+        NAME_SLOTS[source]: NAME_SLOTS[dest]
+        for source, dest in first_seen.items()
+        if source != dest
+    }
+    truncated = {NAME_SLOTS[head]: tail for head, tail in runs.items()}
+    return moved, continuations, truncated

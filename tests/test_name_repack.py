@@ -15,7 +15,11 @@ The rule these tests pin:
 * a repaired split raises NO code of its own — the record carries only the
   flags its own enrichment earned;
 * only a merged record is repacked. A record that arrived whole keeps the slot
-  layout the pipeline gave it.
+  layout the pipeline gave it;
+* a slot holding a later PIECE of a value raises no name-quality code and
+  carries no review flag — the column ran out, which is not a defect in the
+  record — while a value the rewrite MOVED keeps its own flag in the slot it
+  moved to, and a slot whose value was cut says so.
 """
 
 from __future__ import annotations
@@ -30,12 +34,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from api.models import EnrichmentOptions, EnrichmentRecord
 from config import Settings
+from enrichment.issue_detection import detect_issues
 from enrichment.name_repack import (
     NAME_FIELD_WIDTH,
     chunk_name,
+    classify_slots,
     merge_split_runs,
     repack_name_block,
 )
+from enrichment.flags import resettle_slots
 from enrichment.registry_match import FUZZY_TIER
 from enrichment.orchestrator import (
     Orchestrator,
@@ -81,6 +88,14 @@ class _SplitLLM:
 
     async def aclose(self):
         pass
+
+
+class _NoROR(MockRORClient):
+    """A registry that identifies nothing, so the names under test reach the
+    rewrite exactly as the record stated them."""
+
+    async def call(self, name, *a, **k) -> dict[str, Any]:
+        return {"matched": False, "score": 0.0, "guard_rejections": []}
 
 
 class _RecordingROR(MockRORClient):
@@ -430,3 +445,262 @@ class TestTheMergedNameIsWhatTheRecordStates:
         assert result["name1_enriched"] == (
             "University of Texas Health Science Center"
         )
+
+
+# ---------------------------------------------------------------------------
+# What the origin map says
+# ---------------------------------------------------------------------------
+
+class TestClassifySlots:
+    def test_a_block_left_one_piece_per_slot_says_nothing(self):
+        assert classify_slots({0: 0, 1: 1, 2: 2}) == ({}, [], {})
+
+    def test_a_second_piece_of_name_1_is_a_continuation_of_it(self):
+        moved, continuations, truncated = classify_slots({0: 0, 1: 0})
+        assert continuations == ["name2"]
+        assert truncated == {"name1": ["name2"]}
+        assert moved == {}
+
+    def test_the_value_the_continuation_displaced_is_reported_as_moved(self):
+        moved, continuations, truncated = classify_slots({0: 0, 1: 0, 2: 1})
+        assert moved == {"name2": "name3"}
+        assert continuations == ["name2"]
+        assert truncated == {"name1": ["name2"]}
+
+    def test_a_value_cut_into_three_names_both_of_its_tails(self):
+        _, continuations, truncated = classify_slots({0: 0, 1: 0, 2: 0})
+        assert continuations == ["name2", "name3"]
+        assert truncated == {"name1": ["name2", "name3"]}
+
+    def test_two_cut_values_are_reported_separately(self):
+        _, continuations, truncated = classify_slots({0: 0, 1: 0, 2: 1, 3: 1})
+        assert continuations == ["name2", "name4"]
+        assert truncated == {"name1": ["name2"], "name3": ["name4"]}
+
+
+# ---------------------------------------------------------------------------
+# The flags the rewrite leaves behind
+# ---------------------------------------------------------------------------
+
+def _flagged(**state: Any) -> dict[str, Any]:
+    """A record carrying rendered flags, as `finalise` holds one: a dict."""
+    return {"record_id": "t", "flag_notes": {}, "flag_details": {}, **state}
+
+
+class TestResettleSlots:
+    def test_a_moved_value_keeps_its_flag_in_the_slot_it_moved_to(self):
+        """13332323 in the corpus: the rewrite put `Inc.` in Name 2 and pushed
+        `Comm. Bruker Scientific LLC` — the relocated value the flag was
+        raised for — down to Name 3. The flag belongs with the value."""
+        result = _flagged(
+            flag_scopes={"relocated-unverified": ["name2"]},
+            flag_low_confidence=[],
+        )
+        changed = resettle_slots(result, {"name2": "name3"}, ["name2"], {})
+        assert changed is True
+        assert result["flag_scopes"] == {"relocated-unverified": ["name3"]}
+        assert result["flagged_fields"] == ["name3"]
+        assert result["flag_reason"].startswith("Name 3: moved here")
+
+    def test_the_derived_low_moves_with_its_value_too(self):
+        """`low-confidence-unchanged` is not in the scope map — it is derived
+        from `flag_low_confidence` — so it needs carrying in its own
+        right."""
+        result = _flagged(flag_scopes={}, flag_low_confidence=["name2"])
+        changed = resettle_slots(result, {"name2": "name4"}, ["name2"], {})
+        assert changed is True
+        assert result["flag_low_confidence"] == ["name4"]
+        assert result["flag_reason"].startswith(
+            "Name 4: left exactly as supplied",
+        )
+
+    def test_a_continuation_slot_carries_no_flag(self):
+        result = _flagged(
+            flag_scopes={"unverified-inference": ["name3"]},
+            flag_low_confidence=[],
+        )
+        assert resettle_slots(result, {}, ["name3"], {}) is True
+        assert result["flag_codes"] == []
+        assert result["flagged_fields"] == []
+        assert result["flag_for_review"] is False
+
+    def test_a_code_keeps_the_slots_that_are_not_continuations(self):
+        result = _flagged(
+            flag_scopes={"dept-via-lab": ["name2", "name3"]},
+            flag_low_confidence=[],
+        )
+        resettle_slots(result, {}, ["name3"], {})
+        assert result["flag_scopes"] == {"dept-via-lab": ["name2"]}
+
+    def test_a_cut_slot_keeps_its_flag_and_says_the_value_runs_on(self):
+        """The head is a real value's beginning and its doubt is real. What
+        was wrong is only that the prose named a value the cell no longer
+        shows in full."""
+        result = _flagged(
+            flag_scopes={"unverified-inference": ["name2"]},
+            flag_low_confidence=[],
+        )
+        assert resettle_slots(
+            result, {}, ["name3"], {"name2": ["name3"]},
+        ) is True
+        assert result["flag_codes"] == ["unverified-inference"]
+        assert result["flagged_fields"] == ["name2"]
+        assert (
+            "Name 2 holds the first part only; the value continues in Name 3"
+            in result["flag_reason"]
+        )
+
+    def test_one_cut_slot_says_it_once_however_many_codes_it_carries(self):
+        """13213617 carries `entity-superseded` and `unverified-inference`
+        over one cut Name 1. The clause is a fact about the slot, not about
+        either doubt, and a reason that stated it twice would read as two."""
+        result = _flagged(
+            flag_scopes={
+                "entity-superseded": ["name1"],
+                "unverified-inference": ["name1"],
+            },
+            flag_low_confidence=[],
+        )
+        resettle_slots(result, {}, ["name2"], {"name1": ["name2"]})
+        assert result["flag_reason"].count("holds the first part only") == 1
+
+    def test_a_rewrite_that_moved_nothing_changes_nothing(self):
+        result = _flagged(
+            flag_scopes={"unverified-inference": ["name2"]},
+            flag_low_confidence=["name1"],
+            flag_codes=["unverified-inference"],
+        )
+        assert resettle_slots(result, {}, [], {}) is False
+        assert result["flag_scopes"] == {"unverified-inference": ["name2"]}
+
+    def test_nothing_here_can_raise_a_code(self):
+        """The whole function re-renders what already stands. A slot with no
+        flag on it does not acquire one by being moved, silenced or cut."""
+        result = _flagged(flag_scopes={}, flag_low_confidence=[])
+        resettle_slots(
+            result, {"name2": "name3"}, ["name2"], {"name1": ["name2"]},
+        )
+        assert not result.get("flag_codes")
+
+
+# ---------------------------------------------------------------------------
+# End to end — the corpus rows the rule was written from
+# ---------------------------------------------------------------------------
+
+def _audit(result, **kw) -> list[str]:
+    """The audit path over an enriched record — what `/issues` would say."""
+    return detect_issues(
+        EnrichmentRecord(
+            record_id="t", country="US",
+            **{f"name_{i}": getattr(result, f"name{i}_enriched")
+               for i in range(1, 6)},
+        ),
+        **kw,
+    )
+
+
+class TestContinuationSlotsAreNotDefects:
+    @pytest.mark.asyncio
+    async def test_a_continuation_slot_raises_no_name_quality_code(self):
+        """13044882, 13044976, 13129468 and 13047774 in the corpus, all four
+        the same shape. "…at San Antonio Health Science Center" is 55
+        characters and the column holds 40, so "Health Science Center" ships
+        in Name 2 — where `is_granular_unit` reads it as a named research
+        unit and G2-NAME-009 reports a lab with no department. There is no
+        lab and no missing department; there is a column that ran out."""
+        st = Settings()
+        r = await _run(
+            _orch(ror=_NoROR(st), llm=_SplitLLM(pairs={("Name 1", "Name 2")})),
+            name1="University of Texas at San Antonio",
+            name2="Health Science Center",
+        )
+        assert _block(r)[:3] == [
+            "University of Texas at San Antonio",
+            "Health Science Center",
+            None,
+        ]
+        assert r.uc0_continuation_slots == ["name2"]
+        # Without the marker the detector cannot tell, and says so. This half
+        # is the defect, pinned so the fix cannot be read as a coincidence.
+        assert "G2-NAME-009" in _audit(r)
+        assert "G2-NAME-009" not in _audit(
+            r, continuation_slots=r.uc0_continuation_slots,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_continuation_slot_carries_no_confirm_flag(self):
+        st = Settings()
+        r = await _run(
+            _orch(ror=_NoROR(st), llm=_SplitLLM(pairs={("Name 1", "Name 2")})),
+            name1="University of Texas at San Antonio",
+            name2="Health Science Center",
+        )
+        for code, fields in (r.flag_scopes or {}).items():
+            assert "name2" not in fields, code
+        assert "name2" not in (r.flag_low_confidence or [])
+        assert "name2" not in (r.flagged_fields or [])
+
+    @pytest.mark.asyncio
+    async def test_the_slot_whose_value_was_cut_says_the_value_runs_on(self):
+        """13048130's shape. The doubt about Name 2 is real and stays; what
+        changes is that the reason no longer describes a whole value over a
+        cell holding its first half."""
+        st = Settings()
+        r = await _run(
+            _orch(ror=_NoROR(st), llm=_SplitLLM(
+                pairs={("Name 1", "Name 2"), ("Name 2", "Name 3")},
+            )),
+            name1="University of Michigan",
+            name2="Dept of Nuclear Engineering &",
+            name3="Radiological Science",
+        )
+        assert r.uc0_continuation_slots == ["name3"]
+        assert "name2" in (r.flagged_fields or [])
+        assert (
+            "Name 2 holds the first part only; the value continues in Name 3"
+            in (r.flag_reason or "")
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_genuine_department_on_a_row_that_was_not_repacked(self):
+        """The other side of the rule. Nothing reported this block as split,
+        so nothing is repacked, no slot is a continuation, and Name 2 is
+        judged exactly as it always was."""
+        st = Settings()
+        r = await _run(
+            _orch(ror=_NoROR(st), llm=_SplitLLM(pairs=set())),
+            name1="University of Michigan",
+            name2="Smith Lab",
+        )
+        assert r.uc0_continuation_slots == []
+        # Canonicalised, as any Name 2 is — the point is that it is JUDGED,
+        # which the assertion below is.
+        assert _block(r)[:2] == ["University of Michigan", "Smith Laboratory"]
+        assert "G2-NAME-009" in _audit(
+            r, continuation_slots=r.uc0_continuation_slots,
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_merge_itself_is_untouched(self):
+        """The input defect was real and the repair still happens. UC 0 is
+        what these rows are FOR: nothing above silences the merge, only what
+        is said about the slots it produces.
+
+        (`G1-NAME-001` is not asserted here. It was withdrawn on 2026-09-07 —
+        the deterministic heuristic was a proxy for an LLM-only rule — so it
+        is not in `EMITTED_CODES` and fires on no row, and UC 0 deliberately
+        raises no code of its own for a split either. The merge running is
+        the property that is actually observable, so it is the one pinned.)
+        """
+        st = Settings()
+        r = await _run(
+            _orch(ror=_NoROR(st), llm=_SplitLLM(pairs={("Name 1", "Name 2")})),
+            name1="University of Texas at San Antonio",
+            name2="Health Science Center",
+        )
+        assert 0 in (r.use_cases_triggered or [])
+        # The two fragments were joined and then re-cut, which is a different
+        # block from the one that arrived: the record was enriched as
+        # "…at San Antonio Health Science Center", one name.
+        assert r.uc0_continuation_slots == ["name2"]
+        assert r.name1_enriched == "University of Texas at San Antonio"

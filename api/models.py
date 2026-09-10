@@ -490,6 +490,22 @@ class EnrichmentResult(BaseModel):
     # the derivation (see enrichment.flags.retract). The confidence itself
     # ships, in `name1_provenance` / `name2_provenance`.
     flag_low_confidence: List[str] = Field(default_factory=list, exclude=True)
+    # Name slots holding a later piece of a value UC 0's rewrite cut at the
+    # column edge (`enrichment.name_repack.classify_slots`). Not a value the
+    # record states and not one any producer chose: the SAP column ran out
+    # mid-name and the remainder went to the slot below. Internal, like the
+    # four above — nothing about it belongs in a customer-facing column, and
+    # it ships in none.
+    #
+    # It is on the model rather than dropped with `finalise`'s other transient
+    # keys because the audit path needs it and cannot re-derive it: by the
+    # time `detect_issues` reads a record, a continuation slot is an ordinary
+    # populated Name column and the only thing that could tell it apart is a
+    # width heuristic — which is exactly what `G1-NAME-001` was withdrawn for
+    # being. See `enrichment.issue_detection.detect_issues`.
+    uc0_continuation_slots: List[str] = Field(
+        default_factory=list, exclude=True,
+    )
     error: Optional[str] = None
     record_type: Literal["research_institution", "company", "unknown"] = "unknown"
     # Registry identifiers — both surface in the JSON (not excluded) so the

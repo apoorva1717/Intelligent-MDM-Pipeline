@@ -43,6 +43,7 @@ from enrichment.company_canonical import run_company_canonical
 from enrichment.lab_resolver import run_lab_resolver
 from enrichment.name_repack import (
     NAME_FIELD_WIDTH,
+    classify_slots,
     merge_split_runs,
     repack_name_block,
 )
@@ -72,7 +73,12 @@ from enrichment.preprocess import (
 from dedup.candidates import LEGAL_SUFFIXES
 from dedup.signatures import normalize_key
 from enrichment.classifier import TypeEvidence, classify
-from enrichment.flags import OVERFLOW, compute_flags, raise_after
+from enrichment.flags import (
+    OVERFLOW,
+    compute_flags,
+    raise_after,
+    resettle_slots,
+)
 from enrichment.liveness import (
     gleif_verdict as liveness_gleif_verdict,
     probe_ror_status as liveness_probe_ror_status,
@@ -2373,6 +2379,27 @@ def _repack_merged_name_block(result: dict[str, Any]) -> None:
             and enriched != original
             and str(enriched).casefold() != str(original or "").casefold()
         )
+
+    # The flags this rewrite falsified, corrected the same way the registry
+    # ownership above is: from the origin map, following the values.
+    #
+    # `compute_flags` runs EARLIER in `finalise` than this rewrite does, and
+    # has to: every name rule it reads judges a whole name, and the pieces
+    # laid out here are not names. So each flag names the slot its value sat
+    # in when it was judged, and this rewrite has since moved some of those
+    # values and cut others at the column edge. `resettle_slots` carries a
+    # moved value's flags to where the value went, silences the continuation
+    # slots (a field-width artefact is not a defect and has no doubt of its
+    # own) and adds one clause to a flag whose slot now runs on below it. It
+    # re-renders what already stands and never re-judges, so nothing can be
+    # raised here and no name value is touched.
+    _moved, _continuations, _truncated = classify_slots(origin)
+    if _moved or _continuations:
+        resettle_slots(result, _moved, _continuations, _truncated)
+    # Read by the audit path, which sees the finished record and not this
+    # function. `exclude=True` on the model, so no shipped column moves.
+    if _continuations:
+        result["uc0_continuation_slots"] = list(_continuations)
 
     if dropped:
         logger.info({

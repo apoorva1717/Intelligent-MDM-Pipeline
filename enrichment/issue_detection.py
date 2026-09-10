@@ -678,6 +678,26 @@ def _is_contact_content(value: str | None) -> bool:
     )
 
 
+def _continuation_slots(slots: Iterable[str] | None) -> frozenset[str]:
+    """Record-field names of the slots *slots* names, in either spelling.
+
+    The pipeline talks about name slots as ``name2`` (that is what a flag
+    scope and ``_slot_origin`` are keyed on); an ``EnrichmentRecord`` field is
+    ``name_2``. A caller holding one and calling a detector that reads the
+    other should not have to know which side of that line it is on, so both
+    are accepted and normalised here rather than at each of the four call
+    sites below.
+    """
+    out = set()
+    for slot in slots or ():
+        text = str(slot).strip()
+        if text in RECORD_NAME_FIELDS:
+            out.add(text)
+        elif text.replace("name", "name_", 1) in RECORD_NAME_FIELDS:
+            out.add(text.replace("name", "name_", 1))
+    return frozenset(out)
+
+
 def _overflow_slots(record: EnrichmentRecord) -> set[str]:
     """Record-field names of every name slot that is one half of a split value.
 
@@ -1129,8 +1149,21 @@ def _street_signature(
 # G1 — Data in Wrong Field
 # ---------------------------------------------------------------------------
 
-def _detect_wrong_field(record: EnrichmentRecord, found: set[str]) -> None:
+def _detect_wrong_field(
+    record: EnrichmentRecord,
+    found: set[str],
+    continuations: frozenset[str] = frozenset(),
+) -> None:
     names = _names(record)
+    # A slot holding a later piece of a value the SAP column cut is not a
+    # value this record states, so no rule below that judges what a slot
+    # CONTAINS may read it. Rules that read the block's SHAPE still count it
+    # as populated — the slot is occupied, whatever put the text there — so
+    # `populated` below is built from `names` and not from this.
+    judged = [
+        None if field in continuations else value
+        for field, value in zip(RECORD_NAME_FIELDS, names)
+    ]
     streets = _streets(record)
 
     # G1-CROSS-001 — address content in a Name: a street / sub-location / PO
@@ -1142,7 +1175,7 @@ def _detect_wrong_field(record: EnrichmentRecord, found: set[str]) -> None:
     # preprocess.py:2405, which also raises ``_ev_name_site_conflict`` — so the
     # detector was silent on a class of misplaced content the pipeline both
     # recognises and acts on.
-    for nm in names:
+    for nm in judged:
         if nm and (_extract_addresses(nm)[0] or _has_site_qualifier(nm)):
             found.add("G1-CROSS-001")
             break
@@ -1163,7 +1196,7 @@ def _detect_wrong_field(record: EnrichmentRecord, found: set[str]) -> None:
 
     # G1-CROSS-003 — contact info (email / phone / URL / c-o-ATTN / person) in a
     # Name or Street field.
-    for field in names + streets:
+    for field in judged + streets:
         if _is_contact_content(field):
             found.add("G1-CROSS-003")
             break
@@ -1265,7 +1298,7 @@ def _detect_wrong_field(record: EnrichmentRecord, found: set[str]) -> None:
             break
 
     # G1-NAME-013 — a Name field whose entire value is an internal/opaque code.
-    for nm in names:
+    for nm in judged:
         if nm and _is_opaque_code(nm):
             found.add("G1-NAME-013")
             break
@@ -1283,6 +1316,7 @@ def _detect_missing(
     record: EnrichmentRecord,
     found: set[str],
     present_fields: set[str] | None,
+    continuations: frozenset[str] = frozenset(),
 ) -> None:
     # Required-field checks — gated on the column being present in the file.
     #
@@ -1362,7 +1396,19 @@ def _detect_missing(
 
     # G2-NAME-009 — a granular research group in any department slot with no
     # parent department anywhere else in the name block.
+    #
+    # A continuation slot cannot be the granular unit. "The University of
+    # Texas at San Antonio Health Science Center" is 58 characters and the
+    # column holds 40, so "Health Science Center" ships in Name 2 — where
+    # `is_granular_unit` reads it as a named research unit and the rule
+    # reports a lab with no department over the tail of the organisation's
+    # own name. There is no lab and no missing department; there is a column
+    # that ran out. It stays in `others`, because the question asked of the
+    # OTHER slots is whether a parent is stated anywhere, and the piece is
+    # still text in the block.
     for i, value in enumerate(dept_values):
+        if RECORD_NAME_FIELDS[i + 1] in continuations:
+            continue
         if not is_granular_unit(value):
             continue
         others = [v for j, v in enumerate(dept_values) if j != i]
@@ -1386,12 +1432,20 @@ def _detect_missing(
 # G3 — Duplicate or Conflicting Data
 # ---------------------------------------------------------------------------
 
-def _detect_duplicate(record: EnrichmentRecord, found: set[str]) -> None:
+def _detect_duplicate(
+    record: EnrichmentRecord,
+    found: set[str],
+    continuations: frozenset[str] = frozenset(),
+) -> None:
     names = _names(record)
+    judged = [
+        None if field in continuations else value
+        for field, value in zip(RECORD_NAME_FIELDS, names)
+    ]
     streets = _streets(record)
 
     # G3-NAME-003 — DBA pattern present in a Name field.
-    for nm in names:
+    for nm in judged:
         if nm and _normalise_dba(nm)[1]:
             found.add("G3-NAME-003")
             break
@@ -1515,7 +1569,11 @@ def _detect_format(record: EnrichmentRecord, found: set[str]) -> None:
 # G5 — Non-Standard Naming
 # ---------------------------------------------------------------------------
 
-def _detect_naming(record: EnrichmentRecord, found: set[str]) -> None:
+def _detect_naming(
+    record: EnrichmentRecord,
+    found: set[str],
+    continuations: frozenset[str] = frozenset(),
+) -> None:
     # G5-NAME-001 — organisation name (Name 1) abbreviated / non-canonical.
     # Field attribution is by slot and nothing else: an abbreviation in Name 1
     # is -001, one in Name 2..N is -002, and a record carrying one only below
@@ -1536,7 +1594,14 @@ def _detect_naming(record: EnrichmentRecord, found: set[str]) -> None:
     # the enriched-side run sees one populated slot with no overflow pair and
     # judges its form normally — which is where an abbreviation in the joined
     # text is meant to surface.
-    overflow = _overflow_slots(record)
+    # A continuation slot joins the set for exactly the reason the docstring
+    # above gives for a split half: "Sch of Chemical Engineering &" is not a
+    # name in a non-official form, it is half of a name, and G5's question —
+    # is this the official spelling of the thing? — has no answer for a
+    # fragment. `_overflow_slots` finds the fragments a RAW file arrived with;
+    # `continuations` names the ones this pipeline's own field-width rewrite
+    # produced. Same shape, same silence.
+    overflow = _overflow_slots(record) | continuations
 
     if "name_1" not in overflow and _is_non_canonical_name(
         record.name_1, _NONCANON_TOKENS_ORG
@@ -1765,6 +1830,7 @@ def detect_issues(
     flag_for_review: bool | None = None,
     flag_codes: Iterable[str] | None = None,
     origins: Iterable[str] | None = None,
+    continuation_slots: Iterable[str] | None = None,
 ) -> list[str]:
     """Return every Issue-Catalogue code that fires for *record*.
 
@@ -1793,6 +1859,24 @@ def detect_issues(
     token was retired and the state it named now lives there (see
     :func:`provenance_is_low`).
 
+    *continuation_slots* names the Name slots holding a later piece of a value
+    UC 0's rewrite cut at the column edge — ``EnrichmentResult``'s
+    ``uc0_continuation_slots``, in either the ``name2`` or the ``name_2``
+    spelling. Those slots are skipped by every rule that judges what a slot
+    CONTAINS, and by none that reads the block's SHAPE: the slot is occupied,
+    so it is not a gap (``G1-NAME-004``), its characters are in the block, so
+    they count towards the length limit (``G4-NAME-015``), and Name 2 holding
+    a continuation is still Name 2 not stating a department (``G2-NAME-012``).
+    What goes is only the judgement of the piece as if it were a value.
+
+    Leave it ``None`` (the default) for a raw workbook and for an enriched one
+    read back from disk. This is deliberately a parameter and not something
+    the detector works out for itself: from the record alone a continuation is
+    an ordinary populated Name column, and the only thing that could tell it
+    apart is a field-width heuristic — which is what ``G1-NAME-001`` was
+    withdrawn for being. The caller either knows because it ran the pipeline,
+    or it does not know and must not guess.
+
     *origins* optionally restricts the result to codes with those Catalogue v2
     origins (``"DS"``, ``"API"``, ``"BOTH"``). The default emits every origin,
     including the 11 DS-only codes. That is deliberate and is the documented
@@ -1804,11 +1888,12 @@ def detect_issues(
     is not reported twice once that decision is taken.
     """
     found: set[str] = set()
-    _detect_wrong_field(record, found)
-    _detect_missing(record, found, present_fields)
-    _detect_duplicate(record, found)
+    continuations = _continuation_slots(continuation_slots)
+    _detect_wrong_field(record, found, continuations)
+    _detect_missing(record, found, present_fields, continuations)
+    _detect_duplicate(record, found, continuations)
     _detect_format(record, found)
-    _detect_naming(record, found)
+    _detect_naming(record, found, continuations)
     _detect_enrichment_flags(found, flag_codes)
 
     if origins is not None:
