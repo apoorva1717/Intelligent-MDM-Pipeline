@@ -271,8 +271,42 @@ _MAIL_STOP_MARKER_RE = re.compile(
 # — gating on it would let "Building Annex" through as a building. Named here
 # rather than inline so the loop in `_extract_sublocations` can tell this one
 # entry apart; no other entry's value changes.
+#
+# One OPTIONAL trailing token joins the identifier ("Bldg 248 C" — row
+# 13057080). Without it the C matched no entry at all and left-packed into
+# Street 2, while the same building written "Bldg 248-C" one row over
+# (13045839) came out whole, so the Building column disagreed with itself over
+# a space. The token is bounded four ways so it takes a stray identifier
+# fragment and nothing else:
+#
+#   * `{1,4}` plus the closing `\b` — at most four characters, and a longer
+#     token cannot match a four-character prefix of itself ("Bldg 181
+#     Massachusetts Ave" keeps its street);
+#   * `(?=[A-Za-z])` — letter-leading, so a bare number after the id stays a
+#     room or a house number;
+#   * `_TRAILING_NOT_A_MARKER` — never a word another extractor owns, so
+#     "BLDG 76 ROOM 431" still yields Room 431 and "Bldg 248-C Dock B" still
+#     leaves its dock alone;
+#   * the group is optional, so every marker-first value without a trailing
+#     token reads exactly as before.
+#
+# `_is_identifier_like` still gates on group 1 — the FIRST token — which is
+# unchanged. Group 2 is never gated and never read: the stored value is
+# `m.group(0)`, and widening the match is the whole of its effect.
+#
+# CODE is in the exclusion list defensively, not because it is reachable. On
+# the one row that carries it ("Mary Moody Northern Building L CODE: L14",
+# 13348274) `_named_building_value` claims the marker-last phrase first and
+# hands `_extract_sublocations` a string with no marker left in it, so this
+# entry never runs — a pin that holds on another commit's ordering rather than
+# on its own terms, which a reorder would undo silently.
+_TRAILING_NOT_A_MARKER = (
+    r"Rm|Room|Ste|Suite|Fl|Floor|Lab|Dock|Gate|Bay|MS|MC|Unit|CODE"
+)
 _MARKER_FIRST_BUILDING_RE = re.compile(
-    r"\b(?:Bldg\.?|Building)\s+(\w[\w\-]*)\b", re.IGNORECASE,
+    r"\b(?:Bldg\.?|Building)\s+(\w[\w\-]*)\b"
+    rf"(?:\s+(?!(?:{_TRAILING_NOT_A_MARKER})\b)(?=[A-Za-z])([A-Za-z0-9\-]{{1,4}})\b)?",
+    re.IGNORECASE,
 )
 
 # Sub-location markers. Order matters: most specific first so "Mail Stop"

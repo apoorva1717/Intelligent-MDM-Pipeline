@@ -458,3 +458,46 @@ consciously not fixed there; each is its own branch.
    measured as a flag and rejected: it was correct once in six and fired on five rows
    outside the affected population. If these get a flag it should rest on a building-name
    signal, not on a digit.
+
+## Follow-ups opened by the marker-first trailing-token change
+
+1. **`preprocess._ADDRESS_PATTERNS[4]` has the same one-token limit, in the name block.**
+   `enrichment/preprocess.py:458` —
+   `\b(?:Suite|Ste|Unit|Floor|Bldg|Building|Room|Rm)\b\.?\s+[\w\-]+\b` — captures one
+   token after the marker, exactly as `_MARKER_FIRST_BUILDING_RE` did before this
+   change. On row 13352736 (`dedup_STRESS_200_v1`) it splits Name 2 `BLDG 3610 BHT2`
+   into a `BLDG 3610` street fragment and a `BHT2` name remainder before the address
+   stage runs, so `_extract_sublocations` is handed an already-truncated string and the
+   widened building pattern cannot reach the row. The row is pinned must-NOT-change in
+   `TestTheNameFieldReRouteIsOutOfScope`.
+
+   It was left alone deliberately: that pattern also governs Suite, Ste, Unit, Floor,
+   Room and Rm routing out of the name block, it is in a module this change did not
+   gate, and the population it would fix is one row. Widening it needs its own gate over
+   all six files, keyed on the five other markers rather than on `Bldg`.
+
+   Note a second, independent block on the same row: fed through a *street* slot instead,
+   `_extract_mail_code(allow_bare=True)` claims `BHT2` as a bare mail code before
+   `_extract_sublocations` runs at all. Either route, the trailing token is gone before
+   the building entry sees it — so fixing preprocess alone would not be sufficient either.
+
+2. **`CODE` is excluded from the trailing-token set defensively, not because it is
+   reachable.** On the only row carrying the shape — `Mary Moody Northern Building L
+   CODE: L14` (13348274, S1) — `_named_building_value` claims the marker-last phrase
+   first and hands `_extract_sublocations` a string with no marker left in it, so the
+   marker-first entry never runs. The raw-regex population for the widened pattern is 3
+   cells; the reachable population is 1. That pin therefore holds on `2869779`'s
+   ordering rather than on its own terms, and a reorder of `process_address`'s extractor
+   sequence would undo it silently, with no test failing that names the cause.
+
+3. **The concurrency-order retry ladder is a second reproducibility false positive.**
+   The USC `department_domain` flake already recorded above reproduced during this
+   change's gate at `--concurrency 5`, and the trace shows the mechanism: a
+   progressively-truncated-host fetch ladder (`norris.usc.edu` → `norr.usc.edu` →
+   `nor.usc.edu`) whose `evidence-unavailable-frozen` lines land on a *different record
+   each pass* and stop firing altogether once some in-process state is warm — control 4
+   misses on 13345935/13345937, after 4 misses on 13134277, then 0 on three consecutive
+   runs. No file under the frozen cache is written, so the state is in-memory and
+   scheduler-dependent. `--concurrency 1` removes it: the same A/B then returns 2 cells
+   on 1 row. Any A/B over these files should run at concurrency 1, or run a same-code
+   control at the same concurrency and subtract.

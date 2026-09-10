@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -1161,3 +1162,221 @@ class TestNumericResidualNeverReachesANameSlot:
     ])
     def test_the_predicate(self, value, expected):
         assert _residual_may_relocate(value) is expected
+
+
+# ---------------------------------------------------------------------------
+# Marker-first building takes ONE short trailing token (row 13057080).
+#
+# `_MARKER_FIRST_BUILDING_RE` captures a single token after the marker, so
+# "Bldg 248 C" yielded Building="Bldg 248" and stranded "C" — no
+# `_SUITE_PATTERNS` entry claims a lone letter and the bare mail-code scan
+# declines it — which then left-packed into Street 2. Its cluster sibling
+# 13045839 writes the same building as "Bldg 248-C", where the hyphen puts the
+# C inside the identifier and Building comes out "Bldg 248-C". One building,
+# two Building values, decided by whether the typist used a space or a hyphen.
+#
+# The pattern now admits an OPTIONAL trailing token, bounded four ways so it
+# takes the stray identifier fragment and nothing else:
+#
+#   * at most 4 characters — "Bldg 181 Massachusetts Ave" keeps its street;
+#   * letter-leading — a bare number after the id is a room or a house
+#     number, never part of the building ("Bldg 248 12");
+#   * never a sub-location or logistics marker — Rm, Room, Ste, Suite, Fl,
+#     Floor, Lab, Dock, Gate, Bay, MS, MC, Unit, CODE — those have owners,
+#     and "BLDG 76 ROOM 431" must still give Room 431;
+#   * word-bounded, so a 4-character prefix of a longer token cannot match.
+#
+# `_is_identifier_like` still gates on group 1, the FIRST token, unchanged:
+# the stored value is `m.group(0)` and always carries the alphabetic marker.
+#
+# CODE is in the exclusion list as belt-and-braces. It is not reachable today
+# — on the only row that carries it, "Mary Moody Northern Building L CODE:
+# L14" (13348274), `_named_building_value` claims the marker-last phrase first
+# and hands `_extract_sublocations` a string with no marker in it, so this
+# entry never runs. That pin therefore holds only because `2869779`'s ordering
+# wins, which a future reorder would silently undo. The exclusion costs one
+# token and makes the pin hold on its own terms.
+#
+# Scope: this entry only. `_named_building_value`, the boundary sets, the
+# mail-code and PO Box extractors and every other `_SUITE_PATTERNS` entry are
+# untouched, which is what bounds the population to one row.
+# ---------------------------------------------------------------------------
+
+
+class TestMarkerFirstBuildingTakesOneShortTrailingToken:
+    """The one row that changes, and the boundary that keeps it to one."""
+
+    @pytest.mark.asyncio
+    async def test_bldg_248_c_is_one_building(self):
+        """Row 13057080 (S2). The trailing "C" joins the building and the
+        source slot is left blank — not left-packed into Street 2."""
+        res = await _named_building("Bldg 248 C")
+        assert res.building == "Bldg 248 C"
+        assert res.street_cleaned is None
+        assert res.street_2_cleaned is None
+        # The C is a building fragment, not a sub-location. Nothing else
+        # may claim it on the way past.
+        assert res.room is None
+        assert res.suite is None
+        assert res.floor is None
+        assert res.mail_code is None
+
+    @pytest.mark.asyncio
+    async def test_the_cluster_siblings_now_agree(self):
+        """13057080 and 13045839 are the same building in cluster S2-C11,
+        written with a space and with a hyphen. The hyphenated form is
+        untouched by this change; the spaced form now reaches the same
+        reading, modulo the separator the record itself used."""
+        spaced = await _named_building("Bldg 248 C")
+        hyphen = await _named_building("Bldg 248-C Dock B")
+        assert spaced.building == "Bldg 248 C"
+        assert hyphen.building == "Bldg 248-C"
+        # Same three tokens either way; only the separator the record itself
+        # used still differs, which is not this change's to normalise.
+        _norm = lambda v: re.split(r"[\s\-]+", v)  # noqa: E731
+        assert _norm(spaced.building) == _norm(hyphen.building) == [
+            "Bldg", "248", "C",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_the_gate_still_reads_the_first_token(self):
+        """`_is_identifier_like` sees group 1 — the id — not the phrase and
+        not the trailing token. "Building Annex" has no digit and runs to 14
+        characters; it stays rejected for the reason it always was."""
+        res = await _named_building("Building Annex")
+        assert res.building is None
+        assert res.street_cleaned == "Building Annex"
+
+
+class TestMarkerFirstTrailingTokenIsBounded:
+    """Must-not-change. Every value here is pinned at its control value from
+    the pre-change run; the assertion is that the widened pattern reads them
+    exactly as HEAD did."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value,building,room,suite,floor,mail_code,street", [
+        # No trailing token at all — the plain marker-first form.
+        ("Bldg 12", "Bldg 12", None, None, None, None, None),
+        ("Bldg 6", "Bldg 6", None, None, None, None, None),
+        ("Building 4", "Building 4", None, None, None, None, None),
+        ("Bldg A", "Bldg A", None, None, None, None, None),
+        ("Bldg Ot7", "Bldg Ot7", None, None, None, None, None),
+        ("BLDG 201-2S-13", "BLDG 201-2S-13", None, None, None, None, None),
+        # The trailing token is a sub-location marker with its own owner.
+        ("BLDG 76 ROOM 431", "BLDG 76", "431", None, None, None, None),
+        ("MRL Building Room 1551", "MRL Building", "1551", None, None, None, None),
+        ("W R Banks Bldg Rm 149", "W R Banks Bldg", "149", None, None, None, None),
+        ("Enders Bldg Lab 649", None, "Lab 649", None, None, None, "Enders Bldg"),
+        (
+            "UCLA - GONDA BLDG FLOOR 5",
+            None, None, None, "5", None, "UCLA - GONDA BLDG",
+        ),
+        # A bare marker with nothing after it — still a bare marker.
+        ("MARK AVE, BLDG N239 ROOM", "BLDG N239", None, None, None, None, "MARK Ave"),
+        # The trailing token is a logistics marker.
+        ("Bldg 248-C Dock B", "Bldg 248-C", None, None, None, None, "Dock B"),
+        # Longer than four characters — a street, and it stays one.
+        (
+            "Bldg 181 Massachusetts Ave",
+            "Bldg 181", None, None, None, None, "Massachusetts Ave",
+        ),
+        # Three markers behind the id, each with its own owner; the building
+        # never sees a trailing token because they are removed first.
+        ("Bldg 7 Suite 200 MS-RD45", "Bldg 7", None, "200", None, None, None),
+        # The id fails `_is_identifier_like`, so the entry declines the whole
+        # phrase — the trailing token cannot rescue it.
+        ("Bldg Central Receiving", None, None, None, None, None,
+         "Bldg Central Receiving"),
+        # Not this entry's shapes at all.
+        ("PO Box 2000", None, None, None, None, None, None),
+        ("Mail Code 1940", None, None, None, None, "1940", None),
+        ("Lab 163", None, "Lab 163", None, None, None, None),
+    ])
+    async def test_pinned_at_the_control_value(
+        self, value, building, room, suite, floor, mail_code, street,
+    ):
+        res = await _named_building(value)
+        assert res.building == building, value
+        assert res.room == room, value
+        assert res.suite == suite, value
+        assert res.floor == floor, value
+        assert res.mail_code == mail_code, value
+        assert res.street_cleaned == street, value
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value,building,room,street", [
+        # The marker-LAST forms. `_named_building_value` claims each of these
+        # before this entry runs, which is what makes them immune.
+        ("Genomics Bldg 1219B-MA", "Genomics Bldg 1219B-MA", None, None),
+        ("Heroy Bldg/Rm 450", "Heroy Bldg", "450", None),
+        ("Genentech Hall S252 MC2140", None, "S252", "Genentech Hall"),
+        (
+            "South Campus Research Building 1",
+            "South Campus Research Building 1", None, None,
+        ),
+        ("Edwards Bldg R307", "Edwards Bldg R307", None, None),
+        (
+            "Mary Moody Northern Building L CODE: L14",
+            "Mary Moody Northern Building L", "L14", "CODE:",
+        ),
+    ])
+    async def test_named_buildings_are_unreachable_by_this_entry(
+        self, value, building, room, street,
+    ):
+        res = await _named_building(value)
+        assert res.building == building, value
+        assert res.room == room, value
+        assert res.street_cleaned == street, value
+
+
+class TestTheNameFieldReRouteIsOutOfScope:
+    """Row 13352736 — "BLDG 3610 BHT2" in Name 2 — looks like 13057080 and is
+    NOT fixed by this change. Pinned as must-NOT-change so the boundary is
+    asserted rather than assumed.
+
+    The trailing token is severed one stage earlier, by
+    ``preprocess._ADDRESS_PATTERNS[4]`` (`enrichment/preprocess.py:458`):
+
+        \\b(?:Suite|Ste|Unit|Floor|Bldg|Building|Room|Rm)\\b\\.?\\s+[\\w\\-]+\\b
+
+    which has the same one-token limit as this entry but lives in another
+    module and also governs Suite, Ste, Unit, Floor, Room and Rm routing out
+    of the name block. `_extract_sublocations` is handed "BLDG 3610" — already
+    truncated — so widening THIS pattern cannot reach the row.
+
+    Widening the preprocess pattern is the remedy and is deliberately not done
+    here: it is five other markers' behaviour, in a module this change has not
+    gated, for one row. Logged as a follow-up.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_trailing_token_is_severed_before_the_address_stage(self):
+        from enrichment.preprocess import _extract_addresses
+        fragments, remainder = _extract_addresses("BLDG 3610 BHT2")
+        assert fragments == ["BLDG 3610"]
+        assert remainder == "BHT2"
+
+    @pytest.mark.asyncio
+    async def test_row_13352736_is_unchanged(self):
+        res = await process_address(
+            record_id="13352736",
+            name1="US Army Institute of Surgical Research",
+            name2="BLDG 3610 BHT2", name3=None,
+            street="CHAMBERS PASS", street_2=None, street_3=None,
+            city="Fort Sam Houston", state="TX", zip_code="78234",
+            country="US", po_box=None, care_of_enriched=None, llm_client=None,
+        )
+        assert res.building == "BLDG 3610"
+        assert res.name_overrides == {"name2": "BHT2"}
+        assert res.street_cleaned == "CHAMBERS PASS"
+        assert res.street_2_cleaned is None
+
+    @pytest.mark.asyncio
+    async def test_the_same_string_in_a_street_slot_is_taken_by_mail_code(self):
+        """The second, independent reason this row is out of reach: fed
+        through a street slot, `_extract_mail_code` claims "BHT2" as a bare
+        mail code BEFORE `_extract_sublocations` runs at all. Either route,
+        the trailing token is gone before this entry sees it."""
+        res = await _named_building("BLDG 3610 BHT2")
+        assert res.building == "BLDG 3610"
+        assert res.mail_code == "BHT2"
