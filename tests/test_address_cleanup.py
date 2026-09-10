@@ -9,7 +9,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from enrichment.address_processing import process_address
+from enrichment.address_processing import (
+    AddressResult,
+    _residual_may_relocate,
+    merge_into_result,
+    process_address,
+)
 
 
 async def _street2(value):
@@ -980,3 +985,179 @@ class TestResidualMailCodeIsDetectOnly:
         assert res.department_addendum == "Chemistry Annex"
         assert res.street_2_cleaned is None
         assert "G1-ADDR-011" in res.address_issues
+
+
+# ---------------------------------------------------------------------------
+# A numeric residual never reaches a name slot.
+#
+# The sibling of the MAIL_CODE fix above, and the same shape: the classifier's
+# LABEL is left alone, only the PLACEMENT is withdrawn. Where MAIL_CODE was
+# withdrawn because a deterministic rule had already declined the value, this
+# one is withdrawn because of what the value IS. A name slot holds what a body
+# is called; a residual carrying a digit carries an address token — a house
+# number, a building number, a room, a bare desk code — and those identify a
+# place.
+#
+# Row 13225557 (Princeton) is the case in hand: Street 2 "1 Frick Chemistry",
+# classified DEPARTMENT at 0.98, relocated into Name 3 at origin
+# `preprocess:street` behind an already-resolved Name 2 of "Department of
+# Chemistry". The record ended up naming a building as one of its units, and
+# the address block lost the only line that said where the building was.
+#
+# Six rows across S1-S5 + dedup_STRESS_200_v1 were in this population, on five
+# distinct shapes; all six are pinned below at their post-fix values. Every one
+# arrived by the same route — the LLM DEPARTMENT branch — and none by the
+# preprocess street->name router, which `_street_is_department` never let them
+# past.
+#
+# `Genomics` and `Chemistry Annex` are the control: digit-free, still relocate,
+# unchanged. Without them this reads as a ban on the DEPARTMENT branch, which
+# it is not.
+# ---------------------------------------------------------------------------
+
+
+class TestNumericResidualNeverReachesANameSlot:
+    """The DEPARTMENT branch declines a digit-bearing residual, and declining
+    means the value STAYS in its street slot."""
+
+    @pytest.mark.asyncio
+    async def test_frick_chemistry_stays_in_street_2(self):
+        """Row 13225557. Street 2 keeps the value, Name 3 is never written,
+        and G1-ADDR-011 does not fire — it reports a move out of the street
+        block, and no move happened."""
+        llm = _ScriptedResidualLLM("DEPARTMENT", 0.98)
+        result = {
+            "record_id": "13225557",
+            "name1_enriched": "Princeton University",
+            "name2_enriched": "Department of Chemistry",
+        }
+        res = await process_address(
+            record_id="13225557", name1="Princeton University",
+            name2="Department of Chemistry", name3=None,
+            street="120 WASHINGTON ROAD", street_2="1 Frick Chemistry",
+            street_3=None,
+            city="PRINCETON", state="NJ", zip_code="08544", country="US",
+            po_box=None, care_of_enriched=None, llm_client=llm,
+        )
+        assert llm.calls == 1                       # the reader still runs
+        assert res.department_addendum is None      # it just does not place
+        assert res.street_2_cleaned == "1 Frick Chemistry"
+        assert "G1-ADDR-011" not in res.address_issues
+
+        merge_into_result(result, res)
+        assert result.get("name3_enriched") is None
+        assert result["name2_enriched"] == "Department of Chemistry"
+        assert (result.get("_slot_origin") or {}).get("name3") is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("shape,value", [
+        # One per distinct shape the scan of the six workbooks turned up.
+        ("leading house number",     "1 Frick Chemistry"),            # 13225557
+        ("leading building number",  "3400 Biological Sciences III"),  # 13349146
+        ("marker + number + name",   "Lot 20 Princeton Neuroscience"), # 13337493
+        ("name + trailing number",   "NPIC 203"),                      # 13147518
+        ("name + trailing number",   "CHIEF SUPP SVC 90"),             # 13335915
+        ("room marker + number",     "Rm Calibr 125"),                 # 13336447
+    ])
+    async def test_every_measured_shape_stays_put(self, shape, value):
+        llm = _ScriptedResidualLLM("DEPARTMENT", 0.95)
+        res = await process_address(
+            record_id="x", name1="Some University", name2=None, name3=None,
+            street="100 Main St", street_2=value, street_3=None,
+            city="Tampa", state="FL", zip_code="33620", country="US",
+            po_box=None, care_of_enriched=None, llm_client=llm,
+        )
+        assert res.department_addendum is None, shape
+        assert res.street_2_cleaned == value, shape
+        assert "G1-ADDR-011" not in res.address_issues, shape
+
+    @pytest.mark.asyncio
+    async def test_a_digit_free_residual_still_relocates(self):
+        """"Genomics" — the value row 13341769 used to strand in Name 4 when
+        `_named_building_value` split its building. Digit-free, so this change
+        does not touch it: it still routes exactly as before."""
+        llm = _ScriptedResidualLLM("DEPARTMENT", 0.95)
+        result = {"record_id": "x", "name1_enriched": "Some University"}
+        res = await process_address(
+            record_id="x", name1="Some University", name2=None, name3=None,
+            street="100 Main St", street_2="Genomics", street_3=None,
+            city="Tampa", state="FL", zip_code="33620", country="US",
+            po_box=None, care_of_enriched=None, llm_client=llm,
+        )
+        assert res.department_addendum == "Genomics"
+        assert res.street_2_cleaned is None
+        assert "G1-ADDR-011" in res.address_issues
+
+        merge_into_result(result, res)
+        assert result["name2_enriched"] == "Genomics"
+        assert result["_slot_origin"]["name2"] == "preprocess:street"
+
+    @pytest.mark.asyncio
+    async def test_a_department_residual_still_relocates(self):
+        """The ordinary DEPARTMENT case the branch exists for."""
+        llm = _ScriptedResidualLLM("DEPARTMENT", 0.95)
+        result = {"record_id": "x", "name1_enriched": "Some University"}
+        res = await process_address(
+            record_id="x", name1="Some University", name2=None, name3=None,
+            street="100 Main St", street_2="Dept of Chemistry", street_3=None,
+            city="Tampa", state="FL", zip_code="33620", country="US",
+            po_box=None, care_of_enriched=None, llm_client=llm,
+        )
+        assert res.department_addendum == "Dept of Chemistry"
+        assert res.street_2_cleaned is None
+
+        merge_into_result(result, res)
+        assert result["name2_enriched"] == "Dept of Chemistry"
+        assert result["_slot_origin"]["name2"] == "preprocess:street"
+
+    @pytest.mark.asyncio
+    async def test_dow_268_is_unchanged_from_the_mail_code_fix(self):
+        """Row 13185613. "Dow 268" carries a digit AND is labelled MAIL_CODE.
+        The new reject is not in that branch, so the row's behaviour is
+        exactly what `f3f5dd7` left: the value stays in Street 2, Mail Code
+        stays blank, and nothing about the digit changes the outcome."""
+        llm = _ScriptedResidualLLM("MAIL_CODE", 0.95)
+        res = await process_address(
+            record_id="13185613", name1="Central Michigan University",
+            name2="Dept of Chemistry", name3=None,
+            street="EAST OTTAWA COURT", street_2="Dow 268", street_3=None,
+            city="MOUNT PLEASANT", state="MI", zip_code="48859", country="US",
+            po_box=None, care_of_enriched=None, llm_client=llm,
+        )
+        assert llm.calls == 1
+        assert res.mail_code is None
+        assert res.street_2_cleaned == "Dow 268"
+        assert res.department_addendum is None
+
+    def test_the_relocation_fallback_refuses_a_digit_addendum(self):
+        """The second reject site. `_reduce_primary_street` and
+        `_extract_care_of` reach `department_addendum` by deterministic routes
+        that never meet the DEPARTMENT branch, so the fallback repeats the
+        test on the way into the name block. A rule that holds at one of two
+        writers is not an invariant."""
+        addr = AddressResult()
+        addr.department_addendum = "Chemistry Dept. 200"
+        result = {"record_id": "x", "name1_enriched": "Some University"}
+        merge_into_result(result, addr)
+        assert result.get("name2_enriched") is None
+        assert (result.get("_slot_origin") or {}).get("name2") is None
+
+    def test_the_relocation_fallback_still_places_a_digit_free_addendum(self):
+        addr = AddressResult()
+        addr.department_addendum = "Chemistry Dept."
+        result = {"record_id": "x", "name1_enriched": "Some University"}
+        merge_into_result(result, addr)
+        assert result["name2_enriched"] == "Chemistry Dept."
+        assert result["_slot_origin"]["name2"] == "preprocess:street"
+
+    @pytest.mark.parametrize("value,expected", [
+        ("Department of Chemistry", True),
+        ("Genomics", True),
+        ("1 Frick Chemistry", False),
+        ("NPIC 203", False),
+        ("Rm Calibr 125", False),
+        ("", False),
+        (None, False),
+    ])
+    def test_the_predicate(self, value, expected):
+        assert _residual_may_relocate(value) is expected

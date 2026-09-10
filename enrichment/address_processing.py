@@ -1216,6 +1216,78 @@ def _looks_unambiguous(value: str | None) -> bool:
     return _looks_like_street(value)
 
 
+def _residual_may_relocate(value: str | None) -> bool:
+    """False when a residual must NOT be moved out of a street slot into a
+    name slot.
+
+    A name slot holds what a body is CALLED. A residual carrying a digit is
+    carrying an address token — a house number, a building number, a room, a
+    bare desk code — and those identify a PLACE. "1 Frick Chemistry" is a
+    building at 120 Washington Road; "Department of Chemistry" is the unit.
+    The first is not a worse spelling of the second, and Name 3 is not where
+    it goes.
+
+    The classifier is not wrong about these values in the sense it is asked
+    about: they DO name a department, somewhere inside them. It is the
+    RELOCATION that is wrong, because the value it would move is a street
+    line with a department's name in it, not a department. So the test is on
+    the value, at the two sites that relocate, and the classifier is left
+    exactly as it is — the same shape as the MAIL_CODE fix (`f3f5dd7`), where
+    the label was allowed to stand and only the placement was withdrawn.
+
+    Six rows across S1-S5 + dedup_STRESS_200_v1 shipped a name slot holding a
+    digit-bearing street residual at origin `preprocess:street`, on five
+    distinct shapes:
+
+        1 Frick Chemistry              leading house number      (13225557)
+        3400 Biological Sciences III   leading building number   (13349146)
+        Lot 20 Princeton Neuroscience  marker + number + name    (13337493)
+        NPIC 203                       name + trailing number    (13147518)
+        CHIEF SUPP SVC 90              name + trailing number    (13335915)
+        Rm Calibr 125                  room marker + number      (13336447)
+
+    A digit is the whole test, deliberately. Every narrower rule considered —
+    leading-number only, bare-trailing-token only, a marker list — admits at
+    least one of the six, and a name slot has no legitimate use for a digit
+    that arrived out of a street line: the department names the pipeline is
+    built to produce ("Department of Chemistry") carry none. A digit-free
+    residual is untouched and still relocates, which is what keeps this from
+    being a blanket ban on the DEPARTMENT branch.
+
+    A blank value is not relocatable either — there is nothing to move.
+
+    A/B over S1-S5 + dedup_STRESS_200_v1 (CACHE_FROZEN), same-code control
+    first, `retrieved_at` wall-clock flake subtracted (64 cells): 683 records
+    compared, 6 changed — exactly the six above, no more and no fewer. Zero
+    change to Building, Room, Suite, Mail Code, Mail Stop, Floor, Unit, PO
+    Box, Unloading Point, House Number or Name 1. No digit-free name value
+    moved.
+
+    Three consequences to expect in a diff, all intended:
+
+      * THE STREET SLOT CHANGES, and that is the fix, not collateral. A
+        declined value stays where the record put it, so Street 2 goes from
+        blank (the control deleted it) to holding the value. On 13336447 it
+        goes 'Rm Calibr' -> 'Rm Calibr 125': the control relocated the whole
+        residual and then `uc9:address-in-name-extracted` pulled 'Rm Calibr'
+        back out to the street, stranding a bare '125' in Name 2. One whole
+        value in one slot now, instead of two half-values in two.
+      * `relocated-unverified` / G6-CONFIRM-001, the `input:low` provenance
+        and the derived Search Term 2 drop away WITH the value on the two
+        rows that carried them (13337493, 13335915) — the origin invariant
+        working: provenance leaves with the value it described. 13337493
+        leaves review entirely (`flag_for_review` True -> False), correctly:
+        there is no longer a relocated value to confirm.
+      * G1-ADDR-011 stops firing on all six. It reports a department label
+        taken OUT of a street field; nothing is taken out any more. The
+        shipped Issues column is byte-identical on all six rows either way —
+        the code is raw-side (`issue_detection.py`) and never reached it.
+    """
+    if not value or not str(value).strip():
+        return False
+    return not any(char.isdigit() for char in str(value))
+
+
 async def _apply_residual_llm(
     res: AddressResult,
     secondary: dict[str, str | None],
@@ -1248,6 +1320,25 @@ async def _apply_residual_llm(
             continue
 
         if cls == "DEPARTMENT":
+            # A residual carrying a digit is a street line, not a unit name.
+            # Declined BEFORE the flag and before the clear, in that order and
+            # for two separate reasons:
+            #
+            #   * before `res.issue` — G1-ADDR-011 says "department label in a
+            #     street field", and it is the steward's cue that the value
+            #     was taken out of the street block. Raising it on a value
+            #     that stays put reports a move that did not happen.
+            #   * before `secondary[slot_name] = None` — this is the same trap
+            #     the MAIL_CODE branch below documents. Blanking the slot
+            #     while declining the write does not decline anything; it
+            #     deletes the value. Declining means the value STAYS where the
+            #     record put it, so the reject has to precede the clear.
+            #
+            # `_reduce_primary_street` and `_extract_care_of` reach the
+            # addendum by their own deterministic routes; the fallback in
+            # `merge_into_result` is where those are caught.
+            if not _residual_may_relocate(current):
+                continue
             res.issue("G1-ADDR-011")
             if res.department_addendum is None:
                 res.department_addendum = current.strip()
@@ -1872,8 +1963,13 @@ def merge_into_result(
     # the block downward from name2. A slot is "empty" only when both the
     # enriched and the original value are blank. If every department slot is
     # filled, the address_issues flag is the only record of the finding.
+    # The relocation fallback: the one site whose only job is putting a value
+    # into a name slot. Every route to `department_addendum` funnels through
+    # here, so the digit test is repeated on the way in — the DEPARTMENT
+    # branch is not the only writer, and a rule that holds at one of two
+    # writers is not an invariant.
     _addendum = _trim_fragment(addr.department_addendum)
-    if _addendum:
+    if _addendum and _residual_may_relocate(_addendum):
         for target in DEPT_SLOTS:
             enr = result_dict.get(f"{target}_enriched")
             orig = result_dict.get(f"{target}_original")
