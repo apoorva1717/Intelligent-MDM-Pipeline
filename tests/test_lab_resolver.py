@@ -1,7 +1,7 @@
-"""Tests for rule A-15: lab/group/centre/unit/program → parent department.
+"""Tests for rule A-15 / UC 13: lab → parent department.
 
-Covers the granularity-detection keywords in is_granular_unit and the
-orchestrator-level path for a 'Research Program' record.
+Covers the granularity-detection keywords in is_granular_unit, the narrower
+lab vocabulary in is_lab_unit that gates UC 13, and the orchestrator path.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from api.models import EnrichmentOptions, EnrichmentRecord
 from enrichment.orchestrator import Orchestrator
-from utils.text_utils import is_granular_unit
+from utils.text_utils import is_granular_unit, is_lab_unit
 
 
 class TestIsGranularUnit:
@@ -57,6 +57,48 @@ class TestIsGranularUnit:
         assert is_granular_unit(name) is False
 
 
+class TestIsLabUnit:
+    """The lab vocabulary that gates UC 13 — labs only."""
+
+    @pytest.mark.parametrize("name", [
+        "Smith Lab",
+        "Smith Lab.",
+        "NMR Labs",
+        "Candelario-Jalil Laboratory",
+        "Bronson Diagnostic Laboratories",
+        "Laboratory of Genetics",
+        "Lab of Genetics",
+        # SAP's 35-character field cut the word short.
+        "FERMI NATIONAL ACCELERATOR LABORATO",
+    ])
+    def test_detects_labs(self, name):
+        assert is_lab_unit(name) is True, f"expected lab: {name!r}"
+
+    @pytest.mark.parametrize("name", [
+        # Granular, but not labs — UC 13 no longer looks these up.
+        "Anagnostopoulos Research Group",
+        "AMPAC Centre",
+        "Center for Genomics",
+        "Proteomics Core",
+        "Animal Research Facility",
+        "Trauma Research Unit",
+        "Alpha-1 Research Program",
+        # Lab words that do not name a lab.
+        "Department of Pathology, Immunology and Laboratory Medicine",
+        "Laboratory Medicine",
+        "Dept of Labor & Industries",
+        "LabCorp",
+        "Lab",
+        "Lab 204",
+    ])
+    def test_rejects_non_labs(self, name):
+        assert is_lab_unit(name) is False, f"expected non-lab: {name!r}"
+
+    @pytest.mark.parametrize("name", [None, "", "   "])
+    def test_blank_inputs(self, name):
+        assert is_lab_unit(name) is False
+
+
 class TestLabResolverOrchestrator:
     """End-to-end orchestrator path for rule A-15."""
 
@@ -69,14 +111,22 @@ class TestLabResolverOrchestrator:
         return EnrichmentOptions(max_concurrency=1)
 
     @pytest.mark.asyncio
-    async def test_program_keyword_triggers_lookup(self, orchestrator, options):
-        """A 'Research Program' Name 2 at a research institution triggers
-        the lab resolver and gets promoted to the parent department,
-        with the original program name moved to Name 3."""
+    @pytest.mark.parametrize(("name2", "demoted"), [
+        # Preprocessing has already expanded "Lab" by the time it is demoted.
+        ("Smith Lab", "Smith Laboratory"),
+        ("Smith Labs", "Smith Labs"),
+        ("Smith Laboratories", "Smith Laboratories"),
+    ])
+    async def test_lab_keyword_triggers_lookup(
+        self, orchestrator, options, name2, demoted,
+    ):
+        """A lab Name 2 at a research institution triggers the lab resolver
+        and gets promoted to the parent department, with the original lab
+        name moved to Name 3."""
         record = EnrichmentRecord(
-            record_id="A15_PROGRAM",
+            record_id="A15_LAB",
             name1="Stanford University",
-            name2="Smith Research Program",
+            name2=name2,
             name3=None,
             city="Stanford", state="CA", country="US",
         )
@@ -85,13 +135,36 @@ class TestLabResolverOrchestrator:
 
         assert result.record_type == "research_institution"
         assert result.name2_enriched == "Department of Chemistry"
-        assert result.name3_enriched == "Smith Research Program"
+        assert result.name3_enriched == demoted
         # The parent department was inferred from the lab's page, not read
         # from a stated department — and the doubt is about the department
         # slots, not the institution.
         assert result.flag_codes == ["dept-via-lab"]
         assert result.flagged_fields == ["name2", "name3"]
         assert 13 in result.use_cases_triggered
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name2", [
+        "Smith Research Program", "Bhatt Research Group", "Proteomics Core",
+    ])
+    async def test_non_lab_granular_unit_skips_lookup(
+        self, orchestrator, options, name2,
+    ):
+        """Groups, centres, cores, facilities and programmes are granular but
+        are not labs — UC 13 does not look up a parent for them."""
+        record = EnrichmentRecord(
+            record_id="A15_NOT_A_LAB",
+            name1="Stanford University",
+            name2=name2,
+            name3=None,
+            city="Stanford", state="CA", country="US",
+        )
+        response = await orchestrator.enrich_batch([record], options)
+        result = response.results[0]
+
+        assert 13 not in result.use_cases_triggered
+        assert "dept-via-lab" not in result.flag_codes
+        assert result.name3_enriched is None
 
     @pytest.mark.asyncio
     async def test_department_name2_skips_lookup(self, orchestrator, options):
@@ -136,7 +209,7 @@ class TestLabResolverOrchestrator:
         record = EnrichmentRecord(
             record_id="A15_NAME3_OCCUPIED",
             name1="Stanford University",
-            name2="Bhatt Research Group",
+            name2="Bhatt Lab",
             name3="Existing Value Here",
             city="Stanford", state="CA", country="US",
         )
@@ -144,7 +217,7 @@ class TestLabResolverOrchestrator:
         result = response.results[0]
 
         assert result.name3_enriched == "Existing Value Here"
-        assert result.name4_enriched == "Bhatt Research Group"
+        assert result.name4_enriched == "Bhatt Laboratory"
         # Demoted, so the parent/child split is intact — the only flag is
         # the dept-via-lab inference, scoped to where the lab actually landed.
         assert result.flag_for_review is True
@@ -160,7 +233,7 @@ class TestLabResolverOrchestrator:
         record = EnrichmentRecord(
             record_id="A15_ALL_SLOTS_OCCUPIED",
             name1="Stanford University",
-            name2="Bhatt Research Group",
+            name2="Bhatt Lab",
             name3="Existing Value Here",
             name4="Another Value",
             name5="Third Value",
@@ -199,7 +272,7 @@ class TestLabResolverOrchestrator:
         record = EnrichmentRecord(
             record_id="A15_PARENT_ECHOES_NAME1",
             name1="Stanford University",
-            name2="Smith Research Program",
+            name2="Smith Lab",
             name3=None,
             city="Stanford", state="CA", country="US",
         )

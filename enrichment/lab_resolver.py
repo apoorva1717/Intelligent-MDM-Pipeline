@@ -1,8 +1,9 @@
-"""UC 13 — Lab / research group / centre → parent department resolution.
+"""UC 13 — Lab → parent department resolution.
 
-When the input ``Name2`` names a granular unit (lab, research group,
-centre, core, or facility) it is too low in the hierarchy for MDM
-purposes. The institution's own website almost always documents the
+When the input ``Name2`` names a laboratory (``is_lab_unit``: lab, labs,
+laboratory, laboratories) it is too low in the hierarchy for MDM
+purposes. Other granular units — groups, centres, cores, facilities —
+are not sent here. The institution's own website almost always documents the
 PARENT academic department for such units in URL breadcrumbs, the
 page title, or the breadcrumb navigation.
 

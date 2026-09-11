@@ -322,7 +322,7 @@ class TestFlaggedConditions:
         ).enrich_batch(
             [EnrichmentRecord(
                 record_id="UC13", name1="Stanford University",
-                name2="Smith Research Program", name3=None,
+                name2="Smith Lab", name3=None,
                 city="Stanford", state="CA", country="US",
             )],
             EnrichmentOptions(max_concurrency=1),
@@ -330,7 +330,7 @@ class TestFlaggedConditions:
         r = resp.results[0]
         assert 13 in r.use_cases_triggered
         assert r.name2_enriched == "Department of Chemistry"
-        assert r.name3_enriched == "Smith Research Program"
+        assert r.name3_enriched == "Smith Laboratory"
         assert "dept-via-lab" in r.flag_codes
         assert r.flagged_fields == ["name2", "name3"]
         assert "name1" not in r.flagged_fields

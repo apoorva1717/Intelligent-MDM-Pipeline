@@ -306,7 +306,7 @@ load (:189-192, README.md:3495-3499).
 | G2-VAL-004 | G2 | Region Missing | Region | **Yes / Error** | DS | :825-843 | column present and `is_blank` — unconditional; the US-only predicate was removed, see :374-390 |
 | G2-VAL-007 | G2 | Search Term 1 Missing | Search Term 1 | **Yes / Error** | DS | :825-843 | column present and `is_blank` |
 | G2-VAL-008 | G2 | Country Missing | Country | **Yes / Error** | DS | :825-843 | column present and `is_blank` |
-| G2-NAME-009 | G2 | Lab Without Department | Name 2 | No / Warning | API | :878-887 | `is_granular_unit(value)` in a dept slot with no `is_specific_unit_construction` / `is_unit_construction` sibling |
+| G2-NAME-009 | G2 | Lab Without Department | Name 2 | No / Warning | API | :878-887 | Name 1 passes `looks_like_university_or_research_institute` (same gate as G2-NAME-012) and `is_granular_unit(value)` in a dept slot with no `is_specific_unit_construction` / `is_unit_construction` sibling |
 | G2-CONTACT-008 | G2 | No Contact and No Department | Name 2 | No | API | **`withdrawn`** :234-241 | — |
 | G2-CONTACT-009 | G2 | Department Missing And Enrichable from Contact | Name 2 | No | API | **`withdrawn`** :242-251 | — |
 | G3-NAME-003 | G3 | DBA Pattern in Name Field | Name 1 | No / Warning | BOTH | :907-910 | `_normalise_dba(nm)[1]` |
@@ -511,7 +511,7 @@ the failure mode that let G2-VAL-004 sit permanently dark (:374-390). Pinned by
 |---|---|---|---|
 | G2-VAL-001/-002/-003/-004/-006/-007/-008 | above | **blankness is the trigger**, gated on `present_fields` | no (set) |
 | G2-NAME-012 | `looks_like_university_or_research_institute(record.name_1) and is_blank(record.name_2)` (:870-873) | blank Name 2 is the trigger; blank Name 1 ⇒ no fire | no |
-| G2-NAME-009 | `is_granular_unit(value)` in a dept slot with no `is_specific_unit_construction(x) or is_unit_construction(x)` sibling (:878-887) | `is_granular_unit(None)` falsy ⇒ skipped | no (`break` :887) |
+| G2-NAME-009 | Name 1 passes `looks_like_university_or_research_institute`, and `is_granular_unit(value)` in a dept slot with no `is_specific_unit_construction(x) or is_unit_construction(x)` sibling (:878-887) | `is_granular_unit(None)` falsy ⇒ skipped | no (`break` :887) |
 
 G2-NAME-012 reads **Name 2 alone**, deliberately, not "no department anywhere in the block":
 scanning the block suppressed the code whenever a department sat in the wrong slot (Yale with

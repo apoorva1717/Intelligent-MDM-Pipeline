@@ -123,7 +123,7 @@ the pipeline can fix it; `steward` = no automated path, a human decides. "In red
 | `G2-VAL-004` | G2 | Region Missing | DS | raw | steward | **yes** | no | `_detect_missing` `enrichment/issue_detection.py:1189–1215` ← `_REQUIRED_FIELD_CODES` `:499` |
 | `G2-VAL-007` | G2 | Search Term 1 Missing | DS | raw | rule | **yes** | **yes** | `_detect_missing` `enrichment/issue_detection.py:1189–1215` ← `_REQUIRED_FIELD_CODES` `:500` |
 | `G2-VAL-008` | G2 | Country Missing | DS | raw | rule | **yes** | **yes** | `_detect_missing` `enrichment/issue_detection.py:1189–1215` ← `_REQUIRED_FIELD_CODES` `:501` |
-| `G2-NAME-009` | G2 | Lab Without Department | API | raw | enrichment | no | **yes** | `_detect_missing` `enrichment/issue_detection.py:1258–1267` |
+| `G2-NAME-009` | G2 | Lab Without Department (university / research institute) | API | raw | enrichment | no | **yes** | `_detect_missing` `enrichment/issue_detection.py:1258–1267` |
 | `G2-NAME-012` | G2 | Research Institution Missing Department (Name 2 blank or holds only an administrative desk) | BOTH | raw | steward | no | no | `_detect_missing` `enrichment/issue_detection.py:1250–1254` |
 | `G3-NAME-003` | G3 | DBA Pattern in Name Field | BOTH | raw | rule | no | **yes** | `_detect_duplicate` `enrichment/issue_detection.py:1287–1290` |
 | `G3-NAME-005` | G3 | Duplicate Name Across Fields | API | raw | rule | no | **yes** | `_detect_duplicate` `enrichment/issue_detection.py:1294–1298` |

@@ -318,16 +318,27 @@ _KEEP_UPPER_ACRONYMS = {
     # 13333920 while the NAME path had it right all along.
     "DBA",
     # Vowel-bearing institution acronyms that the length/vowel heuristics would
-    # otherwise title-case ("TUHH" → "Tuhh"). Extend as they come up.
-    "NIST", "NJIT", "TUHH", "NREL", "SLAC", "CERN", "CNRS", "CSIRO", "CCSF",
-    # University acronyms (4-6 chars, vowel-bearing) that the heuristics would
-    # otherwise lower-case ("UCSF" → "Ucsf"). Surface directly from a street
-    # field (e.g. "UCSF; 600 16th Ave") before ROR resolves them, so they must
-    # keep their casing. The 3-char campuses (UCI, UCR, UCB, UCD) are already
-    # kept by the length rule.
-    "UCSF", "UCSD", "UCLA", "UCSB", "UCSC", "SUNY", "CUNY", "UMASS",
-    "UPENN", "UCONN",
+    # otherwise title-case ("NREL" → "Nrel"). Extend as they come up. The ones
+    # that are universities live in `_UNIVERSITY_ACRONYMS` below.
+    "NIST", "NREL", "SLAC", "CERN", "CNRS", "CSIRO",
 }
+
+# University acronyms written as the whole Name 1 ("UCSF"). They keep their
+# casing (the heuristics would otherwise lower-case "UCSF" → "Ucsf"; they
+# surface directly from a street field, e.g. "UCSF; 600 16th Ave", before ROR
+# resolves them) AND they count as a university for the missing-department
+# issue codes, whose word regex cannot see a university in "UCSF".
+#
+# The 3-char campuses (UCI, UCR, UCB, UCD) are left out: they are already
+# kept upper by the length rule, and as org signals they collide with company
+# initialisms — UCB is UCB Pharma. `PARENT_ORG_ACRONYMS` is left out too:
+# NASA, NIH and USDA are agencies whose centres are units in their own right,
+# not labs short of a department.
+_UNIVERSITY_ACRONYMS: frozenset[str] = frozenset({
+    "UCSF", "UCSD", "UCLA", "UCSB", "UCSC", "SUNY", "CUNY", "UMASS",
+    "UPENN", "UCONN", "NJIT", "TUHH", "CCSF",
+})
+_KEEP_UPPER_ACRONYMS |= _UNIVERSITY_ACRONYMS
 # Every parent-org acronym is by definition an acronym, so it keeps its casing
 # too. Folded in rather than duplicated: one edit to PARENT_ORG_ACRONYMS is
 # enough, and the two lists can never disagree about whether "USDA" is a word.
@@ -996,6 +1007,18 @@ _UNIVERSITY_OR_RESEARCH_SIGNALS_RE = re.compile(
 )
 
 
+# A university acronym is not enough on its own when the rest of the name says
+# hospital: "Ronald Reagan UCLA Medical Center" and "UCSF Health" are the
+# clinical enterprise, which routinely has no department. Applied only to the
+# acronym path — the word regex above already decides "University of X Medical
+# Center" and this does not revisit that.
+_CLINICAL_SIGNALS_RE = re.compile(
+    r"\b(?:Hospitals?|Clinics?|Health|Healthcare|"
+    r"Med(?:ical)?\.?\s+(?:Cent(?:er|re)|Ctr))\b",
+    re.IGNORECASE,
+)
+
+
 def looks_like_university_or_research_institute(name: str | None) -> bool:
     """Heuristic: does *name* read as a university, research institute,
     college or academy?
@@ -1005,10 +1028,22 @@ def looks_like_university_or_research_institute(name: str | None) -> bool:
     health systems) and standalone labs/observatories. Used to gate the
     missing-department issue codes so they only fire for org types where
     a department is actually expected.
+
+    A university acronym standing as a whole word ("UCSF", "CALM/UCSD")
+    counts too — see ``_UNIVERSITY_ACRONYMS`` — unless the name reads as
+    the university's clinical arm ("UCSF Health", "Harbor-UCLA Medical
+    Center"), which is the org type this gate exists to leave out.
     """
     if not name or not name.strip():
         return False
-    return bool(_UNIVERSITY_OR_RESEARCH_SIGNALS_RE.search(name))
+    if _UNIVERSITY_OR_RESEARCH_SIGNALS_RE.search(name):
+        return True
+    if _CLINICAL_SIGNALS_RE.search(name):
+        return False
+    return any(
+        tok in _UNIVERSITY_ACRONYMS
+        for tok in re.split(r"[^A-Z0-9]+", name.upper())
+    )
 
 
 def is_granular_unit(text: str | None) -> bool:
@@ -1076,6 +1111,40 @@ def is_granular_unit(text: str | None) -> bool:
             return True
 
     return False
+
+
+# The laboratory vocabulary — the only granular units UC 13 asks a parent
+# department for. A deliberate subset of `is_granular_unit`: centres, cores,
+# facilities, groups, units and programmes are still granular (UC 4 / UC 5
+# still refuse them as a department) but they are not sent to the lab
+# resolver. "Lab" / "Lab." reach here already expanded to "Laboratory" by
+# `expand_abbreviations`; "Labs" is not expanded, so it is listed itself.
+# `laborat\w*` rather than the two whole words because SAP's 35-character
+# field cuts the word where it falls ("Fermi National Accelerator Laborato").
+# It stops short of "Labor", which is "Department of Labor", not a lab.
+_LAB_WORDS = r"(?:labs?|laborat\w*)"
+_IN_SCOPE_HEAD_RE = re.compile(
+    r"^(?:department|division|school|college|faculty)\s+(?:of|for)\s+",
+)
+_LAB_SUFFIX_RE = re.compile(rf"\b\S+\s+{_LAB_WORDS}\.?$")
+_LAB_PREFIX_RE = re.compile(rf"^{_LAB_WORDS}\s+(?:of|for)\s+")
+
+
+def is_lab_unit(text: str | None) -> bool:
+    """Return True when *text* names a laboratory — "Smith Lab",
+    "NMR Labs", "Bronson Diagnostic Laboratories", "Laboratory of X".
+
+    Same two shapes as :func:`is_granular_unit` (lab word as the last word
+    after at least one other, or as the first word followed by of/for), and
+    the same exemption for department-level heads: "Department of Pathology
+    and Laboratory Medicine" is a department.
+    """
+    if not text or not text.strip():
+        return False
+    lowered = (expand_abbreviations(text) or text).strip().lower()
+    if _IN_SCOPE_HEAD_RE.match(lowered):
+        return False
+    return bool(_LAB_SUFFIX_RE.search(lowered) or _LAB_PREFIX_RE.match(lowered))
 
 
 def is_unit_construction(text: str | None) -> bool:

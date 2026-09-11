@@ -256,6 +256,7 @@ from utils.text_utils import (
     is_admin_unit,
     is_blank,
     is_granular_unit,
+    is_lab_unit,
     looks_like_research_institution,
     normalise_case,
     ordered_unit_word,
@@ -8709,13 +8710,17 @@ class Orchestrator:
                     result["use_cases_triggered"].append(6)
                 return await self._finalise_and_return(result, start, record, cache)
 
-            # ── UC 13 / Rule A-15: Lab/group/centre → parent dept ─────
-            # When the input Name2 names a granular research unit (lab,
-            # research group, centre, core, facility, unit, program),
-            # look up the parent academic department on the
-            # institution's site. If found: the parent department
-            # becomes Name2 and the original lab name shifts to Name3
-            # (when Name3 is empty).
+            # ── UC 13 / Rule A-15: Lab → parent dept ──────────────────
+            # When the input Name2 names a laboratory (lab, labs,
+            # laboratory, laboratories — `is_lab_unit`), look up the
+            # parent academic department on the institution's site. If
+            # found: the parent department becomes Name2 and the original
+            # lab name shifts to Name3 (when Name3 is empty).
+            #
+            # Labs only. Groups, centres, cores, facilities, units and
+            # programmes are still granular — the UC 4 / UC 5 scope filters
+            # below still refuse them as a department — but they are not
+            # looked up here; they pass through to the later tiers as-is.
             #
             # Skip when ROR child match already resolved Name2 to a
             # non-granular (department-level) name — Tier 1's answer
@@ -8730,7 +8735,7 @@ class Orchestrator:
             can_lab_resolve = (
                 result["routing_type"] == "research_institution"
                 and bool(pp_name2 and pp_name2.strip())
-                and is_granular_unit(pp_name2)
+                and is_lab_unit(pp_name2)
                 and not ror_child_resolved
             )
             if can_lab_resolve:

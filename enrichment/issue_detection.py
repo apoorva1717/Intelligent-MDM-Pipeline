@@ -297,7 +297,11 @@ ISSUE_CATALOGUE: dict[str, IssueDefinition] = dict([
     _d("G2-VAL-004", "G2", "Region Missing", "Region", True, "DS", "raw", "steward"),
     _d("G2-VAL-007", "G2", "Search Term 1 Missing", "Search Term 1", True, "DS", "raw", "rule"),
     _d("G2-VAL-008", "G2", "Country Missing", "Country", True, "DS", "raw", "rule"),
-    _d("G2-NAME-009", "G2", "Lab Without Department", "Name 2", False, "API", "raw", "enrichment"),
+    _d(
+        "G2-NAME-009", "G2",
+        "Lab Without Department (university / research institute)",
+        "Name 2", False, "API", "raw", "enrichment",
+    ),
     _d(
         "G2-NAME-012", "G2",
         "Research Institution Missing Department "
@@ -1388,14 +1392,20 @@ def _detect_missing(
     # unit but is not a desk either, and is left out deliberately rather than
     # by oversight — widening to it is a separate decision with its own
     # false-positive profile.
-    if (
-        looks_like_university_or_research_institute(record.name_1)
-        and classify(record.name_2 or "") in ("empty", "admin")
-    ):
+    academic = looks_like_university_or_research_institute(record.name_1)
+    if academic and classify(record.name_2 or "") in ("empty", "admin"):
         found.add("G2-NAME-012")
 
     # G2-NAME-009 — a granular research group in any department slot with no
     # parent department anywhere else in the name block.
+    #
+    # Same Name 1 gate as G2-NAME-012. The rule encodes an academic hierarchy
+    # (lab ⊂ department ⊂ institution); in a company a laboratory reporting to
+    # a site or a division IS the structure. "Merck Research Laboratories"
+    # under Merck & Co. and "Baytown Refinery Laboratory" under ExxonMobil are
+    # complete names with nothing missing above them, and ungated the rule
+    # reported both. An agency's field centre ("Ames Research Center" under
+    # NASA) is out for the same reason: it is a unit in its own right.
     #
     # A continuation slot cannot be the granular unit. "The University of
     # Texas at San Antonio Health Science Center" is 58 characters and the
@@ -1406,7 +1416,7 @@ def _detect_missing(
     # that ran out. It stays in `others`, because the question asked of the
     # OTHER slots is whether a parent is stated anywhere, and the piece is
     # still text in the block.
-    for i, value in enumerate(dept_values):
+    for i, value in enumerate(dept_values if academic else ()):
         if RECORD_NAME_FIELDS[i + 1] in continuations:
             continue
         if not is_granular_unit(value):

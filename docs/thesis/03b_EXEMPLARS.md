@@ -383,12 +383,18 @@ supply the measurement.
 
 ### 3b.4.2 Issues raised on the raw record
 
-`Issues` = `G1-ADDR-003; G2-NAME-009`.
+`Issues` = `G1-ADDR-003`.
 
 | Code | Catalogue | Predicate | Value |
 |---|---|---|---|
 | `G1-ADDR-003` | `:266` | `_SUITE_PATTERNS` — `:1093-1100` | `BLDG N239 ROOM` in Street 1 |
-| `G2-NAME-009` | `:298` Lab Without Department | a granular unit in a department slot with no parent department elsewhere in the block — `:1256-1266` | Name 2 `Ames Research Center`, `is_granular_unit` → `True` |
+
+⚠ The snapshot `Issues` column reads `G1-ADDR-003; G2-NAME-009`. `G2-NAME-009` is no
+longer emitted here: it is now gated on `looks_like_university_or_research_institute(Name 1)`,
+the same gate as `G2-NAME-012`, and `NASA` is not a university or research institute. The
+rule encodes lab ⊂ department ⊂ institution; an agency's field centre is a unit in its own
+right, not a lab short of a department. `Ames Research Center` is still `is_granular_unit`
+→ `True` — it is the gate, not the unit test, that stays silent.
 
 ⚠ `expected_issue_codes` reads `G1-ADDR-003;G5-NAME-001`. `G5-NAME-001` is **not**
 emitted and cannot be: `_is_non_canonical_name("NASA", _NONCANON_TOKENS_ORG)` → `False`
@@ -438,12 +444,13 @@ canonicalisation**, not on the first Tier 1 call — a distinction the shipped
 
 ### 3b.4.5 Issues remaining
 
-`Issues` = `G2-NAME-009`.
+`Issues` = *(empty)*. (The snapshot reads `G2-NAME-009`; see §3b.4.2 for why it is no
+longer emitted.)
 
 | Code | Pre | Post | Why |
 |---|---|---|---|
 | `G1-ADDR-003` | ✓ | — | `N239` sits in `Building` |
-| `G2-NAME-009` | ✓ | ✓ | `Ames Research Center` is still granular and no parent department appears anywhere in the name block; `remedy="enrichment"` (`:298`) and enrichment did not supply one |
+| `G2-NAME-009` | — | — | Name 1 `National Aeronautics and Space Administration` does not pass the university / research-institute gate, on either side |
 
 ### 3b.4.6 Cluster — `stress_200_scored.xlsx`, `c_4b36bea42391`
 

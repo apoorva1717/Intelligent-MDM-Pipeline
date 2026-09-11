@@ -597,6 +597,58 @@ def test_g2_name_009_lab_without_department():
     assert "G2-NAME-009" in detect_issues(rec)
 
 
+@pytest.mark.parametrize("name1, name2", [
+    ("Merck & Co., Inc.", "Merck Research Laboratories"),
+    ("Ford Motor Company", "Research and Engineering Center"),
+    ("3M Company", "Research Materials Laboratory"),
+    ("ExxonMobil", "Baytown Refinery Laboratory"),
+    ("Acme Corp", "Park St. Laboratory"),
+])
+def test_g2_name_009_not_raised_for_a_corporate_lab(name1, name2):
+    """The rule encodes lab ⊂ department ⊂ institution. In a company a lab
+    under a site or division is the structure, not a missing department."""
+    rec = _record(**{"Name 1": name1, "Name 2": name2})
+    assert "G2-NAME-009" not in detect_issues(rec)
+
+
+def test_g2_name_009_not_raised_for_an_agency_field_centre():
+    """S3's exemplar. Ames is a NASA centre in its own right."""
+    rec = _record(**{"Name 1": "NASA", "Name 2": "Ames Research Center"})
+    assert "G2-NAME-009" not in detect_issues(rec)
+
+
+def test_g2_name_009_fires_under_a_university_acronym():
+    """S5's exemplar. The word regex cannot see a university in "UCSF"; the
+    acronym set is what keeps this true positive under the gate."""
+    rec = _record(**{"Name 1": "UCSF", "Name 2": "Emanuela Zacco - LCA Core"})
+    assert "G2-NAME-009" in detect_issues(rec)
+
+
+def test_g2_name_012_fires_under_a_university_acronym():
+    """Shared predicate: the acronym widening reaches G2-NAME-012 too, so the
+    two missing-department codes cannot disagree about what a university is."""
+    rec = _record(**{"Name 1": "UCSF", "Name 2": ""})
+    assert "G2-NAME-012" in detect_issues(rec)
+
+
+@pytest.mark.parametrize("name1", [
+    "UCSF Health",
+    "Harbor-UCLA Medical Center",
+    "Ronald Reagan UCLA Medical Center",
+])
+def test_a_university_acronyms_clinical_arm_is_not_a_university(name1):
+    """S4 rows. The acronym path must not reopen the clinical exclusion the
+    gate exists for."""
+    rec = _record(**{"Name 1": name1, "Name 2": ""})
+    assert "G2-NAME-012" not in detect_issues(rec)
+
+
+def test_three_letter_campus_acronyms_are_not_university_signals():
+    """UCB is UCB Pharma as often as it is Berkeley."""
+    rec = _record(**{"Name 1": "UCB", "Name 2": ""})
+    assert "G2-NAME-012" not in detect_issues(rec)
+
+
 def test_missing_department_without_contact_raises_only_name_012():
     # A research institution with no department raises G2-NAME-012, and only
     # that: both G2-CONTACT-* codes are withdrawn in Catalogue v2, which is
