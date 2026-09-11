@@ -176,6 +176,73 @@ class TestPreferredVariant:
 
 
 # ---------------------------------------------------------------------------
+# An acronym variant is never kept — the display name spells it out
+# ---------------------------------------------------------------------------
+
+#: ror.org/042nb2s44, trimmed. ROR lists the acronym among the names, which is
+#: what let a record saying "MIT" match it verbatim and keep the acronym.
+_MIT_ORG: dict[str, Any] = {
+    "id": "https://ror.org/042nb2s44",
+    "types": ["education"],
+    "names": [
+        {"types": ["ror_display", "label"],
+         "value": "Massachusetts Institute of Technology"},
+        {"types": ["acronym"], "value": "MIT"},
+    ],
+    "links": [{"type": "website", "value": "https://web.mit.edu"}],
+    "locations": [{"geonames_details": {
+        "country_code": "US", "country_name": "United States",
+        "country_subdivision_code": "MA",
+        "country_subdivision_name": "Massachusetts", "name": "Cambridge",
+    }}],
+    "relationships": [],
+}
+
+
+class TestAcronymVariant:
+    @pytest.mark.parametrize("incumbent, display, variants", [
+        ("MIT", "Massachusetts Institute of Technology",
+         ["Massachusetts Institute of Technology", "MIT"]),
+        ("m.i.t.", "Massachusetts Institute of Technology",
+         ["Massachusetts Institute of Technology", "MIT"]),
+        # A historical acronym spells nothing in the current name and is
+        # still an abbreviation.
+        ("NBS", "National Institute of Standards and Technology",
+         ["National Institute of Standards and Technology", "NIST", "NBS"]),
+        # An acronym leading a longer variant, spelling the display out.
+        ("UC San Diego", "University of California San Diego",
+         ["University of California San Diego", "UC San Diego", "UCSD"]),
+        ("NIWC Pacific", "Naval Information Warfare Center Pacific",
+         ["Naval Information Warfare Center Pacific", "NIWC Pacific"]),
+    ])
+    def test_acronym_incumbent_takes_the_display_name(
+        self, incumbent, display, variants,
+    ):
+        assert _preferred_registry_variant(
+            incumbent, display, variants,
+        ) == display
+
+    def test_an_acronym_that_spells_nothing_in_the_name_is_kept(self):
+        # "USA" is not an abbreviation of Siemens Healthcare; the variant is a
+        # trading name the record states.
+        assert _preferred_registry_variant(
+            "Siemens Healthineers USA", "Siemens Healthcare",
+            TestPreferredVariant.VARIANTS,
+        ) == "Siemens Healthineers USA"
+
+    def test_a_display_name_that_is_an_acronym_is_the_name(self):
+        assert _preferred_registry_variant(
+            "IBM", "IBM", ["IBM", "International Business Machines"],
+        ) == "IBM"
+
+    def test_a_shouting_registry_word_is_not_an_acronym(self):
+        assert _preferred_registry_variant(
+            "Bayer", "BAYER AKTIENGESELLSCHAFT",
+            ["BAYER AKTIENGESELLSCHAFT", "BAYER"],
+        ) == "BAYER"
+
+
+# ---------------------------------------------------------------------------
 # End to end
 # ---------------------------------------------------------------------------
 
@@ -211,3 +278,27 @@ class TestEndToEnd:
         )
         assert r.ror_id == "https://ror.org/03zzw1w08"
         assert r.name1_enriched == "Mayo Clinic in Florida"
+
+    @pytest.mark.asyncio
+    async def test_a_ror_hit_on_an_acronym_ships_the_full_name(self):
+        r = await _run(
+            _orch(_StubROR({"mit": _MIT_ORG})),
+            name1="MIT", city="Cambridge", state="MA",
+        )
+        assert r.ror_id == "https://ror.org/042nb2s44"
+        assert r.name1_enriched == "Massachusetts Institute of Technology"
+
+    @pytest.mark.asyncio
+    async def test_a_bare_parent_acronym_no_registry_matched_is_expanded(self):
+        r = await _run(_orch(_StubROR({})), name1="NASA", city="Houston",
+                       state="TX")
+        assert r.ror_id is None
+        assert r.name1_enriched == (
+            "National Aeronautics and Space Administration"
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_acronym_with_no_known_expansion_is_left_alone(self):
+        r = await _run(_orch(_StubROR({})), name1="ZKTW", city="Houston",
+                       state="TX")
+        assert r.name1_enriched == "ZKTW"

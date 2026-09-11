@@ -703,7 +703,9 @@ if ror_parent["matched"] and not _match_was_exact(...) and
 On acceptance the write is unconditional — there is no second threshold
 (`:8172-8180`) — and goes through `_write_registry_name` (`:1049`), which prefers the
 record's own spelling when ROR publishes it as a variant
-(`_preferred_registry_variant`, `:851`). Then: `ror_id`, `tier_used = 1`,
+(`_preferred_registry_variant`, `:851`) — unless that variant is an acronym
+(`_variant_is_acronym`): a record saying "MIT" ships "Massachusetts Institute of
+Technology", not ROR's acronym entry. Then: `ror_id`, `tier_used = 1`,
 `source = "ROR"`, `confidence = "high"`, `routing_type` from
 `is_research_institution` (`:8248-8250`), `_apply_domain` (`:8250-8256`), and — for a
 company — `_run_lei_lookup` (`:8263-8266`).

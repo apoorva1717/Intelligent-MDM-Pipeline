@@ -243,6 +243,7 @@ from utils.domain_resolver import (
     canonicalise_domain,
 )
 from utils.text_utils import (
+    PARENT_ORG_ACRONYMS,
     UNIT_SLOT_RANK,
     acronym_matches_name,
     canonical_is_spelling_variant,
@@ -884,15 +885,77 @@ def _preferred_registry_variant(
     Everything else is unchanged. A name the registry does NOT publish — "Mayo
     Clinic FLA" against ror.org/03zzw1w08 — matches no variant, and the display
     name wins, which is the whole point of the registry name write.
+
+    An ACRONYM variant is never preferred (:func:`_variant_is_acronym`). ROR
+    lists "MIT" among the names of ror.org/042nb2s44, so a record saying "MIT"
+    matched it verbatim and shipped "MIT" — registry-owned, and so skipped by
+    the expansion pass in :func:`finalise` too. An acronym is not a name the
+    organisation trades under in the Siemens Healthineers sense; it is the
+    abbreviation the registry write exists to spell out.
     """
     if not (incumbent and incumbent.strip()):
         return display
     for variant in variants or ():
         if not (variant and variant.strip()):
             continue
+        if _variant_is_acronym(variant, display):
+            continue
         if names_match_verbatim(incumbent, variant):
             return variant.strip()
     return display
+
+
+def _acronym_token(token: str) -> str | None:
+    """*token*'s letters when it is written as an acronym ("MIT", "U.C."),
+    else None. Registry spelling only: a registry writes words in mixed case,
+    so an all-caps token in one of its names is an acronym, not SAP shouting."""
+    letters = token.strip(".,;:()").replace(".", "")
+    if letters.isalpha() and letters.isupper() and 2 <= len(letters) <= 6:
+        return letters
+    return None
+
+
+def _variant_is_acronym(variant: str, display: str) -> bool:
+    """Whether registry *variant* abbreviates the organisation rather than
+    naming it — an acronym the display name should be written out in place of.
+
+    Two shapes:
+
+    * the whole variant is one acronym ("MIT", "UCSF", "NBS"). Initials are not
+      checked: a registry's historical acronym ("NBS" for NIST) spells nothing
+      in the current display name and is still an abbreviation;
+    * a variant that LEADS WITH or contains an acronym spelling the display
+      name out ("UC San Diego", "NIWC Pacific") — the same resolver
+      :func:`_registry_unit_acronym` uses. "Siemens Healthineers USA" is not
+      one: "USA" spells nothing in "Siemens Healthcare", so that variant is
+      still a name the record may keep.
+
+    The display name itself is never an acronym variant — when the registry
+    displays "IBM", "IBM" is the name. A false positive here costs little: the
+    variant is merely not preferred, and the display name ships, which is the
+    Fix 4 default.
+    """
+    from utils.name_identity import _acronym_expansion, _tokens
+
+    if variant.strip().lower() == display.strip().lower():
+        return False
+    parts = variant.split()
+    # A registry that publishes in capitals ("BAYER AG") says nothing with its
+    # case, so a lone capitalised token there needs the spelling check too.
+    shouting = display.upper() == display
+    if len(parts) == 1 and not shouting:
+        return _acronym_token(parts[0]) is not None
+    target = _tokens(display)
+    for part in parts:
+        letters = _acronym_token(part)
+        if not letters:
+            continue
+        if acronym_matches_name(letters, display) or any(
+            _acronym_expansion(letters.lower(), target, i) >= 2
+            for i in range(len(target))
+        ):
+            return True
+    return False
 
 
 def _canonical_short_circuit_enriched(
@@ -2635,6 +2698,29 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
             result.transform(
                 f"{field}_enriched", expand_abbreviations(val) or val,
                 rule_id="fix4:expand-abbreviations",
+            )
+
+    # A name that is STILL only an acronym once every lane has run. A registry
+    # hit spells it out on the way in (`_preferred_registry_variant` no longer
+    # keeps ROR's "MIT"); this is the backstop for a record no registry
+    # matched, and it expands only from `PARENT_ORG_ACRONYMS`, the one list
+    # that asserts an official full name. An acronym with no known expansion
+    # is left as written — guessing one is how a record gets renamed to a
+    # different organisation. Registry-owned fields are skipped for the same
+    # reason as above: there the registry itself displays the acronym.
+    for field in NAME_SLOTS:
+        if field in registry_named:
+            continue
+        val = result.get(f"{field}_enriched")
+        letters = (
+            _acronym_token(val.strip())
+            if val and len(val.split()) == 1 else None
+        )
+        full = PARENT_ORG_ACRONYMS.get(letters) if letters else None
+        if full:
+            result.transform(
+                f"{field}_enriched", full,
+                rule_id="acronym:expand-bare-acronym",
             )
 
     # Guarantee the short legal form on the final output regardless of source
