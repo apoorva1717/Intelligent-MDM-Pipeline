@@ -251,11 +251,14 @@ company or unknown, `high` is rank 2 (`:803–804`). A rank reached on locality 
 on the host is never `high` (`:805–811`). **Path C (LLM) is always `low`** (`:1109`), and the
 country gate applies on that path too.
 
-**Department-URL probe.** `_probe_department_url` (`enrichment/orchestrator.py:4656–5082`). Eight
-gates, all before any network call (`:4697–4752`), in this order: `routing_type !=
-"research_institution"`; `department_domain` already set; no institution domain; no Name 2;
-`is_admin_unit(name2)`; `identifies_nothing(name2, result)`; Name 2 is an address or pure location
-fragment; `is_granular_unit(name2)`.
+**Department-URL probe.** `_probe_department_url` (`enrichment/orchestrator.py:4656–5082`). Nine
+gates, all before any network call, in this order: `department_domain` already set; no
+institution domain; no Name 2; Name 2 is a Tier 3 guess finalise will drop
+(`_is_droppable_tier3_guess`); `is_admin_unit(name2)`; `identifies_nothing(name2, result)`; Name 2
+is an address or pure location fragment; `is_granular_unit(name2)`; Name 2 names a legal entity
+(`_names_a_legal_entity`: a trailing legal form — LLC, Inc, Co, Corp, Ltd, GmbH… — or a DBA
+marker). Any organisation type: the probe looks up the web home of the unit Name 2 already
+names, so what gates it is what Name 2 holds, not what kind of organisation Name 1 is.
 
 Scoring, per candidate host (`_score_dept_candidate`, `:542–596`):
 

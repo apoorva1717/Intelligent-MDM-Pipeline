@@ -389,7 +389,16 @@ class TestRoutingUnchanged:
         assert out.record_type == RESEARCH
 
     @pytest.mark.asyncio
-    async def test_company_routing_still_skips_the_department_probe(self):
+    @pytest.mark.parametrize(("name2", "probed"), [
+        # The probe is no longer research-only: a unit Name 2 names at a
+        # company has a web home to look up like any other.
+        ("Department of Chemistry", True),
+        # A legal entity in Name 2 is a company, not a unit of this one.
+        ("Bruker Nano GmbH", False),
+    ])
+    async def test_company_routing_reaches_the_department_probe(
+        self, monkeypatch, name2, probed,
+    ):
         from tests.mocks.openai_mock import MockOpenAIClient
         from tests.mocks.page_mock import MockPageFetcher
         from tests.mocks.serp_mock import MockSearchClient
@@ -398,16 +407,25 @@ class TestRoutingUnchanged:
             "search": MockSearchClient(), "page_fetcher": MockPageFetcher(),
             "llm": MockOpenAIClient(),
         })
+        # Resolving the probe base is the first thing the probe does once
+        # every gate has passed.
+        reached: list[str] = []
+
+        async def _base(result, base, cache):
+            reached.append(base)
+            return base
+
+        monkeypatch.setattr(orch, "_resolve_probe_base", _base)
         rec = EnrichmentRecord(record_id="Y", name1="Bruker Corporation",
                                country="US")
         result = _init_result(rec)
         seed(
             result,
             name1_enriched="Bruker Corporation",
-            name2_enriched="Department of Chemistry",
+            name2_enriched=name2,
             routing_type="company",
             domain="bruker.com",
         )
-        out = await orch._finalise_and_return(
+        await orch._finalise_and_return(
             result, time.monotonic(), rec, BatchCache())
-        assert out.department_domain is None
+        assert bool(reached) is probed

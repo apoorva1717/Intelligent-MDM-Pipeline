@@ -916,7 +916,11 @@ in `_resolve_person_affiliation` (`enrichment/orchestrator.py:5163`):
    which rejects a wrong-country match;
 2. the official name, identifier and domain are taken from **ROR**, never from a
    website-resolver guess;
-3. the record short-circuits either way.
+3. the record short-circuits either way;
+4. a department — Tier 2A on the confirmed domain, or failing that the one the lookup
+   proposed — is written only when ROR's official name passes
+   `looks_like_university_or_research_institute`, the gate every other department lookup
+   uses. The institution, identifier and domain are written for any org type.
 
 ### 3.7.5 Worked example
 
@@ -941,18 +945,26 @@ Recorded for `08_GAPS.md`.
 Four lanes sit between Tier 1 and the grounded resolver. They run in this order and
 each can short-circuit.
 
-### 3.8.1 UC 13 — lab / group / centre → parent department
+### 3.8.1 UC 13 — lab → parent department
 
-Gate (`enrichment/orchestrator.py:8635-8640`):
+Gate (`enrichment/orchestrator.py:8747-8754`):
 
 ```
-can_lab_resolve = routing_type == "research_institution"
+can_lab_resolve = looks_like_university_or_research_institute(name1_enriched or pp_name1)
                   and pp_name2 non-blank
-                  and is_granular_unit(pp_name2)
+                  and is_lab_unit(pp_name2)
                   and not ror_child_resolved
 ```
 
-`ror_child_resolved` (`:8630-8634`) is true when the ROR child match already produced a
+The first condition is the Name 1 check `G2-NAME-009` uses, applied to the Name 1 the
+record ships with. It is not `routing_type`, which is `research_institution` for every
+ROR type other than `company` (healthcare, government, facility, nonprofit…): a lab under
+NASA, a hospital or a company has no academic department above it to find. The lookup is
+that code's remedy, so it runs on exactly the records the code can report. `is_lab_unit`
+admits labs only; groups, centres, cores and facilities are still granular but are not
+looked up.
+
+`ror_child_resolved` (`:8741-8746`) is true when the ROR child match already produced a
 non-granular Name 2 — Tier 1's answer is authoritative and is not overwritten.
 
 `run_lab_resolver` (`enrichment/lab_resolver.py:1-167`) searches the institution's
@@ -1046,14 +1058,18 @@ A failed call is a `transform` back to the input value, not an input write
 ### 3.8.3 Tier 2A — contact lookup
 
 Gate, computed early so the canonical short-circuit does not steal the population
-(`enrichment/orchestrator.py:8760-8770`, comment `:8753-8759`):
+(`enrichment/orchestrator.py:8880-8887`):
 
 ```
-can_do_contact_lookup = routing_type == "research_institution"
+can_do_contact_lookup = looks_like_university_or_research_institute(name1_enriched or pp_name1)
                         and pp_contact non-blank
                         and not multi_contact
                         and institution_domain is not None
 ```
+
+The first condition is the same Name 1 check as the UC 13 lab lookup (§3.8.1) and
+`G2-NAME-009/-012`, not `routing_type`: a contact at an agency, a hospital or a company has
+no academic department to find on the site.
 
 `run_tier2a` (`enrichment/tier2a_contact.py:74-193`) runs in one of two modes, chosen
 by `is_blank(name2)` (`:90`): `2A_population` or `2A_verification`.
@@ -1484,18 +1500,23 @@ refuting the site outright (`enrichment/flags.py:130-137`).
 
 `_probe_department_url` (`enrichment/orchestrator.py:4656-5082`).
 
-**Gates, all before any network call** (`:4699-4747`):
+**Gates, all before any network call** — for any organisation type:
 
 ```
-routing_type != "research_institution"      → return          # :4699-4700
-department_domain already set               → return          # :4701-4702
-no institution domain                       → return          # :4703-4705
-no name2                                    → return          # :4706-4712
-is_admin_unit(name2)                        → return          # :4713-4721  (§5a)
-identifies_nothing(name2, result)           → return          # :4722-4733
-name2 is an address or location fragment    → return          # :4734-4745
-is_granular_unit(name2)                     → return          # :4746-4752
+department_domain already set               → return
+no institution domain                       → return
+no name2                                    → return
+_is_droppable_tier3_guess(result, "name2")  → return          # finalise §6c drops it
+is_admin_unit(name2)                        → return          # §5a
+identifies_nothing(name2, result)           → return
+name2 is an address or location fragment    → return
+is_granular_unit(name2)                     → return
+_names_a_legal_entity(name2)                → return          # LLC/Inc/Co…, DBA
 ```
+
+The probe was research-only until 2026-09-11. It does not infer a department; it looks up the
+web home of the unit Name 2 already names, and a company division or a county department has
+one as surely as a university department. What Name 2 holds is what gates it.
 
 **Needles** (`:4754-4770`): the donor-name prefix is stripped by `extract_dept_core`
 (`"Russell H. Morgan Department of Radiology…"` → `"Radiology…"`), the phrase is cleaned

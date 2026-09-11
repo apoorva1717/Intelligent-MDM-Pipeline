@@ -126,7 +126,7 @@ which the edges do not imply sequence, is figure 8 (`fig-08-enrich-tier-ladder.m
 | 10b | Tier 3 (degraded mode only) | `:9174` | 1 LLM call, no evidence |
 
 Escalation is conditional, and the conditions are computed before the lane runs. Tier 2A's
-gate is `can_do_contact_lookup` (`:8778–8783`): a research institution, exactly one contact, and
+gate is `can_do_contact_lookup` (`:8880–8887`): an academic institution (the Name 1 check `G2-NAME-009` uses), exactly one contact, and
 a known institution domain. It is deliberately computed early — `:8771–8777`: "This must be
 known BEFORE the canonical short-circuit below, because that short-circuit returns for every
 record with a populated Name 2 — which is exactly the population Tier 2A verification mode

@@ -258,6 +258,7 @@ from utils.text_utils import (
     is_granular_unit,
     is_lab_unit,
     looks_like_research_institution,
+    looks_like_university_or_research_institute,
     normalise_case,
     ordered_unit_word,
     smart_title_case,
@@ -1616,6 +1617,39 @@ _LEGAL_TAILS: frozenset[str] = frozenset(
     t.strip().strip(".,").lower() for t in LEGAL_SUFFIXES
 )
 
+#: Legal forms that are also ordinary words or abbreviations in a unit name —
+#: "Dept of Ag Economics", "Facilities SE". Read as a legal form only when
+#: another legal form stands before them ("GmbH & Co. KG").
+_AMBIGUOUS_LEGAL_TAILS: frozenset[str] = frozenset({"ag", "sa", "se", "ab", "kg"})
+
+
+def _names_a_legal_entity(value: str | None) -> bool:
+    """True when *value* ends in a legal form or carries a DBA marker.
+
+    "Billerud Quinnesec LLC", "Flagship Pioneering Co", "DBA Microsemi
+    Lowell". A value like that names a company — a subsidiary, a trading
+    name, the rest of Name 1 — not a unit of the organisation, so it has no
+    department web home. Trailing only: a legal form is a suffix.
+    """
+    if not value or not value.strip():
+        return False
+    if dba_payload(value) is not None:
+        return True
+    tokens = [
+        t.strip(".,;:()").lower() for t in value.split() if t.strip(".,;:()&")
+    ]
+    if not tokens:
+        return False
+    last = tokens[-1]
+    if last in _LEGAL_TAILS and last not in _AMBIGUOUS_LEGAL_TAILS:
+        return True
+    return (
+        last in _AMBIGUOUS_LEGAL_TAILS
+        and len(tokens) >= 2
+        and tokens[-2] in _LEGAL_TAILS
+    )
+
+
 _SITE_QUALIFIER_RE = re.compile(
     r"^(?P<head>.+?)\s*(?:\s+at\s+|\s+[-\u2013\u2014]\s+|,\s*)(?P<tail>\S.*)$",
     re.IGNORECASE,
@@ -2455,6 +2489,23 @@ def _slot_input_value(result: Any, slot: str) -> str | None:
     return None
 
 
+def _is_droppable_tier3_guess(result: dict[str, Any], slot: str) -> bool:
+    """True when *slot* holds a unit Tier 3 invented and `finalise` will drop.
+
+    The input slot was blank, only Tier 3 filled it, and not with high
+    confidence (item 6c). Shared so the department probe does not spend a
+    page fetch and a SERP call looking up the web home of a unit the record
+    is not going to ship.
+    """
+    return bool(
+        result.get("tier_used") == 3
+        and str(result.get("confidence") or "").lower() != "high"
+        and result.get(f"_{slot}_from_tier3")
+        and result.get(f"{slot}_enriched")
+        and not _slot_input_value(result, slot)
+    )
+
+
 def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     """Apply empty-string guards and compute changed flags.
 
@@ -2486,38 +2537,30 @@ def finalise(result: dict[str, Any], start: float) -> dict[str, Any]:
     # (e.g. "St. Louis Site" invented from nothing). Applies to every slot
     # below Name 1 — a fabricated Name 4 is no more defensible than a
     # fabricated Name 2.
-    if result.get("tier_used") == 3 and str(
-        result.get("confidence") or ""
-    ).lower() != "high":
-        for _slot in DEPT_SLOTS:
-            _orig = _slot_input_value(result, _slot)
-            if (
-                result.get(f"_{_slot}_from_tier3")
-                and result.get(f"{_slot}_enriched")
-                and not _orig
-            ):
-                logger.info(
-                    "[%s] Tier 3 %s guess dropped (input blank, confidence=%s): %r",
-                    result.get("record_id"), _slot, result.get("confidence"),
-                    result.get(f"{_slot}_enriched"),
-                )
-                # No flag: the input slot was blank and the output slot is
-                # blank. Nothing was dropped and nothing is uncertain — the
-                # record simply has no unit there, which is not a defect.
-                # Recorded as a write, not a transform: dropping the value is
-                # a decision about the field, and the log is what shows a
-                # reviewer that Tier 3 offered one and the rule refused it.
-                _write(
-                    result, f"{_slot}_enriched", None,
-                    deterministic_evidence(
-                        "item6c:tier3-guess-dropped",
-                        producer="finalise", tier=3,
-                        evidence_ref={
-                            "dropped": result.get(f"{_slot}_enriched"),
-                            "confidence": result.get("confidence"),
-                        },
-                    ),
-                )
+    for _slot in DEPT_SLOTS:
+        if _is_droppable_tier3_guess(result, _slot):
+            logger.info(
+                "[%s] Tier 3 %s guess dropped (input blank, confidence=%s): %r",
+                result.get("record_id"), _slot, result.get("confidence"),
+                result.get(f"{_slot}_enriched"),
+            )
+            # No flag: the input slot was blank and the output slot is
+            # blank. Nothing was dropped and nothing is uncertain — the
+            # record simply has no unit there, which is not a defect.
+            # Recorded as a write, not a transform: dropping the value is
+            # a decision about the field, and the log is what shows a
+            # reviewer that Tier 3 offered one and the rule refused it.
+            _write(
+                result, f"{_slot}_enriched", None,
+                deterministic_evidence(
+                    "item6c:tier3-guess-dropped",
+                    producer="finalise", tier=3,
+                    evidence_ref={
+                        "dropped": result.get(f"{_slot}_enriched"),
+                        "confidence": result.get("confidence"),
+                    },
+                ),
+            )
 
     # Normalise Name 1 when it was passed through uncanonicalised (a ROR miss
     # left the raw source value — often ALL-CAPS and abbreviated, e.g. "LARGO
@@ -4759,14 +4802,20 @@ class Orchestrator:
         encountered. No usable candidate → ``department_domain``
         stays null.
 
-        Gates: research_institution + name2 present + institution
-        domain known + name2 not granular. Granular units (labs,
-        groups, centres) are skipped — they're too fine-grained for a
-        domain probe; a lab's web home requires lab_resolver, not a
-        SERP guess.
+        Gates: name2 present + institution domain known + name2 names a
+        unit — not a desk, a facility word, an address, a granular unit
+        or a legal entity. Granular units (labs, groups, centres) are
+        skipped — they're too fine-grained for a domain probe; a lab's
+        web home requires lab_resolver, not a SERP guess.
+
+        Any organisation type. The probe does not infer a department; it
+        looks up the web home of the unit Name 2 already names, and every
+        candidate must verify against that unit's own words. A division of
+        a national lab, a county department or a company's technology
+        centre has one as surely as a university department does. What
+        separates them is what Name 2 holds, which the gates below test —
+        not what kind of organisation Name 1 is.
         """
-        if result.get("routing_type") != "research_institution":
-            return
         if result.get("department_domain"):
             return
         base = (result.get("domain") or "").strip().lower()
@@ -4777,6 +4826,18 @@ class Orchestrator:
             or (result.get("name2_original") or "").strip()
         )
         if not name2:
+            return
+        # A unit Tier 3 invented for a blank input slot, which finalise will
+        # drop (item 6c): there is no unit to find a web home for. Company
+        # and unresolved records fall to Tier 3 far more often than
+        # universities do, so this matters more since the probe stopped being
+        # research-only.
+        if _is_droppable_tier3_guess(result, "name2"):
+            logger.info(
+                "[%s] dept domain probe: skipped (Tier 3 guess finalise "
+                "drops, name2=%r)",
+                record_id, name2,
+            )
             return
         # §5a: an administrative desk (accounts payable, finance, …) has no
         # department web home and its search_term_2 is "ADMIN" regardless — skip
@@ -4816,6 +4877,17 @@ class Orchestrator:
         if is_granular_unit(name2):
             logger.info(
                 "[%s] dept domain probe: skipped (granular unit name2=%r)",
+                record_id, name2,
+            )
+            return
+        # A legal entity or a trading name ("Billerud Quinnesec LLC",
+        # "DBA Microsemi Lowell", "Solutions of Sandia LLC" — the rest of a
+        # Name 1 cut at the column) is a company, not a unit of this one.
+        # Probed, its own site on a subdomain would verify and ship as the
+        # organisation's department.
+        if _names_a_legal_entity(name2):
+            logger.info(
+                "[%s] dept domain probe: skipped (legal entity name2=%r)",
                 record_id, name2,
             )
             return
@@ -5343,8 +5415,15 @@ class Orchestrator:
             # Department: prefer a Tier 2A lookup on the CONFIRMED domain (the
             # contact searched on the institution's own site), fall back to the
             # web-proposed department.
-            department = affil.department
-            if is_blank(pp_name2) and domain:
+            #
+            # Academic institutions only — the same Name 1 check as the main
+            # Tier 2A gate and the UC 13 lab lookup. The institution, id and
+            # domain above are written for any org type; a department is not
+            # looked for, and the one the affiliation lookup proposed is not
+            # written, when the confirmed org is an agency, hospital or company.
+            academic = looks_like_university_or_research_institute(official)
+            department = affil.department if academic else None
+            if academic and is_blank(pp_name2) and domain:
                 try:
                     t2a = await run_tier2a(
                         record.record_id,
@@ -8722,6 +8801,17 @@ class Orchestrator:
             # below still refuse them as a department — but they are not
             # looked up here; they pass through to the later tiers as-is.
             #
+            # Academic institutions only, decided by the same Name 1 check
+            # G2-NAME-009 uses (`looks_like_university_or_research_institute`),
+            # on the Name 1 the record will ship with — the value the
+            # post-enrichment audit reads. The lookup is that code's remedy,
+            # so it runs on exactly the records the code can report. It is
+            # not `routing_type`: that is `research_institution` for anything
+            # ROR types healthcare, government, facility or nonprofit, and a
+            # lab at Merck, a NASA centre or a hospital's clinical laboratory
+            # has no academic department above it to find — only a web
+            # search that can land on an unrelated university's.
+            #
             # Skip when ROR child match already resolved Name2 to a
             # non-granular (department-level) name — Tier 1's answer
             # is authoritative and we must not overwrite it.
@@ -8733,7 +8823,9 @@ class Orchestrator:
                 and not is_granular_unit(ror_child_enriched_name2)
             )
             can_lab_resolve = (
-                result["routing_type"] == "research_institution"
+                looks_like_university_or_research_institute(
+                    result["name1_enriched"] or pp_name1,
+                )
                 and bool(pp_name2 and pp_name2.strip())
                 and is_lab_unit(pp_name2)
                 and not ror_child_resolved
@@ -8850,8 +8942,16 @@ class Orchestrator:
             # Tier 2A verification mode needs to see. Computed once here
             # and consumed both by the short-circuit and by the Tier 2A
             # gate further down.
+            #
+            # Academic institutions only, by the same Name 1 check as the
+            # UC 13 lab lookup above and G2-NAME-009/-012 — not `routing_type`,
+            # which is `research_institution` for anything ROR types
+            # healthcare, government, facility or nonprofit. A contact at NASA
+            # or a hospital has no academic department to find on the site.
             can_do_contact_lookup = (
-                result["routing_type"] == "research_institution"
+                looks_like_university_or_research_institute(
+                    result["name1_enriched"] or pp_name1,
+                )
                 and bool(pp_contact and pp_contact.strip())
                 and not multi_contact
                 and bool(institution_domain)
@@ -9095,7 +9195,7 @@ class Orchestrator:
                 canonical_short_circuit = False
 
             # ── TIER 2A (contact lookup): 1 SerpAPI call, gated ────────
-            # Runs for a research institution with a single contact and an
+            # Runs for an academic institution with a single contact and an
             # official domain, in either mode: population when Name 2 is
             # blank, verification when it is populated (the contact's page
             # is the authority on which unit they actually sit in).

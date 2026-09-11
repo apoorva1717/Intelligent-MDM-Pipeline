@@ -201,6 +201,28 @@ class TestLabResolverOrchestrator:
         assert 13 not in result.use_cases_triggered
 
     @pytest.mark.asyncio
+    async def test_non_academic_research_institution_skips_lookup(
+        self, orchestrator, options,
+    ):
+        """ROR types NASA ``government``, so the record routes and classifies
+        ``research_institution`` — but a NASA lab has no academic department
+        above it. The gate is G2-NAME-009's Name 1 check, not the routing
+        type, so the lookup runs on exactly the records that code reports."""
+        record = EnrichmentRecord(
+            record_id="A15_SKIP_AGENCY",
+            name1="National Aeronautics and Space Administration",
+            name2="Jet Propulsion Laboratory",
+            name3=None,
+            city="Pasadena", state="CA", country="US",
+        )
+        response = await orchestrator.enrich_batch([record], options)
+        result = response.results[0]
+
+        assert result.record_type == "research_institution"
+        assert 13 not in result.use_cases_triggered
+        assert "dept-via-lab" not in result.flag_codes
+
+    @pytest.mark.asyncio
     async def test_name3_occupied_demotes_to_the_next_free_slot(
         self, orchestrator, options,
     ):

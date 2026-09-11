@@ -582,3 +582,121 @@ class TestAdminWordThatAlsoNamesAUnit:
             host, "smu.edu", "smu.edu",
             _dept_needles("Department of Biological Sciences"),
         ) is False
+
+
+# ---------------------------------------------------------------------------
+# Any organisation type; a legal entity in Name 2 is not a unit
+# ---------------------------------------------------------------------------
+
+from enrichment.orchestrator import _names_a_legal_entity  # noqa: E402
+
+
+def _stub_orch(pf, serp):
+    st = Settings()
+    return Orchestrator(st, mock_clients={
+        "ror": MockRORClient(st), "lei": MockLEIClient(st),
+        "search": serp, "page_fetcher": pf,
+        "llm": type("L", (), {
+            "extract_json": staticmethod(lambda *a, **k: {}),
+            "aclose": staticmethod(lambda: None)})(),
+    })
+
+
+def _company_result(name2):
+    return {
+        "record_id": "C1",
+        "routing_type": "company",
+        "domain": "parker.com",
+        "website_url": "https://parker.com",
+        "name1_enriched": "Parker-Hannifin Corporation",
+        "name2_enriched": name2,
+        "department_domain": None,
+    }
+
+
+class TestProbeRunsForAnyOrganisation:
+    @_pytest.mark.asyncio
+    async def test_a_company_division_is_probed(self):
+        """The probe looks up the web home of the unit Name 2 names; a
+        company's division has one as surely as a university department."""
+        pf = _StoryPF({"https://parflex.parker.com/": "Parflex Division"})
+        o = _stub_orch(pf, _SerpStub([]))
+        result = _company_result("Parflex Division")
+        await o._probe_department_url("C1", result, BatchCache())
+        assert result["department_domain"] == "parflex.parker.com"
+
+    @_pytest.mark.asyncio
+    @_pytest.mark.parametrize("name2", [
+        "Parflex Holdings LLC",
+        "DBA Parflex",
+    ])
+    async def test_a_legal_entity_in_name2_is_not_probed(self, name2):
+        """Skipped before any fetch or SERP call: a subsidiary's or trading
+        name's own site would otherwise verify and ship as a department."""
+        pf = _StoryPF({"https://parflex.parker.com/": "Parflex Holdings LLC"})
+        serp = _SerpStub([])
+        o = _stub_orch(pf, serp)
+        result = _company_result(name2)
+        await o._probe_department_url("C1", result, BatchCache())
+        assert result["department_domain"] is None
+        assert pf.fetched == []
+
+
+class TestNamesALegalEntity:
+    @_pytest.mark.parametrize("value", [
+        "Billerud Quinnesec LLC",
+        "Flagship Pioneering Co",
+        "Merck & Co., Inc.",
+        "Solutions of Sandia LLC",
+        "Acme GmbH & Co. KG",
+        "DBA Microsemi Lowell",
+        "d/b/a Dairy Diagnostics Laboratory",
+    ])
+    def test_legal_entities(self, value):
+        assert _names_a_legal_entity(value) is True
+
+    @_pytest.mark.parametrize("value", [
+        "Department of Chemistry",
+        "Forensic Services Division",
+        "Technology Center - New England",
+        # Legal forms that are also ordinary words in a unit name, trailing
+        # with no other legal form before them.
+        "Dept of Ag",
+        "Facilities SE",
+        # Not trailing.
+        "Company B Operations",
+        None, "", "   ",
+    ])
+    def test_units_and_blanks(self, value):
+        assert _names_a_legal_entity(value) is False
+
+
+class TestTier3GuessIsNotProbed:
+    @_pytest.mark.asyncio
+    async def test_a_unit_tier3_invented_for_a_blank_slot_is_not_probed(self):
+        """Finalise drops it (item 6c), so its web home is not worth a fetch.
+        Seen live: "General Research Division" invented for Comet Therapeutics,
+        probed, then dropped — one wasted SERP call per such record."""
+        pf = _StoryPF({"https://parflex.parker.com/": "Parflex Division"})
+        o = _stub_orch(pf, _SerpStub([]))
+        result = _company_result("Parflex Division")
+        result.update({
+            "tier_used": 3, "confidence": "medium",
+            "_name2_from_tier3": True, "name2_original": None,
+        })
+        await o._probe_department_url("C1", result, BatchCache())
+        assert result["department_domain"] is None
+        assert pf.fetched == []
+
+    @_pytest.mark.asyncio
+    async def test_a_high_confidence_tier3_unit_is_still_probed(self):
+        """Finalise keeps a high-confidence Tier 3 unit, so the probe runs."""
+        pf = _StoryPF({"https://parflex.parker.com/": "Parflex Division"})
+        o = _stub_orch(pf, _SerpStub([]))
+        result = _company_result("Parflex Division")
+        result.update({
+            "tier_used": 3, "confidence": "high",
+            "_name2_from_tier3": True, "name2_original": None,
+        })
+        await o._probe_department_url("C1", result, BatchCache())
+        assert result["department_domain"] == "parflex.parker.com"
