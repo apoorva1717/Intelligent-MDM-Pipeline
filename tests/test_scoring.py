@@ -33,6 +33,7 @@ os.environ.setdefault("MOCK_EXTERNAL_CALLS", "true")
 os.environ.setdefault("OPENAI_API_KEY", "test-key-for-mocks")
 
 from dedup.scoring import (
+    SF_FIELDS,
     DuplicateRowIdError,
     ScoringRow,
     coerce_weights,
@@ -1692,6 +1693,56 @@ class TestClickReportHeaders:
         # + 12 equipment + 15 sleeping + 10 status
         assert cell("score_final") == 127
         assert summary.errors == 0
+
+
+class TestSalesforceHeaders:
+    """The Salesforce slots arrive as SF_ID_* (SAP extract), sf1..sf8 (ADF
+    query, STRESS_200 fixture) or SF_ID_1..8, in any casing. An unbound
+    spelling left every slot blank and scored Salesforce_Instance_Count 0
+    for every row, silently."""
+
+    SPELLINGS = [
+        [f"sf{i}" for i in range(1, 9)],
+        [f"SF{i}" for i in range(1, 9)],
+        [f"SF_ID_{i}" for i in range(1, 9)],
+        [f"sf_id_{i}" for i in range(1, 9)],
+        ["SF_ID_Biosystems", "SF_ID_AXS", *(f"SF_ID_{i}" for i in range(3, 9))],
+    ]
+
+    @pytest.mark.parametrize("keys", SPELLINGS)
+    def test_json_route_binds_every_spelling(self, keys):
+        row = ScoringRow.model_validate({"row_id": "1", **{k: "x" for k in keys}})
+        assert [getattr(row, f) for f in SF_FIELDS] == ["x"] * 8
+        assert derived_counts(row)[2] == 8
+
+    def test_explicit_file_header_beats_legacy_list(self):
+        row = ScoringRow.model_validate({
+            "row_id": "1", "SF_ID_AXS": "x", "salesforce_ids": ["a", "b", "c"],
+        })
+        assert derived_counts(row)[2] == 1
+
+    def test_json_response_still_serializes_sf_fields(self):
+        row = ScoringRow.model_validate({"row_id": "1", "SF_ID_1": "x"})
+        assert row.model_dump(by_alias=True)["sf1"] == "x"
+
+    @pytest.mark.parametrize("headers", SPELLINGS)
+    def test_file_route_scores_every_spelling(self, headers):
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["Customer", *headers])
+        ws.append(["1", "a", None, "b", " ", None, None, None, "c"])
+        buffer = io.BytesIO()
+        wb.save(buffer)
+
+        output, _ = score_workbook(buffer.getvalue())
+        ws_out = load_workbook(io.BytesIO(output)).worksheets[0]
+        headers = [c.value for c in ws_out[1]]
+
+        def cell(h):
+            return ws_out.cell(row=2, column=headers.index(h) + 1).value
+
+        assert cell("Salesforce_Instance_Count") == 3  # was 0 — bound on name
+        assert cell("score_SalesforceInstances") == 30
 
 
 class TestStaleWeightsTable:

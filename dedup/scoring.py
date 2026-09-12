@@ -81,6 +81,22 @@ SCORE_BREAKDOWN_COLUMNS: Dict[str, str] = {
 # The 8 flat Salesforce id fields, in slot order (sf1 = Biosystems, sf2 = AXS,
 # sf3..sf8). Each is its own scalar column — no list/object on the wire.
 SF_FIELDS: Tuple[str, ...] = ("sf1", "sf2", "sf3", "sf4", "sf5", "sf6", "sf7", "sf8")
+# Every accepted spelling of each slot, same order as SF_FIELDS, preference
+# order within a slot (first present wins). Both routes match them through
+# _norm_header, so case, "_" and spaces never matter: sf1 / SF1 / SF_ID_1 /
+# SF_ID_Biosystems all bind slot 1. An unbound slot is silently blank, which
+# zeroes Salesforce_Instance_Count for every row — hence the wide net.
+SF_HEADER_SPELLINGS: Tuple[Tuple[str, ...], ...] = (
+    ("SF_ID_Biosystems", "SF_ID_1", "sf1"),
+    ("SF_ID_AXS", "SF_ID_2", "sf2"),
+    *((f"SF_ID_{i}", f"sf{i}") for i in range(3, 9)),
+)
+
+
+def _norm_header(name: object) -> str:
+    """Lowercase alphanumerics only — the header tolerance of the file route
+    (dedup.scoring_xlsx._norm), applied to JSON keys too."""
+    return "".join(ch for ch in str(name).lower() if ch.isalnum())
 
 
 class DuplicateRowIdError(ValueError):
@@ -197,7 +213,9 @@ class ScoringRow(BaseModel):
         default=None, alias="Sales_Org_Consolidated"  # "," or ";"-delimited
     )
     # Salesforce ids as 8 flat scalar columns (no list/object on the wire).
-    # Only non-empty ids count toward Salesforce_Instance_Count.
+    # Only non-empty ids count toward Salesforce_Instance_Count. Any
+    # SF_HEADER_SPELLINGS key binds (see _unpack_salesforce_ids); the slots
+    # always serialize as sf1..sf8.
     sf1: Optional[str] = Field(default=None, description="Salesforce id slot 1 (Biosystems).")
     sf2: Optional[str] = Field(default=None, description="Salesforce id slot 2 (AXS).")
     sf3: Optional[str] = None
@@ -210,14 +228,29 @@ class ScoringRow(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _unpack_salesforce_ids(cls, data):
-        """Backward-compat: accept a legacy ``salesforce_ids`` list (still used by
-        the file endpoint and older callers) and spread it across sf1..sf8. The
-        canonical shape is the flat sf1..sf8 columns; explicit sf* keys win."""
-        if (
-            isinstance(data, dict)
-            and "salesforce_ids" in data
-            and not any(f in data for f in SF_FIELDS)
-        ):
+        """Bind every Salesforce slot spelling onto sf1..sf8, case- and
+        punctuation-insensitively (SF1, sf_1, SF_ID_1, SF_ID_Biosystems ...).
+
+        Backward-compat: a legacy ``salesforce_ids`` list (still used by the
+        file endpoint and older callers) is spread across sf1..sf8, but only
+        when no explicit slot key is present — explicit keys win."""
+        if not isinstance(data, dict):
+            return data
+        present: Dict[str, str] = {}
+        for key in data:
+            if isinstance(key, str):
+                present.setdefault(_norm_header(key), key)
+        explicit = {}
+        for field, spellings in zip(SF_FIELDS, SF_HEADER_SPELLINGS):
+            key = next(
+                (present[n] for n in map(_norm_header, spellings) if n in present),
+                None,
+            )
+            if key is not None:
+                explicit[field] = data[key]
+        if explicit:
+            return {**data, **explicit}
+        if "salesforce_ids" in data:
             ids = data.get("salesforce_ids") or []
             data = dict(data)
             for i, field in enumerate(SF_FIELDS):

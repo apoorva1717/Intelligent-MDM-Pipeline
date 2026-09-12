@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Tuple
 
 from dedup.scoring import (
     SCORE_BREAKDOWN_COLUMNS as BREAKDOWN_COLUMNS,
+    SF_HEADER_SPELLINGS,
     ScoringRow,
     ScoringSummary,
     build_summary,
@@ -62,11 +63,10 @@ INPUT_HEADERS: Dict[str, Tuple[str, ...]] = {
 # Every accepted spelling of the Customer column, for locating the data sheet.
 ROW_ID_HEADERS: Tuple[str, ...] = INPUT_HEADERS["row_id"]
 
-# The 8 Salesforce id slots, in order.
-SF_ID_HEADERS: List[str] = [
-    "SF_ID_Biosystems", "SF_ID_AXS",
-    "SF_ID_3", "SF_ID_4", "SF_ID_5", "SF_ID_6", "SF_ID_7", "SF_ID_8",
-]
+# The 8 Salesforce id slots, in order, each with its accepted header
+# spellings (first present in the sheet wins, as for INPUT_HEADERS). Shared
+# with the JSON route, which binds the same spellings the same way.
+SF_ID_HEADERS: Tuple[Tuple[str, ...], ...] = SF_HEADER_SPELLINGS
 
 # score_breakdown key -> output column header: imported from dedup.scoring as
 # BREAKDOWN_COLUMNS (single source of truth shared with the JSON model).
@@ -232,7 +232,10 @@ def score_workbook(contents: bytes) -> Tuple[bytes, ScoringSummary]:
     }
     if input_cols["row_id"] is None:
         raise ScoringFileError("The data sheet has no 'Customer' column.")
-    sf_cols = [columns.get(_norm(h)) for h in SF_ID_HEADERS]
+    sf_cols = [
+        next((columns[k] for k in map(_norm, spellings) if k in columns), None)
+        for spellings in SF_ID_HEADERS
+    ]
     routing_col, cluster_col = _cluster_columns(columns)
     # Adjudication merge confidence persisted by clustering — gates
     # low-confidence merges to manual_review at election time (no LLM re-run).
