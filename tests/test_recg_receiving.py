@@ -1,4 +1,4 @@
-"""UC 6 — "RECG" is the receiving desk, and nothing else is.
+"""UC 6 — "RECG" is the receiving desk, wherever it is written.
 
 SAP exports carry the receiving dock as a bare four-letter code. It is not a
 word: `utils.text_utils` already has to tell "GAS" from "RECG" precisely
@@ -14,11 +14,14 @@ hold without a suffix — so no invariant has to be restated downstream to keep
 it. "receiving" is already in `_FUNCTIONAL_UNIT_WORDS`, so the placement
 routers read the normalised value as a department with no further wiring.
 
-Matching is whole-field and exact. "RECG Warehouse" is a named facility and
-"Building RECG" is a building; neither is the desk, and a value that merely
-CONTAINS the code is never rewritten. That is the whole difference from the
-accounts-payable detector, which matches anywhere in a field and needs a
-suffix splitter and a segment list to undo the damage that causes.
+Two rules:
+
+* The code is spelled out as a WORD, anywhere in any name or street slot
+  ("RECG Warehouse" -> "Receiving Warehouse"). Only a whole word: "RECGA" and
+  "PRECG" are other tokens.
+* The receiving desk stays in the NAME block. An Attn / c-o marker or a bare
+  reference label written around it ("REF# , Attn: RECG") does not make it a
+  contact or a Care Of, and a street slot is not where it lives either.
 """
 
 from __future__ import annotations
@@ -69,12 +72,15 @@ class TestNameSlot:
 
 
 class TestStreetSlot:
-    """The code sits in a street slot — it is not an address, so it moves."""
+    """The desk sits in a street slot — it is not an address, so it moves."""
 
-    def test_moves_to_the_first_empty_name_slot(self):
-        r = _pp(name1="Acme Corp", street1="RECG")
+    @pytest.mark.parametrize("value", ["RECG", "Receiving", "Attn: RECG",
+                                       "Attn: Receiving", "c/o RECG"])
+    def test_moves_to_the_first_empty_name_slot(self, value):
+        r = _pp(name1="Acme Corp", street1=value)
         assert _names(r) == ["Acme Corp", RECEIVING, None, None, None]
         assert _streets(r) == [None, None, None]
+        assert not (r.care_of and r.care_of.strip())
 
     def test_skips_an_occupied_slot(self):
         r = _pp(name1="Acme Corp", name2="Beta Holdings Inc", street2="RECG")
@@ -82,17 +88,22 @@ class TestStreetSlot:
                              None, None]
         assert _streets(r) == [None, None, None]
 
-    def test_redundant_when_the_name_block_already_has_a_department(self):
-        # A department is already stated; a second one from a street field
-        # adds nothing, and the router drops it rather than stack two.
+    def test_a_department_does_not_make_the_desk_redundant(self):
+        # The desk is where deliveries go, not the record's department, so it
+        # takes the next slot instead of being dropped.
         r = _pp(name1="Acme Corp", name2="Oncology Research Unit", street1="RECG")
         assert _names(r) == ["Acme Corp", "Oncology Research Unit",
-                             None, None, None]
+                             RECEIVING, None, None]
+        assert _streets(r) == [None, None, None]
+
+    def test_a_desk_already_in_the_name_block_is_not_repeated(self):
+        r = _pp(name1="Acme Corp", name2="Attn: RECG", street1="Attn: RECG")
+        assert _names(r) == ["Acme Corp", RECEIVING, None, None, None]
         assert _streets(r) == [None, None, None]
 
     def test_name_block_full_leaves_the_value_in_the_street(self):
         # Nowhere to put the desk. Better an unmoved street than a dropped
-        # one — the same call the AP router makes.
+        # one — the same call the AP router makes. It is still spelled out.
         r = _pp(
             name1="Acme Corp", name2="Beta Holdings Inc",
             name3="Gamma Trading Ltd", name4="Delta Partners LLC",
@@ -101,47 +112,59 @@ class TestStreetSlot:
         assert _names(r) == ["Acme Corp", "Beta Holdings Inc",
                              "Gamma Trading Ltd", "Delta Partners LLC",
                              "Epsilon Ventures Inc"]
-        assert r.street1 == "RECG"
-        assert RECEIVING not in _names(r)
+        assert r.street1 == RECEIVING
 
 
 class TestAttnIsNeverAContact:
     """"Attn: RECG" addresses a desk. No person is named, so no contact is."""
 
-    @pytest.mark.parametrize("value", ["Attn: RECG", "ATTN: RECG", "Attn RECG"])
+    @pytest.mark.parametrize("value", [
+        "Attn: RECG", "ATTN: RECG", "Attn RECG", "Attn: Receiving",
+        "c/o RECG",
+        # Row 13342226 / 13342227: a reference label with no value in front
+        # of the attention line. The label names nothing once the desk is out.
+        "REF# , Attn: RECG", "REF#, RECG", "REF# , Attn: Receiving",
+    ])
     def test_attn_payload_lands_in_a_name_slot(self, value):
         r = _pp(name1="Acme Corp", name2=value)
         assert r.name2 == RECEIVING
         assert not (r.contact and r.contact.strip())
+        assert not (r.care_of and r.care_of.strip())
 
     def test_not_extracted_as_a_contact_from_a_bare_slot(self):
         r = _pp(name1="Acme Corp", name2="RECG")
         assert not (r.contact and r.contact.strip())
 
+    def test_a_person_behind_attn_is_still_a_contact(self):
+        r = _pp(name1="Acme Corp", name2="Attn: Erin Murphy")
+        assert r.contact == "Erin Murphy"
+        assert RECEIVING not in _names(r)
 
-class TestPartialMatchesAreLeftAlone:
-    """The code has to be the WHOLE field. Anything else is a real value."""
 
-    @pytest.mark.parametrize("value", [
-        "RECG Warehouse",
-        "RECG Dock 3",
-        "Acme Corp RECG",
-        "RECGA",
-        "PRECG",
+class TestCodeInsideAValue:
+    """The code is a word and is spelled out wherever it stands."""
+
+    @pytest.mark.parametrize("value, expected", [
+        ("RECG Warehouse", "Receiving Warehouse"),
+        ("RECG Dock 3", "Receiving Dock 3"),
+        ("Acme Corp RECG", "Acme Corp Receiving"),
     ])
-    def test_name_slot_value_is_not_rewritten(self, value):
+    def test_name_slot_word_is_spelled_out(self, value, expected):
+        r = _pp(name1="Acme Corp", name2=value)
+        assert r.name2 == expected
+
+    @pytest.mark.parametrize("value", ["RECGA", "PRECG"])
+    def test_other_tokens_are_left_alone(self, value):
         r = _pp(name1="Acme Corp", name2=value)
         assert r.name2 == value
         assert RECEIVING not in _names(r)
 
-    def test_building_recg_is_a_building(self):
-        # The named-building router owns this value and routes it to the
-        # street. What matters here is that it is never read as the desk.
+    def test_building_recg_is_spelled_out(self):
+        # The named-building router owns this value; only the code changes.
         r = _pp(name1="Acme Corp", name2="Building RECG")
-        assert RECEIVING not in _names(r)
-        assert "Building RECG" in [v for v in _names(r) + _streets(r) if v]
+        assert "Building Receiving" in [v for v in _names(r) + _streets(r) if v]
 
-    def test_partial_match_in_a_street_slot_is_not_rewritten(self):
+    def test_word_in_a_street_slot_is_spelled_out(self):
         r = _pp(name1="Acme Corp", street1="RECG Warehouse")
+        assert r.street1 == "Receiving Warehouse"
         assert RECEIVING not in _names(r)
-        assert r.street1 == "RECG Warehouse"

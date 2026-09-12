@@ -212,23 +212,51 @@ def _is_ap_reference(text: str) -> bool:
 #: hold — so nothing downstream has to restate an invariant to protect it.
 RECG_CANONICAL = "Receiving"
 
-#: The code as it arrives. The comparison is exact, so there is no pattern
-#: here to compile — the code is written one way and only one way.
+#: The code as it arrives. A whole word in any case — "RECGA" and "PRECG" are
+#: other tokens and are left as written.
 RECG_CODE = "recg"
+_RECG_WORD_RE = re.compile(r"\bRECG\b", re.IGNORECASE)
+
+#: Words that may sit beside the desk without naming anything themselves: the
+#: attention / care-of marker and the reference label a source system writes
+#: in front of the desk it routes to ("REF# , Attn: RECG"). A label WITH a
+#: value ("REF# 4471") keeps its digits and is therefore not all label.
+_DESK_LABEL_WORDS = {
+    "attn", "att", "attention", "c", "o", "care", "of",
+    "ref", "reference", "no", "nbr", "num", "number", "id", "po",
+    "acct", "account",
+}
+
+
+def _normalise_recg(value: str | None) -> str | None:
+    """Spell every "RECG" word in *value* out as "Receiving".
+
+    The code is written one way and means one thing wherever it stands in a
+    field — "RECG Warehouse" is the receiving warehouse, "REF# , Attn: RECG"
+    addresses the receiving desk. Whole-field matching left both as codes and
+    let the second reach Contact as if "RECG" were a person.
+    """
+    if not value:
+        return value
+    return _RECG_WORD_RE.sub(RECG_CANONICAL, value)
 
 
 def _is_recg_reference(value: str) -> bool:
-    """True when *value* is the bare SAP receiving code and nothing else.
+    """True when *value* is the receiving desk and nothing else — the SAP code
+    "RECG" or the word "Receiving", whole field, any case."""
+    return bool(value) and value.strip().lower() in (RECG_CODE, RECG_CANONICAL.lower())
 
-    Whole field, exact, case-insensitive. NOT the accounts-payable detector's
-    substring match, and not for want of symmetry: "AP" earns a pattern list
-    because the desk is written a dozen ways ("A/P", "Accts Payable", "AP
-    Dept"), and pays for it with `_split_ap_suffix` and `_trailing_ap_phrase`
-    to undo the over-matching. "RECG" is written one way. Matching it inside a
-    field would rewrite "RECG Warehouse" — a named facility — into a desk, and
-    buy back nothing, because there is no second spelling to catch.
+
+def _is_labelled_receiving_desk(value: str | None) -> bool:
+    """True when *value* is the receiving desk plus nothing but an attention
+    marker or reference label: "Receiving", "Attn: RECG", "REF# , Attn:
+    Receiving", "c/o Receiving". The desk is a unit of the organisation, so
+    the whole field ships as "Receiving" in a Name slot — never as a contact
+    or a Care Of, whatever marker was written in front of it.
     """
-    return bool(value) and value.strip().lower() == RECG_CODE
+    words = [w.lower() for w in re.findall(r"[A-Za-z0-9]+", value or "")]
+    desk = [w for w in words if w not in _DESK_LABEL_WORDS]
+    return desk in ([RECG_CODE], [RECG_CANONICAL.lower()])
 
 
 #: A segment that is the accounts-payable desk and nothing else. A bare "AP"
@@ -1892,6 +1920,19 @@ def preprocess_record(
     supplied_block = (name1, name2, name3, name4, name5)
 
     # ---------------------------------------------------------------
+    # UC 6 — the receiving code spelled out, in every slot and position.
+    # Runs FIRST so every router below — the opaque-code strip, UC 15's attn
+    # classifier, UC 7's contact guard, the street→name router — reads the
+    # word "Receiving" and never the code.
+    # ---------------------------------------------------------------
+    for slot in (*NAME_SLOTS, *STREET_SLOTS):
+        val = getattr(res, slot)
+        spelled = _normalise_recg(val)
+        if spelled != val:
+            setattr(res, slot, spelled)
+            res.note(6, f"RECG spelled out as {RECG_CANONICAL} in {slot} (was {val!r})")
+
+    # ---------------------------------------------------------------
     # Leading opaque-code strip. A stray account/customer code prefixed
     # onto a name field ("B800000123 c/o Dr. Mark Adams") is removed so the
     # real content is exposed — in particular so a following c/o clause
@@ -2133,6 +2174,25 @@ def preprocess_record(
     # ---------------------------------------------------------------
     for slot in STREET_SLOTS:
         val = getattr(res, slot)
+        # The receiving desk, bare or behind an Attn marker ("Attn:
+        # Receiving"). It is the delivery desk, not the record's department,
+        # so a department already in the name block does not make it
+        # redundant — it takes the next empty slot. Only a Receiving already
+        # in the block does, since that is the same value twice.
+        if val and _is_labelled_receiving_desk(val):
+            names = {(getattr(res, s) or "").strip().lower() for s in NAME_SLOTS}
+            if RECG_CANONICAL.lower() in names:
+                setattr(res, slot, None)
+                res.note(16, f"receiving desk in {slot} already in the name block — removed ({val!r})")
+                continue
+            target = _first_empty_name_slot(res)
+            if target is None:
+                continue  # no empty name slot — leave it in the street
+            setattr(res, target, RECG_CANONICAL)
+            setattr(res, slot, None)
+            _mark_from_street(res, RECG_CANONICAL)
+            res.note(16, f"receiving desk in {slot} moved to {target} (was {val!r})")
+            continue
         if not _street_is_department(val):
             continue
         dept = val.strip()
@@ -2290,12 +2350,11 @@ def preprocess_record(
             setattr(res, field_name, "Accounts Payable")
             res.note(6, f"{field_name} normalised to Accounts Payable (was {val!r})")
             continue
-        # The receiving desk. Whole-field only, so there is no organisation to
-        # rescue first and no suffix to split — the two cases above exist only
-        # because the AP detector matches inside a field, and this one cannot.
-        # Runs after the street router, so a code lifted out of a street slot
-        # normalises here in the name slot it landed in.
-        if _is_recg_reference(val):
+        # The receiving desk, with whatever attention marker or reference
+        # label was written around it ("REF# , Receiving" once UC 7 has taken
+        # the Attn prefix off "REF# , Attn: RECG"). The label names nothing
+        # once the desk is its own value, so the field is the desk alone.
+        if _is_labelled_receiving_desk(val) and val.strip() != RECG_CANONICAL:
             setattr(res, field_name, RECG_CANONICAL)
             res.note(6, f"{field_name} normalised to {RECG_CANONICAL} (was {val!r})")
 
