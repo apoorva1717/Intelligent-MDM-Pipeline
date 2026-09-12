@@ -456,6 +456,14 @@ _ADDRESS_PATTERNS = [
     # value, otherwise "Unit" matches inside "United" and "Ste" inside
     # "Stevens", corrupting ordinary names.
     re.compile(r"\b(?:Suite|Ste|Unit|Floor|Bldg|Building|Room|Rm)\b\.?\s+[\w\-]+\b", re.IGNORECASE),
+    # Floor written number-first ("5th Fl", "22nd Floor", "3 Fl") and the
+    # abbreviated marker-first form ("Fl 5", "Fl. 3rd"). Both forms were
+    # stranded in Name 2 once the street line beside them was extracted:
+    # "10920 Wilshire Blvd, 5th Fl" shipped Name 2 = "5th Fl". "Fl" is also
+    # Florida, so it only counts next to a 1-3 digit floor number — never
+    # "FL Dept" or the state+ZIP "FL 33601".
+    re.compile(r"\b\d{1,3}(?:st|nd|rd|th)?\s+(?:Floor|Fl)\b\.?", re.IGNORECASE),
+    re.compile(r"\bFl\.?\s+\d{1,3}(?:st|nd|rd|th)?\b", re.IGNORECASE),
     # "PO Box 12345", "P.O. Box 12345", "Post Office Box 12345",
     # bare "Box 100", "Mail Box 5", "Mailbox 42"
     re.compile(
