@@ -40,13 +40,9 @@ from dedup.flags import v2_blocking, v2_id_conflict, v2_name2
 from dedup.models import DedupRequest, DedupResponse, DedupRow
 from dedup.prompts import prompt_version
 from dedup.scoring import (
-    ApprovalRequest,
-    ApprovalResponse,
-    ClusterNotFoundError,
     DuplicateRowIdError,
     ScoringRequest,
     ScoringResponse,
-    apply_approval,
     build_summary,
     coerce_weights,
     detect_issues as detect_dedup_issues,
@@ -1482,37 +1478,6 @@ async def dedup_score(request: ScoringRequest) -> ScoringResponse:
         },
     )
     return ScoringResponse(rows=results, summary=summary, issues=issues)
-
-
-@router.post("/api/dedup/approve", response_model=ApprovalResponse)
-async def dedup_approve(request: ApprovalRequest) -> ApprovalResponse:
-    """Record a human's approve/reject decision on one proposed cluster.
-
-    Stateless: the caller submits the scored rows, the decision is applied to
-    the named cluster_id (approval_status set; on "approved" the proposed winner
-    is promoted into the golden fields), and the updated rows are echoed back.
-    Persistence is intentionally out of scope — a durable approval store is a
-    future step. Phase 3 consumes ONLY rows with approval_status="approved" or
-    election_status="unique".
-    """
-    logger.info(
-        "dedup_approve: cluster=%s decision=%s approver=%s rows=%d",
-        request.cluster_id, request.decision, request.approver, len(request.rows),
-    )
-    try:
-        rows, updated = apply_approval(
-            request.rows, request.cluster_id, request.decision
-        )
-    except ClusterNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    return ApprovalResponse(
-        cluster_id=request.cluster_id,
-        decision=request.decision,
-        approver=request.approver,
-        updated_row_ids=updated,
-        rows=rows,
-    )
 
 
 @router.post("/api/dedup/score/file")

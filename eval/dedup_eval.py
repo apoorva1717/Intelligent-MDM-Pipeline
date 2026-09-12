@@ -22,10 +22,11 @@ Pairwise (vs the fixture):
 Business-risk (counts AND offending row_ids):
   wrongful_block_candidates: expected_routing == unique  AND is_golden_record == False
   competing_goldens:         expected_routing == cluster AND routing == unique
-  uncertainty_upgrades:      expected_routing == manual_review AND election_status == proposed
+  uncertainty_upgrades:      expected_routing == manual_review AND routing == cluster
+    (clustering's Routing is the only uncertainty flag; election carries none)
 
 Election:
-  clusters, elections, manual_review count, and tie-break invocations
+  clusters, elections, and tie-break invocations
   (clusters whose top ``score_final`` is shared by >=2 members, so the winner
   was decided by the tie-break, not the score).
 """
@@ -51,7 +52,6 @@ _FIELD_BY_HEADER = {
     "electionstatus": "election_status",
     "scorefinal": "score_final",
     "goldenrecordid": "golden_record_id",
-    "proposedgoldenid": "proposed_golden_id",
     "scoredwithweightsversion": "weights_version",
 }
 
@@ -70,7 +70,7 @@ def _clean(value: object) -> Optional[str]:
 
 
 def _as_bool(value: object) -> Optional[bool]:
-    """Excel booleans arrive native; a blanked (manual_review) golden is None."""
+    """Excel booleans arrive native; a blank cell is None."""
     if isinstance(value, bool):
         return value
     text = _clean(value)
@@ -200,7 +200,7 @@ def business_risk_metrics(rows: List[dict]) -> dict:
     uncertainty_upgrades = [
         r["row_id"] for r in rows
         if r["expected_routing"] == "manual_review"
-        and r["election_status"] == "proposed"
+        and r["routing"] == "cluster"
     ]
 
     def _entry(ids: List[str]) -> dict:
@@ -221,7 +221,6 @@ def election_metrics(rows: List[dict]) -> dict:
             clusters.setdefault(r["cluster_id"], []).append(r)
 
     elections = sum(1 for r in rows if r["is_golden_record"] is True and r["cluster_id"])
-    manual_review = sum(1 for r in rows if r["election_status"] == "manual_review")
 
     tiebreak_clusters = []
     for cid, members in clusters.items():
@@ -232,7 +231,6 @@ def election_metrics(rows: List[dict]) -> dict:
     return {
         "clusters": len(clusters),
         "elections": elections,
-        "manual_review_rows": manual_review,
         "tiebreak_decided_clusters": {
             "count": len(tiebreak_clusters),
             "cluster_ids": sorted(tiebreak_clusters),
@@ -281,7 +279,7 @@ def _format_report(report: dict) -> str:
         "",
         "  Election",
         f"    clusters {e['clusters']}  elections {e['elections']}"
-        f"  manual_review {e['manual_review_rows']}  tie-break-decided {tb['count']}",
+        f"  tie-break-decided {tb['count']}",
     ]
     return "\n".join(lines)
 

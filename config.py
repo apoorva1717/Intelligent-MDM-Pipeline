@@ -121,10 +121,9 @@ OPTIONAL_VARS_WITH_DEFAULTS = {
     "MAX_PAGE_CONTENT_CHARS": "3000",
     "DEFAULT_MAX_CONCURRENCY": "5",
     # Golden-record election: a duplicate merge whose adjudication confidence is
-    # below this keeps its cluster membership but enters election as
-    # manual_review (a human confirms before anything is blocked). Retuning it
-    # never re-runs the LLM — election reads the confidence persisted by
-    # clustering.
+    # below this is reported as a low_confidence_merge issue; the election
+    # itself is unchanged. Retuning it never re-runs the LLM — scoring reads
+    # the confidence persisted by clustering.
     "CONFIDENCE_MERGE_THRESHOLD": "0.95",
     # Dedup candidate NOMINATION (residue pass). A pair of signatures becomes an
     # LLM adjudication candidate when suffix-stripped name similarity (Jaro-
@@ -594,7 +593,7 @@ class Settings:
     )
 
     # Golden-record election (Phase 2 Pass 3). A merge below this confidence is
-    # demoted to manual_review at election time; the threshold is a pure data
+    # reported as a low_confidence_merge issue; the threshold is a pure data
     # retune (no LLM re-run).
     confidence_merge_threshold: float = field(
         default_factory=lambda: float(os.getenv("CONFIDENCE_MERGE_THRESHOLD", "0.95"))

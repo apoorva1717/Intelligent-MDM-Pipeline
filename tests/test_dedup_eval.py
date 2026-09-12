@@ -29,13 +29,13 @@ _HEADERS = [
 
 # (customer, exp_cluster, exp_routing, cluster_id, routing, is_golden, status, score)
 _ROWS = [
-    ("1", "A1", "cluster", "cA", "cluster", True, "proposed", 30),
-    ("2", "A1", "cluster", "cA", "cluster", False, "proposed", 20),
+    ("1", "A1", "cluster", "cA", "cluster", True, "cluster", 30),
+    ("2", "A1", "cluster", "cA", "cluster", False, "cluster", 20),
     ("3", "A1", "cluster", None, "unique", True, "unique", 10),      # FN + competing golden
-    ("9", "unique", "unique", "cB", "cluster", False, "proposed", 5),  # wrongful block
-    ("8", "unique", "unique", "cB", "cluster", True, "proposed", 40),  # bad-merge winner
-    ("20", "M1", "manual_review", "cM", "cluster", True, "proposed", 15),  # upgrade + tie
-    ("21", "M1", "manual_review", "cM", "cluster", False, "proposed", 15),  # upgrade + tie
+    ("9", "unique", "unique", "cB", "cluster", False, "cluster", 5),  # wrongful block
+    ("8", "unique", "unique", "cB", "cluster", True, "cluster", 40),  # bad-merge winner
+    ("20", "M1", "manual_review", "cM", "cluster", True, "cluster", 15),  # upgrade + tie
+    ("21", "M1", "manual_review", "cM", "cluster", False, "cluster", 15),  # upgrade + tie
 ]
 
 
@@ -90,7 +90,7 @@ def test_election_metrics(tmp_path):
     e = election_metrics(rows)
     assert e["clusters"] == 3           # cA, cB, cM
     assert e["elections"] == 3          # one golden per predicted cluster
-    assert e["manual_review_rows"] == 0
+    assert "manual_review_rows" not in e
     assert e["tiebreak_decided_clusters"] == {"count": 1, "cluster_ids": ["cM"]}
 
 

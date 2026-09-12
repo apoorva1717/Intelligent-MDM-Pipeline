@@ -72,10 +72,7 @@ SF_ID_HEADERS: Tuple[Tuple[str, ...], ...] = SF_HEADER_SPELLINGS
 # BREAKDOWN_COLUMNS (single source of truth shared with the JSON model).
 
 DERIVED_COLUMNS = ("Company_Code_Count", "Sales_Org_Count", "Salesforce_Instance_Count")
-ELECTION_COLUMNS = (
-    "is_golden_record", "golden_record_id", "proposed_golden_id",
-    "election_status", "approval_status",
-)
+ELECTION_COLUMNS = ("is_golden_record", "golden_record_id", "election_status")
 
 
 class ScoringFileError(ValueError):
@@ -237,8 +234,8 @@ def score_workbook(contents: bytes) -> Tuple[bytes, ScoringSummary]:
         for spellings in SF_ID_HEADERS
     ]
     routing_col, cluster_col = _cluster_columns(columns)
-    # Adjudication merge confidence persisted by clustering — gates
-    # low-confidence merges to manual_review at election time (no LLM re-run).
+    # Adjudication merge confidence persisted by clustering — a below-threshold
+    # merge is reported as a low_confidence_merge issue (no LLM re-run).
     confidence_col = columns.get(_norm("Confidence"))
     # Adjudication reasoning — surfaced as a verdict_contradiction issue.
     reasoning_col = columns.get(_norm("Reasoning"))
@@ -290,13 +287,13 @@ def score_workbook(contents: bytes) -> Tuple[bytes, ScoringSummary]:
     cc_col, so_col, sf_count_col = (
         _ensure_column(ws, columns, h) for h in DERIVED_COLUMNS
     )
-    golden_col, golden_id_col, proposed_col, status_col, approval_col = (
+    golden_col, golden_id_col, status_col = (
         _ensure_column(ws, columns, h) for h in ELECTION_COLUMNS
     )
     weights_ver_col = _ensure_column(ws, columns, "scored_with_weights_version")
     # Additive, appended last: the anchor the relative *_last_used ladders were
-    # scored against, so a proposal and a later approval can be checked for
-    # ladder drift the same way the weights fingerprint checks weights drift.
+    # scored against, so two runs can be checked for ladder drift the same
+    # way the weights fingerprint checks weights drift.
     ref_year_col = _ensure_column(ws, columns, "scored_with_reference_year")
 
     for ws_row, row, result in zip(row_indices, rows, results):
@@ -309,17 +306,9 @@ def score_workbook(contents: bytes) -> Tuple[bytes, ScoringSummary]:
         ws.cell(row=ws_row, column=cc_col, value=company_codes)
         ws.cell(row=ws_row, column=so_col, value=sales_orgs)
         ws.cell(row=ws_row, column=sf_count_col, value=sf_instances)
-        # A manual_review row leaves is_golden_record / golden_record_id EMPTY —
-        # nobody filtering is_golden_record alone may act on an unreviewed row.
-        # The computed winner survives in proposed_golden_id.
-        is_mr = result.election_status == "manual_review"
-        ws.cell(row=ws_row, column=golden_col,
-                value=None if is_mr else result.is_golden_record)
-        ws.cell(row=ws_row, column=golden_id_col,
-                value=None if is_mr else result.golden_record_id)
-        ws.cell(row=ws_row, column=proposed_col, value=result.proposed_golden_id)
+        ws.cell(row=ws_row, column=golden_col, value=result.is_golden_record)
+        ws.cell(row=ws_row, column=golden_id_col, value=result.golden_record_id)
         ws.cell(row=ws_row, column=status_col, value=result.election_status)
-        ws.cell(row=ws_row, column=approval_col, value=result.approval_status)
         ws.cell(row=ws_row, column=weights_ver_col,
                 value=result.scored_with_weights_version)
         ws.cell(row=ws_row, column=ref_year_col,
