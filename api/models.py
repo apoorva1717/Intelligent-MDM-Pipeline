@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import (
@@ -10,6 +11,8 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    field_validator,
+    model_validator,
 )
 
 from api.output_columns import RESPONSE_COLUMNS
@@ -27,6 +30,33 @@ from enrichment.provenance import (
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
+
+_TRUE_WORDS = frozenset({"true", "1", "yes", "y", "x"})
+
+
+def parse_bool(value: Any) -> bool:
+    """Read a JSON, spreadsheet or SQL truth value: ``True``, ``1``,
+    ``"TRUE"``, ``"yes"``, ``"X"`` … Blank, missing and anything
+    unrecognised read as ``False``."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if value is None:
+        return False
+    text = str(value).strip().lower()
+    if text in _TRUE_WORDS:
+        return True
+    try:
+        return float(text) != 0
+    except ValueError:
+        return False
+
+
+def _norm_key(name: object) -> str:
+    """Case-, space- and punctuation-insensitive form of a column header."""
+    return "".join(ch for ch in str(name).lower() if ch.isalnum())
+
 
 class EnrichmentRecord(BaseModel):
     """A single customer master data record to enrich.
@@ -230,6 +260,39 @@ class EnrichmentRecord(BaseModel):
         validation_alias=AliasChoices("email", "Email"),
     )
 
+    # ── Enrichment state ─────────────────────────────────────────────
+    # Set on every result enrichment completed. A record that arrives with
+    # it set is not enriched again: it is returned exactly as it came (see
+    # Orchestrator.enrich_batch). Blank or missing reads as False, so a raw
+    # SAP export is enriched as before.
+    enriched: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("Enriched", "enriched"),
+    )
+    # The record's output-only columns (Domain, ROR ID, Suite, Flag Codes …),
+    # keyed by EnrichmentResult field name. Read only to echo an
+    # already-enriched record back — held here rather than as attributes so
+    # the pipeline can never read them for a record it does enrich.
+    echo: Dict[str, Any] = Field(default_factory=dict, exclude=True)
+
+    @field_validator("enriched", mode="before")
+    @classmethod
+    def _parse_enriched(cls, value: Any) -> bool:
+        return parse_bool(value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _collect_echo(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        headers = _echo_headers()
+        echo: dict[str, Any] = {}
+        for key, value in data.items():
+            field = headers.get(_norm_key(key))
+            if field and value not in (None, "") and field not in echo:
+                echo[field] = value
+        return {**data, "echo": echo} if echo else data
+
     # No field is mandatory: every column is optional, including the
     # customer identifier. When absent, ``record_id`` falls back to an
     # empty string (the record is still processed; correlation just lacks
@@ -299,6 +362,29 @@ class EnrichmentRecord(BaseModel):
     @property
     def country(self) -> Optional[str]:
         return self.country_region_key
+
+
+@lru_cache(maxsize=1)
+def _echo_headers() -> dict[str, str]:
+    """Normalised output header → result field, for every output column that
+    is not also an input column, plus the Legacy table's "Unloading"."""
+    inputs: set[str] = set()
+    for name, field in EnrichmentRecord.model_fields.items():
+        alias = field.validation_alias
+        if isinstance(alias, AliasChoices):
+            names = [str(choice) for choice in alias.choices]
+        elif isinstance(alias, str):
+            names = [alias]
+        else:
+            names = []
+        inputs.update(_norm_key(n) for n in (*names, name))
+    headers = {
+        _norm_key(header): field
+        for field, header in RESPONSE_COLUMNS.items()
+        if _norm_key(header) not in inputs
+    }
+    headers[_norm_key("Unloading")] = "unloading_point"
+    return headers
 
 
 class EnrichmentOptions(BaseModel):
@@ -507,6 +593,10 @@ class EnrichmentResult(BaseModel):
         default_factory=list, exclude=True,
     )
     error: Optional[str] = None
+    # True once enrichment has completed for this record — set by
+    # enrich_batch, left False when `error` is set so a failed record is
+    # picked up again. Echoed True for a record that arrived already enriched.
+    enriched: bool = False
     record_type: Literal["research_institution", "company", "unknown"] = "unknown"
     # Registry identifiers — both surface in the JSON (not excluded) so the
     # dedup phase can converge records on a shared identifier: ror_id for
@@ -659,7 +749,8 @@ class EnrichmentResult(BaseModel):
     name2_match_result: Literal["exact", "partial", "no_match", "not_applicable", "unknown"] = Field(default="not_applicable", exclude=True)
     # Which use cases (0-9) fired for this record
     use_cases_triggered: List[int] = Field(default_factory=list, exclude=True)
-    enrichment_status: Literal["enriched", "verified", "unresolved", "failed"] = Field(default="failed", exclude=True)
+    # "skipped": the record arrived already enriched and was echoed back.
+    enrichment_status: Literal["enriched", "verified", "unresolved", "failed", "skipped"] = Field(default="failed", exclude=True)
     duration_ms: int = Field(default=0, exclude=True)
 
     # ── The write lock, carried past finalisation (Fix 10, Step 1) ───
@@ -710,6 +801,67 @@ class EnrichmentResult(BaseModel):
         self.__pydantic_fields_set__.add(name)
 
 
+# Result fields an already-enriched record echoes from its own input fields.
+# Every other column comes from ``EnrichmentRecord.echo``.
+_ECHO_FROM_INPUT: dict[str, str] = {
+    **{name: name for name in (
+        "ecc_customer_number", "central_deletion_flag", "comments",
+        "account_group", "company_code", "sales_organization",
+        "distribution_channel", "division", "house_number",
+        "country_region_key", "postal_code", "city", "region",
+        "language_key", "reconciliation_acct", "tax_jurisdiction",
+        "central_delivery_block", "delivery_priority", "shipping_conditions",
+        "delivering_plant", "created_on", "created_by", "vat_registration_no",
+        "search_term_1", "search_term_2",
+    )},
+    **{f"name{n}_enriched": f"name_{n}" for n in range(1, 6)},
+    "care_of_enriched": "care_of",
+    "contact_enriched": "contact",
+    "email_enriched": "email",
+    "street_cleaned": "street_1",
+    **{f"street_{n}_cleaned": f"street_{n}" for n in range(2, 6)},
+    "po_box_extracted": "po_box",
+    "terms_of_payment": "terms_of_payment_contact",
+}
+_RECORD_TYPES = ("research_institution", "company", "unknown")
+
+
+def echo_result(record: EnrichmentRecord) -> EnrichmentResult:
+    """An already-enriched record, returned exactly as it arrived.
+
+    Every output column is filled from the record itself — its input fields,
+    or ``record.echo`` for the columns only enrichment writes — so a caller
+    that stores every column (the Legacy merge overwrites them all) gets back
+    what it sent instead of blanks. Nothing is recomputed.
+    """
+    values: dict[str, Any] = {}
+    for field, value in record.echo.items():
+        if field == "flag_for_review":
+            value = parse_bool(value)
+        elif field in ("flag_codes", "flagged_fields"):
+            # A list from JSON, or the "; "-joined text the file writer and
+            # the Legacy merge store.
+            items = value if isinstance(value, list) else str(value).split(";")
+            value = [str(v).strip() for v in items if str(v).strip()]
+        elif field == "record_type":
+            value = str(value).strip()
+            if value not in _RECORD_TYPES:
+                value = "unknown"
+        else:
+            value = str(value).strip() or None
+        values[field] = value
+    for field, source in _ECHO_FROM_INPUT.items():
+        value = getattr(record, source)
+        if value is not None or field not in values:
+            values[field] = value
+    return EnrichmentResult(
+        **values,
+        record_id=record.record_id,
+        enriched=True,
+        enrichment_status="skipped",
+    )
+
+
 class EnrichmentSummary(BaseModel):
     """Aggregate statistics for the batch."""
     total: int = 0
@@ -717,6 +869,9 @@ class EnrichmentSummary(BaseModel):
     verified: int = 0
     unresolved: int = 0
     failed: int = 0
+    # Records that arrived with Enriched set and were echoed back unprocessed.
+    # Not part of the four counts above, which describe records enrichment ran on.
+    skipped: int = 0
     research_institution_count: int = 0
     company_count: int = 0
     tier1_resolved: int = 0

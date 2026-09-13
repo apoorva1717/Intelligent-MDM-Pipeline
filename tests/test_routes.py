@@ -127,6 +127,116 @@ class TestRoutes:
         resp = await client.post("/enrich", json=payload)
         assert resp.status_code == 200
 
+    @pytest.mark.parametrize("value, expected", [
+        (True, True), ("TRUE", True), ("true", True), (1, True), ("1", True),
+        ("1.0", True), ("Yes", True), ("X", True),
+        (False, False), ("false", False), (0, False), ("0", False),
+        ("", False), (None, False), ("no", False),
+    ])
+    def test_enriched_input_values(self, value, expected):
+        from api.models import EnrichmentRecord
+        assert EnrichmentRecord.model_validate({"Enriched": value}).enriched is expected
+
+    @pytest.mark.asyncio
+    async def test_enriched_record_is_returned_unchanged(self, client):
+        """A record that arrives with Enriched set skips enrichment entirely:
+        every column comes back as sent, blanks included, so the Legacy merge
+        (which overwrites every column) writes back what it read."""
+        record = {
+            "Customer": "SKIP_1", "Enriched": True,
+            "Name 1": "princeton university", "Name 2": "Chemistry",
+            "Street 1": "SOUTH DR", "Street 2": None,
+            "Suite": "100", "Unloading": "Loading Dock",
+            "Domain": "princeton.edu", "ROR ID": "https://ror.org/00hx57361",
+            "Record Type": "research_institution", "Flag for Review": 1,
+            "Flag Codes": "domain-unverified; source-conflict",
+            "Name 1 Provenance": "ror:verified", "Terms of Payment": "Z030",
+        }
+        resp = await client.post("/enrich", json={"records": [record]})
+        assert resp.status_code == 200
+        data = resp.json()
+        out = data["results"][0]
+        assert out["Enriched"] is True
+        assert out["Name 1"] == "princeton university"  # not re-cased or resolved
+        assert out["Street 2"] is None
+        assert out["Suite"] == "100"
+        assert out["Unloading Point"] == "Loading Dock"
+        assert out["Domain"] == "princeton.edu"
+        assert out["ROR ID"] == "https://ror.org/00hx57361"
+        assert out["Record Type"] == "research_institution"
+        assert out["Flag for Review"] is True
+        assert out["Flag Codes"] == ["domain-unverified", "source-conflict"]
+        assert out["Name 1 Provenance"] == "ror:verified"
+        assert out["Terms of Payment"] == "Z030"
+        assert out["provenance"] == []
+        assert data["summary"]["total"] == 1
+        assert data["summary"]["skipped"] == 1
+        assert data["summary"]["failed"] == 0
+
+    @pytest.mark.asyncio
+    async def test_mixed_batch_enriches_only_unmarked_and_keeps_order(self, client):
+        payload = {"records": [
+            {"Customer": "A", "Name 1": "Massachusetts Institute of Technology",
+             "Enriched": "false"},
+            {"Customer": "B", "Name 1": "left alone", "Enriched": "TRUE"},
+            {"Customer": "C", "Name 1": "Pfizer Inc"},
+        ]}
+        resp = await client.post("/enrich", json=payload)
+        assert resp.status_code == 200
+        data = resp.json()
+        results = data["results"]
+        assert [r["Customer"] for r in results] == ["A", "B", "C"]
+        assert all(r["Enriched"] is True for r in results)
+        # Enriched rows carry a derived provenance; the echoed one only what it sent.
+        assert results[0]["Name 1 Provenance"]
+        assert results[1]["Name 1"] == "left alone"
+        assert results[1]["Name 1 Provenance"] is None
+        assert data["summary"]["total"] == 3
+        assert data["summary"]["skipped"] == 1
+
+    @pytest.mark.asyncio
+    async def test_failed_record_is_not_marked_enriched(self, client, monkeypatch):
+        """A record whose enrichment raised stays Enriched = false so the next
+        run retries it rather than keeping what the failure returned."""
+        from enrichment.orchestrator import Orchestrator
+
+        async def boom(self, record, options, cache):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(Orchestrator, "_enrich_single", boom)
+        resp = await client.post(
+            "/enrich", json={"records": [{"Customer": "F1", "Name 1": "MIT"}]},
+        )
+        assert resp.status_code == 200
+        out = resp.json()["results"][0]
+        assert out["Error"] == "boom"
+        assert out["Enriched"] is False
+
+    @pytest.mark.asyncio
+    async def test_enriched_file_reuploaded_comes_back_identical(self, client):
+        """Re-running an enriched workbook changes nothing: every row carries
+        Enriched = true, so every row is echoed back cell for cell."""
+        data = self._xlsx_bytes(
+            ["Customer", "Name 1", "Name 2", "Street 1", "Street 2", "City",
+             "Region", "Postal Code", "Country/Region Key"],
+            ["RT1", "Princeton University", "Chemistry", "SOUTH DR",
+             "Loading Dock", "PRINCETON", "NJ", "08544", "US"],
+            ["RT2", "Pfizer Inc", None, "235 E 42nd St", "Suite 400",
+             "New York", "NY", "10017", "US"],
+        )
+        first = await client.post("/enrich/file", files=self._xlsx_upload(data))
+        assert first.status_code == 200
+        second = await client.post(
+            "/enrich/file", files=self._xlsx_upload(first.content),
+        )
+        assert second.status_code == 200
+
+        def cells(content):
+            ws = load_workbook(io.BytesIO(content)).active
+            return [[c.value for c in row] for row in ws.iter_rows()]
+
+        assert cells(first.content) == cells(second.content)
+
     @staticmethod
     def _xlsx_bytes(header: list, *rows: list) -> bytes:
         wb = Workbook()

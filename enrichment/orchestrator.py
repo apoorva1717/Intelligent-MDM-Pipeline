@@ -31,6 +31,7 @@ from api.models import (
     EnrichmentResponse,
     EnrichmentResult,
     EnrichmentSummary,
+    echo_result,
 )
 from config import Settings
 from enrichment.address_processing import (
@@ -4515,14 +4516,19 @@ class Orchestrator:
             async with semaphore:
                 return await self._enrich_single(record, options, cache)
 
+        # A record that arrives already enriched skips the whole pipeline — no
+        # lookups, no rewrites, no batch consensus — and is echoed back as it
+        # came. Only the rest are enriched.
+        to_enrich = [i for i, r in enumerate(records) if not r.enriched]
+
         try:
             results = await asyncio.gather(
-                *[_process_with_semaphore(r) for r in records],
+                *[_process_with_semaphore(records[i]) for i in to_enrich],
                 return_exceptions=True,
             )
 
-            final_results: list[EnrichmentResult] = []
-            for i, res in enumerate(results):
+            enriched_results: list[EnrichmentResult] = []
+            for i, res in zip(to_enrich, results):
                 if isinstance(res, Exception):
                     logger.error(
                         "Unhandled exception for record %s: %s",
@@ -4537,9 +4543,13 @@ class Orchestrator:
                     # before its return. Normalise it here so a fail-safe row
                     # is cased like every other row in the workbook.
                     normalise_output_fields(failed)
-                    final_results.append(EnrichmentResult(**failed))
+                    enriched_results.append(EnrichmentResult(**failed))
                 else:
-                    final_results.append(res)
+                    enriched_results.append(res)
+            # A record whose enrichment raised is not marked enriched, so the
+            # next run picks it up again instead of keeping what it returned.
+            for res in enriched_results:
+                res.enriched = res.error is None
 
             # Fix 6 — batch consensus. Runs AFTER every record has been
             # finalised and BEFORE serialisation (and before the summary, so
@@ -4547,11 +4557,22 @@ class Orchestrator:
             # only: no record is merged, dropped or deduplicated here, and
             # `tier_used` is untouched. It raises no flag; it withdraws only
             # the codes its own write to `name1_enriched` falsified. See
-            # enrichment/batch_consensus.py.
-            consensus = apply_batch_consensus(final_results)
+            # enrichment/batch_consensus.py. Only records enriched in this run
+            # take part: an echoed record is never rewritten.
+            consensus = apply_batch_consensus(enriched_results)
+
+            by_index = dict(zip(to_enrich, enriched_results))
+            final_results = [
+                by_index[i] if i in by_index else echo_result(record)
+                for i, record in enumerate(records)
+            ]
 
             batch_ms = int((time.perf_counter() - batch_start) * 1000)
-            summary = self._build_summary(final_results, batch_ms)
+            # The status counts describe the records enrichment ran on;
+            # echoed records are counted once, in `skipped`.
+            summary = self._build_summary(enriched_results, batch_ms)
+            summary.total = len(final_results)
+            summary.skipped = len(final_results) - len(enriched_results)
             summary.consensus_groups = consensus.groups
             summary.consensus_records_updated = consensus.records_updated
             summary.consensus_conflicts = consensus.conflicts
@@ -4621,8 +4642,10 @@ class Orchestrator:
             )
 
             logger.info(
-                "Batch complete: %d records, %d enriched, %d failed in %dms",
-                summary.total, summary.enriched, summary.failed, batch_ms,
+                "Batch complete: %d records, %d enriched, %d failed, "
+                "%d skipped (already enriched) in %dms",
+                summary.total, summary.enriched, summary.failed,
+                summary.skipped, batch_ms,
             )
 
             return EnrichmentResponse(results=final_results, summary=summary)

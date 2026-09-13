@@ -98,6 +98,10 @@ RESPONSE_COLUMNS: dict[str, str] = {
     "flagged_fields": "Flagged Fields",
     "flag_reason": "Flag Reason",
     "error": "Error",
+    # True on every result that enrichment completed without an error. Read
+    # back on input: a record that arrives with it set is returned as it came,
+    # without being enriched again (Orchestrator.enrich_batch).
+    "enriched": "Enriched",
     "record_type": "Record Type",
     # Registry identifiers — ror_id for institutions, lei_id for companies.
     "ror_id": "ROR ID",
