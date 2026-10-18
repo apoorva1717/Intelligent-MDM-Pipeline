@@ -173,6 +173,13 @@ OPTIONAL_VARS_WITH_DEFAULTS = {
     # was skipped, which registries it queried, which guards rejected what.
     # Purely additive — retry behaviour is unchanged. Default off.
     "RETRY_TRACE": "false",
+    # VAT ID validation against VIES (vat/vies_client.py, POST /api/validate/vat).
+    "VIES_API_BASE": "https://ec.europa.eu/taxation_customs/vies/rest-api",
+    "VIES_TIMEOUT_SECONDS": "15",
+    "VIES_MAX_ATTEMPTS": "3",
+    "VIES_BACKOFF_SECONDS": "1.0",
+    "VIES_MAX_CONCURRENCY": "1",
+    "VIES_REQUESTER_VAT": "",
 }
 
 
@@ -632,6 +639,37 @@ class Settings:
     # Log file path. None => configure_logging uses its default
     # (logs/enrichment_api.log); set LOG_FILE="" to disable file logging.
     log_file: Optional[str] = field(default_factory=lambda: os.getenv("LOG_FILE"))
+
+    # ── VAT ID validation against VIES (vat/vies_client.py) ──────────────────
+    # The European Commission's VIES REST API. Responses are cached in the
+    # `vies/` namespace of EVIDENCE_CACHE_DIR and CACHE_FROZEN applies to it.
+    vies_api_base: str = field(
+        default_factory=lambda: os.getenv(
+            "VIES_API_BASE", "https://ec.europa.eu/taxation_customs/vies/rest-api",
+        )
+    )
+    vies_timeout_seconds: float = field(
+        default_factory=lambda: float(os.getenv("VIES_TIMEOUT_SECONDS", "15"))
+    )
+    # Attempts per VAT number, first call included. Only transient answers
+    # (MS_UNAVAILABLE, TIMEOUT, *_MAX_CONCURRENT_REQ*, network, 5xx) retry.
+    vies_max_attempts: int = field(
+        default_factory=lambda: int(os.getenv("VIES_MAX_ATTEMPTS", "3"))
+    )
+    # Backoff before retry n is VIES_BACKOFF_SECONDS * 2**(n-1).
+    vies_backoff_seconds: float = field(
+        default_factory=lambda: float(os.getenv("VIES_BACKOFF_SECONDS", "1.0"))
+    )
+    # VIES is "designed for single requests" (its FAQ) and publishes no rate
+    # limit, only MS_MAX_CONCURRENT_REQ when one is hit — so one at a time.
+    vies_max_concurrency: int = field(
+        default_factory=lambda: int(os.getenv("VIES_MAX_CONCURRENCY", "1"))
+    )
+    # Optional: the requester's own EU VAT ID (e.g. "DE123456789"). When set,
+    # VIES returns a consultation number (requestIdentifier). Never hardcoded.
+    vies_requester_vat: str = field(
+        default_factory=lambda: os.getenv("VIES_REQUESTER_VAT", "").strip()
+    )
 
 
 def get_settings() -> Settings:

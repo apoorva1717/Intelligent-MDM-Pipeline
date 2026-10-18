@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from api.middleware import RequestLoggingMiddleware, configure_logging
 from api.routes import router
+from api.vat_routes import router as vat_router
 from config import get_settings, validate_env
 
 settings = get_settings()
@@ -27,3 +28,4 @@ app = FastAPI(
 
 app.add_middleware(RequestLoggingMiddleware)
 app.include_router(router)
+app.include_router(vat_router)
