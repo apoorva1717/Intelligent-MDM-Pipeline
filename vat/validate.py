@@ -28,7 +28,7 @@ from api.models import EnrichmentRecord
 from api.routes import _norm_header
 from vat.name_match import NameMatch, match_name
 from vat.normalize import VatFormat, assess_format
-from vat.vies_client import VIESClient, ViesResult
+from vat.vies_client import ERROR, SERVICE_UNAVAILABLE, VIESClient, ViesResult
 
 #: Output columns, appended after every input column, in this order.
 VAT_COLUMNS: list[str] = [
@@ -180,6 +180,14 @@ def summarize(
         country = _cell(row, cols["country"]) or "(blank)"
         by_country[country]["format_status"][row["VAT_Format_Status"]] += 1
         by_country[country]["vies_status"][row["VAT_VIES_Status"]] += 1
+    # Numbers VIES did not answer. Neither state is cached, so a re-run asks
+    # VIES again for exactly these and replays every VALID / INVALID.
+    rows_per_vat = Counter(r["VAT_Normalized"] for r in out if r["VAT_VIES_Status"] != NOT_CHECKED)
+    unanswered = [
+        {"vat": vat, "status": r.status, "error_code": r.error_code, "rows": rows_per_vat[vat]}
+        for vat, r in sorted(vies.items())
+        if r.status in (SERVICE_UNAVAILABLE, ERROR)
+    ]
     return {
         "rows": len(out),
         "unique_customers": len({c for c in customers if c is not None}),
@@ -187,6 +195,13 @@ def summarize(
         "unique_vies_lookups": len(vies),
         "vies_network_calls": sum(r.attempts for r in vies.values()),
         "vies_from_cache": sum(r.from_cache for r in vies.values()),
+        "vies_service_unavailable_vat_ids": sum(
+            u["status"] == SERVICE_UNAVAILABLE for u in unanswered
+        ),
+        "vies_service_unavailable_rows": sum(
+            u["rows"] for u in unanswered if u["status"] == SERVICE_UNAVAILABLE
+        ),
+        "vies_unanswered": unanswered,
         "customers_with_vat_conflict": len({
             c for c, row in zip(customers, out)
             if row["VAT_Flags"] and CUSTOMER_VAT_CONFLICT in row["VAT_Flags"]

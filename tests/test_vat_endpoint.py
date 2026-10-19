@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import io
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from openpyxl import Workbook, load_workbook
 
 from api import vat_routes
 from api.app import app
@@ -49,7 +52,8 @@ def stub():
 @pytest_asyncio.fixture
 async def client(stub, tmp_path, monkeypatch):
     settings = replace(
-        get_settings(), vies_backoff_seconds=0.0, vies_requester_vat="", cache_frozen=False,
+        get_settings(), vies_backoff_seconds=0.0, vies_min_interval_ms=0,
+        vies_requester_vat="", cache_frozen=False,
     )
 
     def factory(_settings=None):
@@ -214,4 +218,96 @@ class TestSummaryAndErrors:
     @pytest.mark.asyncio
     async def test_empty_batch_is_422(self, client):
         resp = await client.post(URL, json={"rows": []})
+        assert resp.status_code == 422
+
+
+
+# ---------------------------------------------------------------------------
+# POST /api/validate/vat/file
+# ---------------------------------------------------------------------------
+
+FILE_URL = "/api/validate/vat/file"
+FIXTURE = Path(__file__).parent / "fixtures" / "vat" / "VAT_TEST_EXPORT_30.xlsx"
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+async def _upload(client, name, content):
+    return await client.post(FILE_URL, files={"file": (name, content, XLSX)})
+
+
+def _book(rows):
+    wb = Workbook()
+    wb.active.title = "Data"
+    for r in rows:
+        wb.active.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _sheet(wb, title):
+    rows = list(wb[title].iter_rows(values_only=True))
+    return list(rows[0]), [dict(zip(rows[0], r)) for r in rows[1:]]
+
+
+class TestFileEndpoint:
+    @pytest.mark.asyncio
+    async def test_fixture_round_trip(self, client, stub):
+        resp = await _upload(client, "VAT_TEST_EXPORT_30.xlsx", FIXTURE.read_bytes())
+        assert resp.status_code == 200, resp.text
+        assert resp.headers["content-type"] == XLSX
+        assert resp.headers["content-disposition"] == 'attachment; filename="VAT_TEST_EXPORT_30_vat.xlsx"'
+        assert (resp.headers["x-vat-rows"], resp.headers["x-vat-service-unavailable"]) == ("30", "0")
+
+        out = load_workbook(io.BytesIO(resp.content), read_only=True)
+        src = load_workbook(FIXTURE, read_only=True)
+        assert out.sheetnames == ["Data", "Test_Notes", "Summary"]
+        in_headers, in_rows = _sheet(src, "Data")
+        out_headers, out_rows = _sheet(out, "Data")
+        assert out_headers == in_headers + VAT_COLUMNS
+        assert [{h: r[h] for h in in_headers} for r in out_rows] == in_rows
+        assert _sheet(out, "Test_Notes") == _sheet(src, "Test_Notes")
+        assert [r["VAT_Format_Status"] for r in out_rows].count("FORMAT_OK") == 26
+        assert len(stub.requests) == 24  # once per unique VAT, not per row
+
+    @pytest.mark.asyncio
+    async def test_service_unavailable_count_header(self, client, stub):
+        stub.replies = [vies_mock.error("MS_UNAVAILABLE")]
+        content = _book([["Customer", "Country/Region Key", "VAT Registration No."],
+                         ["1", "DE", "DE136695976"], ["2", "FR", "FR40303265045"]])
+        resp = await _upload(client, "x.xlsx", content)
+        assert resp.headers["x-vat-service-unavailable"] == "2"
+
+    @pytest.mark.asyncio
+    async def test_active_sheet_fallback(self, client):
+        wb = Workbook()
+        wb.active.title = "Export"
+        wb.active.append(["Customer", "Country/Region Key", "VAT Registration No."])
+        wb.active.append(["1", "DE", "DE136695976"])
+        buf = io.BytesIO()
+        wb.save(buf)
+        resp = await _upload(client, "export.xlsx", buf.getvalue())
+        assert resp.status_code == 200
+        _, rows = _sheet(load_workbook(io.BytesIO(resp.content)), "Export")
+        assert rows[0]["VAT_VIES_Status"] == "VALID"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name, content, status", [
+        ("export.csv", b"Customer,VAT", 400),   # wrong extension
+        ("export.xlsx", b"", 400),                       # empty
+        ("export.xlsx", b"not a workbook", 400),         # unreadable
+    ])
+    async def test_bad_uploads(self, client, name, content, status):
+        resp = await _upload(client, name, content)
+        assert resp.status_code == status
+
+    @pytest.mark.asyncio
+    async def test_no_vat_column_is_422(self, client):
+        resp = await _upload(client, "x.xlsx", _book([["Customer", "Name"], ["1", "Acme"]]))
+        assert resp.status_code == 422
+        assert "VAT Registration No." in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_no_data_rows_is_422(self, client):
+        resp = await _upload(client, "x.xlsx", _book([["Customer", "VAT Registration No."]]))
         assert resp.status_code == 422

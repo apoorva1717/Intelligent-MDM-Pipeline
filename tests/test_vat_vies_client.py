@@ -37,7 +37,8 @@ EL_OK = assess_format("GR094014201", "GR")
 def _settings(**overrides):
     base = dict(
         vies_max_attempts=3, vies_backoff_seconds=1.0,
-        vies_max_concurrency=1, vies_requester_vat="", cache_frozen=False,
+        vies_max_concurrency=1, vies_min_interval_ms=0, vies_requester_vat="",
+        cache_frozen=False,
     )
     return replace(get_settings(), **{**base, **overrides})
 
@@ -330,3 +331,84 @@ class TestPureHelpers:
         }
         with pytest.raises(ValueError):
             requester_fields("136695976")
+
+
+# ---------------------------------------------------------------------------
+# Pacing (VIES_MIN_INTERVAL_MS)
+# ---------------------------------------------------------------------------
+
+class _FakeTime:
+    """A clock that only moves when the client sleeps."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.sleeps: list[float] = []
+
+    def clock(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.sleeps.append(round(seconds, 6))
+        self.now += seconds
+
+
+def _paced_client(stub, tmp_path, fake, **settings):
+    return VIESClient(
+        _settings(**{"vies_min_interval_ms": 500, **settings}),
+        cache=EvidenceCache(tmp_path),
+        transport=stub.transport,
+        sleep=fake.sleep,
+        clock=fake.clock,
+    )
+
+
+class TestPacing:
+    @pytest.mark.asyncio
+    async def test_calls_are_spaced_by_the_minimum_interval(self, tmp_path):
+        fake = _FakeTime()
+        stub = ViesStub(vies_mock.echo_valid_undisclosed)
+        client = _paced_client(stub, tmp_path, fake)
+        await client.check_many([DE_OK, FR_OK, EL_OK])
+        assert len(stub.requests) == 3
+        assert fake.sleeps == [0.5, 0.5]  # none before the first call
+
+    @pytest.mark.asyncio
+    async def test_spacing_holds_with_concurrency_above_one(self, tmp_path):
+        fake = _FakeTime()
+        stub = ViesStub(vies_mock.echo_valid_undisclosed)
+        client = _paced_client(stub, tmp_path, fake, vies_max_concurrency=3)
+        await client.check_many([DE_OK, FR_OK, EL_OK])
+        assert len(stub.requests) == 3
+        assert fake.sleeps == [0.5, 0.5]
+
+    @pytest.mark.asyncio
+    async def test_a_backoff_longer_than_the_interval_adds_no_extra_wait(self, tmp_path):
+        fake = _FakeTime()
+        stub = ViesStub(vies_mock.error("MS_MAX_CONCURRENT_REQ"),
+                        vies_mock.valid_undisclosed("DE", "136695976"))
+        client = _paced_client(stub, tmp_path, fake)
+        r = await client.check(DE_OK)
+        assert (r.status, r.attempts) == (VALID, 2)
+        assert fake.sleeps == [1.0]  # the 1 s backoff already exceeds 500 ms
+
+    @pytest.mark.asyncio
+    async def test_cache_replays_are_not_paced(self, tmp_path):
+        warm = ViesStub(vies_mock.echo_valid_undisclosed)
+        await _paced_client(warm, tmp_path, _FakeTime()).check_many([DE_OK, FR_OK])
+        fake = _FakeTime()
+        stub = ViesStub(vies_mock.echo_valid_undisclosed)
+        await _paced_client(stub, tmp_path, fake).check_many([DE_OK, FR_OK])
+        assert (stub.requests, fake.sleeps) == ([], [])
+
+    @pytest.mark.asyncio
+    async def test_zero_disables_pacing(self, tmp_path):
+        fake = _FakeTime()
+        stub = ViesStub(vies_mock.echo_valid_undisclosed)
+        await _paced_client(stub, tmp_path, fake, vies_min_interval_ms=0).check_many(
+            [DE_OK, FR_OK, EL_OK],
+        )
+        assert fake.sleeps == []
+
+    def test_default_is_500_ms(self):
+        from config import OPTIONAL_VARS_WITH_DEFAULTS
+        assert OPTIONAL_VARS_WITH_DEFAULTS["VIES_MIN_INTERVAL_MS"] == "500"

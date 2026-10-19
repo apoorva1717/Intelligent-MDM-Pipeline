@@ -40,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable, Iterable
 
@@ -188,12 +189,14 @@ class VIESClient:
         cache: EvidenceCache | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._url = settings.vies_api_base.rstrip("/") + "/check-vat-number"
         self._timeout = settings.vies_timeout_seconds
         self._max_attempts = max(1, settings.vies_max_attempts)
         self._backoff = settings.vies_backoff_seconds
         self._concurrency = max(1, settings.vies_max_concurrency)
+        self._min_interval = max(0, settings.vies_min_interval_ms) / 1000.0
         self._requester = requester_fields(settings.vies_requester_vat)
         if cache is None:
             root = (settings.evidence_cache_dir or "").strip() or None
@@ -202,6 +205,10 @@ class VIESClient:
         self._store: DiskCache = cache.namespace(NAMESPACE)
         self._transport = transport
         self._sleep = sleep
+        self._clock = clock
+        # Pacing state, shared by every in-flight lookup of this client.
+        self._pace_lock = asyncio.Lock()
+        self._next_call_at = float("-inf")
 
     @property
     def frozen(self) -> bool:
@@ -263,6 +270,18 @@ class VIESClient:
             result = ViesResult(status, vat, error_code=f"HTTP_{code}")
         raise _NotRecorded(result)
 
+    async def _pace(self) -> None:
+        """Hold the next HTTP call until VIES_MIN_INTERVAL_MS after the last
+        one started. VIES publishes no rate limit and answers bursts with
+        MS_MAX_CONCURRENT_REQ, so calls are spaced even at concurrency 1."""
+        if self._min_interval <= 0:
+            return
+        async with self._pace_lock:
+            wait = self._next_call_at - self._clock()
+            if wait > 0:
+                await self._sleep(wait)
+            self._next_call_at = self._clock() + self._min_interval
+
     async def _check(self, client: httpx.AsyncClient, fmt: VatFormat) -> ViesResult:
         vat = fmt.normalized or ""
         key = self.cache_key(vat)
@@ -278,6 +297,7 @@ class VIESClient:
         attempt = 0
         while True:
             attempt += 1
+            await self._pace()
             self._cache.note_network_call(NAMESPACE)
             try:
                 data = await self._live(client, vat, request)

@@ -179,6 +179,7 @@ OPTIONAL_VARS_WITH_DEFAULTS = {
     "VIES_MAX_ATTEMPTS": "3",
     "VIES_BACKOFF_SECONDS": "1.0",
     "VIES_MAX_CONCURRENCY": "1",
+    "VIES_MIN_INTERVAL_MS": "500",
     "VIES_REQUESTER_VAT": "",
 }
 
@@ -664,6 +665,11 @@ class Settings:
     # limit, only MS_MAX_CONCURRENT_REQ when one is hit — so one at a time.
     vies_max_concurrency: int = field(
         default_factory=lambda: int(os.getenv("VIES_MAX_CONCURRENCY", "1"))
+    )
+    # Minimum gap between the starts of two VIES HTTP calls (retries
+    # included), across all in-flight lookups. Cache replays are not paced.
+    vies_min_interval_ms: int = field(
+        default_factory=lambda: int(os.getenv("VIES_MIN_INTERVAL_MS", "500"))
     )
     # Optional: the requester's own EU VAT ID (e.g. "DE123456789"). When set,
     # VIES returns a consultation number (requestIdentifier). Never hardcoded.

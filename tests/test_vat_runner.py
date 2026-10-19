@@ -19,7 +19,7 @@ import pytest_asyncio
 from openpyxl import Workbook, load_workbook
 
 from config import get_settings
-from tests.mocks.vies_mock import ViesStub, echo_valid_undisclosed
+from tests.mocks.vies_mock import ViesStub, echo_valid_undisclosed, error
 from tools import vat_validate_xlsx
 from utils.cache import EvidenceCache
 from vat.validate import CUSTOMER_VAT_CONFLICT, VAT_COLUMNS
@@ -33,7 +33,7 @@ _NOTE_TO_STATUS = {"pass": {"FORMAT_OK"}, "FAIL": {"FORMAT_ERROR"},
 
 
 def _client(tmp_path, stub):
-    settings = replace(get_settings(), vies_backoff_seconds=0.0,
+    settings = replace(get_settings(), vies_backoff_seconds=0.0, vies_min_interval_ms=0,
                        vies_requester_vat="", cache_frozen=False)
     return VIESClient(settings, cache=EvidenceCache(tmp_path / "cache"),
                       transport=stub.transport)
@@ -145,9 +145,40 @@ class TestWorkbook:
         wb.active.append(["Customer", "Country/Region Key", "VAT Registration No."])
         wb.active.append(["1", "DE", "DE136695976"])
         wb.save(src)
-        with caplog.at_level(logging.WARNING, logger="tools.vat_validate_xlsx"):
+        with caplog.at_level(logging.WARNING, logger="vat.xlsx"):
             await vat_validate_xlsx.run(src, tmp_path / "o.xlsx",
                                         _client(tmp_path, ViesStub(echo_valid_undisclosed)))
         assert "No sheet named 'Data'" in caplog.text
         headers, rows = _sheet_rows(tmp_path / "o.xlsx", "Export")
         assert rows[0]["VAT_VIES_Status"] == "VALID"
+
+
+class TestRerunAfterUnavailable:
+    @pytest.mark.asyncio
+    async def test_summary_lists_unanswered_ids_and_a_rerun_asks_only_for_them(self, tmp_path):
+        down = {"IE6388047V", "SE556703748501"}
+
+        def reply(body):
+            vat = body["countryCode"] + body["vatNumber"]
+            return error("MS_UNAVAILABLE") if vat in down else echo_valid_undisclosed(body)
+
+        first = tmp_path / "first.xlsx"
+        summary = await vat_validate_xlsx.run(FIXTURE, first, _client(tmp_path, ViesStub(reply)))
+        assert summary["vies_service_unavailable_vat_ids"] == 2
+        assert summary["vies_service_unavailable_rows"] == 3  # IE6388047V is on two rows
+        assert [(u["vat"], u["error_code"], u["rows"]) for u in summary["vies_unanswered"]] == [
+            ("IE6388047V", "MS_UNAVAILABLE", 2), ("SE556703748501", "MS_UNAVAILABLE", 1),
+        ]
+
+        ws = load_workbook(first, read_only=True)["Summary"]
+        cells = {r[0]: r[1:] for r in ws.iter_rows(values_only=True) if r and r[0]}
+        assert cells["Unique VAT IDs SERVICE_UNAVAILABLE"][0] == 2
+        assert cells["Rows SERVICE_UNAVAILABLE"][0] == 3
+        assert cells["IE6388047V"][:3] == ("SERVICE_UNAVAILABLE", "MS_UNAVAILABLE", 2)
+
+        # Same input, same cache: only the two unanswered numbers go to VIES.
+        stub = ViesStub(echo_valid_undisclosed)
+        again = await vat_validate_xlsx.run(FIXTURE, tmp_path / "second.xlsx", _client(tmp_path, stub))
+        assert sorted(r["countryCode"] + r["vatNumber"] for r in stub.requests) == sorted(down)
+        assert again["vies_from_cache"] == 22
+        assert again["vies_service_unavailable_vat_ids"] == 0
