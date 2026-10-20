@@ -324,6 +324,130 @@ Two mechanisms deal with this:
 
 ---
 
+## 3a. Missing-VAT lookup experiment (fixture, 2026-10-20)
+
+**Setup.** Code at `4bd61d1`, run live on 2026-10-20:
+
+```
+python tools/vat_lookup_compare.py tests/fixtures/vat/VAT_TEST_EXPORT_30.xlsx --rows 2-18 --exclude 9 --cache-dir <short path>
+```
+
+- **Rows:** 16 DE rows with a confirmed VAT ID (rows 2–18, without the Bayer typo row 9) were
+  blanked. That is 15 customers, since Bosch has two rows. Universität Stuttgart (row 20, blank
+  in the export) was looked up as the "genuinely missing" case.
+- **Totals count each customer once.**
+- **Ground truth came from the companies' Impressum pages** ("Impressum confirmed" in
+  Test_Notes). Mode A searches for those same pages, so its recall here is **not an
+  independent measure**. It measures whether the pipeline finds and reads the page, not whether
+  the page is right.
+- Mode B (LLM only) is an **experiment, not for production use**; its answers are never written
+  to SAP.
+
+### Results per customer
+
+| Row | Customer | Ground truth | Mode A value | Mode A status / reason | Mode A outcome | Mode B value (confidence) | Mode B outcome |
+|---|---|---|---|---|---|---|---|
+| 2 | Google Germany GmbH | DE811569869 | IE6388047V | UNVERIFIED, `ATTRIBUTION_PARTIAL` ("Google Ireland Limited") | wrong, VIES VALID | – (low) | null |
+| 3 | Siemens Aktiengesellschaft | DE129274202 | DE813775002 | UNVERIFIED, `ATTRIBUTION_PARTIAL` ("Siemens Finance & Leasing GmbH") | wrong, VIES VALID | DE129274202 (high) | correct |
+| 4–5 | Robert Bosch GmbH | DE811128135 | DE811128135 | VERIFIED, MATCH | correct | DE147867203 (high) | wrong, check digit fails |
+| 6 | Zalando SE | DE260543043 | – | NOT_FOUND, `NO_IMPRESSUM_PAGE` | null | DE260543043 (high) | correct |
+| 7 | BASF SE | DE149145247 | DE149145247 | VERIFIED, MATCH | correct | DE143558497 (high) | wrong, check digit fails |
+| 8 | Bayer AG | DE123659859 | – | NOT_FOUND, `NO_IMPRESSUM_PAGE` | null | DE123456789 (low) | wrong, check digit fails |
+| 10 | Bayerische Motoren Werke AG | DE129273398 | – | NOT_FOUND, `NO_IMPRESSUM_PAGE` | null | DE129273398 (high) | correct |
+| 11 | Merck KGaA | DE811850788 | – | NOT_FOUND, `NO_IMPRESSUM_PAGE` | null | DE111671602 (high) | wrong, check digit fails |
+| 12 | Henkel AG & Co. KGaA | DE119429301 | DE119429301 | VERIFIED, MATCH | correct | DE119429301 (high) | correct |
+| 13 | Boehringer Ingelheim International GmbH | DE811138149 | – | NOT_FOUND, `NO_VAT_ID_ON_PAGE` | null | – (low) | null |
+| 14 | adidas AG | DE132490588 | DE132490588 | VERIFIED, MATCH | correct | DE132273796 (high) | wrong, check digit fails |
+| 15 | Continental AG | DE115645799 | DE115645799 | VERIFIED, MATCH | correct | DE115648799 (high) | wrong, check digit fails |
+| 16 | Dr. Ing. h.c. F. Porsche AG | DE147799625 | – | NOT_FOUND, `NO_VAT_ID_ON_PAGE` | null | DE147799625 (high) | correct |
+| 17 | QIAGEN GmbH | DE121386819 | DE121386819 | UNVERIFIED, `ATTRIBUTION_PARTIAL` ("QIAGEN GmbH - Germany") | correct | DE121386819 (high) | correct |
+| 18 | Fresenius SE & Co. KGaA | DE114152311 | DE114152311 | VERIFIED, MATCH | correct | DE811119184 (high) | wrong, check digit fails |
+| 20 | Universität Stuttgart | (none in SAP) | DE147794196 | VERIFIED, MATCH | no truth | DE147794196 (medium) | no truth |
+
+Mode A read exactly 1 candidate page per customer wherever it read one.
+
+### Totals (15 customers)
+
+| Outcome | Mode A (grounded) | Mode B (LLM only) |
+|---|---|---|
+| Correct | 7 | 6 |
+| Wrong but passes format | 2 | 0 |
+| … of which VIES VALID (someone else's real number) | **2** | 0 |
+| Wrong, fails check digit | 0 | **7** |
+| Null (no value proposed) | 6 | 2 |
+| FOUND_VERIFIED | 6 | n/a (never verified) |
+| **FOUND_VERIFIED but wrong** | **0** | n/a |
+
+**Mode B correctness by self-reported confidence**
+
+| Confidence | Customers | Correct | Wrong, VIES VALID | Wrong, bad check digit | Null |
+|---|---|---|---|---|---|
+| high | 12 | 6 | 0 | 6 | 0 |
+| medium | 0 | – | – | – | – |
+| low | 3 | 0 | 0 | 1 (`DE123456789`, a placeholder) | 2 |
+
+### What the results show
+
+- **Mode A's strict attribution gate did its job.** Both wrong-but-VIES-valid numbers Mode A
+  read stayed `FOUND_UNVERIFIED`. In both cases the search ranked a page that names a
+  *different* legal entity first:
+  - **Google:** google.de's own Impressum names Google Ireland Limited, `IE6388047V`.
+  - **Siemens:** the Impressum of Siemens Finance & Leasing GmbH.
+
+  None of the 6 verified results is wrong. Without the strict gate (the original MATCH-or-PARTIAL
+  rule), both wrong numbers would have reached VIES, been called VALID and been reported as
+  verified.
+- **The strict gate also cost one correct result.** QIAGEN's page attributes the number to
+  "QIAGEN GmbH - Germany". The extra country word makes it PARTIAL, so a correct ID stays
+  unverified.
+- **Every one of Mode B's wrong answers failed the check digit.** That's 7 of 7, and 6 of them
+  were stated with **high** confidence. None was VIES-valid, because none was even format-valid.
+  The check digit alone caught all of them. Its 6 correct answers are all large, well-known
+  companies. Self-reported confidence carries no usable signal: "high" was right exactly half
+  the time (6 of 12).
+- **Universität Stuttgart is not a "no answer" case.** Its Impressum
+  (uni-stuttgart.de/impressum) states *"Umsatzsteuer-Identifikationsnummer DE 1477 94 196"*.
+  - Mode A read and verified it: attribution MATCH, VIES VALID.
+  - Mode B gave the same number at medium confidence, and VIES says VALID.
+  - The SAP record lacks the number, but the university has one. The fixture's expectation that
+    "nothing found" is the right answer does not hold.
+- **Why Mode A found nothing for six companies.** None of these is a reader or gate failure:
+  - **Bot protection.** bayer.com, merckgroup.com and porsche.com answered **403** (Akamai and
+    similar). Both BMW sites **timed out**.
+  - **JavaScript-only pages.** Boehringer Ingelheim's Impressum pages returned 200 with **no
+    text**.
+  - **Search noise plus URL selection.** For Zalando, the "…Impressum" query returned Berlin city
+    pages. The correct Impressum URLs came only from the "…Imprint" query, and the lookup takes
+    the first 3 URLs of the merged list, so it never reached them. For Bayer, the first result was
+    the football club's shop, whose fallback probes used up the fetch budget.
+
+### Cost
+
+| | Mode A | Mode B | Audit |
+|---|---|---|---|
+| SerpAPI queries (network) | 32 (32) | – | – |
+| Page attempts / fetched / recorded | 53 / 53 / 34 | – | – |
+| LLM calls (network) | 13 reads | 16 asks | – |
+| VIES checks | 7 | 7 | 2 |
+| Cache write failures | 0 | 0 | 0 |
+| Wall time | 371 s | 38 s | – |
+
+### Reproducibility (frozen re-run of the same command)
+
+The frozen re-run made **0** network calls of any kind. Mode A replayed 34 pages and 13 LLM
+answers, and Mode B replayed 16 LLM answers. The totals, the confidence table, every Mode B row
+and 12 of 16 Mode A rows were identical.
+
+**4 Mode A rows differ** (Bayer, BMW, Merck, Porsche): live `NOT_FOUND`, frozen
+`LOOKUP_INCOMPLETE` / `FROZEN_CACHE_MISS`. These are the customers whose pages returned 403 or
+timed out. Such answers are not recorded (only 2xx and 404/410 are, by design), so the frozen run
+had nothing to replay.
+
+The frozen label is the accurate one: the live run reported "blocked / timed out" as *not
+found*, when it should have said *could not look*. This is an open fix (§5, follow-up 10).
+
+---
+
 ## 4. Proposed issue codes (proposal only)
 
 The Notion catalogue is the source of truth. **None of these exist in the catalogue or in the
@@ -392,3 +516,21 @@ steward as a data defect.
      `cache_write_failures` in the summary, the Summary sheet and the Cost sheet. This
      **detects** the problem; it does not fix `DiskCache`. The fix is still this follow-up.
      Runs of the experiment use a short cache path (the scratchpad's 8.3 form, 81 characters).
+10. **Mode A issues found by the 2026-10-20 experiment** (§3a). Open; not fixed in the
+    results commit.
+    - **A blocked or timed-out page is reported as `NOT_FOUND` in a live run.** It should be
+      `LOOKUP_INCOMPLETE` with a reason (for example `PAGE_UNAVAILABLE:403`), the same as the
+      frozen run's `FROZEN_CACHE_MISS`. Live and frozen output would then agree for these rows,
+      and "could not look" would never read as "nothing there".
+    - **URL selection takes the first 3 of the merged result list.** One noisy query (Zalando's
+      "…Impressum" returning Berlin city pages) can crowd out the other query's good results.
+      Alternating between the two queries' results, or preferring result URLs whose path looks
+      like an Impressum, would fix that.
+    - **A country word in the attributed name** ("QIAGEN GmbH - Germany") makes an exact
+      attribution PARTIAL. Treating country names as a qualifier would recover it.
+    - **Bot protection (403) and JavaScript-only Impressum pages** are a limit of plain HTTP
+      fetching, not of the reader.
+    - **Character encoding.** Some page text is stored with mis-decoded umlauts ("gegrÃ¼ndete"):
+      the existing `PageFetcher` takes the encoding `requests` guesses. The quote and ID gates
+      still work, because they compare within the same text, but the stored evidence reads
+      badly.
