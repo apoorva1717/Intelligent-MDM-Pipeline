@@ -431,3 +431,101 @@ class TestInValidateRows:
         out, summary = await validate_rows(rows, engine._vies)
         assert list(out[0]) == list(rows[0]) + VAT_COLUMNS
         assert "lookup" not in summary
+
+
+
+# ---------------------------------------------------------------------------
+# Fix 1 — a blocked / timed-out page is LOOKUP_INCOMPLETE, never NOT_FOUND
+# ---------------------------------------------------------------------------
+
+class TestUnavailablePages:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("answer, reason", [(403, "403"), (503, "503"), ("timeout", "ReadTimeout")])
+    async def test_blocked_page_is_incomplete_with_the_reason(self, tmp_path, answer, reason):
+        engine, _, reader = _engine(tmp_path, web=FakeWeb({IMPRESSUM: answer}))
+        r = await engine.lookup(BOSCH)
+        assert r.status == LOOKUP_INCOMPLETE
+        assert f"PAGE_UNAVAILABLE:{reason}" in r.flags
+        assert reader.prompts == []
+
+    @pytest.mark.asyncio
+    async def test_frozen_replay_reproduces_it_exactly(self, tmp_path):
+        live, _, _ = _engine(tmp_path, web=FakeWeb({IMPRESSUM: 403}))
+        r1 = await live.lookup(BOSCH)
+        web = FakeWeb()
+        frozen, _, _ = _engine(tmp_path, search=FakeSearch(), web=web, frozen=True)
+        r2 = await frozen.lookup(BOSCH)
+        assert web.fetched == []
+        assert (r2.status, r2.flags) == (r1.status, r1.flags)
+        assert "FROZEN_CACHE_MISS" not in r2.flags
+
+    @pytest.mark.asyncio
+    async def test_a_live_rerun_asks_the_site_again(self, tmp_path):
+        first, _, _ = _engine(tmp_path, web=FakeWeb({IMPRESSUM: 403}))
+        await first.lookup(BOSCH)
+        web = FakeWeb({IMPRESSUM: page(IMPRESSUM, BODY)})
+        again, _, _ = _engine(tmp_path, web=web, reader=_reader(
+            reading("DE811128135", "Robert Bosch GmbH", QUOTE)))
+        r = await again.lookup(BOSCH)
+        assert web.fetched == [IMPRESSUM]          # not served the 403
+        assert r.status == FOUND_VERIFIED
+
+    @pytest.mark.asyncio
+    async def test_unavailable_answers_never_enter_vat_pages(self, tmp_path):
+        engine, _, _ = _engine(tmp_path, web=FakeWeb({IMPRESSUM: 403}))
+        await engine.lookup(BOSCH)
+        assert engine._pages.get(IMPRESSUM) is None          # the 403 is not in vat_pages
+        assert engine._unavailable.get(IMPRESSUM) == {"url": IMPRESSUM, "reason": "403"}
+        assert len(list((tmp_path / "vat_pages_unavailable").glob("*.json"))) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_found_result_still_lists_blocked_pages(self, tmp_path):
+        blocked = "https://www.blocked.example/impressum"
+        engine, _, _ = _engine(
+            tmp_path, search=FakeSearch({"Bosch": [blocked, IMPRESSUM]}),
+            web=FakeWeb({blocked: 403, IMPRESSUM: page(IMPRESSUM, BODY)}),
+            reader=_reader(reading("DE811128135", "Robert Bosch GmbH", QUOTE)))
+        r = await engine.lookup(BOSCH)
+        assert r.status == FOUND_VERIFIED and "PAGE_UNAVAILABLE:403" in r.flags
+
+
+# ---------------------------------------------------------------------------
+# Fix 2 — result URLs alternate between the two queries
+# ---------------------------------------------------------------------------
+
+class _TwoQueries(FakeSearch):
+    def __init__(self, impressum, imprint):
+        super().__init__()
+        self.lists = {"Impressum": impressum, "Imprint": imprint}
+
+    async def search(self, query, num_results=5, *, country=None):
+        self.queries.append(query)
+        from search.base import SearchResult
+        urls = self.lists["Impressum" if query.endswith("Impressum") else "Imprint"]
+        return [SearchResult(title=u, url=u, snippet="") for u in urls]
+
+
+class TestAlternatingResults:
+    @pytest.mark.asyncio
+    async def test_a_noisy_query_cannot_crowd_out_the_other(self, tmp_path):
+        noise = ["https://de.wikipedia.org/wiki/Berlin", "https://www.berlin.de/",
+                 "https://www.visitberlin.de/de"]
+        good = [IMPRESSUM, "https://corporate.bosch.example/impressum"]
+        engine, _, _ = _engine(tmp_path, search=_TwoQueries(noise, good))
+        assert await engine._search_urls(BOSCH) == [noise[0], IMPRESSUM, noise[1]]
+
+    @pytest.mark.asyncio
+    async def test_duplicates_across_queries_count_once(self, tmp_path):
+        engine, _, _ = _engine(tmp_path, search=_TwoQueries([IMPRESSUM, "https://a.example/"],
+                                                            [IMPRESSUM, "https://b.example/"]))
+        assert await engine._search_urls(BOSCH) == [IMPRESSUM, "https://a.example/", "https://b.example/"]
+
+    @pytest.mark.asyncio
+    async def test_the_good_page_is_reached_within_the_fetch_cap(self, tmp_path):
+        noise = ["https://de.wikipedia.org/wiki/Berlin", "https://www.berlin.de/"]
+        web = FakeWeb({noise[0]: page(noise[0], "Berlin", title="Berlin – Wikipedia"),
+                       IMPRESSUM: page(IMPRESSUM, BODY)})
+        engine, _, _ = _engine(tmp_path, search=_TwoQueries(noise, [IMPRESSUM]), web=web,
+                               reader=_reader(reading("DE811128135", "Robert Bosch GmbH", QUOTE)))
+        r = await engine.lookup(BOSCH)
+        assert (r.status, r.value) == (FOUND_VERIFIED, "DE811128135")

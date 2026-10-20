@@ -4,7 +4,8 @@ For one in-scope customer (see ``vat/lookup.py``):
 
 1. **Candidate pages.** SerpAPI ``"<Name 1> <City> Impressum"`` and
    ``"<Name 1> <City> Imprint"`` (``gl=DE``); the first
-   :data:`MAX_RESULT_URLS` distinct result URLs. A result that is not itself an
+   :data:`MAX_RESULT_URLS` distinct result URLs, taken **alternately** from
+   the two result lists so one noisy query cannot crowd out the other. A result that is not itself an
    Impressum is replaced by the first of :data:`FALLBACK_PATHS` on the same
    host that is. At most :data:`MAX_FETCHES` page attempts per customer.
 2. **Reader.** The LLM reads each Impressum's fetched text — a reader, never a
@@ -50,12 +51,17 @@ fetch cap. The best candidate wins (verified match > verified qualifier >
 VIES-unverified > gate-failed) and every candidate read is listed in
 ``VAT_Found_Flags`` as ``CANDIDATE:<value>|<attributed_to>|<host>|<outcome>``.
 No VAT ID on any page → ``NOT_FOUND``; nothing found while part of the lookup
-could not run → ``LOOKUP_INCOMPLETE``.
+could not run → ``LOOKUP_INCOMPLETE``. A page that answered 403 / 5xx / timed
+out is part of the lookup that could not run (``PAGE_UNAVAILABLE:<status>``):
+"blocked" is never reported as "not found".
 
 Every external answer is cached in the VIES client's own evidence cache, so
 ``CACHE_FROZEN`` covers all of it: ``vat_serp`` (via ``utils.cache.cached_serp``),
 ``vat_pages`` (keyed on URL; only 2xx and 404/410 are recorded — a timeout or
-a 5xx is never replayed) and ``vat_llm`` (``vat/llm_cache.py``).
+a 5xx is never replayed to a live run) and ``vat_llm`` (``vat/llm_cache.py``).
+Unavailable answers go to ``vat_pages_unavailable``, which **only a frozen
+replay reads**: it lets ``CACHE_FROZEN`` reproduce ``PAGE_UNAVAILABLE`` exactly,
+while a live run never reads it and always asks the site again.
 """
 
 from __future__ import annotations
@@ -144,6 +150,9 @@ NO_IMPRESSUM_PAGE = "NO_IMPRESSUM_PAGE"
 NO_VAT_ID_ON_PAGE = "NO_VAT_ID_ON_PAGE"
 LLM_UNAVAILABLE = "LLM_UNAVAILABLE"
 FROZEN_CACHE_MISS = "FROZEN_CACHE_MISS"
+#: Prefix: a page answered something other than 2xx / 404 / 410 (403, 5xx,
+#: a timeout). ``PAGE_UNAVAILABLE:403``, ``PAGE_UNAVAILABLE:ReadTimeout``.
+PAGE_UNAVAILABLE = "PAGE_UNAVAILABLE"
 
 _IMPRESSUM_RE = re.compile(
     r"impressum|imprint|legal[\s_-]*notice|anbieterkennzeichnung|rechtliche[\s_-]*hinweise",
@@ -352,6 +361,8 @@ class GroundedLookup:
         self._serp_disk = cache.namespace("vat_serp")
         self._serp = BatchCache(SerpCache(self._serp_disk))
         self._pages = cache.namespace("vat_pages")
+        # Read only by a frozen replay; see the module docstring.
+        self._unavailable = cache.namespace("vat_pages_unavailable")
         self._fetcher = fetcher or PageFetcher(
             timeout=getattr(settings, "page_fetch_timeout_seconds", 10),
             max_chars=PAGE_MAX_CHARS, store=None,
@@ -383,7 +394,7 @@ class GroundedLookup:
     # -- external answers, cached -------------------------------------------
 
     async def _search_urls(self, inp: LookupInput) -> list[str]:
-        urls: list[str] = []
+        per_query: list[list[str]] = []
         base = " ".join(p for p in (inp.name_1, inp.city) if p)
         for suffix in ("Impressum", "Imprint"):
             query = f"{base} {suffix}"
@@ -397,10 +408,19 @@ class GroundedLookup:
             )
             if results and not was_recorded:
                 self._vies.write_failures.check(self._serp_disk, serp_disk_key(query, "DE"))
-            for r in results or []:
-                url = getattr(r, "url", None) or (r.get("url") if isinstance(r, dict) else None)
-                if url and url not in urls:
-                    urls.append(url)
+            per_query.append([
+                u for u in (
+                    getattr(r, "url", None) or (r.get("url") if isinstance(r, dict) else None)
+                    for r in results or []
+                ) if u
+            ])
+        # Alternate: Impressum #1, Imprint #1, Impressum #2, … — so a query
+        # that returned noise cannot fill all the slots on its own.
+        urls: list[str] = []
+        for rank in range(max((len(q) for q in per_query), default=0)):
+            for q in per_query:
+                if rank < len(q) and q[rank] not in urls:
+                    urls.append(q[rank])
         return urls[:MAX_RESULT_URLS]
 
     async def _fetch(self, url: str, flags: set[str]) -> PageFetchResult | None:
@@ -414,19 +434,29 @@ class GroundedLookup:
                 content=PageFetcher._content_from_json(recorded.get("content")),
             )
         if self._pages.replay_only:
-            flags.add(FROZEN_CACHE_MISS)
+            seen = self._unavailable.get(url)
+            if isinstance(seen, dict):
+                flags.add(f"{PAGE_UNAVAILABLE}:{seen.get('reason')}")
+            else:
+                flags.add(FROZEN_CACHE_MISS)
             return None
         self._stats.pages_fetched += 1
         res = await self._fetcher.fetch_page_result(url)
         status = res.status or 0
         if 200 <= status < 300 or status in (404, 410):
             # Definitive answers only. A timeout / 5xx / transport error is
-            # not recorded, so the next run asks again.
+            # not recorded, so the next live run asks again.
             self._vies.write_failures.set_checked(self._pages, url, {
                 "url": res.url, "status": res.status,
                 "content": PageFetcher._content_to_json(res.content),
             })
-        return res
+            return res
+        reason = str(res.status) if res.status else (res.error or "unknown")
+        flags.add(f"{PAGE_UNAVAILABLE}:{reason}")
+        self._vies.write_failures.set_checked(self._unavailable, url, {
+            "url": url, "reason": reason,
+        })
+        return None
 
     async def _impressum_for(self, url: str, flags: set[str]) -> PageFetchResult | None:
         """The Impressum for one result URL: the URL itself, else the first
@@ -438,6 +468,7 @@ class GroundedLookup:
         if not is_directory_host(url):
             scheme = urlparse(url).scheme or "https"
             tries += [f"{scheme}://{host}{path}" for path in FALLBACK_PATHS]
+            tries = list(dict.fromkeys(tries))  # the result URL may itself be /impressum
         for candidate in tries:
             if self._stats_attempts_left() <= 0:
                 return None
@@ -513,13 +544,15 @@ class GroundedLookup:
             if _rank(best) == 0:
                 break  # a verified exact attribution: nothing can beat it
 
+        unavailable = sorted(f for f in flags if f.startswith(PAGE_UNAVAILABLE + ":"))
         if best is not None:
             return FoundResult(
                 best.mode, best.status, best.value, best.source_url,
                 best.attributed_to, best.evidence, best.date,
-                flags=(*best.flags, *candidates),
+                flags=(*best.flags, *candidates, *unavailable),
             )
-        if flags & {FROZEN_CACHE_MISS, LLM_UNAVAILABLE}:
+        if unavailable or flags & {FROZEN_CACHE_MISS, LLM_UNAVAILABLE}:
+            # Part of the lookup could not run — "blocked" is not "not found".
             return FoundResult(GROUNDED, LOOKUP_INCOMPLETE, flags=tuple(sorted(flags)))
         if not impressum_seen:
             return FoundResult(GROUNDED, NOT_FOUND, flags=(NO_IMPRESSUM_PAGE,))
