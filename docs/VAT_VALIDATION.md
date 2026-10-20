@@ -301,6 +301,27 @@ On 2026-10-18 the first run had 24 lookups (26 HTTP calls) and 1 SERVICE_UNAVAIL
 (`FR45775662257`). The re-run made 1 HTTP call, replayed the other 23 answers from cache, and
 ended with 0 SERVICE_UNAVAILABLE.
 
+### Missing-VAT lookup: search ranking varies day to day
+
+Mode A's result depends on which pages SerpAPI ranks first, and that ranking changes from one
+day to the next. For the identical query "Robert Bosch GmbH Gerlingen-Schillerhoehe Impressum":
+
+- **2026-10-19:** the first Impressum read was `bosch-home.com`, the Impressum of a different
+  Bosch company (Robert Bosch Hausgeräte GmbH, `DE129274235`).
+- **2026-10-20:** the first result was `bosch.de/impressum` (Robert Bosch GmbH, `DE811128135`).
+
+Two mechanisms deal with this:
+
+1. **The frozen cache makes a run reproducible.** Every search, page and LLM answer is
+   recorded, so a `CACHE_FROZEN` re-run reads exactly what the original run saw, whatever the
+   search engine ranks today. The 2026-10-19 results were *not* reproducible: they were lost
+   to the cache path problem (§5, follow-up #9), which is what the write guard now detects.
+2. **Continuing past `ATTRIBUTION_PARTIAL` makes the result robust to ranking.** The lookup
+   stops only at a verified exact attribution. A subsidiary's Impressum ranked first is read,
+   rejected as PARTIAL and listed as a candidate, and the lookup moves on to the next result
+   URL (within the 6-fetch cap). Whether the right page is reached therefore depends much less
+   on whether it was ranked first.
+
 ---
 
 ## 4. Proposed issue codes (proposal only)

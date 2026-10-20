@@ -21,6 +21,12 @@ The input file is never modified. Run on a file this tool already wrote, the
 
 ``--frozen`` sets CACHE_FROZEN: no VIES call is made, a number with no
 recording is SERVICE_UNAVAILABLE / FROZEN_CACHE_MISS.
+
+``--lookup-missing {none,grounded,llm_only}`` (default ``none``, unchanged
+behaviour) proposes VAT IDs for rows with an empty VAT Registration No. and
+Country/Region Key DE in the ``VAT_Found_*`` columns — proposals only, the VAT
+column is never written. ``llm_only`` is an **experiment**, not for production
+use (``vat/lookup_llm_only.py``).
 """
 
 from __future__ import annotations
@@ -37,7 +43,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 
 
-async def run(input_path: Path, out_path: Path, client) -> dict[str, Any]:
+async def run(input_path: Path, out_path: Path, client, lookup=None) -> dict[str, Any]:
     """Validate *input_path* into *out_path*. Returns the summary."""
     from openpyxl import load_workbook
 
@@ -45,9 +51,12 @@ async def run(input_path: Path, out_path: Path, client) -> dict[str, Any]:
 
     wb = load_workbook(input_path)
     try:
-        summary = await validate_workbook(wb, client, source=str(input_path))
+        summary = await validate_workbook(wb, client, source=str(input_path), lookup=lookup)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    finally:
+        if lookup is not None:
+            await lookup.aclose()
     wb.save(out_path)
     return summary
 
@@ -60,6 +69,9 @@ def main() -> int:
                     help="Force CACHE_FROZEN=true — replay recorded VIES answers only.")
     ap.add_argument("--cache-dir", default=None,
                     help="Override EVIDENCE_CACHE_DIR (VIES answers go in <dir>/vies/).")
+    ap.add_argument("--lookup-missing", choices=("none", "grounded", "llm_only"), default="none",
+                    help="Propose VAT IDs for rows with no VAT ID and key DE (llm_only is an "
+                         "experiment, not for production use).")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -71,6 +83,7 @@ def main() -> int:
         os.environ["EVIDENCE_CACHE_DIR"] = args.cache_dir
 
     from config import get_settings  # noqa: E402
+    from vat.lookup_engines import make_lookup  # noqa: E402
     from vat.vies_client import VIESClient  # noqa: E402
 
     input_path = Path(args.input).resolve()
@@ -80,12 +93,17 @@ def main() -> int:
     if out_path == input_path:
         raise SystemExit("--out must differ from the input file; the input is never modified.")
 
-    summary = asyncio.run(run(input_path, out_path, VIESClient(get_settings())))
+    settings = get_settings()
+    client = VIESClient(settings)
+    lookup = make_lookup(args.lookup_missing, settings, client)
+    summary = asyncio.run(run(input_path, out_path, client, lookup))
     print(f"Wrote {out_path}")
     print(f"  rows={summary['rows']} unique_customers={summary['unique_customers']} "
           f"vies_lookups={summary['unique_vies_lookups']} "
           f"conflicts={summary['customers_with_vat_conflict']}")
     print(f"  format: {summary['format_status']}")
+    if "lookup" in summary:
+        print(f"  lookup ({summary['lookup']['mode']}): {summary['lookup']['status']}")
     print(f"  vies:   {summary['vies_status']}")
     return 0
 

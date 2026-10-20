@@ -16,6 +16,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from vat.lookup import LOOKUP_COLUMNS, LookupEngine
 from vat.name_match import MATCH, MISMATCH, NOT_AVAILABLE, PARTIAL
 from vat.normalize import FORMAT_ERROR, FORMAT_OK, MISSING, NOT_EU
 from vat.validate import NOT_CHECKED, VAT_COLUMNS, validate_rows
@@ -122,6 +123,20 @@ def _write_summary(wb, summary: dict[str, Any], meta: list[tuple[str, Any]]) -> 
     if not summary["vies_unanswered"]:
         ws.append(["(none)"])
 
+    lookup = summary.get("lookup")
+    if lookup:
+        ws.append([])
+        ws.append([f"Missing-VAT lookup — mode {lookup['mode']} (proposals only; "
+                   "VAT Registration No. is never written)"])
+        if lookup["mode"] == "llm_only":
+            ws.append(["EXPERIMENT ONLY — not for production use; results are not to be written to SAP."])
+        ws.append(["Rows in scope (VAT blank, Country/Region Key DE)", lookup["rows_in_scope"]])
+        for status, n in sorted(lookup["status"].items()):
+            ws.append([status, n])
+        ws.append(["Cost"])
+        for key, n in lookup["cost"].items():
+            ws.append([key, n])
+
     ws.append([])
     ws.append(["Rows per Country/Region Key"])
     ws.append(["Country/Region Key", "Rows", *format_states, *vies_states])
@@ -134,20 +149,25 @@ def _write_summary(wb, summary: dict[str, Any], meta: list[tuple[str, Any]]) -> 
         ])
 
 
-async def validate_workbook(wb, client: VIESClient, *, source: str) -> dict[str, Any]:
+async def validate_workbook(
+    wb, client: VIESClient, *, source: str, lookup: LookupEngine | None = None,
+) -> dict[str, Any]:
     """Validate *wb* in place (result columns + Summary sheet). Returns the
-    summary. *source* names the input on the Summary sheet.
+    summary. *source* names the input on the Summary sheet. With a *lookup*
+    engine the ``VAT_Found_*`` columns are written too.
 
     Raises ``ValueError`` for a sheet with no header row, no data rows, or no
     VAT Registration No. column.
     """
     ws = _data_sheet(wb)
-    header_idx, headers, rows = _read(ws, VAT_COLUMNS)
+    # Earlier result columns are never read back as input, lookup ones included.
+    header_idx, headers, rows = _read(ws, VAT_COLUMNS + LOOKUP_COLUMNS)
     if not rows:
         raise ValueError(f"Sheet {ws.title!r} has no data rows.")
 
-    results, summary = await validate_rows([r for _, r in rows], client)
-    _write_results(ws, header_idx, headers, rows, results, VAT_COLUMNS)
+    results, summary = await validate_rows([r for _, r in rows], client, lookup=lookup)
+    written = VAT_COLUMNS + (LOOKUP_COLUMNS if lookup is not None else [])
+    _write_results(ws, header_idx, headers, rows, results, written)
     _write_summary(wb, summary, [
         ("Input", source),
         ("Sheet", ws.title),

@@ -311,3 +311,109 @@ class TestFileEndpoint:
     async def test_no_data_rows_is_422(self, client):
         resp = await _upload(client, "x.xlsx", _book([["Customer", "VAT Registration No."]]))
         assert resp.status_code == 422
+
+
+
+# ---------------------------------------------------------------------------
+# lookup_missing (none | grounded | llm_only) and the experiment alias
+# ---------------------------------------------------------------------------
+
+from vat.lookup import LOOKUP_COLUMNS, FoundResult  # noqa: E402
+
+
+class _FakeLookup:
+    """Proposes one fixed value for every in-scope customer."""
+
+    def __init__(self, mode):
+        self.mode = mode
+        self.calls = 0
+        self.closed = False
+
+    async def lookup(self, inp):
+        self.calls += 1
+        status = "FOUND_VERIFIED" if self.mode == "grounded" else "LLM_GUESS:FORMAT_OK:VALID"
+        return FoundResult(self.mode, status, value="DE136695976")
+
+    def stats(self):
+        return {"calls": self.calls}
+
+    async def aclose(self):
+        self.closed = True
+
+
+@pytest.fixture
+def lookups(monkeypatch):
+    made: list = []
+
+    def factory(mode, client):
+        if mode == "none":
+            return None
+        engine = _FakeLookup(mode)
+        made.append(engine)
+        return engine
+
+    monkeypatch.setattr(vat_routes, "_get_lookup", factory)
+    return made
+
+
+_MISSING_DE = {"Customer": "1", "Name": "Acme GmbH", "Country/Region Key": "DE",
+               "VAT Registration No.": None}
+
+
+class TestLookupMissing:
+    @pytest.mark.asyncio
+    async def test_default_is_none_and_output_unchanged(self, client, lookups):
+        body = await _post(client, [_MISSING_DE])
+        assert body["columns"] == VAT_COLUMNS
+        assert list(body["rows"][0]) == list(_MISSING_DE) + VAT_COLUMNS
+        assert "lookup" not in body["summary"] and lookups == []
+
+    @pytest.mark.asyncio
+    async def test_body_parameter(self, client, lookups):
+        resp = await client.post(URL, json={"rows": [_MISSING_DE], "lookup_missing": "grounded"})
+        body = resp.json()
+        assert body["columns"] == VAT_COLUMNS + LOOKUP_COLUMNS
+        assert body["rows"][0]["VAT_Found_Status"] == "FOUND_VERIFIED"
+        assert body["rows"][0]["VAT Registration No."] is None  # never written
+        assert lookups[0].closed
+
+    @pytest.mark.asyncio
+    async def test_query_parameter_overrides_body(self, client, lookups):
+        resp = await client.post(URL + "?lookup_missing=llm_only",
+                                 json={"rows": [_MISSING_DE], "lookup_missing": "grounded"})
+        assert resp.json()["rows"][0]["VAT_Lookup_Mode"] == "LLM_ONLY"
+
+    @pytest.mark.asyncio
+    async def test_experiment_alias_is_llm_only(self, client, lookups):
+        resp = await client.post(URL + "/llm-only-experiment", json={"rows": [_MISSING_DE]})
+        assert resp.status_code == 200
+        row = resp.json()["rows"][0]
+        assert (row["VAT_Lookup_Mode"], row["VAT_Found_Status"]) == (
+            "LLM_ONLY", "LLM_GUESS:FORMAT_OK:VALID")
+        assert [e.mode for e in lookups] == ["llm_only"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_mode_is_422(self, client, lookups):
+        resp = await client.post(URL, json={"rows": [_MISSING_DE], "lookup_missing": "guess"})
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_file_endpoint_with_lookup(self, client, lookups):
+        content = _book([["Customer", "Name", "Country/Region Key", "VAT Registration No."],
+                         ["1", "Acme GmbH", "DE", None], ["2", "Beta SA", "FR", "FR40303265045"]])
+        resp = await client.post(FILE_URL + "?lookup_missing=grounded",
+                                 files={"file": ("x.xlsx", content, XLSX)})
+        assert resp.status_code == 200
+        wb = load_workbook(io.BytesIO(resp.content))
+        headers, rows = _sheet(wb, "Data")
+        assert headers[-len(LOOKUP_COLUMNS):] == LOOKUP_COLUMNS
+        assert [r["VAT_Found_Status"] for r in rows] == ["FOUND_VERIFIED", None]
+        summary_text = [c for r in wb["Summary"].iter_rows(values_only=True) for c in r if c]
+        assert any("Missing-VAT lookup" in str(c) for c in summary_text)
+
+    @pytest.mark.asyncio
+    async def test_file_endpoint_default_has_no_lookup_columns(self, client, lookups):
+        content = _book([["Customer", "Country/Region Key", "VAT Registration No."], ["1", "DE", None]])
+        resp = await client.post(FILE_URL, files={"file": ("x.xlsx", content, XLSX)})
+        headers, _ = _sheet(load_workbook(io.BytesIO(resp.content)), "Data")
+        assert headers[-len(VAT_COLUMNS):] == VAT_COLUMNS and "VAT_Lookup_Mode" not in headers
