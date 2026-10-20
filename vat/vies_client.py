@@ -48,6 +48,7 @@ import httpx
 
 from llm.openai_client import resolve_tls_verify
 from utils.cache import DiskCache, EvidenceCache
+from vat.cache_guard import WriteFailures
 from vat.normalize import VatFormat
 
 logger = logging.getLogger(__name__)
@@ -203,6 +204,9 @@ class VIESClient:
             cache = EvidenceCache(root, frozen=settings.cache_frozen)
         self._cache = cache
         self._store: DiskCache = cache.namespace(NAMESPACE)
+        #: Cache writes that did not reach disk — this client's and the
+        #: missing-VAT lookups' (they share this client's cache).
+        self.write_failures = WriteFailures()
         self._transport = transport
         self._sleep = sleep
         self._clock = clock
@@ -213,6 +217,12 @@ class VIESClient:
     @property
     def frozen(self) -> bool:
         return self._store.replay_only
+
+    @property
+    def evidence_cache(self) -> EvidenceCache:
+        """This client's own cache. The missing-VAT lookups put their
+        namespaces in it, so one CACHE_FROZEN switch covers all of them."""
+        return self._cache
 
     def _client(self) -> httpx.AsyncClient:
         kwargs: dict[str, Any] = {
@@ -318,7 +328,9 @@ class VIESClient:
                 continue
             # Recorded only here: a VALID / INVALID body. The request body
             # sent is stored for the reader; the key is what replays it.
-            self._store.set(key, {"url": self._url, "params": request, "body": data})
+            self.write_failures.set_checked(
+                self._store, key, {"url": self._url, "params": request, "body": data},
+            )
             return replace(parse_response(vat, data), attempts=attempt)
 
     async def check(self, fmt: VatFormat) -> ViesResult:

@@ -87,6 +87,11 @@ the status code.
   is necessary to support the activity of a legitimate user (for example: to draw up their
   own invoices)"*. Checking our own customers' VAT IDs fits that purpose. Whether the returned
   name and address may be stored in MDM (and in the evidence cache) needs sign-off.
+- **Scraping Impressum pages (missing-VAT lookup, Mode A).** The lookup fetches company web
+  pages with the existing `search.page_fetcher.PageFetcher`. That fetcher identifies itself as
+  `BrukerMDM-Enrichment/1.0` and **does not consult robots.txt**. This is the existing
+  behaviour and was kept unchanged. Whether automated retrieval of Impressum pages is
+  acceptable belongs in the same legal/compliance review as the VIES terms above.
 
 ### The DE / ES name gap
 
@@ -101,6 +106,24 @@ State that issued the VAT number does not allow to disclose this information."* 
 
 On the fixture, all 17 valid DE rows and both ES rows came back this way. IE, FR, LU, SE and
 AT returned names.
+
+### VIES ignores trader fields for Germany (confirmed live)
+
+`CheckVatRequest` accepts `traderName`, `traderPostalCode`, `traderCity` (and street and company
+type), and the answer has a `trader*Match` field for each. On 2026-10-19, three DE fixture
+numbers (Bosch `DE811128135`, BASF `DE149145247`, Porsche `DE147799625`) were each sent twice:
+once with the correct SAP name, postal code and city, and once with the name "Muster Handels
+GmbH".
+
+- **All six answers** were `valid: true`, with **every** `trader*Match = NOT_PROCESSED` and the
+  trader fields echoed as `"---"`. The wrong name got exactly the same answer as the right one.
+- No requester VAT ID was sent. Whether Germany processes the match for an authenticated
+  requester is untested; that belongs with the BZSt eVatR follow-up.
+
+**Consequence.** For a German VAT ID, VIES proves only that the number exists, never whose it
+is. The client therefore does not send trader fields. In the missing-VAT lookup, the
+Impressum's attribution (gate d) is the **only** link between a number and the customer's name,
+which is why that gate is strict.
 
 ---
 
@@ -340,3 +363,11 @@ steward as a data defect.
      close behind (233, 231).
    - A deeper checkout or a longer `EVIDENCE_CACHE_DIR` loses recordings with no error. The
      first VIES cache key (URL-based) hit exactly this.
+   - Hit again on 2026-10-19 by the missing-VAT lookup. Under a 189-character cache directory,
+     every `vat_serp` and `vat_llm` entry and every long-URL `vat_pages` entry was dropped, so a
+     frozen re-run would have had nothing to replay.
+   - **Workaround in the VAT code only** (`vat/cache_guard.py`): after each write the VAT code
+     checks the file exists. A missing file is logged as a warning and counted as
+     `cache_write_failures` in the summary, the Summary sheet and the Cost sheet. This
+     **detects** the problem; it does not fix `DiskCache`. The fix is still this follow-up.
+     Runs of the experiment use a short cache path (the scratchpad's 8.3 form, 81 characters).

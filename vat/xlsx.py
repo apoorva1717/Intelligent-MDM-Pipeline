@@ -103,6 +103,7 @@ def _write_summary(wb, summary: dict[str, Any], meta: list[tuple[str, Any]]) -> 
         ("VIES answers replayed from cache", summary["vies_from_cache"]),
         ("Unique VAT IDs SERVICE_UNAVAILABLE", summary["vies_service_unavailable_vat_ids"]),
         ("Rows SERVICE_UNAVAILABLE", summary["vies_service_unavailable_rows"]),
+        ("Cache write failures (answers not recorded)", summary.get("cache_write_failures", 0)),
     ])
     format_states = [FORMAT_OK, FORMAT_ERROR, MISSING, NOT_EU]
     vies_states = [VALID, INVALID, SERVICE_UNAVAILABLE, ERROR, NOT_CHECKED]
