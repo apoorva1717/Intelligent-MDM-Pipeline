@@ -1,10 +1,16 @@
-"""Async Azure OpenAI client for LLM calls.
+"""Async OpenAI client for LLM calls — Azure OpenAI or OpenAI direct.
 
-Azure OpenAI is the only LLM backend, in every environment — there is no
-direct-OpenAI / "local" path. The deployment is read from
-``AZURE_OPENAI_DEPLOYMENT`` (the dedup adjudicator may override it via
-``AOAI_DEPLOYMENT_DEDUP``); the endpoint and key come from
-``AZURE_OPENAI_ENDPOINT`` / ``AZURE_OPENAI_API_KEY``.
+The provider is chosen by :func:`config.llm_provider`:
+
+* **Azure OpenAI** when ``AZURE_OPENAI_API_KEY`` and ``AZURE_OPENAI_ENDPOINT``
+  are set (the historical behaviour, unchanged). The deployment is read from
+  ``AZURE_OPENAI_DEPLOYMENT`` (the dedup adjudicator may override it via
+  ``AOAI_DEPLOYMENT_DEDUP``).
+* **OpenAI direct** otherwise, when ``OPENAI_API_KEY`` is set. The model is
+  ``OPENAI_MODEL`` (dedup: ``OPENAI_MODEL_DEDUP``); ``OPENAI_BASE_URL``
+  optionally overrides the API URL.
+
+Both get the same TLS handling, timeouts and request parameters.
 """
 
 from __future__ import annotations
@@ -19,7 +25,9 @@ from typing import Any
 
 import certifi
 import httpx
-from openai import AsyncAzureOpenAI
+from openai import AsyncAzureOpenAI, AsyncOpenAI
+
+from config import AZURE, OPENAI, llm_model, llm_provider
 
 from utils.cache import active_evidence_cache, llm_disk_key, note_network_call
 
@@ -228,8 +236,21 @@ def resolve_tls_verify() -> "ssl.SSLContext | bool":
     return context
 
 
-def get_openai_client(api_version: str | None = None) -> AsyncAzureOpenAI:
-    """Returns Azure OpenAI async client.
+#: The api-version part of an LLM cache key for OpenAI direct. Azure keys keep
+#: their real API version, so existing Azure recordings still replay, and an
+#: answer from one provider is never served as the other's.
+OPENAI_CACHE_API_VERSION = "openai-direct"
+
+
+def llm_cache_api_version(api_version: str | None = None) -> str:
+    """The api-version recorded in an LLM cache key for the active provider."""
+    if llm_provider() == OPENAI:
+        return OPENAI_CACHE_API_VERSION
+    return api_version or os.getenv("AZURE_OPENAI_API_VERSION") or DEFAULT_AZURE_OPENAI_API_VERSION
+
+
+def get_openai_client(api_version: str | None = None) -> "AsyncAzureOpenAI | AsyncOpenAI":
+    """Returns the async client for the active provider (see module docstring).
 
     The httpx client is constructed with an explicit ``verify`` resolved by
     :func:`resolve_tls_verify`, so a corporate VPN that intercepts TLS with
@@ -241,22 +262,19 @@ def get_openai_client(api_version: str | None = None) -> AsyncAzureOpenAI:
     we also bypass openai SDK's ``AsyncHttpxClientWrapper``, sidestepping its
     noisy ``__del__`` aclose-as-task behaviour on Python 3.13 + httpx 0.28.
 
-    ``api_version`` overrides the REST API version; when omitted it falls back
-    to ``AZURE_OPENAI_API_VERSION`` then ``DEFAULT_AZURE_OPENAI_API_VERSION``.
-    Phase 1 callers pass nothing and keep the historical version; the dedup
-    adjudicator passes a newer version that supports ``reasoning_effort``.
+    ``api_version`` overrides the Azure REST API version; when omitted it
+    falls back to ``AZURE_OPENAI_API_VERSION`` then
+    ``DEFAULT_AZURE_OPENAI_API_VERSION``. Phase 1 callers pass nothing and keep
+    the historical version; the dedup adjudicator passes a newer version that
+    supports ``reasoning_effort``. OpenAI direct has no API version and
+    ignores it.
     """
-    api_key = os.getenv("AZURE_OPENAI_API_KEY")
-    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-    api_version = (
-        api_version
-        or os.getenv("AZURE_OPENAI_API_VERSION")
-        or DEFAULT_AZURE_OPENAI_API_VERSION
-    )
-    if not api_key or not endpoint:
+    provider = llm_provider()
+    if provider is None:
         raise RuntimeError(
-            "AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT must be set. "
-            "Copy .env.example to .env and add your values, "
+            "No LLM provider configured: set AZURE_OPENAI_API_KEY and "
+            "AZURE_OPENAI_ENDPOINT (Azure OpenAI), or OPENAI_API_KEY (OpenAI "
+            "direct). Copy .env.example to .env and add your values, "
             "then restart the server."
         )
     # Connect timeout is generous because a VPN tunnel can add real latency
@@ -268,10 +286,20 @@ def get_openai_client(api_version: str | None = None) -> AsyncAzureOpenAI:
         timeout=httpx.Timeout(read_timeout, connect=connect_timeout),
         trust_env=True,
     )
+    if provider == OPENAI:
+        return AsyncOpenAI(
+            api_key=os.environ["OPENAI_API_KEY"].strip(),
+            base_url=os.getenv("OPENAI_BASE_URL", "").strip() or None,
+            http_client=http_client,
+        )
     return AsyncAzureOpenAI(
-        api_key=api_key,
-        azure_endpoint=endpoint,
-        api_version=api_version,
+        api_key=os.environ["AZURE_OPENAI_API_KEY"].strip(),
+        azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"].strip(),
+        api_version=(
+            api_version
+            or os.getenv("AZURE_OPENAI_API_VERSION")
+            or DEFAULT_AZURE_OPENAI_API_VERSION
+        ),
         http_client=http_client,
     )
 
@@ -307,7 +335,7 @@ async def call_openai(
 
     def _params(with_seed: bool) -> dict[str, Any]:
         params: dict[str, Any] = {
-            "model": os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-5.4"),
+            "model": llm_model(),  # Azure deployment or OpenAI model
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -378,14 +406,14 @@ class OpenAIClient:
     """
 
     def __init__(self, settings: Any = None) -> None:
-        self._model = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-5.4")
+        self._model = llm_model()
         if settings and hasattr(settings, "openai_model"):
             self._model = settings.openai_model
         # Lazy: only build the AsyncAzureOpenAI on first use. This keeps
         # construction cheap and avoids initialising a network client
         # in code paths that end up using a mock instead.
         self._client: AsyncAzureOpenAI | None = None
-        logger.info("LLM client initialised with Azure OpenAI (deployment=%s)", self._model)
+        logger.info("LLM client initialised (provider=%s, model=%s)", llm_provider(), self._model)
 
     def _get_client(self) -> AsyncAzureOpenAI:
         if self._client is None:
@@ -439,10 +467,7 @@ class OpenAIClient:
         if store is not None:
             key = llm_disk_key(
                 deployment=self._model,
-                api_version=(
-                    os.getenv("AZURE_OPENAI_API_VERSION")
-                    or DEFAULT_AZURE_OPENAI_API_VERSION
-                ),
+                api_version=llm_cache_api_version(),
                 temperature=temperature,
                 top_p=LLM_TOP_P,
                 seed=LLM_SEED if _SEED_SUPPORTED else None,

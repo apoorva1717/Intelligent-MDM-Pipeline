@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900" font-family="Segoe UI, Calibri, Arial, sans-serif" role="img" aria-label="How one SAP record gets enriched: six steps — Clean, Identify, Department, Last resort, Verify, Judge — with the kind of source behind each step, how far each value can be trusted, and what happens after enrichment.">
+  <rect width="1600" height="900" fill="#FFFFFF"/>
+
+  <!-- Title -->
+  <text x="60" y="78" font-size="40" font-weight="700" fill="#15202B">How one SAP record gets enriched</text>
+  <text x="60" y="114" font-size="20" fill="#5B6776">Cheap and certain first. Models and web pages may propose a value; only registries and rules may confirm it.</text>
+
+  <!-- Legend -->
+  <circle cx="68" cy="155" r="8" fill="#0F766E"/><text x="84" y="161" font-size="16" fill="#15202B">Registry (ROR, GLEIF, Wikidata)</text>
+  <circle cx="378" cy="155" r="8" fill="#D9A900"/><text x="394" y="161" font-size="16" fill="#15202B">Web search or page</text>
+  <circle cx="588" cy="155" r="8" fill="#BE185D"/><text x="604" y="161" font-size="16" fill="#15202B">Language model</text>
+  <circle cx="768" cy="155" r="8" fill="#3D4A58"/><text x="784" y="161" font-size="16" fill="#15202B">Fixed rule</text>
+
+  <!-- Card frames -->
+  <g fill="#F7F9FA" stroke="#CBD3DC" stroke-width="1.5">
+    <rect x="60" y="195" width="232" height="360" rx="10"/>
+    <rect x="310" y="195" width="232" height="360" rx="10"/>
+    <rect x="560" y="195" width="232" height="360" rx="10"/>
+    <rect x="810" y="195" width="232" height="360" rx="10"/>
+    <rect x="1060" y="195" width="232" height="360" rx="10"/>
+    <rect x="1310" y="195" width="232" height="360" rx="10"/>
+  </g>
+  <!-- Chevrons between cards -->
+  <g fill="#8A97A6">
+    <polygon points="296,365 306,375 296,385"/>
+    <polygon points="546,365 556,375 546,385"/>
+    <polygon points="796,365 806,375 796,385"/>
+    <polygon points="1046,365 1056,375 1046,385"/>
+    <polygon points="1296,365 1306,375 1296,385"/>
+  </g>
+  <!-- Step numbers -->
+  <g fill="#15202B">
+    <circle cx="90" cy="231" r="16"/><circle cx="340" cy="231" r="16"/><circle cx="590" cy="231" r="16"/>
+    <circle cx="840" cy="231" r="16"/><circle cx="1090" cy="231" r="16"/><circle cx="1340" cy="231" r="16"/>
+  </g>
+  <g font-size="17" font-weight="700" fill="#FFFFFF" text-anchor="middle">
+    <text x="90" y="237">1</text><text x="340" y="237">2</text><text x="590" y="237">3</text>
+    <text x="840" y="237">4</text><text x="1090" y="237">5</text><text x="1340" y="237">6</text>
+  </g>
+  <!-- Step names and questions -->
+  <g font-size="23" font-weight="700" fill="#15202B">
+    <text x="116" y="239">Clean</text><text x="366" y="239">Identify</text><text x="616" y="239">Department</text>
+    <text x="866" y="239">Last resort</text><text x="1116" y="239">Verify</text><text x="1366" y="239">Judge</text>
+  </g>
+  <g font-size="15" fill="#5B6776">
+    <text x="80" y="272">Put each value in its place</text><text x="330" y="272">Which organisation?</text><text x="580" y="272">Which department?</text>
+    <text x="830" y="272">Nothing matched yet?</text><text x="1080" y="272">Check from other angles</text><text x="1330" y="272">Decide once, at the end</text>
+  </g>
+  <g stroke="#CBD3DC" stroke-width="1">
+    <line x1="80" y1="287" x2="272" y2="287"/><line x1="330" y1="287" x2="522" y2="287"/><line x1="580" y1="287" x2="772" y2="287"/>
+    <line x1="830" y1="287" x2="1022" y2="287"/><line x1="1080" y1="287" x2="1272" y2="287"/><line x1="1330" y1="287" x2="1522" y2="287"/>
+  </g>
+
+  <!-- Step lines: dots = sources, in order -->
+  <g font-size="15" fill="#15202B">
+    <!-- 1 Clean -->
+    <circle cx="82" cy="314" r="6" fill="#3D4A58"/><circle cx="96" cy="314" r="6" fill="#BE185D"/><text x="124" y="319">Merge split names</text>
+    <circle cx="82" cy="354" r="6" fill="#3D4A58"/><text x="124" y="359">Move email, address</text>
+    <circle cx="82" cy="394" r="6" fill="#3D4A58"/><circle cx="96" cy="394" r="6" fill="#BE185D"/><text x="124" y="399">Person → Contact</text>
+    <circle cx="82" cy="434" r="6" fill="#D9A900"/><circle cx="96" cy="434" r="6" fill="#BE185D"/><circle cx="110" cy="434" r="6" fill="#0F766E"/><text x="124" y="439">Person only: find org</text>
+    <!-- 2 Identify -->
+    <circle cx="332" cy="314" r="6" fill="#0F766E"/><text x="374" y="319">ROR (every record)</text>
+    <circle cx="332" cy="354" r="6" fill="#0F766E"/><text x="374" y="359">GLEIF (companies)</text>
+    <circle cx="332" cy="394" r="6" fill="#0F766E"/><text x="374" y="399">Wikidata pointer</text>
+    <circle cx="332" cy="434" r="6" fill="#BE185D"/><text x="374" y="439">Model: company name</text>
+    <!-- 3 Department -->
+    <circle cx="582" cy="314" r="6" fill="#0F766E"/><text x="624" y="319">ROR child match</text>
+    <circle cx="582" cy="354" r="6" fill="#D9A900"/><circle cx="596" cy="354" r="6" fill="#BE185D"/><text x="624" y="359">Lab → parent dept</text>
+    <circle cx="582" cy="394" r="6" fill="#BE185D"/><text x="624" y="399">Model tidies Name 2</text>
+    <circle cx="582" cy="434" r="6" fill="#D9A900"/><circle cx="596" cy="434" r="6" fill="#BE185D"/><text x="624" y="439">Contact's web page</text>
+    <!-- 4 Last resort -->
+    <circle cx="832" cy="314" r="6" fill="#D9A900"/><text x="874" y="319">Search the web</text>
+    <circle cx="832" cy="354" r="6" fill="#D9A900"/><text x="874" y="359">Read 3 pages</text>
+    <circle cx="832" cy="394" r="6" fill="#BE185D"/><circle cx="846" cy="394" r="6" fill="#3D4A58"/><text x="874" y="399">Model copies a name</text>
+    <circle cx="832" cy="434" r="6" fill="#0F766E"/><text x="874" y="439">Registry re-check</text>
+    <!-- 5 Verify -->
+    <circle cx="1082" cy="314" r="6" fill="#0F766E"/><text x="1124" y="319">Retry with new name</text>
+    <circle cx="1082" cy="354" r="6" fill="#D9A900"/><circle cx="1096" cy="354" r="6" fill="#3D4A58"/><text x="1124" y="359">Website must be tied</text>
+    <circle cx="1082" cy="394" r="6" fill="#D9A900"/><circle cx="1096" cy="394" r="6" fill="#BE185D"/><text x="1124" y="399">Read the website</text>
+    <circle cx="1082" cy="434" r="6" fill="#D9A900"/><circle cx="1096" cy="434" r="6" fill="#3D4A58"/><text x="1124" y="439">Department website</text>
+    <circle cx="1082" cy="474" r="6" fill="#3D4A58"/><circle cx="1096" cy="474" r="6" fill="#BE185D"/><text x="1124" y="479">Clean the address</text>
+    <!-- 6 Judge -->
+    <circle cx="1332" cy="314" r="6" fill="#3D4A58"/><text x="1374" y="319">ROR vs GLEIF agree?</text>
+    <circle cx="1332" cy="354" r="6" fill="#3D4A58"/><text x="1374" y="359">Confidence per field</text>
+    <circle cx="1332" cy="394" r="6" fill="#3D4A58"/><text x="1374" y="399">Record type</text>
+    <circle cx="1332" cy="434" r="6" fill="#3D4A58"/><text x="1374" y="439">Review flag, once</text>
+  </g>
+
+  <!-- Card badges -->
+  <rect x="326" y="510" width="200" height="32" rx="16" fill="#E1F1EE" stroke="#0F766E" stroke-width="1.5"/>
+  <text x="426" y="531" font-size="14" font-weight="600" fill="#0F766E" text-anchor="middle">Registry hit → skip ahead</text>
+  <rect x="821" y="510" width="210" height="32" rx="16" fill="#FAE6EF" stroke="#BE185D" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="926" y="531" font-size="13" font-weight="600" fill="#BE185D" text-anchor="middle">No pages → model alone, flagged</text>
+
+  <!-- Every record goes through Verify and Judge -->
+  <g stroke="#3D4A58" stroke-width="2" stroke-dasharray="3 6" stroke-linecap="round" fill="none">
+    <path d="M176 557V590M426 557V590M676 557V590M926 557V590M176 590H1176V562"/>
+  </g>
+  <polygon points="1169,570 1176,558 1183,570" fill="#3D4A58"/>
+  <text x="676" y="619" font-size="15" fill="#5B6776" text-anchor="middle">A record can leave any step early, but every record goes through Verify and Judge</text>
+
+  <!-- How far to trust each value -->
+  <text x="60" y="672" font-size="18" font-weight="700" fill="#15202B">How far to trust each value</text>
+  <rect x="60" y="690" width="250" height="112" rx="8" fill="#E1F1EE" stroke="#0F766E" stroke-width="1.5"/>
+  <text x="78" y="724" font-size="21" font-weight="700" fill="#15202B">verified</text>
+  <text x="78" y="750" font-size="15" fill="#15202B">A registry wrote it, or two</text>
+  <text x="78" y="770" font-size="15" fill="#15202B">independent sources agree</text>
+  <text x="78" y="792" font-size="15" font-weight="600" fill="#0F766E">No review needed</text>
+  <rect x="325" y="690" width="250" height="112" rx="8" fill="#FBF3C4" stroke="#D9A900" stroke-width="1.5"/>
+  <text x="343" y="724" font-size="21" font-weight="700" fill="#15202B">provisional</text>
+  <text x="343" y="750" font-size="15" fill="#15202B">One source, and nothing</text>
+  <text x="343" y="770" font-size="15" fill="#15202B">contradicts it</text>
+  <text x="343" y="792" font-size="15" font-weight="600" fill="#15202B">No review needed</text>
+  <rect x="590" y="690" width="250" height="112" rx="8" fill="#E7EBF0" stroke="#3D4A58" stroke-width="1.5"/>
+  <text x="608" y="724" font-size="21" font-weight="700" fill="#15202B">low</text>
+  <text x="608" y="750" font-size="15" fill="#15202B">Nothing confirms it, or</text>
+  <text x="608" y="770" font-size="15" fill="#15202B">the sources disagree</text>
+  <text x="608" y="792" font-size="15" font-weight="600" fill="#15202B">Review if Name 1 or 2</text>
+
+  <!-- After enrichment -->
+  <text x="900" y="672" font-size="18" font-weight="700" fill="#15202B">After enrichment</text>
+  <rect x="900" y="690" width="190" height="112" rx="8" fill="#E7EBF0" stroke="#3D4A58" stroke-width="1.5"/>
+  <text x="916" y="724" font-size="17" font-weight="700" fill="#15202B">Written back</text>
+  <text x="916" y="750" font-size="15" fill="#15202B">to the SAP table</text>
+  <text x="916" y="770" font-size="15" fill="#5B6776">30 rows at a time</text>
+  <rect x="1116" y="690" width="206" height="112" rx="8" fill="none" stroke="#3D4A58" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="1130" y="724" font-size="17" font-weight="700" fill="#15202B">Address validation</text>
+  <text x="1130" y="750" font-size="15" fill="#15202B">HERE API</text>
+  <text x="1130" y="770" font-size="15" fill="#5B6776">outside this repository</text>
+  <rect x="1348" y="690" width="194" height="112" rx="8" fill="none" stroke="#3D4A58" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="1362" y="724" font-size="17" font-weight="700" fill="#15202B">Issues, then</text>
+  <text x="1362" y="750" font-size="15" fill="#15202B">deduplication</text>
+  <text x="1362" y="770" font-size="15" fill="#5B6776">later phases</text>
+  <g stroke="#3D4A58" stroke-width="2"><line x1="1090" y1="746" x2="1108" y2="746"/><line x1="1322" y1="746" x2="1340" y2="746"/></g>
+  <g fill="#3D4A58"><polygon points="1106,740 1115,746 1106,752"/><polygon points="1338,740 1347,746 1338,752"/></g>
+  <text x="900" y="828" font-size="13" fill="#5B6776">Dashed: runs after this API</text>
+
+  <!-- Footer rule -->
+  <text x="60" y="862" font-size="17" font-weight="600" fill="#15202B">Anything a model writes is re-checked by a registry, or it ships flagged for review.</text>
+</svg>

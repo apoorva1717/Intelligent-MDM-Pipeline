@@ -19,6 +19,7 @@ upload reader trims every cell) — no zero-stripping, no padding.
 
 from __future__ import annotations
 
+import asyncio
 from collections import Counter, defaultdict
 from typing import Any, Iterable, Mapping
 
@@ -26,7 +27,12 @@ from pydantic import AliasChoices
 
 from api.models import EnrichmentRecord
 from api.routes import _norm_header
-from vat.lookup import BLANK_COLUMNS, LookupEngine, LookupInput, in_scope, run_lookups
+from vat.lookup import AGREEMENT_COLUMN, BLANK_COLUMNS, agreement, grounded_compare_columns
+from vat.lookup import (
+    COMPARE_COLUMNS, FOUND_VS_SAP, GROUNDED_VS_SAP, LOOKUP_COLUMNS, SCOPE_ALL, SCOPE_MISSING,
+    vs_sap,
+)
+from vat.lookup import LookupEngine, LookupInput, in_scope, run_lookups
 from vat.name_match import NameMatch, match_name
 from vat.normalize import VatFormat, assess_format
 from vat.vies_client import ERROR, SERVICE_UNAVAILABLE, VIESClient, ViesResult
@@ -153,12 +159,24 @@ def _result_columns(
 async def validate_rows(
     rows: list[Mapping[str, Any]], client: VIESClient,
     lookup: LookupEngine | None = None,
+    compare_lookup: LookupEngine | None = None,
+    scope: str = SCOPE_MISSING,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Every row, unchanged, with :data:`VAT_COLUMNS` appended; plus a summary.
 
     With a *lookup* engine (``vat/lookup.py``), the :data:`LOOKUP_COLUMNS` are
     appended too, filled for in-scope rows (VAT blank, key DE) and blank for
     the rest. Without one the output is exactly as before.
+
+    With a *compare_lookup* as well (the grounded lookup next to the LLM-only
+    experiment), the same in-scope rows are looked up a second time and
+    :data:`vat.lookup.COMPARE_COLUMNS` are appended: that engine's result and
+    ``VAT_LLM_vs_Grounded``.
+
+    *scope* ``all`` (evaluation) looks up every DE row, VAT ID or not, and adds
+    ``VAT_Found_vs_SAP`` (and ``VAT_Grounded_vs_SAP``): each proposal against
+    the SAP value. The lookups never see that value — :class:`LookupInput`
+    carries name and address only.
 
     Raises ``ValueError`` when no row has a VAT Registration No. column.
     """
@@ -192,21 +210,70 @@ async def validate_rows(
                 postal_code=_cell(row, lcols["postal_code"]),
                 city=_cell(row, lcols["city"]),
                 country=fmt.country_key,
-            ) if in_scope(fmt) else None
+            ) if in_scope(fmt, scope) else None
             for row, customer, fmt in zip(rows, customers, formats)
         ]
-        found = await run_lookups(lookup, inputs)
+        if compare_lookup is not None:
+            # Independent of each other: run side by side, not one after the other.
+            found, second = await asyncio.gather(
+                run_lookups(lookup, inputs), run_lookups(compare_lookup, inputs),
+            )
+        else:
+            found, second = await run_lookups(lookup, inputs), None
         for row, result in zip(out, found):
             row.update(result.columns() if result else BLANK_COLUMNS)
+        if scope == SCOPE_ALL:
+            for row, inp, fmt, a in zip(out, inputs, formats, found):
+                row[FOUND_VS_SAP] = (
+                    vs_sap(a.value if a else None, fmt.normalized, inp.country)
+                    if inp is not None else None
+                )
         summary["lookup"] = {
             "mode": lookup.mode,
+            "scope": scope,
             "rows_in_scope": sum(f is not None for f in found),
             "status": dict(Counter(r["VAT_Found_Status"] for r in out if r["VAT_Found_Status"])),
             "cost": lookup.stats(),
         }
+        if scope == SCOPE_ALL:
+            summary["lookup"]["vs_sap"] = dict(Counter(r[FOUND_VS_SAP] for r in out if r[FOUND_VS_SAP]))
+        if compare_lookup is not None:
+            for row, inp, fmt, a, b in zip(out, inputs, formats, found, second):
+                row.update(grounded_compare_columns(b))
+                row[AGREEMENT_COLUMN] = (
+                    agreement(a.value if a else None, b.value if b else None, inp.country)
+                    if inp is not None else None
+                )
+                if scope == SCOPE_ALL:
+                    row[GROUNDED_VS_SAP] = (
+                        vs_sap(b.value if b else None, fmt.normalized, inp.country)
+                        if inp is not None else None
+                    )
+            summary["compare_lookup"] = {
+                "mode": compare_lookup.mode,
+                "status": dict(Counter(r["VAT_Grounded_Status"] for r in out if r["VAT_Grounded_Status"])),
+                "agreement": dict(Counter(r[AGREEMENT_COLUMN] for r in out if r[AGREEMENT_COLUMN])),
+                "cost": compare_lookup.stats(),
+            }
+            if scope == SCOPE_ALL:
+                summary["compare_lookup"]["vs_sap"] = dict(
+                    Counter(r[GROUNDED_VS_SAP] for r in out if r[GROUNDED_VS_SAP]))
     # After the lookup: its writes go through the same cache and counter.
     summary["cache_write_failures"] = client.write_failures.count
     return out, summary
+
+
+#: Every result column, in output order. Which of them a result carries
+#: depends on the run (lookup mode, side-by-side, scope).
+ALL_RESULT_COLUMNS: list[str] = (
+    VAT_COLUMNS + LOOKUP_COLUMNS + [FOUND_VS_SAP] + COMPARE_COLUMNS + [GROUNDED_VS_SAP]
+)
+
+
+def result_columns(out: list[dict[str, Any]]) -> list[str]:
+    """The result columns these rows carry, in output order."""
+    present = set(out[0]) if out else set()
+    return [c for c in ALL_RESULT_COLUMNS if c in present]
 
 
 def summarize(

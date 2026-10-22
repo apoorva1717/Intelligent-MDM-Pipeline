@@ -326,6 +326,18 @@ class _Stats:
     vies_checks: int = 0
 
 
+class _Budget:
+    """One customer's page-fetch budget. Per call, so customers looked up at
+    the same time cannot spend each other's."""
+
+    def __init__(self) -> None:
+        self.used = 0
+
+    @property
+    def left(self) -> int:
+        return MAX_FETCHES - self.used
+
+
 def _rank(result: FoundResult) -> int:
     """0 verified match (stop) · 1 verified qualifier · 2 gates passed but VIES
     not VALID · 3 a gate failed."""
@@ -371,7 +383,6 @@ class GroundedLookup:
         # One counter for every write into this cache, injected reader or not.
         self._llm.write_failures = vies.write_failures
         self._stats = _Stats()
-        self._row_attempts_start = 0
 
     def stats(self) -> dict[str, int]:
         s = self._stats
@@ -423,9 +434,13 @@ class GroundedLookup:
                     urls.append(q[rank])
         return urls[:MAX_RESULT_URLS]
 
-    async def _fetch(self, url: str, flags: set[str]) -> PageFetchResult | None:
+    async def _fetch(
+        self, url: str, flags: set[str], budget: "_Budget | None" = None,
+    ) -> PageFetchResult | None:
         """One page attempt through ``vat_pages``. None when nothing usable."""
         self._stats.page_attempts += 1
+        if budget is not None:
+            budget.used += 1
         recorded = self._pages.get(url)
         if isinstance(recorded, dict):
             self._stats.page_cache_hits += 1
@@ -458,7 +473,9 @@ class GroundedLookup:
         })
         return None
 
-    async def _impressum_for(self, url: str, flags: set[str]) -> PageFetchResult | None:
+    async def _impressum_for(
+        self, url: str, flags: set[str], budget: _Budget,
+    ) -> PageFetchResult | None:
         """The Impressum for one result URL: the URL itself, else the first
         fallback path on its host that is one. Directory hosts get no
         fallback probes (their Impressum is the directory's own). None when
@@ -470,15 +487,12 @@ class GroundedLookup:
             tries += [f"{scheme}://{host}{path}" for path in FALLBACK_PATHS]
             tries = list(dict.fromkeys(tries))  # the result URL may itself be /impressum
         for candidate in tries:
-            if self._stats_attempts_left() <= 0:
+            if budget.left <= 0:
                 return None
-            res = await self._fetch(candidate, flags)
+            res = await self._fetch(candidate, flags, budget)
             if res is not None and res.ok and res.content and is_impressum(res):
                 return res
         return None
-
-    def _stats_attempts_left(self) -> int:
-        return MAX_FETCHES - (self._stats.page_attempts - self._row_attempts_start)
 
     async def _read(self, page: PageFetchResult, text: str) -> Reading:
         self._stats.llm_reads += 1
@@ -498,7 +512,7 @@ class GroundedLookup:
         if not inp.name_1:
             return FoundResult(GROUNDED, NOT_RUN, flags=("NO_NAME",))
 
-        self._row_attempts_start = self._stats.page_attempts
+        budget = _Budget()
         flags: set[str] = set()
         urls = await self._search_urls(inp)
         if not urls:
@@ -514,9 +528,9 @@ class GroundedLookup:
             host = (urlparse(url).hostname or "").lower()
             if host in hosts_done:
                 continue
-            if self._stats_attempts_left() <= 0:
+            if budget.left <= 0:
                 break
-            page = await self._impressum_for(url, flags)
+            page = await self._impressum_for(url, flags, budget)
             if page is None:
                 continue
             hosts_done.add(host)

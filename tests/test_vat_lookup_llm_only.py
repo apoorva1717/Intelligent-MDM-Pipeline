@@ -112,7 +112,8 @@ class TestPrompt:
         for value in ("BASF SE", "Carl-Bosch-Strasse 38", "67056", "Ludwigshafen", "DE"):
             assert value in user
         assert "What is this company's German VAT identification number (USt-IdNr.)?" in user
-        assert "Answer null if you do not know." in user
+        assert "still give your best candidate number" in user   # v2: a guess, not null
+        assert "Answer null only if you have no candidate number at all." in user
         assert "Page" not in user and "http" not in user  # no page, no search results
 
 
@@ -151,3 +152,19 @@ class TestLabelling:
         assert (out[0]["VAT_Lookup_Mode"], out[0]["VAT_Found_Status"]) == (
             "LLM_ONLY", "LLM_GUESS:FORMAT_OK:VALID")
         assert summary["lookup"]["mode"] == "llm_only"
+
+
+class TestScopeAllNeverLeaksTheSapValue:
+    @pytest.mark.asyncio
+    async def test_existing_vat_id_is_looked_up_but_never_shown_to_the_model(self, tmp_path):
+        model = _Model({"vat_id": "DE149145247", "confidence": "low"})
+        engine, _ = _engine(tmp_path, model)
+        rows = [{"Customer": "99000005", "Name": "BASF SE", "Country/Region Key": "DE",
+                 "VAT Registration No.": "DE 149 145 247", "City": "Ludwigshafen"}]
+        out, summary = await validate_rows(rows, engine._vies, lookup=engine, scope="all")
+        (_, user), = model.prompts
+        assert "149145247" not in user.replace(" ", "") and "149 145 247" not in user
+        assert out[0]["VAT_Found_Value"] == "DE149145247"    # a low-confidence guess is kept
+        assert out[0]["VAT_Found_Evidence"] == "low"
+        assert out[0]["VAT_Found_vs_SAP"] == "MATCHES_SAP"
+        assert summary["lookup"]["vs_sap"] == {"MATCHES_SAP": 1}

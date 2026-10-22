@@ -16,10 +16,10 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from vat.lookup import LOOKUP_COLUMNS, LookupEngine
+from vat.lookup import COMPARE_COLUMNS, LOOKUP_COLUMNS, LookupEngine
 from vat.name_match import MATCH, MISMATCH, NOT_AVAILABLE, PARTIAL
 from vat.normalize import FORMAT_ERROR, FORMAT_OK, MISSING, NOT_EU
-from vat.validate import NOT_CHECKED, VAT_COLUMNS, validate_rows
+from vat.validate import ALL_RESULT_COLUMNS, NOT_CHECKED, VAT_COLUMNS, result_columns, validate_rows
 from vat.vies_client import ERROR, INVALID, SERVICE_UNAVAILABLE, VALID, VIESClient
 
 logger = logging.getLogger(__name__)
@@ -130,11 +130,34 @@ def _write_summary(wb, summary: dict[str, Any], meta: list[tuple[str, Any]]) -> 
                    "VAT Registration No. is never written)"])
         if lookup["mode"] == "llm_only":
             ws.append(["EXPERIMENT ONLY — not for production use; results are not to be written to SAP."])
-        ws.append(["Rows in scope (VAT blank, Country/Region Key DE)", lookup["rows_in_scope"]])
+        scope_text = ("every DE row, VAT ID or not — evaluation against SAP"
+                      if lookup.get("scope") == "all" else "VAT blank, Country/Region Key DE")
+        ws.append([f"Rows in scope ({scope_text})", lookup["rows_in_scope"]])
         for status, n in sorted(lookup["status"].items()):
             ws.append([status, n])
+        if lookup.get("vs_sap"):
+            ws.append(["VAT_Found_vs_SAP (proposal against the existing SAP VAT ID)"])
+            for value, n in sorted(lookup["vs_sap"].items()):
+                ws.append([value, n])
         ws.append(["Cost"])
         for key, n in lookup["cost"].items():
+            ws.append([key, n])
+    compare = summary.get("compare_lookup")
+    if compare:
+        ws.append([])
+        ws.append([f"Side by side: {compare['mode']} lookup on the same rows "
+                   "(VAT_Grounded_* columns; proposals only)"])
+        for status, n in sorted(compare["status"].items()):
+            ws.append([status, n])
+        ws.append(["VAT_LLM_vs_Grounded"])
+        for value, n in sorted(compare["agreement"].items()):
+            ws.append([value, n])
+        if compare.get("vs_sap"):
+            ws.append(["VAT_Grounded_vs_SAP (proposal against the existing SAP VAT ID)"])
+            for value, n in sorted(compare["vs_sap"].items()):
+                ws.append([value, n])
+        ws.append(["Cost"])
+        for key, n in compare["cost"].items():
             ws.append([key, n])
 
     ws.append([])
@@ -151,6 +174,7 @@ def _write_summary(wb, summary: dict[str, Any], meta: list[tuple[str, Any]]) -> 
 
 async def validate_workbook(
     wb, client: VIESClient, *, source: str, lookup: LookupEngine | None = None,
+    compare_lookup: LookupEngine | None = None, scope: str = "missing",
 ) -> dict[str, Any]:
     """Validate *wb* in place (result columns + Summary sheet). Returns the
     summary. *source* names the input on the Summary sheet. With a *lookup*
@@ -161,12 +185,14 @@ async def validate_workbook(
     """
     ws = _data_sheet(wb)
     # Earlier result columns are never read back as input, lookup ones included.
-    header_idx, headers, rows = _read(ws, VAT_COLUMNS + LOOKUP_COLUMNS)
+    header_idx, headers, rows = _read(ws, ALL_RESULT_COLUMNS)
     if not rows:
         raise ValueError(f"Sheet {ws.title!r} has no data rows.")
 
-    results, summary = await validate_rows([r for _, r in rows], client, lookup=lookup)
-    written = VAT_COLUMNS + (LOOKUP_COLUMNS if lookup is not None else [])
+    results, summary = await validate_rows(
+        [r for _, r in rows], client, lookup=lookup, compare_lookup=compare_lookup, scope=scope,
+    )
+    written = result_columns(results)
     _write_results(ws, header_idx, headers, rows, results, written)
     _write_summary(wb, summary, [
         ("Input", source),

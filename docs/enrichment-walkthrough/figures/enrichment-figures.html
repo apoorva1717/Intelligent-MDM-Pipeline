@@ -1,0 +1,455 @@
+<title>Enrichment Figure Set</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,500..800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ground:#F2F4F6; --panel:#FFFFFF; --ink:#15202B; --muted:#5B6776; --rule:#CBD3DC;
+  --reg:#0F766E; --reg-tint:#E1F1EE;
+  --web:#D9A900; --web-tint:#FBF3C4;
+  --llm:#BE185D; --llm-tint:#FAE6EF;
+  --det:#3D4A58; --det-tint:#E7EBF0;
+  --display:"Archivo","Arial Narrow",system-ui,sans-serif;
+  --body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0D1319; --panel:#141C24; --ink:#E4EAF0; --muted:#97A4B3; --rule:#2B3744;
+    --reg:#3CD3BF; --reg-tint:#10302C; --web:#F5D000; --web-tint:#2C2908;
+    --llm:#F47AB8; --llm-tint:#321827; --det:#B3BFCC; --det-tint:#1C2530;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0D1319; --panel:#141C24; --ink:#E4EAF0; --muted:#97A4B3; --rule:#2B3744;
+  --reg:#3CD3BF; --reg-tint:#10302C; --web:#F5D000; --web-tint:#2C2908;
+  --llm:#F47AB8; --llm-tint:#321827; --det:#B3BFCC; --det-tint:#1C2530;
+}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font:15px/1.6 var(--body);margin:0}
+main{max-width:1320px;margin:0 auto;padding:40px 28px 72px;display:grid;gap:36px}
+h1,h2{font-family:var(--display);font-stretch:78%;letter-spacing:-.01em;text-wrap:balance;margin:0}
+h1{font-size:clamp(2.1rem,4vw,3.1rem);font-weight:800;line-height:1.02}
+h2{font-size:clamp(1.55rem,2.5vw,2.15rem);font-weight:780;line-height:1.08}
+.lede{max-width:68ch;color:var(--muted);margin:12px 0 0;font-size:1.05rem}
+.eyebrow{font:500 12px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}
+code{font-family:var(--mono);font-size:.86em}
+.legend{display:flex;flex-wrap:wrap;gap:10px 22px;margin-top:20px;font-size:13.5px}
+.legend span{display:inline-flex;align-items:center;gap:8px}
+.sw{width:22px;height:14px;border-radius:3px;border:1.5px solid}
+.sw.reg{background:var(--reg-tint);border-color:var(--reg)}
+.sw.web{background:var(--web-tint);border-color:var(--web)}
+.sw.llm{background:var(--llm-tint);border-color:var(--llm)}
+.sw.det{background:var(--det-tint);border-color:var(--det)}
+.sw.out{background:transparent;border-color:var(--det);border-style:dashed}
+.index{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 0;padding:0;list-style:none}
+.index a{display:inline-block;font-size:13.5px;color:var(--ink);text-decoration:none;border:1px solid var(--rule);background:var(--panel);border-radius:3px;padding:4px 10px}
+.index a:hover,.index a:focus-visible{border-color:var(--ink);outline:none}
+.index b{font:500 12px var(--mono);color:var(--muted);margin-right:6px}
+
+.slide{background:var(--panel);border:1px solid var(--rule);border-radius:6px;padding:28px 32px 22px;display:grid;gap:14px;scroll-margin-top:16px;align-content:start}
+.slide .fn{font:500 12px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0}
+.fig{overflow-x:auto}
+.fig svg{display:block;width:100%;height:auto;min-width:880px;color:var(--muted)}
+.say{margin:0;font-size:14px;color:var(--muted);border-top:1px solid var(--rule);padding-top:10px;max-width:100ch}
+.say b{color:var(--ink);font-weight:600}
+.note{margin:0;font-size:13.5px;color:var(--muted)}
+
+svg .t{font:600 13px var(--body);fill:var(--ink)}
+svg .tb{font:700 15px var(--body);fill:var(--ink)}
+svg .s{font:400 11.5px var(--body);fill:var(--muted)}
+svg .lab{font:500 11px var(--mono);fill:var(--muted)}
+svg .labk{font:600 11px var(--mono);fill:var(--ink)}
+svg .num{font:500 11px var(--mono);fill:var(--ink)}
+svg .box rect,svg .box path{stroke-width:1.5}
+svg .reg rect,svg .reg path{fill:var(--reg-tint);stroke:var(--reg)}
+svg .web rect,svg .web path{fill:var(--web-tint);stroke:var(--web)}
+svg .llm rect,svg .llm path{fill:var(--llm-tint);stroke:var(--llm)}
+svg .det rect,svg .det path{fill:var(--det-tint);stroke:var(--det)}
+svg .mix rect{fill:var(--panel);stroke:var(--det)}
+svg .out rect{fill:transparent;stroke:var(--det);stroke-dasharray:5 4}
+svg .dash rect{stroke-dasharray:5 4}
+svg .flow{stroke:currentColor;stroke-width:1.4;fill:none}
+svg .flowd{stroke:currentColor;stroke-width:1.4;fill:none;stroke-dasharray:4 4}
+svg .ink{stroke:var(--ink);stroke-width:1.8;fill:none}
+svg .grid{stroke:var(--rule);stroke-width:1}
+svg .thr{stroke:var(--ink);stroke-width:1.4;stroke-dasharray:5 4}
+svg .ahd{fill:var(--ink)}
+svg .d-reg{fill:var(--reg)} svg .d-web{fill:var(--web)} svg .d-llm{fill:var(--llm)} svg .d-det{fill:var(--det)}
+svg .bar-sort{fill:var(--det)}
+svg .bar-set{fill:var(--panel);stroke:var(--det);stroke-width:1.3;stroke-dasharray:3 2}
+
+/* Figure 1 — before / after */
+.diff{display:grid;grid-template-columns:130px minmax(150px,1fr) minmax(190px,1.1fr) minmax(200px,1.2fr) 150px;border:1px solid var(--rule);border-radius:4px;overflow:hidden;font-size:14px;min-width:880px}
+.diff>div{padding:9px 12px;border-top:1px solid var(--rule);display:flex;align-items:center}
+.diff>.h{background:var(--ground);border-top:0;font:500 11.5px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.diff .f{font-weight:600}
+.diff .in{font-family:var(--mono);font-size:13px;color:var(--muted)}
+.diff .outv{font-weight:500}
+.diff .pv{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.diff .empty{color:var(--rule)}
+.chip{font-size:12.5px;padding:3px 9px;border-radius:3px;border:1.5px solid;line-height:1.3}
+.chip.reg{background:var(--reg-tint);border-color:var(--reg)}
+.chip.web{background:var(--web-tint);border-color:var(--web)}
+.chip.llm{background:var(--llm-tint);border-color:var(--llm)}
+.chip.det{background:var(--det-tint);border-color:var(--det)}
+
+/* present mode */
+.toolbar{position:fixed;top:14px;right:16px;z-index:5;display:flex;gap:8px;align-items:center}
+.toolbar button{font:600 13px var(--body);color:var(--ink);background:var(--panel);border:1px solid var(--rule);border-radius:4px;padding:6px 12px;cursor:pointer}
+.toolbar button:hover,.toolbar button:focus-visible{border-color:var(--ink);outline:none}
+.toolbar .count{font:500 12px var(--mono);color:var(--muted);background:var(--panel);border:1px solid var(--rule);border-radius:4px;padding:6px 10px}
+body.present main>header{display:none}
+body.present main{max-width:none;padding:0;gap:0}
+body.present .slide{display:none;min-height:100vh;border:0;border-radius:0;padding:5vh 5vw 4vh;align-content:center}
+body.present .slide.on{display:grid}
+body.present .fig svg{max-height:66vh}
+body.present h2{font-size:clamp(1.8rem,3.2vw,2.8rem)}
+</style>
+
+<div class="toolbar"><span class="count" id="count" hidden></span><button type="button" id="present">Present</button></div>
+
+<main>
+<header>
+  <p class="eyebrow">Thesis figures · SAP name enrichment</p>
+  <h1>Enrichment, in eight figures</h1>
+  <p class="lede">Companion slides to the enrichment map. Each figure makes one claim, and the line under it is how to say it out loud. Press <b>Present</b> for full-screen slides; arrow keys move, Esc leaves.</p>
+  <div class="legend" aria-label="Colour key">
+    <span><i class="sw reg"></i>Registry</span>
+    <span><i class="sw web"></i>Web search or page</span>
+    <span><i class="sw llm"></i>Language model</span>
+    <span><i class="sw det"></i>Deterministic rule</span>
+    <span><i class="sw out"></i>Outside this API</span>
+  </div>
+  <ol class="index">
+    <li><a href="#f1"><b>1</b>Before and after</a></li>
+    <li><a href="#f2"><b>2</b>Where it runs</a></li>
+    <li><a href="#f3"><b>3</b>Registry guards</a></li>
+    <li><a href="#f4"><b>4</b>Grounded lane</a></li>
+    <li><a href="#f5"><b>5</b>Confidence</a></li>
+    <li><a href="#f6"><b>6</b>A kept name</a></li>
+    <li><a href="#f7"><b>7</b>Website guard</a></li>
+    <li><a href="#f8"><b>8</b>Name scoring</a></li>
+  </ol>
+</header>
+
+<section class="slide" id="f1" aria-labelledby="f1-h">
+  <p class="fn">Figure 1 · the problem and the result</p>
+  <h2 id="f1-h">One record, before and after</h2>
+  <div class="fig">
+    <div class="diff" role="table" aria-label="An SAP record before and after enrichment">
+      <div class="h" role="columnheader">Field</div><div class="h" role="columnheader">As SAP supplied it</div><div class="h" role="columnheader">What happened</div><div class="h" role="columnheader">What ships</div><div class="h" role="columnheader">Provenance</div>
+
+      <div class="f">Name 1</div><div class="in">Stanford Univ</div><div><span class="chip reg">ROR: official name</span></div><div class="outv">Stanford University</div><div class="pv">ror:verified</div>
+      <div class="f">Name 2</div><div class="in">Dept of Chem</div><div><span class="chip reg">ROR child match</span></div><div class="outv">Department of Chemistry</div><div class="pv">ror:verified</div>
+      <div class="f">Name 3</div><div class="in">Attn Dr Jane Smith</div><div><span class="chip det">Person moved to Contact</span></div><div class="outv empty">—</div><div class="pv"></div>
+      <div class="f">Contact</div><div class="in empty">—</div><div><span class="chip det">From Name 3</span></div><div class="outv">Dr Jane Smith</div><div class="pv"></div>
+      <div class="f">Street</div><div class="in">450 SERRA MALL</div><div><span class="chip det">Cased and tidied</span></div><div class="outv">450 Serra Mall</div><div class="pv"></div>
+      <div class="f">ROR ID</div><div class="in empty">—</div><div><span class="chip reg">From the match</span></div><div class="outv">ror.org/00f54p054</div><div class="pv">ror:verified</div>
+      <div class="f">Domain</div><div class="in empty">—</div><div><span class="chip reg">ROR's website link</span></div><div class="outv">stanford.edu</div><div class="pv">ror:verified</div>
+      <div class="f">Record type</div><div class="in empty">—</div><div><span class="chip reg">ROR type: education</span></div><div class="outv">research_institution</div><div class="pv">ror:verified</div>
+      <div class="f">Review</div><div class="in empty">—</div><div><span class="chip det">Computed once, at the end</span></div><div class="outv">No flag · status enriched</div><div class="pv"></div>
+    </div>
+  </div>
+  <p class="note">Illustrative record; the path it takes is the implemented one.</p>
+  <p class="say"><b>Say it like this:</b> SAP stores a name, a department and a person in three name fields. Enrichment puts each value in the right field, replaces the name with the registry's official one, and records where every value came from.</p>
+</section>
+
+<section class="slide" id="f2" aria-labelledby="f2-h">
+  <p class="fn">Figure 2 · system context</p>
+  <h2 id="f2-h">Where enrichment runs</h2>
+  <div class="fig">
+<svg viewBox="0 0 1190 330" role="img" aria-label="SAP data is imported into the DATAshaper Legacy table; ADF sends 30 rows at a time to the enrichment API, which consults registries, web search, page fetches and Azure OpenAI; results are merged back into the same Legacy table, after which address validation and later phases run outside this API.">
+  <defs>
+    <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="currentColor"/></marker>
+    <marker id="k2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" class="ahd"/></marker>
+  </defs>
+  <g class="box det" transform="translate(20,70)"><rect width="150" height="56" rx="4"/><text x="12" y="24" class="t">SAP customer master</text><text x="12" y="43" class="s">source system</text></g>
+  <g class="box det" transform="translate(220,70)"><rect width="180" height="56" rx="4"/><text x="12" y="24" class="t">DATAshaper Legacy</text><text x="12" y="43" class="s">input and output table</text></g>
+  <g class="box mix" transform="translate(500,58)"><rect width="240" height="90" rx="4"/><text x="14" y="26" class="tb">Enrichment API</text><text x="14" y="47" class="s">POST /enrich · 7 steps per record</text><text x="14" y="66" class="s">evidence cache replays repeat runs</text></g>
+  <g class="box det" transform="translate(820,70)"><rect width="170" height="56" rx="4"/><text x="12" y="24" class="t">Merge procedure</text><text x="12" y="43" class="s">usp_merge_legacy_enriched</text></g>
+  <g class="box out" transform="translate(1030,70)"><rect width="150" height="56" rx="4"/><text x="12" y="24" class="t">Address validation</text><text x="12" y="43" class="s">HERE API · not in repo</text></g>
+  <g class="box out" transform="translate(1030,152)"><rect width="150" height="56" rx="4"/><text x="12" y="24" class="t">Issues, then dedup</text><text x="12" y="43" class="s">later phases</text></g>
+
+  <line x1="170" y1="98" x2="218" y2="98" class="flow" marker-end="url(#a2)"/><text x="194" y="90" class="lab" text-anchor="middle">import</text>
+  <line x1="400" y1="98" x2="498" y2="98" class="flow" marker-end="url(#a2)"/><text x="449" y="90" class="lab" text-anchor="middle">ADF · 30 rows</text>
+  <line x1="740" y1="98" x2="818" y2="98" class="flow" marker-end="url(#a2)"/><text x="779" y="90" class="lab" text-anchor="middle">results</text>
+  <line x1="990" y1="98" x2="1028" y2="98" class="flowd" marker-end="url(#a2)"/>
+  <line x1="1105" y1="126" x2="1105" y2="150" class="flowd" marker-end="url(#a2)"/>
+  <path d="M905 70V34H310V68" class="ink" marker-end="url(#k2)"/>
+  <text x="608" y="27" class="labk" text-anchor="middle">merged back into the same table, matched on Customer</text>
+  <text x="310" y="146" class="lab" text-anchor="middle">rows marked Enriched are echoed back</text>
+
+  <path d="M620 148L210 248M620 148L374 248M620 148L538 248M620 148L702 248M620 148L866 248M620 148L1030 248" class="flow" marker-end="url(#a2)"/>
+  <text x="640" y="196" class="lab">asked only as far as each record needs</text>
+  <g class="box reg" transform="translate(135,250)"><rect width="150" height="48" rx="4"/><text x="12" y="20" class="t">ROR</text><text x="12" y="37" class="s">research registry</text></g>
+  <g class="box reg" transform="translate(299,250)"><rect width="150" height="48" rx="4"/><text x="12" y="20" class="t">GLEIF</text><text x="12" y="37" class="s">legal-entity registry</text></g>
+  <g class="box reg" transform="translate(463,250)"><rect width="150" height="48" rx="4"/><text x="12" y="20" class="t">Wikidata</text><text x="12" y="37" class="s">pointer to registry ids</text></g>
+  <g class="box web" transform="translate(627,250)"><rect width="150" height="48" rx="4"/><text x="12" y="20" class="t">SerpAPI / DuckDuckGo</text><text x="12" y="37" class="s">web search</text></g>
+  <g class="box web" transform="translate(791,250)"><rect width="150" height="48" rx="4"/><text x="12" y="20" class="t">Page fetch</text><text x="12" y="37" class="s">organisation sites</text></g>
+  <g class="box llm" transform="translate(955,250)"><rect width="150" height="48" rx="4"/><text x="12" y="20" class="t">Azure OpenAI</text><text x="12" y="37" class="s">gpt-5.4 deployment</text></g>
+</svg>
+  </div>
+  <p class="say"><b>Say it like this:</b> The API never touches SAP directly. ADF reads 30 rows at a time from the DATAshaper table, the API enriches them using registries, the web and a model, and the results are merged back into the same table. Address validation and the later phases run after that.</p>
+</section>
+
+<section class="slide" id="f3" aria-labelledby="f3-h">
+  <p class="fn">Figure 3 · identifying the organisation</p>
+  <h2 id="f3-h">Seven checks between a search hit and a registry id</h2>
+  <div class="fig">
+<svg viewBox="0 0 1190 540" role="img" aria-label="A funnel of seven checks narrows registry search results to one verified identity: country, name score, exact-only override, ambiguity, short name, location, and the cross-source gate. Each check is shown with a real candidate it refused.">
+  <g class="box mix" transform="translate(20,20)"><rect width="560" height="48" rx="3"/><text x="14" y="21" class="t">Search hits from ROR or GLEIF</text><text x="14" y="38" class="s">everything the registry returned for the name</text></g>
+  <g class="box det" transform="translate(45,76)"><rect width="510" height="48" rx="3"/><text x="14" y="21" class="t">1 · Country</text><text x="14" y="38" class="s">the record's country must match</text></g>
+  <g class="box det" transform="translate(70,132)"><rect width="460" height="48" rx="3"/><text x="14" y="21" class="t">2 · Name score</text><text x="14" y="38" class="s">ROR ≥ 0.8 with word guards · GLEIF ≥ 88</text></g>
+  <g class="box det" transform="translate(95,188)"><rect width="410" height="48" rx="3"/><text x="14" y="21" class="t">3 · Exact-only override</text><text x="14" y="38" class="s">if ROR didn't choose: verbatim name only</text></g>
+  <g class="box det" transform="translate(120,244)"><rect width="360" height="48" rx="3"/><text x="14" y="21" class="t">4 · Ambiguity</text><text x="14" y="38" class="s">top two within 2 points → neither</text></g>
+  <g class="box det" transform="translate(145,300)"><rect width="310" height="48" rx="3"/><text x="14" y="21" class="t">5 · Short name</text><text x="14" y="38" class="s">needs a matching place or website</text></g>
+  <g class="box det" transform="translate(170,356)"><rect width="260" height="48" rx="3"/><text x="14" y="21" class="t">6 · Location</text><text x="14" y="38" class="s">disagrees + weak name → note</text></g>
+  <g class="box det" transform="translate(195,412)"><rect width="210" height="48" rx="3"/><text x="14" y="21" class="t">7 · Cross-source</text><text x="14" y="38" class="s">ROR vs GLEIF: keep closer</text></g>
+  <g class="box reg" transform="translate(210,476)"><rect width="180" height="48" rx="3"/><text x="14" y="21" class="t">Verified identity</text><text x="14" y="38" class="s">official name + id</text></g>
+
+  <path d="M580 44H630M555 100H630M530 156H630M505 212H630M480 268H630M455 324H630M430 380H630M405 436H630M390 500H630" class="flowd"/>
+  <text x="640" y="40" class="t">GLEIF search for “Pfizer AG”</text><text x="640" y="57" class="s">also returns its pension foundation: score 29, refused at check 2</text>
+  <text x="640" y="96" class="t">BASF SE, Germany</text><text x="640" y="113" class="s">✕ the US “BASF”: same name, a different legal entity</text>
+  <text x="640" y="152" class="t">Acme Biotech, Tampa</text><text x="640" y="169" class="s">✕ AUM BioTech: “acme” is missing, so 0.87 is capped to 0.7</text>
+  <text x="640" y="208" class="t">“Galveston – University of Texas Medical”</text><text x="640" y="225" class="s">✕ University of North Texas, although it scored above 0.8</text>
+  <text x="640" y="264" class="t">BHS</text><text x="640" y="281" class="s">✕ Berkshire vs Behavioral Health Systems: the registry can't tell</text>
+  <text x="640" y="320" class="t">BIC</text><text x="640" y="337" class="s">accepted only if the city or the website agrees</text>
+  <text x="640" y="376" class="t">Arkema Inc., plant in North Carolina</text><text x="640" y="393" class="s">registry says Pennsylvania; the name is exact, so kept and only noted</text>
+  <text x="640" y="432" class="t">BIC Corp</text><text x="640" y="449" class="s">GLEIF kept; ROR's different company removed → source-conflict</text>
+  <text x="640" y="496" class="t">What survives</text><text x="640" y="513" class="s">writes the registry's official name, its id, and often the domain</text>
+</svg>
+  </div>
+  <p class="say"><b>Say it like this:</b> Registries are authoritative, but their search is not: they return confident wrong answers. So a hit must pass seven checks, all asking one question: is this the same organisation? When in doubt, there is no match, because a wrong id is worse than none.</p>
+</section>
+
+<section class="slide" id="f4" aria-labelledby="f4-h">
+  <p class="fn">Figure 4 · the last resort</p>
+  <h2 id="f4-h">The last resort reads before it answers</h2>
+  <div class="fig">
+<svg viewBox="0 0 1190 370" role="img" aria-label="The grounded lane searches, fetches three pages, has the model name the evidence it used, applies deterministic guards, and re-checks the answer in a registry. A registry hit ships unflagged; a name equal to the input is kept unflagged; a different name ships flagged. With no page fetched it falls back to the model alone; a refused proposal becomes a suggestion.">
+  <defs>
+    <marker id="a4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="currentColor"/></marker>
+  </defs>
+  <g class="box web" transform="translate(20,60)"><rect width="200" height="56" rx="4"/><text x="12" y="24" class="t">1 · Search</text><text x="12" y="43" class="s">“Name 1” + department + city</text></g>
+  <g class="box web" transform="translate(250,60)"><rect width="200" height="56" rx="4"/><text x="12" y="24" class="t">2 · Fetch 3 pages</text><text x="12" y="43" class="s">URL, title, H1, breadcrumb</text></g>
+  <g class="box llm" transform="translate(480,60)"><rect width="200" height="56" rx="4"/><text x="12" y="24" class="t">3 · Model reads</text><text x="12" y="43" class="s">names the item it used</text></g>
+  <g class="box det" transform="translate(710,60)"><rect width="200" height="56" rx="4"/><text x="12" y="24" class="t">4 · Guards</text><text x="12" y="43" class="s">verbatim · no address · same org</text></g>
+  <g class="box reg" transform="translate(940,60)"><rect width="230" height="56" rx="4"/><text x="12" y="24" class="t">5 · Registry re-check</text><text x="12" y="43" class="s">ROR if research · GLEIF if company</text></g>
+  <line x1="220" y1="88" x2="248" y2="88" class="flow" marker-end="url(#a4)"/>
+  <line x1="450" y1="88" x2="478" y2="88" class="flow" marker-end="url(#a4)"/>
+  <line x1="680" y1="88" x2="708" y2="88" class="flow" marker-end="url(#a4)"/>
+  <line x1="910" y1="88" x2="938" y2="88" class="flow" marker-end="url(#a4)"/>
+
+  <line x1="350" y1="116" x2="350" y2="288" class="flowd" marker-end="url(#a4)"/><text x="358" y="200" class="lab">no page fetched</text>
+  <g class="box llm dash" transform="translate(250,290)"><rect width="200" height="56" rx="4"/><text x="12" y="24" class="t">Tier 3 · model alone</text><text x="12" y="43" class="s">anything it writes is flagged</text></g>
+  <line x1="790" y1="116" x2="790" y2="288" class="flowd" marker-end="url(#a4)"/><text x="798" y="200" class="lab">refused</text>
+  <g class="box det" transform="translate(710,290)"><rect width="160" height="56" rx="4"/><text x="12" y="24" class="t">Input kept</text><text x="12" y="43" class="s">shown as Suggested Name</text></g>
+
+  <path d="M1055 116V148H925V327" class="flow"/>
+  <line x1="925" y1="195" x2="938" y2="195" class="flow" marker-end="url(#a4)"/>
+  <line x1="925" y1="261" x2="938" y2="261" class="flow" marker-end="url(#a4)"/>
+  <line x1="925" y1="327" x2="938" y2="327" class="flow" marker-end="url(#a4)"/>
+  <text x="921" y="191" class="lab" text-anchor="end">hit</text>
+  <text x="921" y="257" class="lab" text-anchor="end">= input</text>
+  <text x="921" y="323" class="lab" text-anchor="end">differs</text>
+  <g class="box reg" transform="translate(940,170)"><rect width="230" height="50" rx="4"/><text x="12" y="21" class="t">Registry hit</text><text x="12" y="39" class="s">official name + id · no flag</text></g>
+  <g class="box web" transform="translate(940,236)"><rect width="230" height="50" rx="4"/><text x="12" y="21" class="t">Same as the input</text><text x="12" y="39" class="s">kept as unchanged-verified · no flag</text></g>
+  <g class="box llm" transform="translate(940,302)"><rect width="230" height="50" rx="4"/><text x="12" y="21" class="t">A different name, no hit</text><text x="12" y="39" class="s">written · unverified-inference</text></g>
+</svg>
+  </div>
+  <p class="say"><b>Say it like this:</b> When no registry answers, the pipeline searches, reads three pages, and makes the model copy a name that literally appears in them. Then it asks the registry again. Only a registry hit, or the page confirming the name SAP already had, ships without a flag.</p>
+</section>
+
+<section class="slide" id="f5" aria-labelledby="f5-h">
+  <p class="fn">Figure 5 · how much a value is worth</p>
+  <h2 id="f5-h">One function decides every confidence</h2>
+  <div class="fig">
+<svg viewBox="0 0 1190 262" role="img" aria-label="Four questions in a fixed order decide a value's confidence: any doubt gives low; a registry-authored value is verified; a value an independent second source agrees with is verified with that witness; a single source gives provisional; otherwise low.">
+  <defs>
+    <marker id="a5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="currentColor"/></marker>
+  </defs>
+  <g class="box mix" transform="translate(20,40)"><rect width="210" height="62" rx="4"/><text x="12" y="26" class="t">1 · Any doubt?</text><text x="12" y="46" class="s">contradicted · ambiguous · too short</text></g>
+  <g class="box mix" transform="translate(270,40)"><rect width="210" height="62" rx="4"/><text x="12" y="26" class="t">2 · A registry wrote it?</text><text x="12" y="46" class="s">ROR or GLEIF authored the value</text></g>
+  <g class="box mix" transform="translate(520,40)"><rect width="210" height="62" rx="4"/><text x="12" y="26" class="t">3 · A second source agrees?</text><text x="12" y="46" class="s">independent · a model doesn't count</text></g>
+  <g class="box mix" transform="translate(770,40)"><rect width="210" height="62" rx="4"/><text x="12" y="26" class="t">4 · One source at all?</text><text x="12" y="46" class="s">a page, or the input itself</text></g>
+  <g class="box det" transform="translate(1010,40)"><rect width="160" height="62" rx="4"/><text x="12" y="28" class="tb">low</text><text x="12" y="47" class="s">nothing to go on</text></g>
+  <line x1="230" y1="71" x2="268" y2="71" class="flow" marker-end="url(#a5)"/><text x="249" y="63" class="lab" text-anchor="middle">no</text>
+  <line x1="480" y1="71" x2="518" y2="71" class="flow" marker-end="url(#a5)"/><text x="499" y="63" class="lab" text-anchor="middle">no</text>
+  <line x1="730" y1="71" x2="768" y2="71" class="flow" marker-end="url(#a5)"/><text x="749" y="63" class="lab" text-anchor="middle">no</text>
+  <line x1="980" y1="71" x2="1008" y2="71" class="flow" marker-end="url(#a5)"/><text x="994" y="63" class="lab" text-anchor="middle">no</text>
+
+  <line x1="125" y1="102" x2="125" y2="168" class="flow" marker-end="url(#a5)"/><text x="133" y="140" class="lab">yes</text>
+  <line x1="375" y1="102" x2="375" y2="168" class="flow" marker-end="url(#a5)"/><text x="383" y="140" class="lab">yes</text>
+  <line x1="625" y1="102" x2="625" y2="168" class="flow" marker-end="url(#a5)"/><text x="633" y="140" class="lab">yes</text>
+  <line x1="875" y1="102" x2="875" y2="168" class="flow" marker-end="url(#a5)"/><text x="883" y="140" class="lab">yes</text>
+  <g class="box det" transform="translate(20,170)"><rect width="210" height="78" rx="4"/><text x="12" y="26" class="tb">low</text><text x="12" y="46" class="s">input:low</text><text x="12" y="64" class="s">Name 1 or 2 low → review</text></g>
+  <g class="box reg" transform="translate(270,170)"><rect width="210" height="78" rx="4"/><text x="12" y="26" class="tb">verified</text><text x="12" y="46" class="s">ror:verified · gleif:verified</text><text x="12" y="64" class="s">+wikidata if found through it</text></g>
+  <g class="box reg" transform="translate(520,170)"><rect width="210" height="78" rx="4"/><text x="12" y="26" class="tb">verified + witness</text><text x="12" y="46" class="s">input:verified+web</text><text x="12" y="64" class="s">web:x:verified+wikidata</text></g>
+  <g class="box web" transform="translate(770,170)"><rect width="210" height="78" rx="4"/><text x="12" y="26" class="tb">provisional</text><text x="12" y="46" class="s">web:acme.com:provisional</text><text x="12" y="64" class="s">+llm only if a blind model agreed</text></g>
+</svg>
+  </div>
+  <p class="note">Review flag = Name 1 or Name 2 is <b>low</b>, or any code that asks for review. Two codes are shown but never queue a record: <code>domain-unverified</code> and <code>registry-location-mismatch</code>.</p>
+  <p class="say"><b>Say it like this:</b> Every value gets one of three confidence words, from one function asking four questions in a fixed order. Doubt beats everything. A registry is trusted on its own; anything else needs a second, independent source, and a model never counts as one.</p>
+</section>
+
+<section class="slide" id="f6" aria-labelledby="f6-h">
+  <p class="fn">Figure 6 · when SAP's name was already right</p>
+  <h2 id="f6-h">A kept name is not always a doubtful name</h2>
+  <div class="fig">
+<svg viewBox="0 0 1190 390" role="img" aria-label="When Name 1 leaves the pipeline unchanged, six checks in order decide its state: a page read, the grounded lane, a domain tied to the name, or a Wikidata match make it unchanged-verified; a blind model proposal equal to it makes it unchanged-confirmed; otherwise it is unchanged-unresolved and flagged.">
+  <defs>
+    <marker id="a6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="currentColor"/></marker>
+  </defs>
+  <g class="box mix" transform="translate(20,40)"><rect width="520" height="46" rx="4"/><circle cx="16" cy="23" r="5" class="d-web"/><text x="30" y="19" class="t">Page read: the site states this name</text><text x="30" y="36" class="s">the organisation's own site, fetched and read</text></g>
+  <g class="box mix" transform="translate(20,98)"><rect width="520" height="46" rx="4"/><circle cx="16" cy="23" r="5" class="d-web"/><text x="30" y="19" class="t">The grounded lane returned the same name</text><text x="30" y="36" class="s">after searching and reading pages</text></g>
+  <g class="box mix" transform="translate(20,156)"><rect width="520" height="46" rx="4"/><circle cx="16" cy="23" r="5" class="d-det"/><text x="30" y="19" class="t">The domain is tied to Name 1</text><text x="30" y="36" class="s">by registry, name match or on-site title; a company email doesn't count</text></g>
+  <g class="box mix" transform="translate(20,214)"><rect width="520" height="46" rx="4"/><circle cx="16" cy="23" r="5" class="d-reg"/><text x="30" y="19" class="t">A Wikidata item matches</text><text x="30" y="36" class="s">type, country, name and headquarters all agree</text></g>
+  <g class="box mix" transform="translate(20,272)"><rect width="520" height="46" rx="4"/><circle cx="16" cy="23" r="5" class="d-llm"/><text x="30" y="19" class="t">A blind model proposal equals it</text><text x="30" y="36" class="s">asked what the organisation is called, never shown the answer</text></g>
+  <g class="box mix" transform="translate(20,330)"><rect width="520" height="46" rx="4"/><circle cx="16" cy="23" r="5" class="d-det"/><text x="30" y="19" class="t">None of the above</text><text x="30" y="36" class="s">nothing independent confirms it</text></g>
+  <line x1="280" y1="86" x2="280" y2="96" class="flow" marker-end="url(#a6)"/>
+  <line x1="280" y1="144" x2="280" y2="154" class="flow" marker-end="url(#a6)"/>
+  <line x1="280" y1="202" x2="280" y2="212" class="flow" marker-end="url(#a6)"/>
+  <line x1="280" y1="260" x2="280" y2="270" class="flow" marker-end="url(#a6)"/>
+  <line x1="280" y1="318" x2="280" y2="328" class="flow" marker-end="url(#a6)"/>
+  <text x="288" y="95" class="lab">no</text><text x="288" y="153" class="lab">no</text><text x="288" y="211" class="lab">no</text><text x="288" y="269" class="lab">no</text><text x="288" y="327" class="lab">no</text>
+
+  <line x1="540" y1="63" x2="638" y2="63" class="flow" marker-end="url(#a6)"/>
+  <line x1="540" y1="121" x2="638" y2="121" class="flow" marker-end="url(#a6)"/>
+  <line x1="540" y1="179" x2="638" y2="179" class="flow" marker-end="url(#a6)"/>
+  <line x1="540" y1="237" x2="638" y2="237" class="flow" marker-end="url(#a6)"/>
+  <line x1="540" y1="295" x2="638" y2="295" class="flow" marker-end="url(#a6)"/>
+  <line x1="540" y1="353" x2="638" y2="353" class="flow" marker-end="url(#a6)"/>
+  <text x="589" y="57" class="lab" text-anchor="middle">yes</text><text x="589" y="115" class="lab" text-anchor="middle">yes</text><text x="589" y="173" class="lab" text-anchor="middle">yes</text><text x="589" y="231" class="lab" text-anchor="middle">yes</text><text x="589" y="289" class="lab" text-anchor="middle">yes</text>
+
+  <g class="box reg" transform="translate(640,40)"><rect width="530" height="220" rx="4"/><text x="18" y="96" class="tb">unchanged-verified</text><text x="18" y="118" class="s">input:verified+web · +wikidata · +registry</text><text x="18" y="138" class="s">no flag · status verified</text></g>
+  <g class="box web" transform="translate(640,272)"><rect width="530" height="46" rx="4"/><text x="18" y="19" class="t">unchanged-confirmed</text><text x="18" y="36" class="s">input:provisional+llm · no flag · status verified</text></g>
+  <g class="box det" transform="translate(640,330)"><rect width="530" height="46" rx="4"/><text x="18" y="19" class="t">unchanged-unresolved</text><text x="18" y="36" class="s">input:low · flagged low-confidence-unchanged · status unresolved</text></g>
+</svg>
+  </div>
+  <p class="say"><b>Say it like this:</b> Keeping SAP's own name is not a failure. If the organisation's site, a tied domain or Wikidata confirms it, the kept name is verified and nobody reviews it. Only a name that nothing confirms asks a steward to check.</p>
+</section>
+
+<section class="slide" id="f7" aria-labelledby="f7-h">
+  <p class="fn">Figure 7 · the website</p>
+  <h2 id="f7-h">A website must be tied to the organisation, not just found</h2>
+  <div class="fig">
+<svg viewBox="0 0 1190 330" role="img" aria-label="Candidate websites from ROR, web search, a model guess or a found page are reduced to a registrable domain and passed through the ownership guard's six conditions in order. The first that holds accepts the domain; if none holds it ships at low confidence with an advisory code; if the page names another organisation it is withdrawn.">
+  <defs>
+    <marker id="a7" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="currentColor"/></marker>
+  </defs>
+  <g class="box reg" transform="translate(20,50)"><rect width="190" height="46" rx="4"/><text x="12" y="19" class="t">ROR website link</text><text x="12" y="36" class="s">from a matched record</text></g>
+  <g class="box web" transform="translate(20,108)"><rect width="190" height="46" rx="4"/><text x="12" y="19" class="t">Web search</text><text x="12" y="36" class="s">“Name 1” official website</text></g>
+  <g class="box llm" transform="translate(20,166)"><rect width="190" height="46" rx="4"/><text x="12" y="19" class="t">Model's guess</text><text x="12" y="36" class="s">only if search found none</text></g>
+  <g class="box web" transform="translate(20,224)"><rect width="190" height="46" rx="4"/><text x="12" y="19" class="t">A page already used</text><text x="12" y="36" class="s">faculty or lab page URL</text></g>
+  <path d="M210 73L248 150M210 131L248 156M210 189L248 164M210 247L248 170" class="flow" marker-end="url(#a7)"/>
+  <g class="box det" transform="translate(250,137)"><rect width="170" height="46" rx="4"/><text x="12" y="19" class="t">Reduce to domain</text><text x="12" y="36" class="s">www.x.edu/path → x.edu</text></g>
+  <line x1="420" y1="160" x2="458" y2="160" class="flow" marker-end="url(#a7)"/>
+
+  <g class="box mix" transform="translate(460,20)"><rect width="400" height="290" rx="4"/>
+    <text x="16" y="28" class="tb">Ownership guard · first that holds</text>
+    <text x="16" y="60" class="t">1 · A registry supplied it</text><text x="16" y="76" class="s">ror:verified</text>
+    <text x="16" y="100" class="t">2 · An independent source names it</text><text x="16" y="116" class="s">ROR links or Wikidata · web:x:verified+wikidata</text>
+    <text x="16" y="140" class="t">3 · Name 1 matches the domain, ≥ 82</text><text x="16" y="156" class="s">lockheedmartin.com 82.4 ✓ · aumbiotech.com 81.8 ✕</text>
+    <text x="16" y="180" class="t">4 · The record's company email</text><text x="16" y="196" class="s">orders@meridianlabs.com · never gmail or outlook</text>
+    <text x="16" y="220" class="t">5 · An on-site title carries the name</text><text x="16" y="236" class="s">every significant word of Name 1</text>
+    <text x="16" y="260" class="t">6 · The site names itself</text><text x="16" y="276" class="s">page read · provisional at most</text>
+  </g>
+  <line x1="860" y1="78" x2="898" y2="78" class="flow" marker-end="url(#a7)"/>
+  <line x1="860" y1="178" x2="898" y2="178" class="flow" marker-end="url(#a7)"/>
+  <line x1="860" y1="278" x2="898" y2="278" class="flow" marker-end="url(#a7)"/>
+  <g class="box reg" transform="translate(900,46)"><rect width="270" height="64" rx="4"/><text x="12" y="21" class="t">One holds: accepted</text><text x="12" y="39" class="s">domain and website written</text><text x="12" y="55" class="s">the condition that held is the reason</text></g>
+  <g class="box web" transform="translate(900,146)"><rect width="270" height="64" rx="4"/><text x="12" y="21" class="t">None holds: shipped, not accepted</text><text x="12" y="39" class="s">web:x:low · domain-unverified</text><text x="12" y="55" class="s">shown to reviewers, never queued</text></g>
+  <g class="box det" transform="translate(900,246)"><rect width="270" height="64" rx="4"/><text x="12" y="21" class="t">Page names another org: withdrawn</text><text x="12" y="39" class="s">johnsoncontrols.com for AB Controls</text><text x="12" y="55" class="s">the only rule that removes a domain</text></g>
+</svg>
+  </div>
+  <p class="say"><b>Say it like this:</b> Finding a website is easy; proving it belongs to this customer is the work. A domain is accepted only when a registry, a second source, the name, the customer's own email or the site itself ties it to the organisation. Otherwise it still ships, marked as unverified.</p>
+</section>
+
+<section class="slide" id="f8" aria-labelledby="f8-h">
+  <p class="fn">Figure 8 · comparing names</p>
+  <h2 id="f8-h">Why the name check penalises extra words</h2>
+  <div class="fig">
+<svg viewBox="0 0 1190 400" role="img" aria-label="Bar chart of name-similarity scores from 0 to 100. token_set scores 100 for three pairs that name different organisations; token_sort scores them 29, 82.9 and 78.9, below GLEIF's 88 threshold. Same-organisation pairs Novartis and Bayer score 84.2 (100 once the legal form is dropped) and 93.3.">
+  <rect x="380" y="10" width="14" height="10" class="bar-sort"/><text x="400" y="19" class="lab">token_sort: used</text>
+  <rect x="540" y="10" width="14" height="10" class="bar-set"/><text x="560" y="19" class="lab">token_set: deliberately not used</text>
+  <path d="M380 40V356M560 40V356M740 40V356M920 40V356M1100 40V356" class="grid"/>
+  <text x="380" y="374" class="lab" text-anchor="middle">0</text><text x="560" y="374" class="lab" text-anchor="middle">25</text><text x="740" y="374" class="lab" text-anchor="middle">50</text><text x="920" y="374" class="lab" text-anchor="middle">75</text><text x="1100" y="374" class="lab" text-anchor="middle">100</text>
+  <text x="740" y="394" class="lab" text-anchor="middle">similarity score</text>
+
+  <text x="370" y="60" class="t" text-anchor="end">Pfizer AG ↔ its pension foundation</text><text x="370" y="78" class="s" text-anchor="end">different organisations</text>
+  <rect x="380" y="48" width="208.8" height="16" class="bar-sort"/><text x="595" y="61" class="num">29</text>
+  <rect x="380" y="68" width="720" height="16" class="bar-set"/><text x="1106" y="81" class="num">100</text>
+
+  <text x="370" y="126" class="t" text-anchor="end">Thermo Fisher Scientific ↔ Fisher Scientific</text><text x="370" y="144" class="s" text-anchor="end">different organisations</text>
+  <rect x="380" y="114" width="596.9" height="16" class="bar-sort"/><text x="983" y="127" class="num">82.9</text>
+  <rect x="380" y="134" width="720" height="16" class="bar-set"/><text x="1106" y="147" class="num">100</text>
+
+  <text x="370" y="192" class="t" text-anchor="end">Coastal Diagnostics Inc ↔ Diagnostics Inc</text><text x="370" y="210" class="s" text-anchor="end">different organisations</text>
+  <rect x="380" y="180" width="568.1" height="16" class="bar-sort"/><text x="955" y="193" class="num">78.9</text>
+  <rect x="380" y="200" width="720" height="16" class="bar-set"/><text x="1106" y="213" class="num">100</text>
+
+  <text x="370" y="258" class="t" text-anchor="end">Novartis ↔ Novartis AG</text><text x="370" y="276" class="s" text-anchor="end">same organisation · 100 once “AG” is dropped</text>
+  <rect x="380" y="246" width="606.2" height="16" class="bar-sort"/><text x="992" y="259" class="num">84.2</text>
+  <rect x="380" y="266" width="720" height="16" class="bar-set"/><text x="1106" y="279" class="num">100</text>
+
+  <text x="370" y="324" class="t" text-anchor="end">Bayr AG ↔ Bayer AG</text><text x="370" y="342" class="s" text-anchor="end">same organisation · a typo</text>
+  <rect x="380" y="312" width="671.8" height="16" class="bar-sort"/><text x="1058" y="325" class="num">93.3</text>
+  <rect x="380" y="332" width="671.8" height="16" class="bar-set"/><text x="1058" y="345" class="num">93.3</text>
+
+  <line x1="1013.6" y1="32" x2="1013.6" y2="356" class="thr"/>
+  <text x="1013.6" y="30" class="labk" text-anchor="middle">GLEIF accepts ≥ 88</text>
+</svg>
+  </div>
+  <p class="note">Scores computed with the project's rapidfuzz. The pipeline's GLEIF score is token_sort, taken as the higher of the raw score and the score with legal forms (AG, Inc, GmbH…) removed.</p>
+  <p class="say"><b>Say it like this:</b> token_set asks whether one name is inside the other, so a pension fund scores 100 against its sponsor. token_sort asks whether they are the same name, so extra words cost points. For accepting a legal entity, only the second question is safe.</p>
+</section>
+</main>
+
+<script>
+(function () {
+  const slides = Array.from(document.querySelectorAll('.slide'));
+  const btn = document.getElementById('present');
+  const count = document.getElementById('count');
+  let i = 0;
+  function show(n) {
+    i = Math.max(0, Math.min(slides.length - 1, n));
+    slides.forEach((s, k) => s.classList.toggle('on', k === i));
+    count.textContent = (i + 1) + ' / ' + slides.length + ' · ← → · Esc';
+  }
+  function enter() {
+    let best = 0, bestDist = Infinity;
+    slides.forEach((s, k) => {
+      const d = Math.abs(s.getBoundingClientRect().top);
+      if (d < bestDist) { bestDist = d; best = k; }
+    });
+    document.body.classList.add('present');
+    count.hidden = false;
+    btn.textContent = 'Exit';
+    show(best);
+    window.scrollTo(0, 0);
+    const el = document.documentElement;
+    if (el.requestFullscreen) { el.requestFullscreen().catch(() => {}); }
+  }
+  function exit() {
+    document.body.classList.remove('present');
+    count.hidden = true;
+    btn.textContent = 'Present';
+    slides.forEach(s => s.classList.remove('on'));
+    if (document.fullscreenElement && document.exitFullscreen) { document.exitFullscreen().catch(() => {}); }
+    slides[i].scrollIntoView();
+  }
+  btn.addEventListener('click', () => document.body.classList.contains('present') ? exit() : enter());
+  document.addEventListener('keydown', (e) => {
+    if (!document.body.classList.contains('present')) return;
+    if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); show(i + 1); }
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); show(i - 1); }
+    else if (e.key === 'Home') { show(0); }
+    else if (e.key === 'End') { show(slides.length - 1); }
+    else if (e.key === 'Escape') { exit(); }
+  });
+  document.addEventListener('fullscreenchange', () => {
+    if (!document.fullscreenElement && document.body.classList.contains('present')) exit();
+  });
+})();
+</script>

@@ -81,6 +81,12 @@ TRANSIENT_ERRORS: frozenset[str] = frozenset({
 
 #: ``error_code`` for a CACHE_FROZEN run with no recording of this number.
 FROZEN_CACHE_MISS = "FROZEN_CACHE_MISS"
+#: ``error_code`` when ``/check-status`` reports the member state Unavailable:
+#: no call is made for the number (VIES help text: DE is only available
+#: 05:00–23:00). SERVICE_UNAVAILABLE — never INVALID.
+MS_UNAVAILABLE_STATUS = "MS_UNAVAILABLE_STATUS"
+#: How long one ``/check-status`` answer is trusted before it is asked again.
+STATUS_TTL_SECONDS = 300.0
 #: ``error_code`` for a 2xx body that is neither an answer nor an error.
 MALFORMED_RESPONSE = "MALFORMED_RESPONSE"
 
@@ -213,6 +219,16 @@ class VIESClient:
         # Pacing state, shared by every in-flight lookup of this client.
         self._pace_lock = asyncio.Lock()
         self._next_call_at = float("-inf")
+        # One semaphore for the client, not per check_many call: the
+        # missing-VAT lookups call check() for several customers at once, and
+        # VIES_MAX_CONCURRENCY must hold across all of them.
+        self._semaphore = asyncio.Semaphore(self._concurrency)
+        # /check-status, asked at most once per STATUS_TTL_SECONDS.
+        self._status_url = settings.vies_api_base.rstrip("/") + "/check-status"
+        self._status: dict[str, str] | None = None
+        self._status_at = float("-inf")
+        self._status_lock = asyncio.Lock()
+        self.status_checks = 0
 
     @property
     def frozen(self) -> bool:
@@ -292,6 +308,26 @@ class VIESClient:
                 await self._sleep(wait)
             self._next_call_at = self._clock() + self._min_interval
 
+    async def _member_state_unavailable(self, client: httpx.AsyncClient, country: str) -> bool:
+        """True only when ``/check-status`` explicitly says *country* is
+        ``Unavailable``. Any failure to ask, or any other answer ("Available",
+        "Monitoring Disabled"), lets the normal call go ahead. Never consulted
+        in a frozen run, and never cached on disk: availability is transient."""
+        if self.frozen:
+            return False
+        async with self._status_lock:
+            if self._status is None or self._clock() - self._status_at > STATUS_TTL_SECONDS:
+                self.status_checks += 1
+                status: dict[str, str] = {}
+                try:
+                    resp = await client.get(self._status_url)
+                    for c in (resp.json() or {}).get("countries", []) if resp.is_success else []:
+                        status[str(c.get("countryCode"))] = str(c.get("availability"))
+                except (httpx.HTTPError, ValueError) as exc:
+                    logger.info("VIES /check-status failed (%s); checking numbers anyway", exc)
+                self._status, self._status_at = status, self._clock()
+        return self._status.get(country) == "Unavailable"
+
     async def _check(self, client: httpx.AsyncClient, fmt: VatFormat) -> ViesResult:
         vat = fmt.normalized or ""
         key = self.cache_key(vat)
@@ -302,6 +338,9 @@ class VIESClient:
         if self._store.replay_only:
             logger.info("VIES: frozen cache has no response for %s", vat)
             return ViesResult(SERVICE_UNAVAILABLE, vat, error_code=FROZEN_CACHE_MISS)
+        if await self._member_state_unavailable(client, vat[:2]):
+            logger.info("VIES: %s reported Unavailable by /check-status; %s not sent", vat[:2], vat)
+            return ViesResult(SERVICE_UNAVAILABLE, vat, error_code=MS_UNAVAILABLE_STATUS)
 
         request = self._request_body(fmt)
         attempt = 0
@@ -349,10 +388,9 @@ class VIESClient:
                 unique.setdefault(fmt.normalized, fmt)
         if not unique:
             return {}
-        semaphore = asyncio.Semaphore(self._concurrency)
         async with self._client() as client:
             async def run(fmt: VatFormat) -> ViesResult:
-                async with semaphore:
+                async with self._semaphore:
                     return await self._check(client, fmt)
 
             results = await asyncio.gather(*(run(f) for f in unique.values()))

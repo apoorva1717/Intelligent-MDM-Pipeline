@@ -90,8 +90,42 @@ def _cache_dir(override_var: str, subdir: str) -> str:
     return f"{root}/{subdir}" if root else ""
 
 
+# ── LLM provider ─────────────────────────────────────────────────────────────
+# Two ways to reach the model, chosen from what is configured:
+#   * Azure OpenAI — when AZURE_OPENAI_API_KEY *and* AZURE_OPENAI_ENDPOINT are
+#     set. Exactly the historical behaviour: AZURE_OPENAI_DEPLOYMENT,
+#     AZURE_OPENAI_API_VERSION, the same cache keys.
+#   * OpenAI direct (api.openai.com) — otherwise, when OPENAI_API_KEY is set.
+#     The model is OPENAI_MODEL; OPENAI_BASE_URL optionally overrides the URL.
+# Azure wins whenever both are configured.
+AZURE = "azure"
+OPENAI = "openai"
+
+
+def llm_provider() -> str | None:
+    """``"azure"``, ``"openai"`` or None (nothing configured)."""
+    if os.getenv("AZURE_OPENAI_API_KEY", "").strip() and os.getenv("AZURE_OPENAI_ENDPOINT", "").strip():
+        return AZURE
+    if os.getenv("OPENAI_API_KEY", "").strip():
+        return OPENAI
+    return None
+
+
+def llm_model(purpose: str = "default") -> str:
+    """The model to call: the Azure *deployment* name, or the OpenAI *model*
+    name. ``purpose="dedup"`` honours the dedup-specific overrides."""
+    if llm_provider() == OPENAI:
+        if purpose == "dedup" and os.getenv("OPENAI_MODEL_DEDUP"):
+            return os.environ["OPENAI_MODEL_DEDUP"]
+        return os.getenv("OPENAI_MODEL") or "gpt-5.4"
+    if purpose == "dedup" and os.getenv("AOAI_DEPLOYMENT_DEDUP"):
+        return os.environ["AOAI_DEPLOYMENT_DEDUP"]
+    return os.getenv("AZURE_OPENAI_DEPLOYMENT") or "gpt-5.4"
+
+
 # ── Environment variable validation ──────────────────────────────────────────
 
+#: One of the two LLM providers must be configured (see llm_provider).
 REQUIRED_VARS = [
     "AZURE_OPENAI_API_KEY",
     "AZURE_OPENAI_ENDPOINT",
@@ -99,6 +133,9 @@ REQUIRED_VARS = [
 
 OPTIONAL_VARS_WITH_DEFAULTS = {
     "AZURE_OPENAI_DEPLOYMENT": "gpt-5.4",
+    # OpenAI direct — used only when Azure is not configured (see llm_provider).
+    "OPENAI_MODEL": "gpt-5.4",
+    "OPENAI_BASE_URL": "",
     "ROR_API_BASE": "https://api.ror.org/v2/organizations",
     "ROR_CONFIDENCE_THRESHOLD": "0.8",
     "LEI_LOOKUP_ENABLED": "true",
@@ -190,14 +227,16 @@ def validate_env() -> None:
     Does not raise — allows the app to start so health checks still work,
     but LLM calls will fail until the variables are set.
     """
-    missing = [v for v in REQUIRED_VARS if not os.getenv(v)]
-    if missing:
-        for var in missing:
-            logger.warning("Missing required env var: %s", var)
+    provider = llm_provider()
+    if provider is None:
         logger.warning(
-            "LLM calls will fail until these are set. "
-            "Copy .env.example to .env and fill in values."
+            "No LLM provider configured: set AZURE_OPENAI_API_KEY + "
+            "AZURE_OPENAI_ENDPOINT (Azure OpenAI), or OPENAI_API_KEY (OpenAI "
+            "direct). LLM calls will fail until one is set. Copy .env.example "
+            "to .env and fill in values."
         )
+    else:
+        logger.info("LLM provider: %s (model/deployment %s)", provider, llm_model())
 
     serpapi_key = os.getenv("SERPAPI_KEY", "").strip()
     if serpapi_key:
@@ -216,10 +255,14 @@ def validate_env() -> None:
 class Settings:
     """Immutable snapshot of all configuration values."""
 
-    # Azure OpenAI
-    openai_api_key: str = field(default_factory=lambda: os.getenv("AZURE_OPENAI_API_KEY", ""))
+    # LLM — Azure OpenAI when configured, otherwise OpenAI direct (llm_provider).
+    openai_api_key: str = field(default_factory=lambda: (
+        os.getenv("AZURE_OPENAI_API_KEY", "") if llm_provider() == AZURE
+        else os.getenv("OPENAI_API_KEY", "")
+    ))
     azure_openai_endpoint: str = field(default_factory=lambda: os.getenv("AZURE_OPENAI_ENDPOINT", ""))
-    openai_model: str = field(default_factory=lambda: os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-5.4"))
+    #: The Azure deployment or the OpenAI model, whichever provider is in use.
+    openai_model: str = field(default_factory=llm_model)
 
     # Search
     serpapi_key: str = field(default_factory=lambda: os.getenv("SERPAPI_KEY", ""))

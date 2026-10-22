@@ -19,12 +19,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import Any, Awaitable, Callable
 
 from llm import openai_client
+from config import llm_model
 from llm.openai_client import (
-    DEFAULT_AZURE_OPENAI_API_VERSION,
     LLM_SEED,
     LLM_TEMPERATURE,
     LLM_TOP_P,
@@ -32,6 +31,7 @@ from llm.openai_client import (
     _FENCE_RE,
     call_openai,
     get_openai_client,
+    llm_cache_api_version,
 )
 from utils.cache import DiskCache, llm_disk_key
 from vat.cache_guard import WriteFailures
@@ -70,10 +70,8 @@ class VatLLM:
 
     def _key(self, system: str, user: str, max_tokens: int) -> str:
         return llm_disk_key(
-            deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-5.4"),
-            api_version=(
-                os.getenv("AZURE_OPENAI_API_VERSION") or DEFAULT_AZURE_OPENAI_API_VERSION
-            ),
+            deployment=llm_model(),
+            api_version=llm_cache_api_version(),
             temperature=LLM_TEMPERATURE,
             top_p=LLM_TOP_P,
             # Read at call time: call_openai drops the seed process-wide the

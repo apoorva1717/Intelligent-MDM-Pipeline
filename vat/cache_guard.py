@@ -16,6 +16,7 @@ counts it, so the miss shows up in the summary instead of disappearing.
 from __future__ import annotations
 
 import logging
+import os
 from collections import Counter
 
 from utils.cache import DiskCache
@@ -42,10 +43,12 @@ class WriteFailures:
         if path.is_file():
             return True
         self.by_namespace[store.namespace] += 1
+        full = os.path.abspath(str(path))  # MAX_PATH applies to the absolute path
         logger.warning(
             "VAT cache: %s entry was NOT written to disk (path %d chars; "
-            "Windows MAX_PATH is 260). A frozen re-run will not have it: %s",
-            store.namespace, len(str(path)), path,
+            "Windows MAX_PATH is 260 — shorten EVIDENCE_CACHE_DIR). "
+            "A frozen re-run will not have it: %s",
+            store.namespace, len(full), full,
         )
         return False
 

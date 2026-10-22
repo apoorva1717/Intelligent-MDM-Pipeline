@@ -276,6 +276,20 @@ POST /api/validate/vat/file   multipart form field "file" = export.xlsx (.xlsx /
 → export_vat.xlsx   headers: X-VAT-Rows, X-VAT-Service-Unavailable (unique VAT IDs VIES did not answer)
   400: wrong extension / empty / unreadable file    422: no header row, no data rows, or no VAT column
 
+POST /api/validate/vat/llm-only-experiment        JSON, as /api/validate/vat with lookup_missing=llm_only
+POST /api/validate/vat/llm-only-experiment/file   XLSX, as /api/validate/vat/file with lookup_missing=llm_only
+→ export_vat_llm_only_experiment.xlsx   (EXPERIMENT ONLY — not for production use, never written to SAP)
+  ?with_grounded=true (default) also runs the grounded lookup (SerpAPI + page read) on the same rows:
+  VAT_Found_* = LLM only · VAT_Grounded_Value/_Status/_Source_URL/_Attributed_To/_Evidence/_Date/_Flags
+  = SERP + read · VAT_LLM_vs_Grounded = SAME | DIFFERENT | LLM_ONLY | GROUNDED_ONLY | NEITHER
+  (normalised VAT IDs compared). ?with_grounded=false: LLM only, no SerpAPI cost.
+  ?scope=all (default on the experiment endpoints): every DE row is looked up, VAT ID or not, and
+  each proposal is scored against the SAP value — VAT_Found_vs_SAP / VAT_Grounded_vs_SAP =
+  MATCHES_SAP | DIFFERS_FROM_SAP | NO_PROPOSAL | SAP_BLANK. The lookups never see the SAP value
+  (name and address only). ?scope=missing: only rows with no VAT ID (the default elsewhere).
+  LLM-only prompt v2: the model always gives its best candidate, with confidence "low" when unsure;
+  null only when it has no candidate at all.
+
 python tools/vat_validate_xlsx.py export.xlsx [--out export_vat.xlsx] [--frozen] [--cache-dir DIR]
 ```
 

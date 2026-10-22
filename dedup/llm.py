@@ -25,6 +25,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from config import llm_model
+
 from llm.openai_client import (
     _FENCE_RE,
     LLM_SEED,
@@ -140,11 +142,8 @@ class DedupLLM:
     def __init__(self, settings: Any = None) -> None:
         # Prefer a dedup-specific deployment; otherwise reuse the Phase 1
         # deployment so a single configured deployment works for both phases.
-        self._deployment = (
-            os.getenv("AOAI_DEPLOYMENT_DEDUP")
-            or os.getenv("AZURE_OPENAI_DEPLOYMENT")
-            or "gpt-5.4"
-        )
+        # (OpenAI direct: OPENAI_MODEL_DEDUP, else OPENAI_MODEL — config.llm_model.)
+        self._deployment = llm_model("dedup")
         self._reasoning_effort = os.getenv("DEDUP_REASONING_EFFORT", "low")
         self._max_retries = int(os.getenv("DEDUP_MAX_RETRIES", "3"))
         self._api_version = (

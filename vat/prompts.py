@@ -77,11 +77,15 @@ LLM_ONLY_USER_PROMPT_TEMPLATE = (
     "Country: {country}\n\n"
     "What is this company's German VAT identification number (USt-IdNr.)? "
     'Answer JSON {{"vat_id": "str or null", "confidence": "high|medium|low"}}. '
-    "Answer null if you do not know."
+    "If you are not sure, still give your best candidate number and set "
+    'confidence to "low". Answer null only if you have no candidate number '
+    "at all."
 )
 
 LLM_ONLY_PROMPT_VERSION = prompt_version(
-    "vat_llm_only_experiment", "v1",
+    # v2 — always a best guess (confidence "low" when unsure) instead of null:
+    # the experiment measures what the model proposes, including when unsure.
+    "vat_llm_only_experiment", "v2",
     LLM_ONLY_SYSTEM_PROMPT, LLM_ONLY_USER_PROMPT_TEMPLATE,
 )
 

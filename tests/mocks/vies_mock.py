@@ -56,8 +56,18 @@ class ViesStub:
     def __init__(self, *replies: Any) -> None:
         self.replies = list(replies)
         self.requests: list[dict[str, Any]] = []
+        #: ``GET /check-status`` answers: countryCode → availability. Countries
+        #: not listed are simply absent from the answer (= not "Unavailable").
+        self.status: dict[str, str] = {}
+        self.status_requests = 0
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/check-status"):
+            self.status_requests += 1
+            return httpx.Response(200, json={
+                "vow": {"available": True},
+                "countries": [{"countryCode": c, "availability": a} for c, a in self.status.items()],
+            })
         self.requests.append(json.loads(request.content or b"{}"))
         reply = self.replies[min(len(self.requests), len(self.replies)) - 1]
         if callable(reply) and not isinstance(reply, httpx.Response):

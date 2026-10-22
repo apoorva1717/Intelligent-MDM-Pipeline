@@ -318,7 +318,7 @@ class TestFileEndpoint:
 # lookup_missing (none | grounded | llm_only) and the experiment alias
 # ---------------------------------------------------------------------------
 
-from vat.lookup import LOOKUP_COLUMNS, FoundResult  # noqa: E402
+from vat.lookup import COMPARE_COLUMNS, LOOKUP_COLUMNS, FoundResult  # noqa: E402
 
 
 class _FakeLookup:
@@ -390,7 +390,7 @@ class TestLookupMissing:
         row = resp.json()["rows"][0]
         assert (row["VAT_Lookup_Mode"], row["VAT_Found_Status"]) == (
             "LLM_ONLY", "LLM_GUESS:FORMAT_OK:VALID")
-        assert [e.mode for e in lookups] == ["llm_only"]
+        assert [e.mode for e in lookups] == ["llm_only", "grounded"]  # side by side by default
 
     @pytest.mark.asyncio
     async def test_unknown_mode_is_422(self, client, lookups):
@@ -417,3 +417,165 @@ class TestLookupMissing:
         resp = await client.post(FILE_URL, files={"file": ("x.xlsx", content, XLSX)})
         headers, _ = _sheet(load_workbook(io.BytesIO(resp.content)), "Data")
         assert headers[-len(VAT_COLUMNS):] == VAT_COLUMNS and "VAT_Lookup_Mode" not in headers
+
+
+class TestLlmOnlyExperimentFile:
+    @pytest.mark.asyncio
+    async def test_file_alias_runs_llm_only(self, client, lookups):
+        content = _book([["Customer", "Name", "Country/Region Key", "VAT Registration No."],
+                         ["1", "Acme GmbH", "DE", None], ["2", "Beta SA", "FR", "FR40303265045"]])
+        resp = await client.post(FILE_URL.replace("/file", "/llm-only-experiment/file"),
+                                 files={"file": ("export.xlsx", content, XLSX)})
+        assert resp.status_code == 200, resp.text
+        assert resp.headers["content-disposition"] == (
+            'attachment; filename="export_vat_llm_only_experiment.xlsx"')
+        assert resp.headers["x-vat-lookup-mode"] == "llm_only"
+        assert [e.mode for e in lookups] == ["llm_only", "grounded"]
+        assert all(e.closed for e in lookups)
+        wb = load_workbook(io.BytesIO(resp.content))
+        _, rows = _sheet(wb, "Data")
+        assert [(r["VAT_Lookup_Mode"], r["VAT_Found_Status"]) for r in rows] == [
+            ("LLM_ONLY", "LLM_GUESS:FORMAT_OK:VALID"), (None, None)]
+        assert rows[0]["VAT Registration No."] is None  # never written
+        summary_text = [str(c) for r in wb["Summary"].iter_rows(values_only=True) for c in r if c]
+        assert any("EXPERIMENT ONLY" in c for c in summary_text)
+
+    @pytest.mark.asyncio
+    async def test_file_alias_rejects_bad_uploads_like_the_file_endpoint(self, client, lookups):
+        resp = await client.post(FILE_URL.replace("/file", "/llm-only-experiment/file"),
+                                 files={"file": ("export.csv", b"x", XLSX)})
+        assert resp.status_code == 400 and lookups == []
+
+    @pytest.mark.asyncio
+    async def test_plain_file_endpoint_keeps_its_name_and_mode(self, client, lookups):
+        content = _book([["Customer", "Country/Region Key", "VAT Registration No."], ["1", "DE", None]])
+        resp = await client.post(FILE_URL, files={"file": ("export.xlsx", content, XLSX)})
+        assert resp.headers["content-disposition"] == 'attachment; filename="export_vat.xlsx"'
+        assert resp.headers["x-vat-lookup-mode"] == "none"
+
+
+class TestSideBySide:
+    @pytest.mark.asyncio
+    async def test_json_has_both_results_and_the_agreement(self, client, lookups):
+        resp = await client.post(URL + "/llm-only-experiment", json={"rows": [_MISSING_DE]})
+        body = resp.json()
+        assert body["columns"] == (VAT_COLUMNS + LOOKUP_COLUMNS + ["VAT_Found_vs_SAP"]
+                                   + COMPARE_COLUMNS + ["VAT_Grounded_vs_SAP"])
+        row = body["rows"][0]
+        assert (row["VAT_Found_Status"], row["VAT_Grounded_Status"]) == (
+            "LLM_GUESS:FORMAT_OK:VALID", "FOUND_VERIFIED")
+        assert row["VAT_LLM_vs_Grounded"] == "SAME"
+        assert body["summary"]["compare_lookup"]["agreement"] == {"SAME": 1}
+
+    @pytest.mark.asyncio
+    async def test_with_grounded_false_skips_it(self, client, lookups):
+        resp = await client.post(URL + "/llm-only-experiment?with_grounded=false",
+                                 json={"rows": [_MISSING_DE]})
+        body = resp.json()
+        assert body["columns"] == VAT_COLUMNS + LOOKUP_COLUMNS + ["VAT_Found_vs_SAP"]
+        assert "VAT_Grounded_Status" not in body["rows"][0]
+        assert [e.mode for e in lookups] == ["llm_only"]
+
+    @pytest.mark.asyncio
+    async def test_out_of_scope_rows_have_blank_comparison(self, client, lookups):
+        fr = {"Customer": "2", "Name": "Beta SA", "Country/Region Key": "FR", "VAT Registration No.": None}
+        body = (await client.post(URL + "/llm-only-experiment", json={"rows": [_MISSING_DE, fr]})).json()
+        assert body["rows"][1]["VAT_Grounded_Status"] is None
+        assert body["rows"][1]["VAT_LLM_vs_Grounded"] is None
+
+    @pytest.mark.asyncio
+    async def test_file_has_both_column_blocks(self, client, lookups):
+        content = _book([["Customer", "Name", "Country/Region Key", "VAT Registration No."],
+                         ["1", "Acme GmbH", "DE", None]])
+        resp = await client.post(FILE_URL.replace("/file", "/llm-only-experiment/file"),
+                                 files={"file": ("export.xlsx", content, XLSX)})
+        wb = load_workbook(io.BytesIO(resp.content))
+        headers, rows = _sheet(wb, "Data")
+        tail = LOOKUP_COLUMNS + ["VAT_Found_vs_SAP"] + COMPARE_COLUMNS + ["VAT_Grounded_vs_SAP"]
+        assert headers[-len(tail):] == tail
+        assert rows[0]["VAT_LLM_vs_Grounded"] == "SAME"
+        text = [str(c) for r in wb["Summary"].iter_rows(values_only=True) for c in r if c]
+        assert any(c.startswith("Side by side") for c in text)
+
+    @pytest.mark.asyncio
+    async def test_plain_endpoints_never_add_the_comparison(self, client, lookups):
+        body = (await client.post(URL + "?lookup_missing=llm_only", json={"rows": [_MISSING_DE]})).json()
+        assert "VAT_LLM_vs_Grounded" not in body["rows"][0]
+        assert [e.mode for e in lookups] == ["llm_only"]
+
+
+class TestAgreement:
+    @pytest.mark.parametrize("llm, grounded, expected", [
+        ("DE 811 128 135", "DE811128135", "SAME"),
+        ("811128135", "de811128135", "SAME"),          # prefix added, case ignored
+        ("DE129273398", "DE811128135", "DIFFERENT"),
+        ("DE811128135", None, "LLM_ONLY"),
+        (None, "DE811128135", "GROUNDED_ONLY"),
+        (None, None, "NEITHER"),
+    ])
+    def test_values(self, llm, grounded, expected):
+        from vat.lookup import agreement
+        assert agreement(llm, grounded, "DE") == expected
+
+
+
+class TestScopeAll:
+    @pytest.mark.asyncio
+    async def test_experiment_looks_up_rows_that_have_a_vat_id_and_compares_with_sap(self, client, lookups):
+        rows = [
+            {"Customer": "1", "Name": "Acme GmbH", "Country/Region Key": "DE",
+             "VAT Registration No.": "DE136695976"},                     # fake engines propose this
+            {"Customer": "2", "Name": "Beta GmbH", "Country/Region Key": "DE",
+             "VAT Registration No.": "DE811128135"},
+            {"Customer": "3", "Name": "Gamma GmbH", "Country/Region Key": "DE",
+             "VAT Registration No.": None},
+            {"Customer": "4", "Name": "Delta SA", "Country/Region Key": "FR",
+             "VAT Registration No.": "FR40303265045"},
+        ]
+        body = (await client.post(URL + "/llm-only-experiment", json={"rows": rows})).json()
+        out = body["rows"]
+        assert [r["VAT_Found_vs_SAP"] for r in out] == ["MATCHES_SAP", "DIFFERS_FROM_SAP", "SAP_BLANK", None]
+        assert [r["VAT_Grounded_vs_SAP"] for r in out] == ["MATCHES_SAP", "DIFFERS_FROM_SAP", "SAP_BLANK", None]
+        assert [r["VAT Registration No."] for r in out] == [r["VAT Registration No."] for r in rows]
+        assert body["summary"]["lookup"]["scope"] == "all"
+        assert body["summary"]["lookup"]["rows_in_scope"] == 3       # every DE row
+        assert sum(e.calls for e in lookups if e.mode == "llm_only") == 3
+
+    @pytest.mark.asyncio
+    async def test_experiment_scope_missing_keeps_the_old_behaviour(self, client, lookups):
+        rows = [{"Customer": "1", "Name": "Acme GmbH", "Country/Region Key": "DE",
+                 "VAT Registration No.": "DE136695976"}]
+        body = (await client.post(URL + "/llm-only-experiment?scope=missing", json={"rows": rows})).json()
+        assert body["rows"][0]["VAT_Found_Status"] is None
+        assert "VAT_Found_vs_SAP" not in body["rows"][0]
+
+    @pytest.mark.asyncio
+    async def test_plain_endpoint_defaults_to_missing(self, client, lookups):
+        rows = [{"Customer": "1", "Name": "Acme GmbH", "Country/Region Key": "DE",
+                 "VAT Registration No.": "DE136695976"}]
+        body = (await client.post(URL + "?lookup_missing=grounded", json={"rows": rows})).json()
+        assert body["rows"][0]["VAT_Found_Status"] is None
+        assert body["summary"]["lookup"]["scope"] == "missing"
+
+    @pytest.mark.asyncio
+    async def test_file_experiment_compares_with_sap(self, client, lookups):
+        content = _book([["Customer", "Name", "Country/Region Key", "VAT Registration No."],
+                         ["1", "Acme GmbH", "DE", "DE136695976"], ["2", "Beta GmbH", "DE", None]])
+        resp = await client.post(FILE_URL.replace("/file", "/llm-only-experiment/file"),
+                                 files={"file": ("export.xlsx", content, XLSX)})
+        wb = load_workbook(io.BytesIO(resp.content))
+        _, out = _sheet(wb, "Data")
+        assert [r["VAT_Found_vs_SAP"] for r in out] == ["MATCHES_SAP", "SAP_BLANK"]
+        text = [str(c) for r in wb["Summary"].iter_rows(values_only=True) for c in r if c]
+        assert any("every DE row" in c for c in text)
+        assert any(c.startswith("VAT_Found_vs_SAP") for c in text)
+
+    @pytest.mark.parametrize("proposal, sap, expected", [
+        ("DE 136 695 976", "DE136695976", "MATCHES_SAP"),
+        ("DE811128135", "DE136695976", "DIFFERS_FROM_SAP"),
+        (None, "DE136695976", "NO_PROPOSAL"),
+        ("DE136695976", None, "SAP_BLANK"),
+    ])
+    def test_vs_sap(self, proposal, sap, expected):
+        from vat.lookup import vs_sap
+        assert vs_sap(proposal, sap, "DE") == expected
