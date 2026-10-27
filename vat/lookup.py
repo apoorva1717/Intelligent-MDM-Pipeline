@@ -13,7 +13,12 @@ Two modes, built to be compared on the same file:
   LLM reads the fetched text, deterministic gates, VIES.
 * ``llm_only`` (``vat/lookup_llm_only.py``) — an **experiment** that asks the
   model from memory, to measure how unreliable that is. Never a production
-  path.
+  path, and not reachable from the VAT endpoints.
+* ``llm_web`` (``vat/lookup_web.py``) — the model searches the web with high
+  reasoning effort, the way ChatGPT / Claude do, and reports the page it read
+  the number on; the code fetches that page itself and holds the answer to
+  the grounded mode's gates. Never from memory. The endpoints run it for
+  ``llm_only`` too.
 """
 
 from __future__ import annotations
@@ -29,10 +34,12 @@ from vat.normalize import MISSING, VatFormat
 NONE = "none"
 GROUNDED = "grounded"
 LLM_ONLY = "llm_only"
-MODES = (NONE, GROUNDED, LLM_ONLY)
+#: The model searches the web (``vat/lookup_web.py``); never from memory.
+LLM_WEB = "llm_web"
+MODES = (NONE, GROUNDED, LLM_ONLY, LLM_WEB)
 
-#: Mode-A/B labels in VAT_Lookup_Mode.
-MODE_LABELS = {GROUNDED: "GROUNDED", LLM_ONLY: "LLM_ONLY"}
+#: Labels in VAT_Lookup_Mode.
+MODE_LABELS = {GROUNDED: "GROUNDED", LLM_ONLY: "LLM_ONLY", LLM_WEB: "LLM_WEB"}
 
 #: Appended after the VAT_* columns, only when a lookup mode is on.
 LOOKUP_COLUMNS: list[str] = [
@@ -44,6 +51,7 @@ LOOKUP_COLUMNS: list[str] = [
     "VAT_Found_Evidence",
     "VAT_Found_Date",
     "VAT_Found_Flags",
+    "VAT_Found_Tier",
 ]
 
 # ── VAT_Found_Status ─────────────────────────────────────────────────────────
@@ -59,6 +67,16 @@ NOT_FOUND = "NOT_FOUND"
 LOOKUP_INCOMPLETE = "LOOKUP_INCOMPLETE"
 #: The lookup was not run for this row (e.g. no SERPAPI_KEY for Mode A).
 NOT_RUN = "NOT_RUN"
+
+# ── VAT_Found_Tier / VAT_Grounded_Tier (grounded only) ──────────────────────
+#: Name and address both tie the ID to this customer.
+TIER_PROPOSED = "PROPOSED"
+#: One of the two ties is weaker (a partial name with a matching address, or
+#: a matching name on a page that states no address).
+TIER_LIKELY = "LIKELY"
+#: A candidate was read, but nothing ties it to this customer well enough.
+TIER_REVIEW = "REVIEW"
+TIERS = (TIER_PROPOSED, TIER_LIKELY, TIER_REVIEW)
 
 #: Country/Region Keys in scope.
 SCOPE_COUNTRIES = frozenset({"DE"})
@@ -97,6 +115,8 @@ class FoundResult:
     evidence: str | None = None
     date: str | None = None
     flags: tuple[str, ...] = field(default_factory=tuple)
+    #: Grounded only: TIER_PROPOSED / _LIKELY / _REVIEW; None without a candidate.
+    tier: str | None = None
 
     def columns(self) -> dict[str, Any]:
         return {
@@ -108,6 +128,7 @@ class FoundResult:
             "VAT_Found_Evidence": self.evidence,
             "VAT_Found_Date": self.date,
             "VAT_Found_Flags": "; ".join(self.flags) or None,
+            "VAT_Found_Tier": self.tier,
         }
 
 
@@ -126,6 +147,7 @@ GROUNDED_COMPARE_COLUMNS: list[str] = [
     "VAT_Grounded_Evidence",
     "VAT_Grounded_Date",
     "VAT_Grounded_Flags",
+    "VAT_Grounded_Tier",
 ]
 AGREEMENT_COLUMN = "VAT_LLM_vs_Grounded"
 COMPARE_COLUMNS: list[str] = GROUNDED_COMPARE_COLUMNS + [AGREEMENT_COLUMN]
@@ -149,6 +171,7 @@ def grounded_compare_columns(result: "FoundResult | None") -> dict[str, Any]:
         "VAT_Grounded_Evidence": result.evidence,
         "VAT_Grounded_Date": result.date,
         "VAT_Grounded_Flags": "; ".join(result.flags) or None,
+        "VAT_Grounded_Tier": result.tier,
     }
 
 

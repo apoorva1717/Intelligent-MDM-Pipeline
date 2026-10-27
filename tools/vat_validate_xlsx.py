@@ -22,11 +22,13 @@ The input file is never modified. Run on a file this tool already wrote, the
 ``--frozen`` sets CACHE_FROZEN: no VIES call is made, a number with no
 recording is SERVICE_UNAVAILABLE / FROZEN_CACHE_MISS.
 
-``--lookup-missing {none,grounded,llm_only}`` (default ``none``, unchanged
-behaviour) proposes VAT IDs for rows with an empty VAT Registration No. and
-Country/Region Key DE in the ``VAT_Found_*`` columns — proposals only, the VAT
-column is never written. ``llm_only`` is an **experiment**, not for production
-use (``vat/lookup_llm_only.py``).
+``--lookup-missing {none,grounded,llm_web,llm_only}`` (default ``none``,
+unchanged behaviour) proposes VAT IDs for rows with an empty VAT Registration
+No. and Country/Region Key DE in the ``VAT_Found_*`` columns — proposals only,
+the VAT column is never written. ``llm_web`` has the model search the web and
+checks the page it cites (``vat/lookup_web.py``). ``llm_only`` asks the model
+from memory: an **experiment**, not for production use
+(``vat/lookup_llm_only.py``).
 """
 
 from __future__ import annotations
@@ -69,9 +71,9 @@ def main() -> int:
                     help="Force CACHE_FROZEN=true — replay recorded VIES answers only.")
     ap.add_argument("--cache-dir", default=None,
                     help="Override EVIDENCE_CACHE_DIR (VIES answers go in <dir>/vies/).")
-    ap.add_argument("--lookup-missing", choices=("none", "grounded", "llm_only"), default="none",
-                    help="Propose VAT IDs for rows with no VAT ID and key DE (llm_only is an "
-                         "experiment, not for production use).")
+    ap.add_argument("--lookup-missing", choices=("none", "grounded", "llm_web", "llm_only"), default="none",
+                    help="Propose VAT IDs for rows with no VAT ID and key DE (llm_web: web "
+                         "search; llm_only: from memory, an experiment, not for production use).")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")

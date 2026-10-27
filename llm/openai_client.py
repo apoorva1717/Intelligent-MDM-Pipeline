@@ -9,8 +9,12 @@ The provider is chosen by :func:`config.llm_provider`:
 * **OpenAI direct** otherwise, when ``OPENAI_API_KEY`` is set. The model is
   ``OPENAI_MODEL`` (dedup: ``OPENAI_MODEL_DEDUP``); ``OPENAI_BASE_URL``
   optionally overrides the API URL.
+* **Anthropic** when neither is set and ``ANTHROPIC_API_KEY`` is. The model is
+  ``ANTHROPIC_MODEL``. :func:`get_openai_client` then returns an
+  ``AsyncAnthropic`` and :func:`call_openai` hands the call to
+  ``llm/anthropic_client.py``, so callers do not change.
 
-Both get the same TLS handling, timeouts and request parameters.
+Azure and OpenAI get the same TLS handling, timeouts and request parameters.
 """
 
 from __future__ import annotations
@@ -27,7 +31,7 @@ import certifi
 import httpx
 from openai import AsyncAzureOpenAI, AsyncOpenAI
 
-from config import AZURE, OPENAI, llm_model, llm_provider
+from config import ANTHROPIC, AZURE, OPENAI, llm_model, llm_provider
 
 from utils.cache import active_evidence_cache, llm_disk_key, note_network_call
 
@@ -240,12 +244,17 @@ def resolve_tls_verify() -> "ssl.SSLContext | bool":
 #: their real API version, so existing Azure recordings still replay, and an
 #: answer from one provider is never served as the other's.
 OPENAI_CACHE_API_VERSION = "openai-direct"
+#: The same, for Anthropic: no API version, and never mistaken for either.
+ANTHROPIC_CACHE_API_VERSION = "anthropic"
 
 
 def llm_cache_api_version(api_version: str | None = None) -> str:
     """The api-version recorded in an LLM cache key for the active provider."""
-    if llm_provider() == OPENAI:
+    provider = llm_provider()
+    if provider == OPENAI:
         return OPENAI_CACHE_API_VERSION
+    if provider == ANTHROPIC:
+        return ANTHROPIC_CACHE_API_VERSION
     return api_version or os.getenv("AZURE_OPENAI_API_VERSION") or DEFAULT_AZURE_OPENAI_API_VERSION
 
 
@@ -268,15 +277,22 @@ def get_openai_client(api_version: str | None = None) -> "AsyncAzureOpenAI | Asy
     the historical version; the dedup adjudicator passes a newer version that
     supports ``reasoning_effort``. OpenAI direct has no API version and
     ignores it.
+
+    With the Anthropic provider this returns an ``AsyncAnthropic`` (see the
+    module docstring); every caller only stores it, passes it back to
+    :func:`call_openai` and closes it.
     """
     provider = llm_provider()
     if provider is None:
         raise RuntimeError(
             "No LLM provider configured: set AZURE_OPENAI_API_KEY and "
-            "AZURE_OPENAI_ENDPOINT (Azure OpenAI), or OPENAI_API_KEY (OpenAI "
-            "direct). Copy .env.example to .env and add your values, "
-            "then restart the server."
+            "AZURE_OPENAI_ENDPOINT (Azure OpenAI), OPENAI_API_KEY (OpenAI "
+            "direct) or ANTHROPIC_API_KEY (Anthropic). Copy .env.example to "
+            ".env and add your values, then restart the server."
         )
+    if provider == ANTHROPIC:
+        from llm.anthropic_client import get_anthropic_client
+        return get_anthropic_client()
     # Connect timeout is generous because a VPN tunnel can add real latency
     # to the initial handshake; override via LLM_HTTP_CONNECT_TIMEOUT if needed.
     connect_timeout = float(os.getenv("LLM_HTTP_CONNECT_TIMEOUT", "30"))
@@ -310,7 +326,7 @@ async def call_openai(
     max_tokens: int = 500,
     client: AsyncAzureOpenAI | None = None,
     *,
-    temperature: float = LLM_TEMPERATURE,
+    temperature: float | None = LLM_TEMPERATURE,
 ) -> str:
     """Call OpenAI with structured JSON output enforced.
 
@@ -324,6 +340,9 @@ async def call_openai(
     ``top_p=1`` and a fixed ``seed``. If the deployment rejects ``seed`` the
     parameter is dropped **once, process-wide**, logged, and the call is
     retried without it — every later call goes straight out without it.
+    ``temperature=None`` omits the parameter (the model's default); only the
+    VAT lookups pass it, for models that reject temperature 0
+    (``vat/llm_cache.py``).
 
     Raises RuntimeError on failure so the orchestrator can log and
     escalate to the next tier cleanly.
@@ -333,6 +352,21 @@ async def call_openai(
     if own_client:
         client = get_openai_client()
 
+    if llm_provider() == ANTHROPIC:
+        # temperature / top_p / seed do not apply (llm/anthropic_client.py).
+        from llm import anthropic_client
+        try:
+            return (await anthropic_client.complete(
+                client, system_prompt, user_prompt, max_tokens)).text
+        except Exception as e:
+            raise RuntimeError(f"Anthropic call failed: {str(e)}") from e
+        finally:
+            if own_client:
+                try:
+                    await client.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
     def _params(with_seed: bool) -> dict[str, Any]:
         params: dict[str, Any] = {
             "model": llm_model(),  # Azure deployment or OpenAI model
@@ -341,10 +375,11 @@ async def call_openai(
                 {"role": "user", "content": user_prompt},
             ],
             "max_completion_tokens": max_tokens,
-            "temperature": temperature,
             "top_p": LLM_TOP_P,
             "response_format": {"type": "json_object"},
         }
+        if temperature is not None:
+            params["temperature"] = temperature
         if with_seed:
             params["seed"] = LLM_SEED
         return params

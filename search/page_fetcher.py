@@ -134,10 +134,14 @@ class PageFetcher:
         timeout: int = 10,
         max_chars: int = 1500,
         store: "DiskCache | None" = None,
+        remove_tags: "frozenset[str] | set[str]" = frozenset(REMOVE_TAGS),
     ) -> None:
         self._timeout = timeout
         self._max_chars = max_chars
         self._store = store
+        #: Tags deleted before `body_text` is taken. Enrichment keeps the
+        #: default; the VAT lookups keep `<header>` (vat/lookup_grounded.py).
+        self._remove_tags = set(remove_tags)
 
     # -- the cache seam ------------------------------------------------------
 
@@ -473,7 +477,7 @@ class PageFetcher:
             footer_text = "…" + footer_text[-(_FOOTER_MAX_CHARS - 1):]
 
         # Remove non-content elements and extract body text
-        for tag in soup.find_all(REMOVE_TAGS):
+        for tag in soup.find_all(self._remove_tags):
             tag.decompose()
         body_text = soup.get_text(separator=" ")
         body_text = re.sub(r"\s+", " ", body_text).strip()

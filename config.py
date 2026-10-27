@@ -97,24 +97,36 @@ def _cache_dir(override_var: str, subdir: str) -> str:
 #     AZURE_OPENAI_API_VERSION, the same cache keys.
 #   * OpenAI direct (api.openai.com) — otherwise, when OPENAI_API_KEY is set.
 #     The model is OPENAI_MODEL; OPENAI_BASE_URL optionally overrides the URL.
-# Azure wins whenever both are configured.
+#   * Anthropic (Claude) — only when neither of the above is configured and
+#     ANTHROPIC_API_KEY is set. The model is ANTHROPIC_MODEL (dedup too, unless
+#     ANTHROPIC_MODEL_DEDUP is set); see llm/anthropic_client.py.
+# Azure wins whenever more than one is configured, then OpenAI direct.
 AZURE = "azure"
 OPENAI = "openai"
+ANTHROPIC = "anthropic"
+DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5"
 
 
 def llm_provider() -> str | None:
-    """``"azure"``, ``"openai"`` or None (nothing configured)."""
+    """``"azure"``, ``"openai"``, ``"anthropic"`` or None (nothing configured)."""
     if os.getenv("AZURE_OPENAI_API_KEY", "").strip() and os.getenv("AZURE_OPENAI_ENDPOINT", "").strip():
         return AZURE
     if os.getenv("OPENAI_API_KEY", "").strip():
         return OPENAI
+    if os.getenv("ANTHROPIC_API_KEY", "").strip():
+        return ANTHROPIC
     return None
 
 
 def llm_model(purpose: str = "default") -> str:
-    """The model to call: the Azure *deployment* name, or the OpenAI *model*
-    name. ``purpose="dedup"`` honours the dedup-specific overrides."""
-    if llm_provider() == OPENAI:
+    """The model to call: the Azure *deployment* name, or the OpenAI / Anthropic
+    *model* name. ``purpose="dedup"`` honours the dedup-specific overrides."""
+    provider = llm_provider()
+    if provider == ANTHROPIC:
+        if purpose == "dedup" and os.getenv("ANTHROPIC_MODEL_DEDUP", "").strip():
+            return os.environ["ANTHROPIC_MODEL_DEDUP"].strip()
+        return os.getenv("ANTHROPIC_MODEL", "").strip() or DEFAULT_ANTHROPIC_MODEL
+    if provider == OPENAI:
         if purpose == "dedup" and os.getenv("OPENAI_MODEL_DEDUP"):
             return os.environ["OPENAI_MODEL_DEDUP"]
         return os.getenv("OPENAI_MODEL") or "gpt-5.4"
@@ -136,6 +148,8 @@ OPTIONAL_VARS_WITH_DEFAULTS = {
     # OpenAI direct — used only when Azure is not configured (see llm_provider).
     "OPENAI_MODEL": "gpt-5.4",
     "OPENAI_BASE_URL": "",
+    # Anthropic — used only when neither Azure nor OpenAI is configured.
+    "ANTHROPIC_MODEL": DEFAULT_ANTHROPIC_MODEL,
     "ROR_API_BASE": "https://api.ror.org/v2/organizations",
     "ROR_CONFIDENCE_THRESHOLD": "0.8",
     "LEI_LOOKUP_ENABLED": "true",
@@ -231,8 +245,9 @@ def validate_env() -> None:
     if provider is None:
         logger.warning(
             "No LLM provider configured: set AZURE_OPENAI_API_KEY + "
-            "AZURE_OPENAI_ENDPOINT (Azure OpenAI), or OPENAI_API_KEY (OpenAI "
-            "direct). LLM calls will fail until one is set. Copy .env.example "
+            "AZURE_OPENAI_ENDPOINT (Azure OpenAI), OPENAI_API_KEY (OpenAI "
+            "direct) or ANTHROPIC_API_KEY (Anthropic). LLM calls will fail "
+            "until one is set. Copy .env.example "
             "to .env and fill in values."
         )
     else:
@@ -255,13 +270,14 @@ def validate_env() -> None:
 class Settings:
     """Immutable snapshot of all configuration values."""
 
-    # LLM — Azure OpenAI when configured, otherwise OpenAI direct (llm_provider).
-    openai_api_key: str = field(default_factory=lambda: (
-        os.getenv("AZURE_OPENAI_API_KEY", "") if llm_provider() == AZURE
-        else os.getenv("OPENAI_API_KEY", "")
-    ))
+    # LLM — Azure OpenAI when configured, otherwise OpenAI direct, otherwise
+    # Anthropic (llm_provider). The field names predate the other providers.
+    openai_api_key: str = field(default_factory=lambda: {
+        AZURE: os.getenv("AZURE_OPENAI_API_KEY", ""),
+        ANTHROPIC: os.getenv("ANTHROPIC_API_KEY", ""),
+    }.get(llm_provider(), os.getenv("OPENAI_API_KEY", "")))
     azure_openai_endpoint: str = field(default_factory=lambda: os.getenv("AZURE_OPENAI_ENDPOINT", ""))
-    #: The Azure deployment or the OpenAI model, whichever provider is in use.
+    #: The Azure deployment or the OpenAI / Anthropic model, whichever is in use.
     openai_model: str = field(default_factory=llm_model)
 
     # Search

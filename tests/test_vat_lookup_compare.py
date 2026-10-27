@@ -26,14 +26,14 @@ FIXTURE = Path(__file__).parent / "fixtures" / "vat" / "VAT_TEST_EXPORT_30.xlsx"
 
 # Rows 2–7: Google DE (2), Siemens (3), Bosch x2 (4, 5), Zalando (6), BASF (7).
 A_ANSWERS = {
-    "99000001": FoundResult("grounded", "FOUND_VERIFIED", value="DE811569869",
+    "99000001": FoundResult("grounded", "FOUND_VERIFIED", value="DE811569869", tier="PROPOSED",
                             flags=("ATTRIBUTION_MATCH", "CANDIDATE:DE811569869|Google Germany GmbH|google.de|FOUND_VERIFIED")),
-    "99000002": FoundResult("grounded", "FOUND_UNVERIFIED", value="DE129274235",  # another Siemens? fake
+    "99000002": FoundResult("grounded", "FOUND_UNVERIFIED", value="DE129274235", tier="LIKELY",  # fake
                             flags=("ATTRIBUTION_PARTIAL", "CANDIDATE:a", "CANDIDATE:b")),
-    "99000003": FoundResult("grounded", "FOUND_VERIFIED", value="DE129274235",    # verified but wrong
+    "99000003": FoundResult("grounded", "FOUND_VERIFIED", value="DE129274235", tier="REVIEW",  # wrong
                             flags=("ATTRIBUTION_MATCH",)),
     "99000004": FoundResult("grounded", "NOT_FOUND", flags=("NO_IMPRESSUM_PAGE",)),
-    "99000005": FoundResult("grounded", "FOUND_UNVERIFIED", value="DE149145248",  # bad checksum
+    "99000005": FoundResult("grounded", "FOUND_UNVERIFIED", value="DE149145248", tier="REVIEW",  # bad checksum
                             flags=("FORMAT_ERROR",)),
 }
 B_ANSWERS = {
@@ -143,3 +143,137 @@ class TestWorkbook:
     def test_parse_rows(self):
         assert compare_tool.parse_rows("2-4,9") == {2, 3, 4, 9}
         assert compare_tool.parse_rows(None) == set()
+
+
+class TestProposals:
+    @pytest.mark.parametrize("status,flags,expected", [
+        ("FOUND_VERIFIED", "ATTRIBUTION_MATCH", True),
+        ("FOUND_UNVERIFIED:VIES_SERVICE_UNAVAILABLE", "ATTRIBUTION_QUALIFIER; VIES:MS_UNAVAILABLE", True),
+        ("FOUND_UNVERIFIED", "ATTRIBUTION_MISMATCH; CANDIDATE:x|y|z|FOUND_UNVERIFIED:ATTRIBUTION_MISMATCH", False),
+        ("FOUND_UNVERIFIED", "ATTRIBUTION_PARTIAL", False),
+        ("FOUND_UNVERIFIED", "DIRECTORY_DOMAIN; ATTRIBUTION_MATCH", False),  # a gate after attribution failed
+        ("FOUND_VERIFIED", "CANDIDATE:x|y|z|FOUND_VERIFIED", False),  # no verdict of its own
+        ("NOT_FOUND", "NO_IMPRESSUM_PAGE", False),
+        ("LOOKUP_INCOMPLETE", "PAGE_UNAVAILABLE:403", False),
+        (None, None, False),
+    ])
+    def test_is_proposal(self, status, flags, expected):
+        assert compare_tool.is_proposal(status, flags) is expected
+
+    @pytest.mark.asyncio
+    async def test_totals_split_proposals_from_any_value(self, report):
+        _, result, _ = report
+        a = result["totals"]["grounded"]
+        # 99000001 verified MATCH, right; 99000003 verified MATCH, wrong; the rest no proposal.
+        assert (a["proposed"], a["proposed_correct"], a["proposed_wrong"], a["no_proposal"]) == (2, 1, 1, 3)
+        assert (a["precision"], a["recall"]) == (0.5, 0.2)
+        assert (a["any_value"], a["CORRECT"]) == (4, 1)  # old metric, kept
+
+    @pytest.mark.asyncio
+    async def test_sheet_has_proposal_block(self, report):
+        wb, _, _ = report
+        labels = [r[0] for r in wb["Comparison"].iter_rows(values_only=True) if r and r[0]]
+        for label in ("Proposed", "No proposal", "Precision (Correct / Proposed)",
+                      "Old metric: any value returned (gate passed or not)"):
+            assert label in labels
+
+
+class TestScoreExisting:
+    @staticmethod
+    def _workbook():
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Data"
+        ws.append(["Customer", "Name", "Country/Region Key", "City", "VAT Actual", "VAT Registration No.",
+                   "VAT_Lookup_Mode", "VAT_Found_Value", "VAT_Found_Status", "VAT_Found_Flags",
+                   "VAT_Found_Evidence", "VAT_Grounded_Value", "VAT_Grounded_Status", "VAT_Grounded_Flags"])
+        ws.append(["1", "Google Germany GmbH", "DE", "HAMBURG", "DE 811569869", None, "LLM_ONLY",
+                   "DE811569869", "LLM_GUESS:FORMAT_OK:VALID", None, "high",
+                   "DE811569869", "FOUND_UNVERIFIED:VIES_SERVICE_UNAVAILABLE", "ATTRIBUTION_MATCH"])
+        ws.append(["2", "ACL GmbH", "DE", "ROTTENBURG", "DE210202605", None, "LLM_ONLY",
+                   None, "LLM_GUESS:MISSING:NOT_CHECKED", None, None,
+                   "DE191570067", "FOUND_UNVERIFIED:VIES_SERVICE_UNAVAILABLE", "ATTRIBUTION_MATCH"])
+        ws.append(["3", "Siemens AG", "DE", "MUENCHEN", "DE129274202", None, "LLM_ONLY",
+                   None, "LLM_GUESS:MISSING:NOT_CHECKED", None, None,
+                   "DE811569869", "FOUND_UNVERIFIED", "ATTRIBUTION_MISMATCH"])
+        ws.append(["4", "Nobody GmbH", "DE", "BERLIN", None, None, "LLM_ONLY",
+                   None, "LLM_GUESS:MISSING:NOT_CHECKED", None, None,
+                   None, "LOOKUP_INCOMPLETE", "PAGE_UNAVAILABLE:403"])
+        return wb
+
+    @pytest.mark.asyncio
+    async def test_scores_grounded_columns_without_lookups(self):
+        wb = self._workbook()
+        result = await compare_tool.score_results(wb)
+        a, b = result["totals"]["grounded"], result["totals"]["llm_only"]
+        assert a["customers"] == 3  # customer 4 has no SAP VAT ID
+        assert (a["proposed"], a["proposed_correct"], a["proposed_wrong"], a["no_proposal"]) == (2, 1, 1, 1)
+        assert (a["any_value"], a["CORRECT"]) == (3, 1)
+        assert (b["CORRECT"], b["NULL"]) == (1, 2)
+        assert result["costs"]["scored"]["vies_checks"] == 0
+        assert {"Comparison", "Mode A rows", "Mode B rows"} <= set(wb.sheetnames)
+
+    @pytest.mark.asyncio
+    async def test_missing_truth_column_is_an_error(self):
+        with pytest.raises(ValueError, match="No column"):
+            await compare_tool.score_results(self._workbook(), truth_column="SAP VAT")
+
+
+class TestTiers:
+    @pytest.mark.asyncio
+    async def test_per_tier_and_cumulative(self, report):
+        _, result, _ = report
+        tiers = result["totals"]["grounded"]["tiers"]
+        # Customers with truth: 99000001 PROPOSED right, 99000002 LIKELY wrong,
+        # 99000003 REVIEW wrong, 99000004 none, 99000005 REVIEW wrong.
+        assert tiers["PROPOSED"] == {"n": 1, "correct": 1, "wrong": 0, "precision": 1.0, "recall": 0.2}
+        assert tiers["LIKELY"] == {"n": 1, "correct": 0, "wrong": 1, "precision": 0.0, "recall": 0.0}
+        assert (tiers["REVIEW"]["n"], tiers["REVIEW"]["correct"]) == (2, 0)
+        assert tiers["PROPOSED + LIKELY"] == {"n": 2, "correct": 1, "wrong": 1, "precision": 0.5,
+                                              "recall": 0.2}
+
+    @pytest.mark.asyncio
+    async def test_files_without_tiers_have_no_tier_block(self):
+        result = await compare_tool.score_results(TestScoreExisting._workbook())
+        assert result["totals"]["grounded"]["tiers"] is None
+
+    @pytest.mark.asyncio
+    async def test_score_existing_reads_the_grounded_tier(self):
+        wb = TestScoreExisting._workbook()
+        ws = wb["Data"]
+        ws.cell(1, ws.max_column + 1, "VAT_Grounded_Tier")
+        for row, tier in zip(range(2, 6), ("PROPOSED", "REVIEW", "REVIEW", None)):
+            ws.cell(row, ws.max_column, tier)
+        tiers = (await compare_tool.score_results(wb))["totals"]["grounded"]["tiers"]
+        assert (tiers["PROPOSED"]["n"], tiers["PROPOSED"]["correct"], tiers["REVIEW"]["n"]) == (1, 1, 2)
+
+
+class TestLlmWeb:
+    @pytest.mark.asyncio
+    async def test_side_by_side_file_scores_both_tiered_modes(self):
+        wb = TestScoreExisting._workbook()
+        ws = wb["Data"]
+        header = [c.value for c in ws[1]]
+        mode_col = header.index("VAT_Lookup_Mode") + 1
+        for row in range(2, 6):
+            ws.cell(row, mode_col, "LLM_WEB")
+        ws.cell(1, ws.max_column + 1, "VAT_Found_Tier")
+        found_tier = ws.max_column
+        ws.cell(1, found_tier + 1, "VAT_Grounded_Tier")
+        for row, (w, g) in zip(range(2, 6), (("PROPOSED", "PROPOSED"), (None, "REVIEW"),
+                                            (None, "REVIEW"), (None, None))):
+            ws.cell(row, found_tier, w)
+            ws.cell(row, found_tier + 1, g)
+        # Mode W's row 2 is a verified, attributed proposal of the right number.
+        ws.cell(2, header.index("VAT_Found_Status") + 1, "FOUND_VERIFIED")
+        ws.cell(2, header.index("VAT_Found_Flags") + 1, "ATTRIBUTION_MATCH; LLM_WEB_SEARCH")
+        result = await compare_tool.score_results(wb)
+        assert set(result["totals"]) == {"grounded", "llm_web"}
+        w = result["totals"]["llm_web"]
+        assert (w["tiers"]["PROPOSED"]["n"], w["tiers"]["PROPOSED"]["correct"]) == (1, 1)
+        assert w["proposed"] == 1 and result["confidence"] == {}
+        assert "Mode W rows" in wb.sheetnames
+        header_row = next(r for r in wb["Comparison"].iter_rows(values_only=True) if r[0] == "Sheet row")
+        assert "W tier" in header_row and "A tier" in header_row

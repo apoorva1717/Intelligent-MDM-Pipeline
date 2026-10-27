@@ -5,15 +5,23 @@
   with the ``VAT_*`` columns and a ``Summary`` sheet (``vat/xlsx.py``, the same
   code ``tools/vat_validate_xlsx.py`` runs).
 * ``POST /api/validate/vat/llm-only-experiment`` — the JSON endpoint with
-  ``lookup_missing=llm_only``, so both lookup modes are easy to call side by
-  side. **Experiment only**: never a production path, never written to SAP.
+  the LLM lookup, so both lookup modes are easy to call side by side.
+  Proposals only, never written to SAP.
 * ``POST /api/validate/vat/llm-only-experiment/file`` — the same for an XLSX
-  upload (the file endpoint with ``lookup_missing=llm_only``). Experiment only.
+  upload, but VIES is never called: every VIES status is NOT_CHECKED.
 
-``lookup_missing`` (``none`` | ``grounded`` | ``llm_only``; default ``none``)
-proposes VAT IDs for rows whose VAT Registration No. is empty and whose
-Country/Region Key is DE, in the ``VAT_Found_*`` columns (``vat/lookup.py``).
-``none`` is the behaviour from before the lookups existed, unchanged.
+``lookup_missing`` (``none`` | ``grounded`` | ``llm_web`` | ``llm_only``;
+default ``none``) proposes VAT IDs for rows whose VAT Registration No. is
+empty and whose Country/Region Key is DE, in the ``VAT_Found_*`` columns
+(``vat/lookup.py``). ``none`` is the behaviour from before the lookups
+existed, unchanged.
+
+**The VAT endpoints never answer from memory.** The LLM lookup here is
+``llm_web`` (``vat/lookup_web.py``): the model searches the web with high
+reasoning effort and the code checks the page it cites. ``llm_only`` is
+accepted for compatibility and runs ``llm_web``; the memory-recall experiment
+(``vat/lookup_llm_only.py``) is reachable only offline
+(``tools/vat_lookup_compare.py``).
 
 Standalone: not called by ``/enrich``, ADF or DATAshaper, and nothing it
 returns is read by enrichment, issues, dedup or scoring. Like every other
@@ -24,7 +32,7 @@ from __future__ import annotations
 
 import io
 import logging
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -41,7 +49,14 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-LookupMode = Literal["none", "grounded", "llm_only"]
+LookupMode = Literal["none", "grounded", "llm_web", "llm_only"]
+
+#: The endpoints never answer from memory: ``llm_only`` runs ``llm_web``.
+_ENDPOINT_MODES = {"llm_only": "llm_web"}
+
+
+def _endpoint_mode(mode: str | None) -> str | None:
+    return _ENDPOINT_MODES.get(mode, mode) if mode else mode
 LookupScope = Literal["missing", "all"]
 
 #: Plain endpoints: look up only rows with no VAT ID (production behaviour).
@@ -65,7 +80,7 @@ class VatValidationRequest(BaseModel):
 
     rows: list[dict[str, Any]] = Field(..., min_length=1)
     #: Propose VAT IDs for rows with an empty VAT Registration No. and key DE.
-    #: ``llm_only`` is an experiment, never a production path.
+    #: ``llm_only`` runs ``llm_web`` (web search; never from memory).
     lookup_missing: LookupMode = "none"
 
 
@@ -105,6 +120,7 @@ async def _validate_json(
     scope: str = "missing",
 ) -> VatValidationResponse:
     client = _client_or_500()
+    mode = _endpoint_mode(mode)
     lookup = _get_lookup(mode, client)
     compare = _get_lookup(compare_mode, client) if (lookup is not None and compare_mode) else None
     logger.info("VAT validation request received: %d rows, lookup_missing=%s, compare=%s",
@@ -123,7 +139,7 @@ async def _validate_json(
 @router.post("/api/validate/vat", response_model=VatValidationResponse)
 async def validate_vat(
     request: VatValidationRequest,
-    lookup_missing: LookupMode | None = Query(
+    lookup_missing: Optional[LookupMode] = Query(
         default=None,
         description="Overrides the body's lookup_missing. Default none: unchanged behaviour.",
     ),
@@ -150,16 +166,16 @@ async def validate_vat_llm_only_experiment(
     request: VatValidationRequest, with_grounded: bool = _WITH_GROUNDED,
     scope: LookupScope = _SCOPE_ALL_DEFAULT,
 ) -> VatValidationResponse:
-    """**EXPERIMENT ONLY — not for production use; results are not to be
-    written to SAP.** The same as ``/api/validate/vat`` with
-    ``lookup_missing=llm_only``: the model is asked for missing VAT IDs from
-    memory, to measure how unreliable that is (``vat/lookup_llm_only.py``).
+    """Proposals only — not to be written to SAP. The same as
+    ``/api/validate/vat`` with ``lookup_missing=llm_web``: the model searches
+    the web for missing VAT IDs (never from memory) and the code checks the
+    page it cites (``vat/lookup_web.py``).
 
     With ``with_grounded`` (default on) the grounded lookup runs on the same
     rows and its result is added next to it (``VAT_Grounded_*``,
     ``VAT_LLM_vs_Grounded``), so the two can be compared in one response."""
     return await _validate_json(
-        request.rows, "llm_only", "grounded" if with_grounded else None, scope=scope,
+        request.rows, "llm_web", "grounded" if with_grounded else None, scope=scope,
     )
 
 
@@ -189,22 +205,26 @@ async def validate_vat_file_llm_only_experiment(
     with_grounded: bool = _WITH_GROUNDED,
     scope: LookupScope = _SCOPE_ALL_DEFAULT,
 ) -> StreamingResponse:
-    """**EXPERIMENT ONLY — not for production use; results are not to be
-    written to SAP.** The same as ``/api/validate/vat/file`` with
-    ``lookup_missing=llm_only``: the model is asked for missing VAT IDs from
-    memory, to measure how unreliable that is (``vat/lookup_llm_only.py``).
-    The returned file is named ``<name>_vat_llm_only_experiment.xlsx`` so it
-    cannot be mistaken for a production result. With ``with_grounded``
-    (default on) the grounded lookup's result is added next to it."""
+    """Proposals only — not to be written to SAP. The same as
+    ``/api/validate/vat/file`` with ``lookup_missing=llm_web``: the model
+    searches the web for missing VAT IDs (never from memory) and the code
+    checks the page it cites (``vat/lookup_web.py``). The returned file is
+    named ``<name>_vat_llm_web.xlsx``. With ``with_grounded`` (default on) the
+    grounded lookup's result is added next to it.
+
+    VIES is not called on this endpoint — not for the SAP VAT IDs, the LLM
+    lookup's candidates or the grounded ones. Every VIES status is
+    NOT_CHECKED, so a hit that passes its gates is
+    ``FOUND_UNVERIFIED:VIES_NOT_CHECKED``."""
     return await _validate_upload(
-        file, "llm_only", out_suffix="_vat_llm_only_experiment",
-        compare_mode="grounded" if with_grounded else None, scope=scope,
+        file, "llm_web", out_suffix="_vat_llm_web",
+        compare_mode="grounded" if with_grounded else None, scope=scope, vies=False,
     )
 
 
 async def _validate_upload(
     file: UploadFile, mode: str, *, out_suffix: str, compare_mode: str | None = None,
-    scope: str = "missing",
+    scope: str = "missing", vies: bool = True,
 ) -> StreamingResponse:
     """The shared body of both file endpoints."""
     from openpyxl import load_workbook
@@ -226,10 +246,12 @@ async def _validate_upload(
         ) from exc
 
     client = _client_or_500()
+    client.enabled = vies
+    mode = _endpoint_mode(mode)
     lookup = _get_lookup(mode, client)
     compare = _get_lookup(compare_mode, client) if (lookup is not None and compare_mode) else None
-    logger.info("VAT validation file request received: %s, lookup_missing=%s, compare=%s",
-                filename, mode, compare_mode)
+    logger.info("VAT validation file request received: %s, lookup_missing=%s, compare=%s, vies=%s",
+                filename, mode, compare_mode, vies)
     try:
         summary = await validate_workbook(
             wb, client, source=filename, lookup=lookup, compare_lookup=compare, scope=scope,

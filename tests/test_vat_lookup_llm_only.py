@@ -91,6 +91,15 @@ class TestStatus:
         assert r.status == f"LLM_GUESS:FORMAT_OK:{vies_status}"
 
     @pytest.mark.asyncio
+    async def test_vies_off_is_not_checked_and_not_sent(self, tmp_path):
+        engine, stub = _engine(tmp_path, _Model({"vat_id": "DE149145247", "confidence": "low"}))
+        engine._vies.enabled = False
+        r = await engine.lookup(BASF)
+        assert r.status == "LLM_GUESS:FORMAT_OK:NOT_CHECKED" and r.value == "DE149145247"
+        assert stub.requests == [] and stub.status_requests == 0
+        assert engine.stats()["vies_checks"] == 0
+
+    @pytest.mark.asyncio
     async def test_unknown_confidence_is_marked(self, tmp_path):
         engine, _ = _engine(tmp_path, _Model({"vat_id": "DE149145247", "confidence": "certain"}))
         assert (await engine.lookup(BASF)).evidence == "unstated:certain"
@@ -112,8 +121,8 @@ class TestPrompt:
         for value in ("BASF SE", "Carl-Bosch-Strasse 38", "67056", "Ludwigshafen", "DE"):
             assert value in user
         assert "What is this company's German VAT identification number (USt-IdNr.)?" in user
-        assert "still give your best candidate number" in user   # v2: a guess, not null
-        assert "Answer null only if you have no candidate number at all." in user
+        assert "give your best candidate number" in user   # v2: a guess, not null
+        assert "vat_id is never null" in user               # v3: no null escape
         assert "Page" not in user and "http" not in user  # no page, no search results
 
 

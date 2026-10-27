@@ -130,6 +130,9 @@ def _write_summary(wb, summary: dict[str, Any], meta: list[tuple[str, Any]]) -> 
                    "VAT Registration No. is never written)"])
         if lookup["mode"] == "llm_only":
             ws.append(["EXPERIMENT ONLY — not for production use; results are not to be written to SAP."])
+        if lookup["mode"] == "llm_web":
+            ws.append(["LLM web search (never from memory): every number is checked against the page "
+                       "the model read it on; one without such a page is dropped."])
         scope_text = ("every DE row, VAT ID or not — evaluation against SAP"
                       if lookup.get("scope") == "all" else "VAT blank, Country/Region Key DE")
         ws.append([f"Rows in scope ({scope_text})", lookup["rows_in_scope"]])
@@ -198,7 +201,7 @@ async def validate_workbook(
         ("Input", source),
         ("Sheet", ws.title),
         ("Run at (UTC)", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")),
-        ("Source", "VIES (European Commission)"),
+        ("Source", "VIES (European Commission)" if client.enabled else "none — VIES not called"),
         ("Cache frozen", "yes" if client.frozen else "no"),
     ])
     summary["sheet"] = ws.title

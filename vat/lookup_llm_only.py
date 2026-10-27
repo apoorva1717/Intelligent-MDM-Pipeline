@@ -88,8 +88,10 @@ class LlmOnlyLookup:
     async def lookup(self, inp: LookupInput) -> FoundResult:
         self._llm_asks += 1
         try:
+            # Reasoning models (gpt-6-sol) count their reasoning against this
+            # cap: at 200 they spent all of it thinking and returned "".
             raw = await self._llm.extract_json(
-                LLM_ONLY_SYSTEM_PROMPT, self.prompt(inp), max_tokens=200,
+                LLM_ONLY_SYSTEM_PROMPT, self.prompt(inp), max_tokens=4000,
             )
         except LLMUnavailableFrozen:
             return FoundResult(LLM_ONLY, LOOKUP_INCOMPLETE,
@@ -113,7 +115,7 @@ class LlmOnlyLookup:
         flags += [f for f in fmt.flags]
 
         vies_status = NOT_CHECKED
-        if fmt.status == FORMAT_OK:
+        if fmt.status == FORMAT_OK and self._vies.enabled:
             self._vies_checks += 1
             vies = await self._vies.check(fmt)
             vies_status = vies.status

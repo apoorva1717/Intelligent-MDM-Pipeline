@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from config import llm_model
+from config import ANTHROPIC, llm_model, llm_provider
 
 from llm.openai_client import (
     _FENCE_RE,
@@ -201,6 +201,8 @@ class DedupLLM:
         """
         client = self._get_client()
         last_error: Optional[str] = None
+        if llm_provider() == ANTHROPIC:
+            return await self._adjudicate_anthropic(client, system_prompt, user_prompt, max_tokens)
 
         for attempt in range(self._max_retries):
             start = time.perf_counter()
@@ -289,3 +291,28 @@ class DedupLLM:
                 break
 
         return DedupLLMResult(error=last_error or "LLM call failed")
+
+    async def _adjudicate_anthropic(
+        self, client: Any, system_prompt: str, user_prompt: str, max_tokens: int,
+    ) -> DedupLLMResult:
+        """The same call on Claude (llm/anthropic_client.py). No temperature,
+        seed or reasoning_effort to fall back from, and the SDK already retries
+        429 / 5xx / connection errors, so one attempt; never raises."""
+        from llm import anthropic_client
+
+        start = time.perf_counter()
+        try:
+            done = await anthropic_client.complete(
+                client, system_prompt, user_prompt, max_tokens, model=self._deployment,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Dedup LLM call failed (Anthropic): %s", exc)
+            return DedupLLMResult(error=str(exc))
+        return DedupLLMResult(
+            raw=done.text,
+            prompt_tokens=done.input_tokens,
+            completion_tokens=done.output_tokens,
+            latency_ms=int((time.perf_counter() - start) * 1000),
+            model_version=done.model,
+            error=None,
+        )

@@ -1,7 +1,8 @@
 """LLM provider selection (config.llm_provider / llm.openai_client.get_openai_client).
 
 Azure OpenAI when AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT are both set;
-otherwise OpenAI direct when OPENAI_API_KEY is set. No network: the clients
+otherwise OpenAI direct when OPENAI_API_KEY is set; otherwise Anthropic when
+ANTHROPIC_API_KEY is set. No network: the clients
 are only constructed, and call_openai gets a stand-in client.
 """
 
@@ -17,7 +18,8 @@ from llm import openai_client as oc
 
 _ALL = ("AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_DEPLOYMENT",
         "AZURE_OPENAI_API_VERSION", "AOAI_DEPLOYMENT_DEDUP", "OPENAI_API_KEY", "OPENAI_MODEL",
-        "OPENAI_MODEL_DEDUP", "OPENAI_BASE_URL")
+        "OPENAI_MODEL_DEDUP", "OPENAI_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
+        "ANTHROPIC_MODEL_DEDUP")
 
 
 @pytest.fixture
@@ -140,3 +142,129 @@ class TestCacheKeysAndRequests:
         env(**AZURE)
         s = config.Settings()
         assert (s.openai_model, s.openai_api_key) == ("MDM-test-deployment", "az-key")
+
+
+# ── Anthropic: the third provider, only when neither OpenAI flavour is set ──
+
+ANTHROPIC = dict(ANTHROPIC_API_KEY="sk-ant-test", ANTHROPIC_MODEL="claude-opus-5-5")
+
+
+def _message(text, stop_reason="end_turn", content=None):
+    from types import SimpleNamespace as NS
+    return NS(
+        content=content if content is not None else [NS(type="text", text=text)],
+        stop_reason=stop_reason, stop_details=None, model="claude-opus-5-5",
+        usage=NS(input_tokens=11, output_tokens=7),
+    )
+
+
+class _AnthropicStub:
+    """Stands in for ``AsyncAnthropic``: ``beta.messages.create`` / ``stream``."""
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.sent: list[dict] = []
+        stub = self
+
+        class _Stream:
+            def __init__(self, reply):
+                self.reply = reply
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def get_final_message(self):
+                return self.reply
+
+        class _Messages:
+            async def create(self, **kwargs):
+                stub.sent.append(kwargs)
+                return stub.replies.pop(0)
+
+            def stream(self, **kwargs):
+                stub.sent.append(kwargs)
+                return _Stream(stub.replies.pop(0))
+
+        self.beta = type("Beta", (), {"messages": _Messages()})()
+
+    async def close(self):
+        pass
+
+
+class TestAnthropic:
+    def test_used_only_when_azure_and_openai_are_missing(self, env):
+        from anthropic import AsyncAnthropic
+        env(**ANTHROPIC)
+        assert config.llm_provider() == "anthropic"
+        assert isinstance(_client(), AsyncAnthropic)
+        assert config.llm_model() == "claude-opus-5-5"
+        assert oc.llm_cache_api_version() == oc.ANTHROPIC_CACHE_API_VERSION
+        assert config.Settings().openai_api_key == "sk-ant-test"
+
+    @pytest.mark.parametrize("values, provider", [(AZURE, "azure"), (OPENAI, "openai")])
+    def test_azure_and_openai_win(self, env, values, provider):
+        env(**ANTHROPIC, **values)
+        assert config.llm_provider() == provider
+
+    def test_default_and_dedup_model(self, env):
+        env(ANTHROPIC_API_KEY="sk-ant-test")
+        assert config.llm_model() == config.DEFAULT_ANTHROPIC_MODEL
+        env(ANTHROPIC_MODEL_DEDUP="claude-sonnet-5-5")
+        assert config.llm_model("dedup") == "claude-sonnet-5-5"
+
+    def test_call_openai_goes_to_claude_without_sampling_params(self, env):
+        env(**ANTHROPIC)
+        client = _AnthropicStub(_message('Here you go:\n```json\n{"ok": true}\n```'))
+        raw = asyncio.run(oc.call_openai("sys", "user", max_tokens=200, client=client))
+        assert raw == '{"ok": true}'
+        (sent,) = client.sent
+        assert sent["model"] == "claude-opus-5-5"
+        assert sent["max_tokens"] >= 16_000          # thinking counts against it
+        assert sent["fallbacks"] == "default" and sent["betas"] == ["server-side-fallback-2026-07-01"]
+        assert not {"temperature", "top_p", "seed"} & set(sent)
+        assert sent["system"].startswith("sys") and "JSON object" in sent["system"]
+
+    @pytest.mark.parametrize("stop", ["refusal", "max_tokens"])
+    def test_incomplete_answer_raises(self, env, stop):
+        env(**ANTHROPIC)
+        client = _AnthropicStub(_message("", stop_reason=stop))
+        with pytest.raises(RuntimeError):
+            asyncio.run(oc.call_openai("sys", "user", client=client))
+
+    def test_no_fallbacks_on_a_model_that_does_not_take_them(self, env):
+        env(ANTHROPIC_API_KEY="sk-ant-test", ANTHROPIC_MODEL="claude-haiku-5-5")
+        client = _AnthropicStub(_message("{}"))
+        asyncio.run(oc.call_openai("sys", "user", client=client))
+        assert "fallbacks" not in client.sent[0] and "betas" not in client.sent[0]
+
+    def test_dedup_adjudicates_on_claude(self, env, monkeypatch):
+        from dedup.llm import DedupLLM
+        env(**ANTHROPIC, ANTHROPIC_MODEL_DEDUP="claude-sonnet-5-5")
+        llm = DedupLLM()
+        llm._client = _AnthropicStub(_message('{"verdict": "same"}'))
+        result = asyncio.run(llm.adjudicate("sys", "user"))
+        assert result.error is None and result.raw == '{"verdict": "same"}'
+        assert (result.prompt_tokens, result.completion_tokens) == (11, 7)
+        assert llm._client.sent[0]["model"] == "claude-sonnet-5-5"
+
+    def test_web_search_continues_a_paused_turn_and_reports_visited_urls(self, env):
+        from types import SimpleNamespace as NS
+        from llm import anthropic_client
+        env(**ANTHROPIC)
+        search = NS(type="web_search_tool_result",
+                    content=[NS(url="https://a.example/"), NS(url="https://b.example/impressum")])
+        fetch = NS(type="web_fetch_tool_result", content=NS(url="https://b.example/impressum"))
+        failed = NS(type="web_search_tool_result", content=NS(error_code="max_uses_exceeded"))
+        client = _AnthropicStub(
+            _message("", stop_reason="pause_turn", content=[search]),
+            _message("", content=[fetch, failed, NS(type="text", text='{"vat_id": "DE811128135"}')]),
+        )
+        text, visited = asyncio.run(anthropic_client.web_search(client, "sys", "user", "high"))
+        assert text == '{"vat_id": "DE811128135"}'
+        assert visited == ["https://a.example/", "https://b.example/impressum"]
+        assert client.sent[0]["tools"] == anthropic_client.WEB_TOOLS
+        assert client.sent[0]["output_config"] == {"effort": "high"}
+        assert [m["role"] for m in client.sent[1]["messages"]] == ["user", "assistant"]

@@ -189,7 +189,7 @@ def llm_disk_key(
     *,
     deployment: str,
     api_version: str,
-    temperature: float,
+    temperature: float | None,
     top_p: float,
     seed: int | None,
     max_tokens: int,

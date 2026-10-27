@@ -315,7 +315,8 @@ class TestFileEndpoint:
 
 
 # ---------------------------------------------------------------------------
-# lookup_missing (none | grounded | llm_only) and the experiment alias
+# lookup_missing (none | grounded | llm_web | llm_only) and the experiment alias.
+# The endpoints never answer from memory: llm_only runs llm_web.
 # ---------------------------------------------------------------------------
 
 from vat.lookup import COMPARE_COLUMNS, LOOKUP_COLUMNS, FoundResult  # noqa: E402
@@ -379,18 +380,25 @@ class TestLookupMissing:
 
     @pytest.mark.asyncio
     async def test_query_parameter_overrides_body(self, client, lookups):
-        resp = await client.post(URL + "?lookup_missing=llm_only",
+        resp = await client.post(URL + "?lookup_missing=llm_web",
                                  json={"rows": [_MISSING_DE], "lookup_missing": "grounded"})
-        assert resp.json()["rows"][0]["VAT_Lookup_Mode"] == "LLM_ONLY"
+        assert resp.json()["rows"][0]["VAT_Lookup_Mode"] == "LLM_WEB"
 
     @pytest.mark.asyncio
-    async def test_experiment_alias_is_llm_only(self, client, lookups):
+    @pytest.mark.parametrize("where", ["query", "body"])
+    async def test_llm_only_never_answers_from_memory(self, client, lookups, where):
+        url = URL + ("?lookup_missing=llm_only" if where == "query" else "")
+        resp = await client.post(url, json={"rows": [_MISSING_DE], "lookup_missing": "llm_only"})
+        assert resp.json()["rows"][0]["VAT_Lookup_Mode"] == "LLM_WEB"
+        assert [e.mode for e in lookups] == ["llm_web"]  # the memory engine is never built
+
+    @pytest.mark.asyncio
+    async def test_experiment_alias_is_llm_web(self, client, lookups):
         resp = await client.post(URL + "/llm-only-experiment", json={"rows": [_MISSING_DE]})
         assert resp.status_code == 200
         row = resp.json()["rows"][0]
-        assert (row["VAT_Lookup_Mode"], row["VAT_Found_Status"]) == (
-            "LLM_ONLY", "LLM_GUESS:FORMAT_OK:VALID")
-        assert [e.mode for e in lookups] == ["llm_only", "grounded"]  # side by side by default
+        assert row["VAT_Lookup_Mode"] == "LLM_WEB"
+        assert [e.mode for e in lookups] == ["llm_web", "grounded"]  # side by side by default
 
     @pytest.mark.asyncio
     async def test_unknown_mode_is_422(self, client, lookups):
@@ -421,24 +429,30 @@ class TestLookupMissing:
 
 class TestLlmOnlyExperimentFile:
     @pytest.mark.asyncio
-    async def test_file_alias_runs_llm_only(self, client, lookups):
+    async def test_file_alias_runs_llm_web(self, client, lookups, stub):
         content = _book([["Customer", "Name", "Country/Region Key", "VAT Registration No."],
                          ["1", "Acme GmbH", "DE", None], ["2", "Beta SA", "FR", "FR40303265045"]])
         resp = await client.post(FILE_URL.replace("/file", "/llm-only-experiment/file"),
                                  files={"file": ("export.xlsx", content, XLSX)})
+        # VIES is never called on this endpoint, not even /check-status.
+        assert stub.requests == [] and stub.status_requests == 0
         assert resp.status_code == 200, resp.text
         assert resp.headers["content-disposition"] == (
-            'attachment; filename="export_vat_llm_only_experiment.xlsx"')
-        assert resp.headers["x-vat-lookup-mode"] == "llm_only"
-        assert [e.mode for e in lookups] == ["llm_only", "grounded"]
+            'attachment; filename="export_vat_llm_web.xlsx"')
+        assert resp.headers["x-vat-lookup-mode"] == "llm_web"
+        assert [e.mode for e in lookups] == ["llm_web", "grounded"]
         assert all(e.closed for e in lookups)
         wb = load_workbook(io.BytesIO(resp.content))
         _, rows = _sheet(wb, "Data")
         assert [(r["VAT_Lookup_Mode"], r["VAT_Found_Status"]) for r in rows] == [
-            ("LLM_ONLY", "LLM_GUESS:FORMAT_OK:VALID"), (None, None)]
+            ("LLM_WEB", "LLM_GUESS:FORMAT_OK:VALID"), (None, None)]
         assert rows[0]["VAT Registration No."] is None  # never written
+        assert rows[1]["VAT_Format_Status"] == "FORMAT_OK"
+        assert rows[1]["VAT_VIES_Status"] == "NOT_CHECKED"
         summary_text = [str(c) for r in wb["Summary"].iter_rows(values_only=True) for c in r if c]
-        assert any("EXPERIMENT ONLY" in c for c in summary_text)
+        assert any("never from memory" in c for c in summary_text)
+        assert not any("EXPERIMENT ONLY" in c for c in summary_text)
+        assert "none — VIES not called" in summary_text
 
     @pytest.mark.asyncio
     async def test_file_alias_rejects_bad_uploads_like_the_file_endpoint(self, client, lookups):
@@ -474,7 +488,7 @@ class TestSideBySide:
         body = resp.json()
         assert body["columns"] == VAT_COLUMNS + LOOKUP_COLUMNS + ["VAT_Found_vs_SAP"]
         assert "VAT_Grounded_Status" not in body["rows"][0]
-        assert [e.mode for e in lookups] == ["llm_only"]
+        assert [e.mode for e in lookups] == ["llm_web"]
 
     @pytest.mark.asyncio
     async def test_out_of_scope_rows_have_blank_comparison(self, client, lookups):
@@ -499,9 +513,9 @@ class TestSideBySide:
 
     @pytest.mark.asyncio
     async def test_plain_endpoints_never_add_the_comparison(self, client, lookups):
-        body = (await client.post(URL + "?lookup_missing=llm_only", json={"rows": [_MISSING_DE]})).json()
+        body = (await client.post(URL + "?lookup_missing=llm_web", json={"rows": [_MISSING_DE]})).json()
         assert "VAT_LLM_vs_Grounded" not in body["rows"][0]
-        assert [e.mode for e in lookups] == ["llm_only"]
+        assert [e.mode for e in lookups] == ["llm_web"]
 
 
 class TestAgreement:
@@ -539,7 +553,7 @@ class TestScopeAll:
         assert [r["VAT Registration No."] for r in out] == [r["VAT Registration No."] for r in rows]
         assert body["summary"]["lookup"]["scope"] == "all"
         assert body["summary"]["lookup"]["rows_in_scope"] == 3       # every DE row
-        assert sum(e.calls for e in lookups if e.mode == "llm_only") == 3
+        assert sum(e.calls for e in lookups if e.mode == "llm_web") == 3
 
     @pytest.mark.asyncio
     async def test_experiment_scope_missing_keeps_the_old_behaviour(self, client, lookups):

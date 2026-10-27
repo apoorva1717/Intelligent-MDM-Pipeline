@@ -41,6 +41,7 @@ from vat.lookup_grounded import (
     QUOTE_NOT_IN_PAGE,
     READER_TEXT_LIMIT,
     GroundedLookup,
+    address_verdict,
     is_directory_host,
     reader_text,
 )
@@ -245,8 +246,8 @@ class TestKeepLooking:
         cands = [f for f in r.flags if f.startswith("CANDIDATE:")]
         assert cands == [
             "CANDIDATE:DE129274235|Robert Bosch Hausger\u00e4te GmbH|www.bosch-home.example"
-            "|FOUND_UNVERIFIED:ATTRIBUTION_PARTIAL",
-            "CANDIDATE:DE811128135|Robert Bosch GmbH|www.bosch.example|FOUND_VERIFIED",
+            "|FOUND_UNVERIFIED:ATTRIBUTION_PARTIAL|REVIEW",
+            "CANDIDATE:DE811128135|Robert Bosch GmbH|www.bosch.example|FOUND_VERIFIED|PROPOSED",
         ]
 
     @pytest.mark.asyncio
@@ -529,3 +530,176 @@ class TestAlternatingResults:
                                reader=_reader(reading("DE811128135", "Robert Bosch GmbH", QUOTE)))
         r = await engine.lookup(BOSCH)
         assert (r.status, r.value) == (FOUND_VERIFIED, "DE811128135")
+
+
+# ── Gate f (address) and tiers ───────────────────────────────────────────────
+
+def _one_page(tmp_path, url, body, answer, key):
+    return _engine(tmp_path, search=FakeSearch({key: [url]}),
+                   web=FakeWeb({url: page(url, body)}), reader=FakeReader({url: answer}))
+
+
+class TestAddressVerdict:
+    @pytest.mark.parametrize("text, verdict", [
+        ("Robert-Bosch-Platz 1 70839 Gerlingen", "ADDRESS_MATCH"),             # postcode
+        ("Sitz: Gerlingen-Schillerhöhe, Amtsgericht Stuttgart", "ADDRESS_MATCH"),  # city, umlaut-folded
+        ("Postfach 10 60 50 70839 Gerlingen", "ADDRESS_MATCH"),
+        ("Apelsteinallee 5 04416 Markkleeberg Telefon: +49 (341) 23078 0", "ADDRESS_MISMATCH"),
+        ("Telefon: +49 (341) 23078 0 HRB 13844", "ADDRESS_UNKNOWN"),  # no postcode + town
+        ("Robert Bosch GmbH USt-IdNr. DE 811 128 135", "ADDRESS_UNKNOWN"),
+    ])
+    def test_postcode_city_or_neither(self, text, verdict):
+        assert address_verdict(text, "70839", "Gerlingen-Schillerhoehe") == verdict
+
+    def test_city_main_token_inside_an_address_block(self):
+        # SAP "FRANKFURT AM MAIN", page "60549 Frankfurt" (another PLZ).
+        assert address_verdict("Fraport AG 60549 Frankfurt", "60547", "FRANKFURT AM MAIN") == "ADDRESS_MATCH"
+
+    def test_city_spelled_without_the_e(self):
+        assert address_verdict("Hauptstr. 1 89073 Ulm-Söflingen", "89000", "SOFLINGEN") == "ADDRESS_MATCH"
+
+
+class TestTiers:
+    @pytest.mark.asyncio
+    async def test_acl_same_name_other_town_is_review(self, tmp_path):
+        # SAP ACL GmbH, 72108 Rottenburg; the page is ACL GmbH in Markkleeberg.
+        acl = LookupInput("13141598", ("ACL GmbH", None, None, None), "Etzwiesenstr.", "21",
+                          "72108", "ROTTENBURG", "DE")
+        url = "https://www.acl.example/de/unternehmen/impressum"
+        quote = "USt-IdNr.: DE 191570067"
+        body = ("Impressum ACL GmbH Apelsteinallee 5 04416 Markkleeberg Deutschland Telefon: "
+                "+49 (341) 23078 0 Handelsregister Leipzig HRB13844 " + quote)
+        engine, _, _ = _one_page(tmp_path, url, body, reading("DE191570067", "ACL GmbH", quote), "ACL")
+        r = await engine.lookup(acl)
+        assert r.status == FOUND_VERIFIED  # status unchanged; the tier carries the verdict
+        assert ATTRIBUTION_MATCH in r.flags and "ADDRESS_MISMATCH" in r.flags
+        assert r.tier == "REVIEW"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("order", [("other", "home"), ("home", "other")])
+    async def test_kappler_two_matches_address_decides(self, tmp_path, order):
+        kappler = LookupInput("K1", ("Kappler GmbH & Co.KG", None, None, None), None, None,
+                              "75217", "BIRKENFELD", "DE")
+        urls = {"other": "https://www.kappler-cnc.example/impressum",
+                "home": "https://www.kappler.example/impressum"}
+        quotes = {"other": "USt-IdNr. DE284842812", "home": "USt-IdNr. DE144252546"}
+        towns = {"other": "Industriestr. 1 72336 Balingen", "home": "Hauptstr. 5 75217 Birkenfeld"}
+        web = FakeWeb({urls[k]: page(urls[k], f"Kappler GmbH & Co. KG {towns[k]} {quotes[k]}")
+                       for k in urls})
+        reader = FakeReader({urls[k]: reading(quotes[k][-11:], "Kappler GmbH & Co. KG", quotes[k])
+                             for k in urls})
+        engine, _, _ = _engine(tmp_path, search=FakeSearch({"Kappler": [urls[k] for k in order]}),
+                               web=web, reader=reader)
+        r = await engine.lookup(kappler)
+        assert (r.value, r.tier) == ("DE144252546", "PROPOSED")
+        assert not any(f.startswith("AMBIGUOUS_SAME_NAME") for f in r.flags)
+        assert len(reader.prompts) == (2 if order[0] == "other" else 1)  # stops at PROPOSED
+
+    @pytest.mark.asyncio
+    async def test_two_matches_without_addresses_are_ambiguous(self, tmp_path):
+        kappler = LookupInput("K1", ("Kappler GmbH & Co.KG", None, None, None), None, None,
+                              "75217", "BIRKENFELD", "DE")
+        a, b = "https://www.kappler-a.example/impressum", "https://www.kappler-b.example/impressum"
+        qa, qb = "USt-IdNr. DE284842812", "USt-IdNr. DE144252546"
+        web = FakeWeb({a: page(a, "Kappler GmbH & Co. KG " + qa), b: page(b, "Kappler GmbH & Co. KG " + qb)})
+        reader = FakeReader({a: reading("DE284842812", "Kappler GmbH & Co. KG", qa),
+                             b: reading("DE144252546", "Kappler GmbH & Co. KG", qb)})
+        engine, _, _ = _engine(tmp_path, search=FakeSearch({"Kappler": [a, b]}), web=web, reader=reader)
+        r = await engine.lookup(kappler)
+        assert r.tier == "REVIEW"
+        assert "AMBIGUOUS_SAME_NAME:DE144252546,DE284842812" in r.flags
+
+    @pytest.mark.asyncio
+    async def test_fraport_partial_with_address_is_likely(self, tmp_path):
+        fraport = LookupInput("F1", ("Fraport AG", "Flughafen Frankfurt", None, None), None, None,
+                              "60547", "FRANKFURT AM MAIN", "DE")
+        url = "https://www.fraport.example/de/tools/impressum.html"
+        quote = "Umsatzsteuer-Identifikationsnummer: DE 114150623"
+        body = "Fraport AG Frankfurt Airport Services Worldwide 60547 Frankfurt am Main " + quote
+        engine, vies, _ = _one_page(tmp_path, url, body, reading(
+            "DE114150623", "Fraport AG Frankfurt Airport Services Worldwide", quote), "Fraport")
+        r = await engine.lookup(fraport)
+        assert (r.status, r.flags[0]) == (FOUND_UNVERIFIED, ATTRIBUTION_PARTIAL)  # unchanged
+        assert "ADDRESS_MATCH" in r.flags and r.tier == "LIKELY"
+        assert vies.requests == []
+
+    @pytest.mark.asyncio
+    async def test_bosch_hausgeraete_partial_other_address_is_review(self, tmp_path):
+        url = "https://www.bosch-home.example/impressum"
+        quote = "Umsatzsteuer-Identifikationsnummer DE129274235"
+        body = "Robert Bosch Hausger\u00e4te GmbH Carl-Wery-Str. 34 81739 M\u00fcnchen " + quote
+        engine, _, _ = _one_page(tmp_path, url, body, reading(
+            "DE129274235", "Robert Bosch Hausger\u00e4te GmbH", quote), "Bosch")
+        r = await engine.lookup(BOSCH)
+        assert ATTRIBUTION_PARTIAL in r.flags and "ADDRESS_MISMATCH" in r.flags
+        assert r.tier == "REVIEW"
+
+    @pytest.mark.asyncio
+    async def test_fraunhofer_institute_vs_gesellschaft_is_likely(self, tmp_path):
+        lbf = LookupInput("FH1", ("Fraunhofer-Institut f\u00fcr Betriebs-",
+                                  "festigkeit u Systemzuverl\u00e4ssigkeit", None, None),
+                          None, None, "64289", "DARMSTADT", "DE")
+        url = "https://www.lbf.fraunhofer.example/de/impressum.html"
+        quote = "Umsatzsteuer-Identifikationsnummer gem\u00e4\u00df \u00a7 27 a UStG: DE 129515865"
+        body = ("Fraunhofer-Gesellschaft zur F\u00f6rderung der angewandten Forschung e.V. "
+                "Hansastra\u00dfe 27c 80686 M\u00fcnchen " + quote +
+                " Fraunhofer LBF Bartningstra\u00dfe 47 64289 Darmstadt")
+        engine, _, _ = _one_page(tmp_path, url, body, reading(
+            "DE129515865", "Fraunhofer-Gesellschaft zur F\u00f6rderung der angewandten Forschung e.V.",
+            quote), "Fraunhofer")
+        r = await engine.lookup(lbf)
+        assert ATTRIBUTION_PARTIAL in r.flags and r.tier == "LIKELY"
+
+    @pytest.mark.asyncio
+    async def test_page_without_postcode_match_is_likely(self, tmp_path):
+        body = "Impressum Robert Bosch GmbH " + QUOTE
+        engine, _, _ = _engine(tmp_path, web=FakeWeb({IMPRESSUM: page(IMPRESSUM, body)}),
+                               reader=_reader(reading("DE811128135", "Robert Bosch GmbH", QUOTE)))
+        r = await engine.lookup(BOSCH)
+        assert r.status == FOUND_VERIFIED
+        assert "ADDRESS_UNKNOWN" in r.flags and r.tier == "LIKELY"
+
+    @pytest.mark.asyncio
+    async def test_keeps_looking_past_likely_for_proposed(self, tmp_path):
+        bare = "https://www.bosch-bare.example/impressum"
+        web = FakeWeb({bare: page(bare, "Impressum Robert Bosch GmbH " + QUOTE),
+                       IMPRESSUM: page(IMPRESSUM, BODY)})
+        reader = FakeReader({u: reading("DE811128135", "Robert Bosch GmbH", QUOTE) for u in (bare, IMPRESSUM)})
+        engine, _, _ = _engine(tmp_path, search=FakeSearch({"Bosch": [bare, IMPRESSUM]}),
+                               web=web, reader=reader)
+        r = await engine.lookup(BOSCH)
+        assert (r.source_url, r.tier) == (IMPRESSUM, "PROPOSED")
+        assert len(reader.prompts) == 2
+        assert not any(f.startswith("AMBIGUOUS_SAME_NAME") for f in r.flags)  # same number twice
+
+    @pytest.mark.asyncio
+    async def test_no_candidate_no_tier(self, tmp_path):
+        home = SITE + "/"
+        engine, _, _ = _engine(tmp_path, search=FakeSearch({"Bosch": [home]}),
+                               web=FakeWeb({home: page(home, "Willkommen", title="Home")}))
+        r = await engine.lookup(BOSCH)
+        assert (r.status, r.tier) == (NOT_FOUND, None)
+
+
+class TestHeaderKept:
+    """molit.eu (WordPress, Hello Elementor) wraps its whole Impressum in
+    ``<header class="entry-header">``; the default REMOVE_TAGS deleted it."""
+
+    HTML = (
+        "<html><head><title>Impressum</title></head><body>"
+        "<header class='site-header'>Logo</header>"
+        "<main><header class='entry-header'><p>MOLIT Institut gGmbH "
+        "Steuer ID DE319116859</p></header></main></body></html>"
+    )
+
+    def test_vat_fetcher_keeps_header_text(self):
+        from search.page_fetcher import PageFetcher
+        from vat.lookup_grounded import PAGE_MAX_CHARS, VAT_REMOVE_TAGS
+        url = "https://www.molit.eu/impressum/"
+        vat = PageFetcher(max_chars=PAGE_MAX_CHARS, remove_tags=VAT_REMOVE_TAGS)._parse(url, self.HTML)
+        assert "DE319116859" in vat.body_text
+
+    def test_default_fetcher_unchanged_for_enrichment(self):
+        from search.page_fetcher import PageFetcher
+        content = PageFetcher()._parse("https://www.molit.eu/impressum/", self.HTML)
+        assert "DE319116859" not in content.body_text

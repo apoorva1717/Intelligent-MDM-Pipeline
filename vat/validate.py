@@ -35,7 +35,9 @@ from vat.lookup import (
 from vat.lookup import LookupEngine, LookupInput, in_scope, run_lookups
 from vat.name_match import NameMatch, match_name
 from vat.normalize import VatFormat, assess_format
-from vat.vies_client import ERROR, SERVICE_UNAVAILABLE, VIESClient, ViesResult
+#: VAT_VIES_Status for a row VIES was not asked about (not FORMAT_OK, or VIES
+#: switched off). Defined in vies_client; re-exported here for its importers.
+from vat.vies_client import ERROR, NOT_CHECKED, SERVICE_UNAVAILABLE, VIESClient, ViesResult
 
 #: Output columns, appended after every input column, in this order.
 VAT_COLUMNS: list[str] = [
@@ -51,8 +53,6 @@ VAT_COLUMNS: list[str] = [
     "VAT_Flags",
 ]
 
-#: VAT_VIES_Status for a row VIES was not asked about (not FORMAT_OK).
-NOT_CHECKED = "NOT_CHECKED"
 #: One Customer, more than one VAT value across its rows.
 CUSTOMER_VAT_CONFLICT = "CUSTOMER_VAT_CONFLICT"
 #: The "; " join used for Flag Codes elsewhere in the pipeline.

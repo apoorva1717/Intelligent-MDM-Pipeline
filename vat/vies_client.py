@@ -89,6 +89,9 @@ MS_UNAVAILABLE_STATUS = "MS_UNAVAILABLE_STATUS"
 STATUS_TTL_SECONDS = 300.0
 #: ``error_code`` for a 2xx body that is neither an answer nor an error.
 MALFORMED_RESPONSE = "MALFORMED_RESPONSE"
+#: Status for a number VIES was not asked about: not FORMAT_OK, or the
+#: client is switched off (``enabled = False``).
+NOT_CHECKED = "NOT_CHECKED"
 
 _SEPARATORS = re.compile(r"[\s.\-]+")
 
@@ -225,6 +228,9 @@ class VIESClient:
         self._semaphore = asyncio.Semaphore(self._concurrency)
         # /check-status, asked at most once per STATUS_TTL_SECONDS.
         self._status_url = settings.vies_api_base.rstrip("/") + "/check-status"
+        #: False: no call to VIES at all (not even /check-status) — every
+        #: number is NOT_CHECKED. Set by the llm-only-experiment file endpoint.
+        self.enabled = True
         self._status: dict[str, str] | None = None
         self._status_at = float("-inf")
         self._status_lock = asyncio.Lock()
@@ -374,6 +380,8 @@ class VIESClient:
 
     async def check(self, fmt: VatFormat) -> ViesResult:
         """Check one value. It must be FORMAT_OK."""
+        if not self.enabled:
+            return ViesResult(NOT_CHECKED, fmt.normalized or "")
         results = await self.check_many([fmt])
         if fmt.normalized not in results:
             raise ValueError(f"not eligible for VIES: {fmt.status}")
@@ -382,6 +390,8 @@ class VIESClient:
     async def check_many(self, formats: Iterable[VatFormat]) -> dict[str, ViesResult]:
         """Check every unique FORMAT_OK value once. Keyed by normalised VAT;
         values that are not FORMAT_OK are skipped, never sent."""
+        if not self.enabled:
+            return {}
         unique: dict[str, VatFormat] = {}
         for fmt in formats:
             if fmt.vies_eligible and fmt.normalized:
