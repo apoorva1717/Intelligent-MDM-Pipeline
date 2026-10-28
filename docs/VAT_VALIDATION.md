@@ -462,6 +462,36 @@ found*, when it should have said *could not look*. This is an open fix (§5, fol
 
 ---
 
+## 3b. Alignment with the design paper (2026-10-27)
+
+The design paper *Designing an Agent to Identify German VAT Identification Numbers*
+proposes a Copilot Studio agent. Here the same design runs in code: an LLM with web
+search (`llm_web`) or SerpAPI plus a page reader (`grounded`), with deterministic
+controls around it. Where the code and the paper differed, the code was changed to
+follow the paper.
+
+| Paper section | Where in the code |
+|---|---|
+| §2 inputs | `LookupInput`. Mandatory: name, street, postal code, city, country. A missing one is flagged `INPUT_INCOMPLETE:<fields>`; the lookup still runs, but an address it cannot match cannot be AUTO_ACCEPT. Optional, read when the workbook has them: `Website` (or a non-mailbox `Email` domain) and `Commercial Register Number` (header aliases in `vat/validate.py`). `Customer` is the Business Partner ID. |
+| §3 Find, Match, Verify | Find: search or web search plus page read. Match: gates a–f and `vat/entity_match.py`. Verify: VIES. Unchanged. |
+| §4 source hierarchy | `VAT_Found_Source_Type`: `COMPANY_IMPRESSUM` / `COMPANY_WEBSITE` (tier 1), `OFFICIAL_REGISTER` (tier 2: handelsregister, unternehmensregister, bundesanzeiger, bzst, e-justice), `SECONDARY` (tier 4: directories, or a page nothing ties to the company). **Changed:** `unternehmensregister` was on the directory list; it is now tier 2. Secondary sources are never AUTO_ACCEPT. |
+| §5 entity resolution | **Legal form preserved (changed):** a name match whose legal form differs ("Example GmbH" / "Example AG", "… GmbH" / "… GmbH & Co. KG") is `ATTRIBUTION_PARTIAL` with `LEGAL_FORM_DIFFERS:<record>/<page>`. Before this change legal forms were dropped and such names matched. Parent, subsidiary and branch handling is unchanged (PARTIAL / QUALIFIER); a branch (`VAT_Found_Name_Match = BRANCH`) is no longer eligible for acceptance. **New:** street + house number check (`str.` / `Straße` folded), address level `EXACT` / `STRONG` / `PARTIAL` / `MISMATCH` / `UNKNOWN`, domain and register-number checks (`DOMAIN_*`, `REGISTER_*` flags), and `VAT_Found_Match_Score` using the paper's weights (name 30, street 25, postal code 15, city 10, domain 10, register 10; elements the record lacks are left out of the denominator). The score is reported only; rules decide. |
+| §6 extraction | `entity_match.vat_candidates`: the paper's `\bDE[ ]?[0-9]{9}\b`, widened to grouped digits ("DE 1477 94 196"); a trailing `-NNNNN` (W-IdNr.) is excluded. Every other ID on the page is listed in `OTHER_VAT_IDS_ON_PAGE`. The prompts now also exclude the W-IdNr., LEI, GLN and D-U-N-S number. |
+| §8 decision model | `vat.lookup.decide` → `VAT_Found_Decision`. **AUTO_ACCEPT**: VIES VALID, tier PROPOSED, name EXACT (not branch or partial, same legal form), address EXACT or STRONG, primary source, cited page actually visited, no `REGISTER_MISMATCH`. **CONFLICT**: `AMBIGUOUS_SAME_NAME` or the new `CONFLICTING_SOURCES` (another gate-passing primary source naming the exact entity, at an address that isn't someone else's, gives a different number). **NOT_FOUND**: no value (NOT_FOUND or LOOKUP_INCOMPLETE). **MANUAL_REVIEW**: every other candidate. `VAT_Found_Confidence`: `VERIFIED` / `HIGH_CONFIDENCE` / `MEDIUM_CONFIDENCE` / `NOT_VERIFIED` / `NOT_FOUND` / `CONFLICT`. AUTO_ACCEPT only marks a candidate as *eligible*; nothing writes `VAT Registration No.`. |
+| §9 agent instructions | `vat/prompts.py`, `vat_llm_web` **v2** and `vat_impressum_read` **v2**: source order, exact legal entity (legal form; no parent, subsidiary, sister, branch, predecessor or successor), identifier exclusions, never guess or derive, null when nothing is found. |
+| §10 audit trail | New columns: `VAT_Found_Page_Title`, `VAT_Found_Published_Address` (kept only when it appears on the page), `VAT_Found_Name_Match`, `VAT_Found_Address_Match`, `VAT_Found_Validation_Status` and `VAT_Found_Validation_Date` (VIES's answer and `requestDate`; `NOT_CHECKED` when a gate failed), `VAT_Found_Agent_Version` (mode, prompt version, model). Existing columns: source URL, legal name found (`Attributed_To`), evidence, research date. The side-by-side `VAT_Grounded_*` set carries the same columns. KPIs (summary `lookup.kpis` and the Summary sheet), counted per customer: discovery, verification, auto-accept, manual-review and not-found rates, conflicts, conflicts by source type, average seconds per customer. |
+
+**Not in code, by design.** The paper's human reviewer and steward decision are a
+steward's own columns. The workbook passes them through untouched. The pipeline doesn't
+add them, because a re-run overwrites every result column it owns. SAP write-back after
+approval (§7, §12.8) stays out of scope.
+
+**Prompt v2 and frozen caches.** The prompt text is part of the LLM cache key. Recordings
+made with v1 (the 2026-10-20 experiment, §3a) do not replay under v2: a `CACHE_FROZEN`
+re-run of that experiment needs the code at `4bd61d1`.
+
+---
+
 ## 4. Proposed issue codes (proposal only)
 
 The Notion catalogue is the source of truth. **None of these exist in the catalogue or in the

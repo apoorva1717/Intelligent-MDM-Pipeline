@@ -35,7 +35,11 @@ For one in-scope customer (see ``vat/lookup.py``):
         Hausgeräte GmbH" for "Robert Bosch GmbH"), the SAP name has
         non-qualifier extras ("Bosch Rexroth AG" vs "Robert Bosch GmbH"), or
         only a fuzzy resemblance → ``ATTRIBUTION_PARTIAL``;
-      * no overlap → ``ATTRIBUTION_MISMATCH``.
+      * no overlap → ``ATTRIBUTION_MISMATCH``;
+      * a MATCH or QUALIFIER whose legal form differs from the record's
+        ("Example GmbH" vs "Example AG", "… GmbH" vs "… GmbH & Co. KG") is
+        PARTIAL, flagged ``LEGAL_FORM_DIFFERS:<record>/<page>``: another
+        legal form is another legal entity (``vat/entity_match.py``).
    e. ``DIRECTORY_DOMAIN`` — the page is on a company-directory host
       (:data:`DIRECTORY_DOMAINS`), not the company's own site.
    f. **address** — run on every candidate read, gate failure or not, and
@@ -70,6 +74,16 @@ has a different number, the result drops to ``REVIEW`` with
 ``AMBIGUOUS_SAME_NAME:<id>,<id>…`` (two companies of the same name). Every
 candidate read is listed in ``VAT_Found_Flags`` as
 ``CANDIDATE:<value>|<attributed_to>|<host>|<outcome>|<tier>``.
+When another candidate names the exact entity on a primary source, at an
+address that is not someone else's, and states a different number, the
+result carries ``CONFLICTING_SOURCES:<id>,<id>…`` (decision ``CONFLICT``).
+
+6. **Evidence** for the decision and the audit trail (design paper §5, §10;
+   ``vat/entity_match.py``): source type (§4 hierarchy), page title, the
+   published address, name and address match levels, domain and register
+   number checks, the weighted match score, and VIES's answer and its date.
+   The decision itself is :func:`vat.lookup.decide`.
+
 No VAT ID on any page → ``NOT_FOUND``; nothing found while part of the lookup
 could not run → ``LOOKUP_INCOMPLETE``. A page that answered 403 / 5xx / timed
 out is part of the lookup that could not run (``PAGE_UNAVAILABLE:<status>``):
@@ -87,7 +101,6 @@ while a live run never reads it and always asks the site again.
 from __future__ import annotations
 
 import re
-import unicodedata
 from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import urlparse
@@ -98,9 +111,36 @@ from search.page_fetcher import REMOVE_TAGS, PageFetcher, PageFetchResult
 from search.serpapi_client import SerpAPIClient
 from rapidfuzz import fuzz
 
+from config import llm_model
 from utils.cache import BatchCache, SerpCache, cached_serp, serp_disk_key
+from vat.entity_match import (
+    ADDRESS_BLOCK_RE as _ADDRESS_BLOCK_RE,
+    DOMAIN_MATCH,
+    DOMAIN_MISMATCH,
+    LEGAL_FORM_DIFFERS,
+    NAME_BRANCH,
+    NAME_EXACT,
+    NAME_MISMATCH,
+    NAME_PARTIAL,
+    PRIMARY_SOURCES,
+    REGISTER_MATCH,
+    REGISTER_MISMATCH,
+    address_match,
+    city_on_page,
+    company_domain,
+    domain_match,
+    is_register_host,
+    legal_forms_differ,
+    match_score,
+    postal_code_on_page,
+    register_match,
+    source_type,
+    vat_candidates,
+)
 from vat.llm_cache import VatLLM
 from vat.lookup import (
+    AMBIGUOUS_SAME_NAME,
+    CONFLICTING_SOURCES,
     FOUND_UNVERIFIED,
     FOUND_VERIFIED,
     GROUNDED,
@@ -116,8 +156,12 @@ from vat.lookup import (
 )
 from vat.name_match import FUZZY_THRESHOLD, name_tokens
 from vat.normalize import FORMAT_OK, assess_format
-from vat.prompts import IMPRESSUM_READ_SYSTEM_PROMPT, IMPRESSUM_READ_USER_PROMPT_TEMPLATE
-from vat.vies_client import VALID, VIESClient
+from vat.prompts import (
+    IMPRESSUM_READ_PROMPT_VERSION,
+    IMPRESSUM_READ_SYSTEM_PROMPT,
+    IMPRESSUM_READ_USER_PROMPT_TEMPLATE,
+)
+from vat.vies_client import NOT_CHECKED, VALID, VIESClient
 
 # ── Limits (module constants by design; not settings) ────────────────────────
 MAX_RESULT_URLS = 3
@@ -138,14 +182,16 @@ READER_TEXT_LIMIT = 12_000
 READER_HEAD_CHARS = 2_000
 READER_WINDOW = 1_500
 
-#: Company-directory hosts. A VAT ID read there is a third party's copy, not
-#: the company's own statement. Matched against the dot-separated labels of
-#: the page's host (see :func:`is_directory_host`), so ``northdata`` covers
-#: northdata.de and northdata.com, and ``branchenbuch`` covers
-#: branchenbuch-deutschland.de.
+#: Company-directory hosts (the design paper's tier 4, secondary sources). A
+#: VAT ID read there is a third party's copy, not the company's own
+#: statement. Matched against the dot-separated labels of the page's host
+#: (see :func:`is_directory_host`), so ``northdata`` covers northdata.de and
+#: northdata.com, and ``branchenbuch`` covers branchenbuch-deutschland.de.
+#: Official registers (Unternehmensregister, Handelsregister …) are tier 2,
+#: not directories: ``vat.entity_match.REGISTER_DOMAINS``.
 DIRECTORY_DOMAINS: frozenset[str] = frozenset({
     "northdata", "firmenwissen", "wlw", "dnb", "companyhouse",
-    "unternehmensregister", "implisense", "creditreform", "kompass",
+    "implisense", "creditreform", "kompass",
     "yellowpages", "gelbeseiten",
     "dasoertliche", "11880", "cylex", "firmenabc", "meinestadt",
     "werliefertwas", "firmeneintrag", "branchenbuch",
@@ -185,14 +231,15 @@ PAGE_UNAVAILABLE = "PAGE_UNAVAILABLE"
 ADDRESS_MATCH = "ADDRESS_MATCH"
 ADDRESS_MISMATCH = "ADDRESS_MISMATCH"
 ADDRESS_UNKNOWN = "ADDRESS_UNKNOWN"
-#: Prefix: several candidates in the winning tier with different numbers.
-AMBIGUOUS_SAME_NAME = "AMBIGUOUS_SAME_NAME"
+#: Prefix: VAT-ID-shaped strings on the page (the design paper's pattern)
+#: other than the candidate.
+OTHER_VAT_IDS_ON_PAGE = "OTHER_VAT_IDS_ON_PAGE"
 
-#: A German address block: a 5-digit postcode followed by a capitalised word
-#: (the town). Phone and register numbers ("23078 0", "HRB 13844") do not
-#: match. The town part is the text after the postcode, cut at the line or
-#: 40 characters.
-_ADDRESS_BLOCK_RE = re.compile(r"(?<![\d-])(?:D-?\s?)?(\d{5})\s+(?=[A-ZÄÖÜ])([^\n]{0,40})")
+#: Gate d's verdict → VAT_Found_Name_Match.
+_NAME_MATCH = {
+    ATTRIBUTION_MATCH: NAME_EXACT, ATTRIBUTION_QUALIFIER: NAME_BRANCH,
+    ATTRIBUTION_PARTIAL: NAME_PARTIAL, ATTRIBUTION_MISMATCH: NAME_MISMATCH,
+}
 
 _IMPRESSUM_RE = re.compile(
     r"impressum|imprint|legal[\s_-]*notice|anbieterkennzeichnung|rechtliche[\s_-]*hinweise",
@@ -279,6 +326,7 @@ class Reading:
     attributed_to: str | None
     evidence_quote: str | None
     other_vat_ids: tuple[str, ...] = ()
+    published_address: str | None = None
 
 
 def parse_reading(raw: Any) -> Reading:
@@ -296,7 +344,19 @@ def parse_reading(raw: Any) -> Reading:
         attributed_to=clean(raw.get("attributed_to")),
         evidence_quote=clean(raw.get("evidence_quote")),
         other_vat_ids=tuple(o for o in (clean(x) for x in others) if o),
+        published_address=clean(raw.get("published_address")),
     )
+
+
+def _compact(text: str | None) -> str:
+    return re.sub(r"[\W_]+", "", (text or "").replace(" ", " ")).lower()
+
+
+def address_on_page(address: str | None, page_text: str) -> str | None:
+    """The reader's published address, kept only when its characters are on
+    the page (punctuation and spacing ignored): an address the reader did
+    not copy from the page is not evidence."""
+    return address if address and _compact(address) in _compact(page_text) else None
 
 
 _ATTR_RANK = {ATTRIBUTION_MATCH: 0, ATTRIBUTION_QUALIFIER: 1,
@@ -305,37 +365,14 @@ _TIER_RANK = {TIER_PROPOSED: 0, TIER_LIKELY: 1, TIER_REVIEW: 2}
 _ADDRESS_RANK = {ADDRESS_MATCH: 0, ADDRESS_UNKNOWN: 1, ADDRESS_MISMATCH: 2}
 
 
-def _fold(text: str | None, *, umlaut_e: bool = True) -> str:
-    """Lower case, umlauts folded (``ü`` → ``ue``, or → ``u`` with
-    *umlaut_e* False), ``ß`` → ``ss``, other accents dropped, everything that
-    is not a letter or digit a single space."""
-    t = (text or "").lower().replace("ß", "ss")
-    if umlaut_e:
-        t = t.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue")
-    t = "".join(c for c in unicodedata.normalize("NFKD", t) if not unicodedata.combining(c))
-    return " ".join(re.sub(r"[^0-9a-z]+", " ", t).split())
-
-
 def address_verdict(page_text: str, postal_code: str | None, city: str | None) -> str:
     """Gate f: ``ADDRESS_MATCH`` / ``ADDRESS_MISMATCH`` / ``ADDRESS_UNKNOWN``
-    for the SAP Postal Code and City against one page's text."""
+    for the SAP Postal Code and City against one page's text. (The finer
+    street-level match the decision reads is ``entity_match.address_match``.)"""
     text = page_text or ""
-    plz = re.sub(r"\D", "", postal_code or "")
-    if len(plz) == 5 and re.search(rf"(?<!\d){plz}(?!\d)", text):
+    if postal_code_on_page(text, postal_code) or city_on_page(text, city):
         return ADDRESS_MATCH
-    blocks = [m.group(2) for m in _ADDRESS_BLOCK_RE.finditer(text)]
-    for umlaut_e in (True, False):
-        sap_city = _fold(city, umlaut_e=umlaut_e)
-        if not sap_city:
-            continue
-        if f" {sap_city} " in f" {_fold(text, umlaut_e=umlaut_e)} ":
-            return ADDRESS_MATCH
-        # "FRANKFURT AM MAIN" vs a block "60549 Frankfurt": the City's
-        # longest token, as a word of the town after a postcode.
-        main = max(sap_city.split(), key=len)
-        if len(main) >= 4 and any(main in _fold(b, umlaut_e=umlaut_e).split() for b in blocks):
-            return ADDRESS_MATCH
-    return ADDRESS_MISMATCH if blocks else ADDRESS_UNKNOWN
+    return ADDRESS_MISMATCH if _ADDRESS_BLOCK_RE.search(text) else ADDRESS_UNKNOWN
 
 
 def candidate_tier(flags: tuple[str, ...], status: str, page_url: str) -> str:
@@ -370,9 +407,18 @@ def _attribution_one(page: list[str], sap: list[str]) -> str:
     return ATTRIBUTION_MISMATCH
 
 
+def legal_form_conflict(attributed_to: str | None, names: tuple[str | None, ...]) -> str | None:
+    """``LEGAL_FORM_DIFFERS:<record>/<page>`` when the page's legal form is
+    not the record's (Name + Name 2–4 joined: the form is often in Name 2)."""
+    joined = " ".join(str(n) for n in names if n and str(n).strip())
+    differs = legal_forms_differ(attributed_to, joined)
+    return f"{LEGAL_FORM_DIFFERS}:{differs[0]}/{differs[1]}" if differs else None
+
+
 def attribution(attributed_to: str | None, names: tuple[str | None, ...]) -> str:
     """Gate d's verdict for the page's *attributed_to* against Name alone and
-    Name + Name 2–4 joined; the better of the two."""
+    Name + Name 2–4 joined; the better of the two. A MATCH / QUALIFIER with
+    another legal form is PARTIAL."""
     page = name_tokens(attributed_to) if attributed_to else []
     if not page:
         return ATTRIBUTION_MISMATCH
@@ -383,7 +429,11 @@ def attribution(attributed_to: str | None, names: tuple[str | None, ...]) -> str
     if len(parts) > 1 or not candidates:
         candidates.append(name_tokens(" ".join(parts)))
     verdicts = [_attribution_one(page, sap) for sap in candidates if sap]
-    return min(verdicts, key=_ATTR_RANK.__getitem__) if verdicts else ATTRIBUTION_MISMATCH
+    verdict = min(verdicts, key=_ATTR_RANK.__getitem__) if verdicts else ATTRIBUTION_MISMATCH
+    if verdict in (ATTRIBUTION_MATCH, ATTRIBUTION_QUALIFIER) and legal_form_conflict(
+            attributed_to, names):
+        return ATTRIBUTION_PARTIAL
+    return verdict
 
 
 def run_gates(reading: Reading, page_text: str, page_url: str, inp: LookupInput):
@@ -455,6 +505,24 @@ def _choice_key(result: FoundResult) -> tuple[int, int, int, int]:
             _ATTR_RANK.get(attr, len(_ATTR_RANK)), _rank(result))
 
 
+def conflicting_sources(best: FoundResult, judged: list[FoundResult]) -> tuple[str, ...]:
+    """``(CONFLICTING_SOURCES:<ids>,)`` when another candidate that passed
+    gates a–c, on a primary source, names this exact entity (or a site of
+    it) at an address that is not someone else's, and states a different
+    number: the design paper's CONFLICT ("trusted sources show different
+    numbers"). A same-name company in another town is not a conflict; the
+    address already tells them apart."""
+    values = {
+        r.value for r in judged
+        if r.value and r.value != best.value and r.status != FOUND_UNVERIFIED
+        and r.name_match in (NAME_EXACT, NAME_BRANCH) and r.source_type in PRIMARY_SOURCES
+        and ADDRESS_MISMATCH not in r.flags
+    }
+    if not values:
+        return ()
+    return (f"{CONFLICTING_SOURCES}:{','.join(sorted(values | {best.value}))}",)
+
+
 class GroundedLookup:
     """Mode A. Clients are injectable; defaults are the repo's own."""
 
@@ -490,6 +558,10 @@ class GroundedLookup:
         # One counter for every write into this cache, injected reader or not.
         self._llm.write_failures = vies.write_failures
         self._stats = _Stats()
+
+    @property
+    def agent_version(self) -> str:
+        return f"{GROUNDED}|{IMPRESSUM_READ_PROMPT_VERSION}|{llm_model()}"
 
     def stats(self) -> dict[str, int]:
         s = self._stats
@@ -584,12 +656,12 @@ class GroundedLookup:
         self, url: str, flags: set[str], budget: _Budget,
     ) -> PageFetchResult | None:
         """The Impressum for one result URL: the URL itself, else the first
-        fallback path on its host that is one. Directory hosts get no
-        fallback probes (their Impressum is the directory's own). None when
+        fallback path on its host that is one. Directory and register hosts
+        get no fallback probes (their Impressum is their own). None when
         none is found within the fetch cap."""
         host = (urlparse(url).hostname or "").lower()
         tries = [url]
-        if not is_directory_host(url):
+        if not (is_directory_host(url) or is_register_host(url)):
             scheme = urlparse(url).scheme or "https"
             tries += [f"{scheme}://{host}{path}" for path in FALLBACK_PATHS]
             tries = list(dict.fromkeys(tries))  # the result URL may itself be /impressum
@@ -675,6 +747,8 @@ class GroundedLookup:
                 if len(values) > 1:
                     tier = TIER_REVIEW
                     ambiguous = (f"{AMBIGUOUS_SAME_NAME}:{','.join(values)}",)
+            if not ambiguous:
+                ambiguous = conflicting_sources(best, judged)
             return replace(best, tier=tier,
                            flags=(*best.flags, *ambiguous, *candidates, *unavailable))
         if unavailable or flags & {FROZEN_CACHE_MISS, LLM_UNAVAILABLE}:
@@ -707,21 +781,27 @@ class GroundedLookup:
     ) -> FoundResult:
         failed, fmt, extra = run_gates(reading, text, page.url, inp)
         flags = list(extra)
-        if reading.other_vat_ids:
-            flags.append("OTHER_VAT_IDS_ON_PAGE:" + ",".join(reading.other_vat_ids))
+        value = fmt.normalized if fmt else reading.vat_id
+        others = list(reading.other_vat_ids)
+        known = {_compact(o) for o in others} | {_compact(value)}
+        others += [c for c in vat_candidates(text) if _compact(c) not in known]
+        if others:
+            flags.append(f"{OTHER_VAT_IDS_ON_PAGE}:" + ",".join(others))
         date = self._pages.fetched_at(page.url) or today()
         common = dict(
-            value=fmt.normalized if fmt else reading.vat_id,
+            value=value,
             source_url=page.url,
             attributed_to=reading.attributed_to,
             evidence=reading.evidence_quote,
             date=date,
+            **self._evidence(page, text, reading, inp, flags),
         )
         flags.append(address_verdict(text, inp.postal_code, inp.city))
         if failed:
             flags = [failed, *flags]
             return FoundResult(GROUNDED, FOUND_UNVERIFIED, flags=tuple(flags),
-                               tier=candidate_tier(tuple(flags), FOUND_UNVERIFIED, page.url), **common)
+                               tier=candidate_tier(tuple(flags), FOUND_UNVERIFIED, page.url),
+                               validation_status=NOT_CHECKED, **common)
 
         if self._vies.enabled:
             self._stats.vies_checks += 1
@@ -730,4 +810,36 @@ class GroundedLookup:
             flags.append(f"VIES:{vies.error_code}")
         status = FOUND_VERIFIED if vies.status == VALID else f"{FOUND_UNVERIFIED}:VIES_{vies.status}"
         return FoundResult(GROUNDED, status, flags=tuple(flags),
-                           tier=candidate_tier(tuple(flags), status, page.url), **common)
+                           tier=candidate_tier(tuple(flags), status, page.url),
+                           validation_status=vies.status, validation_date=vies.request_date,
+                           **common)
+
+    @staticmethod
+    def _evidence(
+        page: PageFetchResult, text: str, reading: Reading, inp: LookupInput, flags: list[str],
+    ) -> dict[str, Any]:
+        """The design paper's entity-resolution evidence (§5) and audit
+        fields (§10) for one candidate. Appends the domain, register and
+        legal-form flags to *flags*; decides nothing."""
+        name = _NAME_MATCH[attribution(reading.attributed_to, inp.names)]
+        legal = legal_form_conflict(reading.attributed_to, inp.names)
+        if legal:
+            flags.append(legal)
+        address, elements = address_match(
+            text, inp.street, inp.house_number, inp.postal_code, inp.city)
+        domain = company_domain(inp.website, inp.email)
+        elements["domain"] = domain_match(page.url, domain)
+        elements["register"] = register_match(text, inp.register_number)
+        if elements["domain"] is not None:
+            flags.append(DOMAIN_MATCH if elements["domain"] else DOMAIN_MISMATCH)
+        if elements["register"] is not None:
+            flags.append(REGISTER_MATCH if elements["register"] else REGISTER_MISMATCH)
+        return dict(
+            source_type=source_type(page.url, directory=is_directory_host(page.url),
+                                    impressum=is_impressum(page), own_domain=elements["domain"]),
+            page_title=(page.content.page_title or None) if page.content else None,
+            published_address=address_on_page(reading.published_address, text),
+            name_match=name,
+            address_match=address,
+            match_score=match_score(name, elements),
+        )

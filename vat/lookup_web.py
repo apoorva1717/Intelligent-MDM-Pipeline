@@ -39,10 +39,13 @@ completion at temperature 0, may get a different answer.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 from urllib.parse import urlparse
 
+from config import llm_model
 from llm.openai_client import LLMUnavailableFrozen
+from vat.entity_match import company_domain, domain_match, source_type
 from vat.llm_cache import VatLLM
 from vat.lookup import (
     FOUND_UNVERIFIED,
@@ -50,15 +53,22 @@ from vat.lookup import (
     LOOKUP_INCOMPLETE,
     NOT_FOUND,
     NOT_RUN,
+    SOURCE_NOT_VISITED,
     TIER_REVIEW,
     FoundResult,
     LookupInput,
     today,
 )
-from vat.lookup_grounded import FROZEN_CACHE_MISS, LLM_UNAVAILABLE, GroundedLookup, Reading
+from vat.lookup_grounded import (
+    FROZEN_CACHE_MISS,
+    LLM_UNAVAILABLE,
+    GroundedLookup,
+    Reading,
+    is_directory_host,
+)
 from vat.normalize import assess_format
-from vat.prompts import LLM_WEB_SYSTEM_PROMPT, LLM_WEB_USER_PROMPT_TEMPLATE
-from vat.vies_client import VIESClient
+from vat.prompts import LLM_WEB_PROMPT_VERSION, LLM_WEB_SYSTEM_PROMPT, LLM_WEB_USER_PROMPT_TEMPLATE
+from vat.vies_client import NOT_CHECKED, VIESClient
 
 #: Reasoning effort of the search call (module constant by design).
 REASONING_EFFORT = "high"
@@ -72,8 +82,6 @@ SEARCH_VISITED = "SEARCH_VISITED"
 LLM_WEB_NO_ANSWER = "LLM_WEB_NO_ANSWER"
 #: The model gave a number but no page for it — dropped.
 ANSWER_WITHOUT_SOURCE = "ANSWER_WITHOUT_SOURCE"
-#: source_url is not one of the URLs the search visited.
-SOURCE_NOT_VISITED = "SOURCE_NOT_VISITED"
 #: source_url could not be fetched here, so the number could not be checked.
 SOURCE_UNREADABLE = "SOURCE_UNREADABLE"
 #: The number's digits are not on source_url as fetched here — dropped.
@@ -116,6 +124,10 @@ class WebSearchLookup:
                                      llm=self._llm)
         self._asks = 0
 
+    @property
+    def agent_version(self) -> str:
+        return f"{LLM_WEB}|{LLM_WEB_PROMPT_VERSION}|{llm_model()}"
+
     def stats(self) -> dict[str, int]:
         pages = self._pages.stats()
         return {
@@ -140,6 +152,8 @@ class WebSearchLookup:
             name_1=names[0] or "", name_2=names[1] or "", name_3=names[2] or "",
             name_4=names[3] or "", street=street, postal_code=inp.postal_code or "",
             city=inp.city or "", country=inp.country or "",
+            domain=company_domain(inp.website, inp.email) or "",
+            register_number=inp.register_number or "",
         )
 
     async def lookup(self, inp: LookupInput) -> FoundResult:
@@ -160,6 +174,7 @@ class WebSearchLookup:
             vat_id=_clean(answer.get("vat_id")),
             attributed_to=_clean(answer.get("attributed_to")),
             evidence_quote=_clean(answer.get("evidence_quote")),
+            published_address=_clean(answer.get("published_address")),
         )
         source = _clean(answer.get("source_url"))
         if not reading.vat_id:
@@ -176,19 +191,23 @@ class WebSearchLookup:
                 return FoundResult(LLM_WEB, NOT_FOUND, source_url=source,
                                    flags=(*base, SOURCE_UNREADABLE, SOURCE_NOT_VISITED, *unavailable))
             fmt = assess_format(reading.vat_id, inp.country)
+            own = domain_match(source, company_domain(inp.website, inp.email))
             return FoundResult(
                 LLM_WEB, FOUND_UNVERIFIED, value=fmt.normalized or reading.vat_id,
                 source_url=source, attributed_to=reading.attributed_to,
                 evidence=reading.evidence_quote, date=self._llm.last_fetched_at or today(),
                 flags=(SOURCE_UNREADABLE, *base, *unavailable), tier=TIER_REVIEW,
+                # Nothing on the page could be checked here: no name, address
+                # or score — only where the model says it read the number.
+                source_type=source_type(source, directory=is_directory_host(source),
+                                        impressum=False, own_domain=own),
+                validation_status=NOT_CHECKED,
             )
         judged, on_page = checked
         if not on_page:
             return FoundResult(LLM_WEB, NOT_FOUND, source_url=source,
                                flags=(NOT_ON_SOURCE_PAGE, judged.flags[0], *base))
         flags = judged.flags if visited_ok else (*judged.flags, SOURCE_NOT_VISITED)
-        return FoundResult(
-            LLM_WEB, judged.status, judged.value, judged.source_url, judged.attributed_to,
-            judged.evidence, judged.date, flags=(*flags, *base),
-            tier=judged.tier if visited_ok else TIER_REVIEW,
-        )
+        # replace(): every piece of evidence the page check recorded is kept.
+        return replace(judged, mode=LLM_WEB, flags=(*flags, *base),
+                       tier=judged.tier if visited_ok else TIER_REVIEW)

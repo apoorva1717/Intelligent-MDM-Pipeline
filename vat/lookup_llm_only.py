@@ -31,11 +31,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from config import llm_model
 from llm.openai_client import LLMUnavailableFrozen
 from vat.llm_cache import VatLLM
 from vat.lookup import LLM_ONLY, LOOKUP_INCOMPLETE, FoundResult, LookupInput, today
 from vat.normalize import FORMAT_OK, assess_format
-from vat.prompts import LLM_ONLY_SYSTEM_PROMPT, LLM_ONLY_USER_PROMPT_TEMPLATE
+from vat.prompts import LLM_ONLY_PROMPT_VERSION, LLM_ONLY_SYSTEM_PROMPT, LLM_ONLY_USER_PROMPT_TEMPLATE
 from vat.validate import NOT_CHECKED
 from vat.vies_client import VIESClient
 
@@ -62,6 +63,10 @@ class LlmOnlyLookup:
         self._llm.write_failures = vies.write_failures
         self._llm_asks = 0
         self._vies_checks = 0
+
+    @property
+    def agent_version(self) -> str:
+        return f"{LLM_ONLY}|{LLM_ONLY_PROMPT_VERSION}|{llm_model()}"
 
     def stats(self) -> dict[str, int]:
         return {

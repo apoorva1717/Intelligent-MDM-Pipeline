@@ -74,7 +74,9 @@ class FakeReader:
 
 
 def reading(vat_id: str | None, attributed_to: str | None = None,
-            quote: str | None = None, others: list[str] | None = None) -> dict[str, Any]:
+            quote: str | None = None, others: list[str] | None = None,
+            address: str | None = None) -> dict[str, Any]:
     return {"vat_id": vat_id, "attributed_to": attributed_to,
-            "evidence_quote": quote, "other_vat_ids_on_page": others or []}
+            "evidence_quote": quote, "other_vat_ids_on_page": others or [],
+            "published_address": address}
 

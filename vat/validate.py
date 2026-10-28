@@ -32,7 +32,7 @@ from vat.lookup import (
     COMPARE_COLUMNS, FOUND_VS_SAP, GROUNDED_VS_SAP, LOOKUP_COLUMNS, SCOPE_ALL, SCOPE_MISSING,
     vs_sap,
 )
-from vat.lookup import LookupEngine, LookupInput, in_scope, run_lookups
+from vat.lookup import LookupEngine, LookupInput, in_scope, lookup_kpis, run_lookups
 from vat.name_match import NameMatch, match_name
 from vat.normalize import VatFormat, assess_format
 #: VAT_VIES_Status for a row VIES was not asked about (not FORMAT_OK, or VIES
@@ -75,15 +75,30 @@ _LOOKUP_ROLE_FIELDS = {
     "house_number": "house_number",
     "postal_code": "postal_code",
     "city": "city",
+    # Optional inputs of the design paper (§2). Not SAP export columns: read
+    # when a workbook carries them, ignored otherwise.
+    "website": "website",
+    "email": "email",
+    "register_number": "register_number",
 }
-#: Headers the SAP export uses that EnrichmentRecord does not accept: the
-#: export's first name column is a bare "Name", not "Name 1".
-_EXTRA_HEADERS = {"name_1": ("Name",)}
+#: Headers EnrichmentRecord does not accept: the SAP export's first name
+#: column is a bare "Name", not "Name 1"; website and register number are
+#: not EnrichmentRecord fields at all.
+_EXTRA_HEADERS = {
+    "name_1": ("Name",),
+    "website": ("Website", "Web Site", "Homepage", "URL", "Domain", "Email Domain"),
+    "register_number": (
+        "Commercial Register Number", "Commercial Register No.", "Register Number",
+        "Handelsregisternummer", "Handelsregister", "Registernummer", "HRB",
+    ),
+}
 
 
 def _accepted_headers(field: str) -> set[str]:
-    alias = EnrichmentRecord.model_fields[field].validation_alias
-    names = list(alias.choices) if isinstance(alias, AliasChoices) else [alias or field]
+    names: list[str] = []
+    if field in EnrichmentRecord.model_fields:
+        alias = EnrichmentRecord.model_fields[field].validation_alias
+        names = list(alias.choices) if isinstance(alias, AliasChoices) else [alias or field]
     names += _EXTRA_HEADERS.get(field, ())
     return {_norm_header(n) for n in [*names, field]}
 
@@ -210,6 +225,9 @@ async def validate_rows(
                 postal_code=_cell(row, lcols["postal_code"]),
                 city=_cell(row, lcols["city"]),
                 country=fmt.country_key,
+                website=_cell(row, lcols["website"]),
+                email=_cell(row, lcols["email"]),
+                register_number=_cell(row, lcols["register_number"]),
             ) if in_scope(fmt, scope) else None
             for row, customer, fmt in zip(rows, customers, formats)
         ]
@@ -233,6 +251,7 @@ async def validate_rows(
             "scope": scope,
             "rows_in_scope": sum(f is not None for f in found),
             "status": dict(Counter(r["VAT_Found_Status"] for r in out if r["VAT_Found_Status"])),
+            "kpis": lookup_kpis(found),
             "cost": lookup.stats(),
         }
         if scope == SCOPE_ALL:
@@ -253,6 +272,7 @@ async def validate_rows(
                 "mode": compare_lookup.mode,
                 "status": dict(Counter(r["VAT_Grounded_Status"] for r in out if r["VAT_Grounded_Status"])),
                 "agreement": dict(Counter(r[AGREEMENT_COLUMN] for r in out if r[AGREEMENT_COLUMN])),
+                "kpis": lookup_kpis(second),
                 "cost": compare_lookup.stats(),
             }
             if scope == SCOPE_ALL:

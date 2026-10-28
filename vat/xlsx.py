@@ -142,6 +142,7 @@ def _write_summary(wb, summary: dict[str, Any], meta: list[tuple[str, Any]]) -> 
             ws.append(["VAT_Found_vs_SAP (proposal against the existing SAP VAT ID)"])
             for value, n in sorted(lookup["vs_sap"].items()):
                 ws.append([value, n])
+        _write_kpis(ws, lookup.get("kpis"))
         ws.append(["Cost"])
         for key, n in lookup["cost"].items():
             ws.append([key, n])
@@ -159,6 +160,7 @@ def _write_summary(wb, summary: dict[str, Any], meta: list[tuple[str, Any]]) -> 
             ws.append(["VAT_Grounded_vs_SAP (proposal against the existing SAP VAT ID)"])
             for value, n in sorted(compare["vs_sap"].items()):
                 ws.append([value, n])
+        _write_kpis(ws, compare.get("kpis"))
         ws.append(["Cost"])
         for key, n in compare["cost"].items():
             ws.append([key, n])
@@ -173,6 +175,21 @@ def _write_summary(wb, summary: dict[str, Any], meta: list[tuple[str, Any]]) -> 
             *(fmt.get(s, 0) for s in format_states),
             *(vies.get(s, 0) for s in vies_states),
         ])
+
+
+def _write_kpis(ws, kpis: dict[str, Any] | None) -> None:
+    """The design paper's reporting measures (§10), per customer researched."""
+    if not kpis:
+        return
+    ws.append(["Decision KPIs (per customer researched; AUTO_ACCEPT = eligible only, "
+               "nothing is written to SAP)"])
+    for key in ("researched_customers", "discovery_rate", "verification_rate",
+                "auto_accept_rate", "manual_review_rate", "not_found_rate", "conflicts",
+                "avg_seconds_per_customer"):
+        ws.append([key, kpis.get(key)])
+    for group in ("decision", "confidence", "conflicts_by_source_type"):
+        for value, n in sorted(kpis.get(group, {}).items()):
+            ws.append([f"{group}: {value}", n])
 
 
 async def validate_workbook(
