@@ -21,25 +21,19 @@ For one in-scope customer (see ``vat/lookup.py``):
       "completes" a number;
    c. ``FORMAT_ERROR`` — ``vat.normalize`` rejects it;
    d. **attribution** — the name the page attributes the ID to, against
-      Name / Name + Name 2–4 (tokens from ``vat.name_match.name_tokens``).
-      Strict, because for a German number it is the *only* name-to-number
-      link (VIES discloses no name and ignores trader fields for DE):
+      the record (``vat.entity_match.name_match``). Strict, because for a
+      German number it is the *only* name-to-number link (VIES discloses no
+      name and ignores trader fields for DE):
 
-      * same token set → passes (``ATTRIBUTION_MATCH``);
-      * the SAP name is the page name followed by a site / department
-        qualifier phrase (:data:`SITE_QUALIFIERS`; "Siemens AG Werk
-        Erlangen" vs page "Siemens AG") → passes with
-        ``ATTRIBUTION_QUALIFIER`` — the steward sees it is the parent
-        entity's ID;
-      * any other overlap — the page name has extra words ("Robert Bosch
-        Hausgeräte GmbH" for "Robert Bosch GmbH"), the SAP name has
-        non-qualifier extras ("Bosch Rexroth AG" vs "Robert Bosch GmbH"), or
-        only a fuzzy resemblance → ``ATTRIBUTION_PARTIAL``;
-      * no overlap → ``ATTRIBUTION_MISMATCH``;
-      * a MATCH or QUALIFIER whose legal form differs from the record's
-        ("Example GmbH" vs "Example AG", "… GmbH" vs "… GmbH & Co. KG") is
-        PARTIAL, flagged ``LEGAL_FORM_DIFFERS:<record>/<page>``: another
-        legal form is another legal entity (``vat/entity_match.py``).
+      * the same entity name and legal form → ``ATTRIBUTION_MATCH`` (a
+        spelled-out form is the same form; a form missing in SAP is no
+        difference);
+      * the record is a site or department of the page's entity ("Siemens
+        AG Werk Erlangen" vs "Siemens AG") → ``ATTRIBUTION_QUALIFIER``: a
+        branch has no VAT ID of its own;
+      * a partly different name, or another legal form ("Example GmbH" vs
+        "Example AG", "… GmbH" vs "… GmbH & Co. KG") → ``ATTRIBUTION_PARTIAL``;
+      * nothing in common → ``ATTRIBUTION_MISMATCH``.
    e. ``DIRECTORY_DOMAIN`` — the page is on a company-directory host
       (:data:`DIRECTORY_DOMAINS`), not the company's own site.
    f. **address** — run on every candidate read, gate failure or not, and
@@ -51,7 +45,9 @@ For one in-scope customer (see ``vat/lookup.py``):
       against a different company of the same name ("ACL GmbH" Markkleeberg
       for "ACL GmbH" Rottenburg).
 
-4. **VIES.** A candidate past every gate is checked with the existing client:
+4. **VIES.** A candidate past every gate leaves the lookup
+   ``FOUND_UNVERIFIED:VIES_PENDING`` and is queued (``vat/vies_retry.py``,
+   Step AF-2). With ``VAT_VIES_IN_LOOKUP`` it is checked here instead:
    ``FOUND_VERIFIED`` only on VALID, else ``FOUND_UNVERIFIED:VIES_<status>``.
    (For DE, VIES discloses no name and ignores trader fields — VALID proves the
    number exists, not whose it is. That is gate d's and the quote's job.)
@@ -100,41 +96,55 @@ while a live run never reads it and always asks the site again.
 
 from __future__ import annotations
 
+import asyncio
+import io
+import logging
 import re
 from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import urlparse
 
+import requests
+
 from enrichment.page_corroborator import _readable_text
 from llm.openai_client import LLMUnavailableFrozen
-from search.page_fetcher import REMOVE_TAGS, PageFetcher, PageFetchResult
+from search.page_fetcher import REMOVE_TAGS, PageContent, PageFetcher, PageFetchResult
 from search.serpapi_client import SerpAPIClient
-from rapidfuzz import fuzz
 
 from config import llm_model
 from utils.cache import BatchCache, SerpCache, cached_serp, serp_disk_key
 from vat.entity_match import (
-    ADDRESS_BLOCK_RE as _ADDRESS_BLOCK_RE,
+    AGGREGATOR_LABELS,
+    BRANCH,
+    DEPARTMENT,
     DOMAIN_MATCH,
     DOMAIN_MISMATCH,
-    LEGAL_FORM_DIFFERS,
-    NAME_BRANCH,
+    EVIDENCE_NOT_VERIFIED,
     NAME_EXACT,
-    NAME_MISMATCH,
     NAME_PARTIAL,
-    PRIMARY_SOURCES,
+    OTHER_VAT_IDS_ON_PAGE as ISSUE_OTHER_VAT_IDS,
     REGISTER_MATCH,
     REGISTER_MISMATCH,
+    SISTER_ENTITY_ON_PAGE,
+    TRUSTED_CLASSES,
+    NameVerdict,
     address_match,
-    city_on_page,
+    address_text,
+    archive_snapshot_date,
     company_domain,
     domain_match,
+    entity_name_on_page,
+    has_address,
+    is_aggregator_host,
+    is_archive_host,
     is_register_host,
-    legal_forms_differ,
+    is_rejected_host,
     match_score,
-    postal_code_on_page,
+    name_match,
     register_match,
+    sister_entity_on_page,
     source_type,
+    town_match,
     vat_candidates,
 )
 from vat.llm_cache import VatLLM
@@ -142,6 +152,7 @@ from vat.lookup import (
     AMBIGUOUS_SAME_NAME,
     CONFLICTING_SOURCES,
     FOUND_UNVERIFIED,
+    FOUND_PENDING,
     FOUND_VERIFIED,
     GROUNDED,
     LOOKUP_INCOMPLETE,
@@ -150,18 +161,19 @@ from vat.lookup import (
     TIER_LIKELY,
     TIER_PROPOSED,
     TIER_REVIEW,
+    VALIDATION_PENDING,
+    VALIDATION_UNAVAILABLE,
     FoundResult,
     LookupInput,
     today,
 )
-from vat.name_match import FUZZY_THRESHOLD, name_tokens
 from vat.normalize import FORMAT_OK, assess_format
 from vat.prompts import (
     IMPRESSUM_READ_PROMPT_VERSION,
     IMPRESSUM_READ_SYSTEM_PROMPT,
     IMPRESSUM_READ_USER_PROMPT_TEMPLATE,
 )
-from vat.vies_client import NOT_CHECKED, VALID, VIESClient
+from vat.vies_client import INVALID, NOT_CHECKED, VALID, VIESClient
 
 # ── Limits (module constants by design; not settings) ────────────────────────
 MAX_RESULT_URLS = 3
@@ -177,38 +189,18 @@ PAGE_MAX_CHARS = 200_000
 #: ``<header class="entry-header">``, and deleting it deleted the USt-IdNr.
 #: VAT only — enrichment keeps the default, so its LLM inputs are unchanged.
 VAT_REMOVE_TAGS = frozenset(REMOVE_TAGS - {"header"})
+#: A PDF result is read when it is at most this large, up to this many pages.
+PDF_MAX_BYTES = 2 * 1024 * 1024
+PDF_MAX_PAGES = 20
 #: Characters of page text the reader is shown, and how they are chosen.
 READER_TEXT_LIMIT = 12_000
 READER_HEAD_CHARS = 2_000
 READER_WINDOW = 1_500
 
-#: Company-directory hosts (the design paper's tier 4, secondary sources). A
-#: VAT ID read there is a third party's copy, not the company's own
-#: statement. Matched against the dot-separated labels of the page's host
-#: (see :func:`is_directory_host`), so ``northdata`` covers northdata.de and
-#: northdata.com, and ``branchenbuch`` covers branchenbuch-deutschland.de.
-#: Official registers (Unternehmensregister, Handelsregister …) are tier 2,
-#: not directories: ``vat.entity_match.REGISTER_DOMAINS``.
-DIRECTORY_DOMAINS: frozenset[str] = frozenset({
-    "northdata", "firmenwissen", "wlw", "dnb", "companyhouse",
-    "implisense", "creditreform", "kompass",
-    "yellowpages", "gelbeseiten",
-    "dasoertliche", "11880", "cylex", "firmenabc", "meinestadt",
-    "werliefertwas", "firmeneintrag", "branchenbuch",
-})
-
-#: Words that turn a company name into one of its sites or departments. The
-#: SAP name "<page name> <qualifier> <rest>" is that company's site, and the
-#: VAT ID is the company's (attribution ATTRIBUTION_QUALIFIER). Compared as
-#: ``name_tokens`` (so "Fakultät" → "fakultaet", "Klinik für" → two tokens).
-SITE_QUALIFIERS: tuple[str, ...] = (
-    "Werk", "Standort", "Niederlassung", "Zweigniederlassung", "Filiale",
-    "Betrieb", "Zentrale", "Institut", "Lehrstuhl", "Abteilung", "Fakultät",
-    "Klinik für", "Department", "Plant", "Site", "Branch", "Division",
-)
-_QUALIFIER_SEQS: tuple[tuple[str, ...], ...] = tuple(
-    tuple(name_tokens(q)) for q in SITE_QUALIFIERS
-)
+#: Company-directory (aggregator) hosts: a VAT ID read there is a third
+#: party's copy, not the company's own statement (source class C). Matched
+#: against the labels of the page's host (``vat.entity_match.is_aggregator_host``).
+DIRECTORY_DOMAINS: frozenset[str] = AGGREGATOR_LABELS
 
 # ── Gate / reason flags (VAT_Found_Flags) ────────────────────────────────────
 QUOTE_NOT_IN_PAGE = "QUOTE_NOT_IN_PAGE"
@@ -234,12 +226,21 @@ ADDRESS_UNKNOWN = "ADDRESS_UNKNOWN"
 #: Prefix: VAT-ID-shaped strings on the page (the design paper's pattern)
 #: other than the candidate.
 OTHER_VAT_IDS_ON_PAGE = "OTHER_VAT_IDS_ON_PAGE"
+#: A candidate read on a marketplace or social network: never used.
+REJECTED_SOURCE = "REJECTED_SOURCE"
+#: A candidate read on an archive snapshot for a record that is not deleted.
+ARCHIVE_NOT_USED = "ARCHIVE_NOT_USED"
+#: Gates a–c: the number could not be checked on the page.
+_EVIDENCE_GATES = frozenset({QUOTE_NOT_IN_PAGE, ID_NOT_IN_PAGE, FORMAT_ERROR})
 
-#: Gate d's verdict → VAT_Found_Name_Match.
-_NAME_MATCH = {
-    ATTRIBUTION_MATCH: NAME_EXACT, ATTRIBUTION_QUALIFIER: NAME_BRANCH,
-    ATTRIBUTION_PARTIAL: NAME_PARTIAL, ATTRIBUTION_MISMATCH: NAME_MISMATCH,
-}
+
+def unusable_source(url: str, inp: LookupInput) -> str | None:
+    """Why a page may not be a source for *inp* at all, or None."""
+    if is_rejected_host(url):
+        return REJECTED_SOURCE
+    if is_archive_host(url) and not inp.deleted:
+        return ARCHIVE_NOT_USED
+    return None
 
 _IMPRESSUM_RE = re.compile(
     r"impressum|imprint|legal[\s_-]*notice|anbieterkennzeichnung|rechtliche[\s_-]*hinweise",
@@ -255,15 +256,69 @@ _PAGE_SEPARATORS = re.compile(r"[\s.\-/ ]+")
 # Pure helpers
 # ---------------------------------------------------------------------------
 
+logger = logging.getLogger(__name__)
+
+
+def is_pdf_url(url: str) -> bool:
+    return urlparse(url or "").path.lower().endswith(".pdf")
+
+
+def fetch_pdf(url: str, timeout: float = 15.0) -> PageFetchResult | None:
+    """A PDF fetched and its text extracted (at most :data:`PDF_MAX_BYTES`,
+    the first :data:`PDF_MAX_PAGES` pages), as a page whose body text is the
+    PDF's text. Status 413 when it is larger. None when the URL does not
+    serve a PDF after all (the HTML fetch then reads it)."""
+    try:
+        resp = requests.get(url, timeout=timeout, stream=True, allow_redirects=True,
+                            headers={"User-Agent": "BrukerMDM-Enrichment/1.0"})
+    except Exception as exc:  # noqa: BLE001 - never fail a record
+        logger.debug("PDF fetch failed (%s): %s", type(exc).__name__, url)
+        return PageFetchResult(url=url, error=type(exc).__name__)
+    with resp:
+        if not (200 <= resp.status_code < 300):
+            return PageFetchResult(url=resp.url or url, status=resp.status_code)
+        body = b""
+        for chunk in resp.iter_content(64 * 1024):
+            body += chunk
+            if len(body) > PDF_MAX_BYTES:
+                return PageFetchResult(url=resp.url or url, status=413)
+    if not body.startswith(b"%PDF") and "pdf" not in resp.headers.get("content-type", "").lower():
+        return None
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(body))
+        text = " ".join((page.extract_text() or "") for page in reader.pages[:PDF_MAX_PAGES])
+    except Exception as exc:  # noqa: BLE001 - a broken PDF is an unreadable page
+        logger.debug("PDF text extraction failed (%s): %s", type(exc).__name__, url)
+        return PageFetchResult(url=resp.url or url, status=422)
+    final = resp.url or url
+    return PageFetchResult(url=final, status=resp.status_code, content=PageContent(
+        url=final, url_path=urlparse(final).path, page_title=urlparse(final).path.rsplit("/", 1)[-1],
+        h1="", breadcrumb="", body_text=re.sub(r"\s+", " ", text).strip()))
+
+
+#: The one retry of a page an own host refused (403 / 429 / 5xx).
+BROWSER_USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+
+
+def fetch_as_browser(url: str, fetcher: PageFetcher, timeout: float = 15.0) -> PageFetchResult:
+    try:
+        resp = requests.get(url, timeout=timeout, allow_redirects=True, headers={
+            "User-Agent": BROWSER_USER_AGENT, "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"})
+    except Exception as exc:  # noqa: BLE001 - never fail a record
+        return PageFetchResult(url=url, error=type(exc).__name__)
+    if not (200 <= resp.status_code < 300):
+        return PageFetchResult(url=resp.url or url, status=resp.status_code)
+    return PageFetchResult(url=resp.url or url, status=resp.status_code,
+                           content=fetcher._parse(resp.url or url, resp.text))
+
+
 def is_directory_host(url: str) -> bool:
     """A host label equals a :data:`DIRECTORY_DOMAINS` entry, or — for entries
     of six characters or more — contains it (``branchenbuch-deutschland``)."""
-    host = (urlparse(url).hostname or "").lower()
-    for label in host.split("."):
-        for entry in DIRECTORY_DOMAINS:
-            if label == entry or (len(entry) >= 6 and entry in label):
-                return True
-    return False
+    return is_aggregator_host(url)
 
 
 def is_impressum(res: PageFetchResult) -> bool:
@@ -300,6 +355,60 @@ def reader_text(text: str, limit: int = READER_TEXT_LIMIT) -> str:
         if used >= limit:
             break
     return " … ".join(parts)
+
+
+_SECTION_RE = re.compile(
+    r"impressum|imprint|legal[\s_-]*notice|einkauf|beschaffung|lieferant|rechnungs|procurement",
+    re.IGNORECASE,
+)
+
+
+def section_first_text(text: str, limit: int) -> str:
+    """*text* cut to *limit* characters, the parts that matter first: the
+    windows around every USt / VAT mention, then around Impressum /
+    procurement headings, then the head of the page — kept in page order."""
+    if len(text) <= limit:
+        return text
+    spans: list[tuple[int, int]] = []
+    for rx in (_VAT_KEYWORD_RE, _SECTION_RE):
+        spans += [(max(0, m.start() - READER_WINDOW), m.end() + READER_WINDOW) for m in rx.finditer(text)]
+    spans.append((0, limit))
+    kept: list[list[int]] = []
+    used = 0
+    for start, end in spans:
+        end = min(end, len(text))
+        for s, e in kept:  # drop what is already kept
+            if start < e and end > s:
+                if start >= s:
+                    start = e
+                elif end <= e:
+                    end = s
+        if end <= start:
+            continue
+        end = min(end, start + (limit - used))
+        kept.append([start, end])
+        used += end - start
+        if used >= limit:
+            break
+    return " … ".join(text[s:e] for s, e in sorted(kept))
+
+
+def deterministic_reading(text: str, names: tuple[str | None, ...]) -> "Reading | None":
+    """A page read without a model (the llm_web code-side fetch): the one
+    German VAT ID on the page, the passage that states it as the quote, and
+    the record's entity as the page names it. None when the page states no
+    VAT ID or several (a group page: which one is the entity's is not
+    something to decide by pattern)."""
+    ids = vat_candidates(text)
+    if len(ids) != 1:
+        return None
+    digits = ids[0][2:]
+    written = re.compile(r"DE[ ]?" + "".join(d + r"[ .]?" for d in digits[:-1]) + digits[-1])
+    m = written.search(text)
+    if not m:
+        return None
+    quote = text[max(0, m.start() - 80):m.end()]
+    return Reading(vat_id=ids[0], attributed_to=entity_name_on_page(text, names), evidence_quote=quote)
 
 
 def _ws(text: str) -> str:
@@ -367,12 +476,13 @@ _ADDRESS_RANK = {ADDRESS_MATCH: 0, ADDRESS_UNKNOWN: 1, ADDRESS_MISMATCH: 2}
 
 def address_verdict(page_text: str, postal_code: str | None, city: str | None) -> str:
     """Gate f: ``ADDRESS_MATCH`` / ``ADDRESS_MISMATCH`` / ``ADDRESS_UNKNOWN``
-    for the SAP Postal Code and City against one page's text. (The finer
-    street-level match the decision reads is ``entity_match.address_match``.)"""
+    for the SAP Postal Code and City against one page's text: the town-level
+    test of ``entity_match.address_match`` (SAME_TOWN or better / DIFFERENT_TOWN
+    / NO_ADDRESS), used to rank candidates."""
     text = page_text or ""
-    if postal_code_on_page(text, postal_code) or city_on_page(text, city):
+    if town_match(text, postal_code, city):
         return ADDRESS_MATCH
-    return ADDRESS_MISMATCH if _ADDRESS_BLOCK_RE.search(text) else ADDRESS_UNKNOWN
+    return ADDRESS_MISMATCH if has_address(text) else ADDRESS_UNKNOWN
 
 
 def candidate_tier(flags: tuple[str, ...], status: str, page_url: str) -> str:
@@ -393,47 +503,19 @@ def candidate_tier(flags: tuple[str, ...], status: str, page_url: str) -> str:
     return TIER_REVIEW
 
 
-def _attribution_one(page: list[str], sap: list[str]) -> str:
-    if set(page) == set(sap):
-        return ATTRIBUTION_MATCH
-    for q in range(1, len(sap)):
-        if any(seq and tuple(sap[q:q + len(seq)]) == seq for seq in _QUALIFIER_SEQS):
-            if set(sap[:q]) == set(page):
-                return ATTRIBUTION_QUALIFIER
-            break  # only the first qualifier starts the site phrase
-    overlap = set(page) & set(sap)
-    if overlap or fuzz.token_sort_ratio(" ".join(page), " ".join(sap)) >= FUZZY_THRESHOLD:
-        return ATTRIBUTION_PARTIAL
-    return ATTRIBUTION_MISMATCH
-
-
-def legal_form_conflict(attributed_to: str | None, names: tuple[str | None, ...]) -> str | None:
-    """``LEGAL_FORM_DIFFERS:<record>/<page>`` when the page's legal form is
-    not the record's (Name + Name 2–4 joined: the form is often in Name 2)."""
-    joined = " ".join(str(n) for n in names if n and str(n).strip())
-    differs = legal_forms_differ(attributed_to, joined)
-    return f"{LEGAL_FORM_DIFFERS}:{differs[0]}/{differs[1]}" if differs else None
+def _attribution_of(verdict: NameVerdict) -> str:
+    if verdict.match == NAME_EXACT:
+        site = {BRANCH, DEPARTMENT} & set(verdict.issues)
+        return ATTRIBUTION_QUALIFIER if site else ATTRIBUTION_MATCH
+    return ATTRIBUTION_PARTIAL if verdict.match == NAME_PARTIAL else ATTRIBUTION_MISMATCH
 
 
 def attribution(attributed_to: str | None, names: tuple[str | None, ...]) -> str:
-    """Gate d's verdict for the page's *attributed_to* against Name alone and
-    Name + Name 2–4 joined; the better of the two. A MATCH / QUALIFIER with
-    another legal form is PARTIAL."""
-    page = name_tokens(attributed_to) if attributed_to else []
-    if not page:
-        return ATTRIBUTION_MISMATCH
-    parts = [str(n) for n in names if n and str(n).strip()]
-    candidates = []
-    if names and names[0]:
-        candidates.append(name_tokens(names[0]))
-    if len(parts) > 1 or not candidates:
-        candidates.append(name_tokens(" ".join(parts)))
-    verdicts = [_attribution_one(page, sap) for sap in candidates if sap]
-    verdict = min(verdicts, key=_ATTR_RANK.__getitem__) if verdicts else ATTRIBUTION_MISMATCH
-    if verdict in (ATTRIBUTION_MATCH, ATTRIBUTION_QUALIFIER) and legal_form_conflict(
-            attributed_to, names):
-        return ATTRIBUTION_PARTIAL
-    return verdict
+    """Gate d's verdict for the page's *attributed_to* against the record
+    (``entity_match.name_match``): MATCH; QUALIFIER for a site or department
+    of the entity; PARTIAL for another legal form or a partly different name;
+    MISMATCH."""
+    return _attribution_of(name_match(attributed_to, names))
 
 
 def run_gates(reading: Reading, page_text: str, page_url: str, inp: LookupInput):
@@ -479,18 +561,19 @@ class _Budget:
     """One customer's page-fetch budget. Per call, so customers looked up at
     the same time cannot spend each other's."""
 
-    def __init__(self) -> None:
+    def __init__(self, limit: int = MAX_FETCHES) -> None:
         self.used = 0
+        self.limit = limit
 
     @property
     def left(self) -> int:
-        return MAX_FETCHES - self.used
+        return self.limit - self.used
 
 
 def _rank(result: FoundResult) -> int:
     """0 verified match · 1 verified qualifier · 2 gates passed but VIES not
-    VALID · 3 a gate failed."""
-    if result.status == FOUND_VERIFIED:
+    VALID · 3 a gate failed. PENDING (VIES not asked yet) ranks as VALID."""
+    if result.status in (FOUND_VERIFIED, FOUND_PENDING):
         return 0 if ATTRIBUTION_MATCH in result.flags else 1
     if result.status.startswith(FOUND_UNVERIFIED + ":"):
         return 2
@@ -515,7 +598,7 @@ def conflicting_sources(best: FoundResult, judged: list[FoundResult]) -> tuple[s
     values = {
         r.value for r in judged
         if r.value and r.value != best.value and r.status != FOUND_UNVERIFIED
-        and r.name_match in (NAME_EXACT, NAME_BRANCH) and r.source_type in PRIMARY_SOURCES
+        and r.name_match == NAME_EXACT and r.source_class in TRUSTED_CLASSES
         and ADDRESS_MISMATCH not in r.flags
     }
     if not values:
@@ -539,6 +622,7 @@ class GroundedLookup:
     ) -> None:
         cache = vies.evidence_cache
         self._vies = vies
+        self._vies_in_lookup = bool(getattr(settings, "vat_vies_in_lookup", False))
         if search_client is None:
             key = (getattr(settings, "serpapi_key", "") or "").strip()
             search_client = SerpAPIClient(key) if key else None
@@ -552,7 +636,7 @@ class GroundedLookup:
         self._unavailable = cache.namespace("vat_pages_unavailable")
         self._fetcher = fetcher or PageFetcher(
             timeout=getattr(settings, "page_fetch_timeout_seconds", 10),
-            max_chars=PAGE_MAX_CHARS, store=None, remove_tags=VAT_REMOVE_TAGS,
+            max_chars=PAGE_MAX_CHARS, store=None, remove_tags=VAT_REMOVE_TAGS, keep_links=True,
         )
         self._llm = llm or VatLLM(cache.namespace("vat_llm"))
         # One counter for every write into this cache, injected reader or not.
@@ -583,11 +667,10 @@ class GroundedLookup:
 
     # -- external answers, cached -------------------------------------------
 
-    async def _search_urls(self, inp: LookupInput) -> list[str]:
+    async def _search_urls(self, inp: LookupInput, queries: tuple[str, ...] | None = None) -> list[str]:
         per_query: list[list[str]] = []
         base = " ".join(p for p in (inp.name_1, inp.city) if p)
-        for suffix in ("Impressum", "Imprint"):
-            query = f"{base} {suffix}"
+        for query in queries or (f"{base} Impressum", f"{base} Imprint"):
             self._stats.serp_queries += 1
             if self._serp.get_serp(query, "DE") is None and not self._serp.serp_frozen:
                 self._stats.serp_network_calls += 1
@@ -635,7 +718,11 @@ class GroundedLookup:
                 flags.add(FROZEN_CACHE_MISS)
             return None
         self._stats.pages_fetched += 1
-        res = await self._fetcher.fetch_page_result(url)
+        res = None
+        if is_pdf_url(url):
+            res = await asyncio.get_running_loop().run_in_executor(None, fetch_pdf, url)
+        if res is None:
+            res = await self._fetcher.fetch_page_result(url)
         status = res.status or 0
         if 200 <= status < 300 or status in (404, 410):
             # Definitive answers only. A timeout / 5xx / transport error is
@@ -651,6 +738,30 @@ class GroundedLookup:
             "url": url, "reason": reason,
         })
         return None
+
+    async def fetch_browser(self, url: str, flags: set[str]) -> PageFetchResult | None:
+        """*url* once more with a browser's User-Agent (``vat_pages`` under
+        ``browser:<url>``). None when it is still refused."""
+        key = "browser:" + url
+        recorded = self._pages.get(key)
+        if isinstance(recorded, dict):
+            self._stats.page_cache_hits += 1
+            res = PageFetchResult(url=recorded.get("url") or url, status=recorded.get("status"),
+                                  content=PageFetcher._content_from_json(recorded.get("content")))
+            return res if res.ok and res.content else None
+        if self._pages.replay_only:
+            flags.add(FROZEN_CACHE_MISS)
+            return None
+        self._stats.page_attempts += 1
+        self._stats.pages_fetched += 1
+        res = await asyncio.get_running_loop().run_in_executor(None, fetch_as_browser, url, self._fetcher)
+        if res.status is not None:
+            self._vies.write_failures.set_checked(self._pages, key, {
+                "url": res.url, "status": res.status, "content": PageFetcher._content_to_json(res.content)})
+        if not (res.ok and res.content):
+            flags.add(f"{PAGE_UNAVAILABLE}:{res.status or res.error}")
+            return None
+        return res
 
     async def _impressum_for(
         self, url: str, flags: set[str], budget: _Budget,
@@ -685,15 +796,20 @@ class GroundedLookup:
 
     # -- one customer ---------------------------------------------------------
 
-    async def lookup(self, inp: LookupInput) -> FoundResult:
+    async def lookup(
+        self, inp: LookupInput, *, query: str | None = None, max_fetches: int | None = None,
+    ) -> FoundResult:
+        """*query*: one SerpAPI query instead of the two default ones (the
+        llm_web fallback passes its search 1); *max_fetches*: the page-fetch
+        cap instead of :data:`MAX_FETCHES`."""
         if self._search is None:
             return FoundResult(GROUNDED, NOT_RUN, flags=(NO_SERPAPI_KEY,))
         if not inp.name_1:
             return FoundResult(GROUNDED, NOT_RUN, flags=("NO_NAME",))
 
-        budget = _Budget()
+        budget = _Budget(max_fetches or MAX_FETCHES)
         flags: set[str] = set()
-        urls = await self._search_urls(inp)
+        urls = await self._search_urls(inp, (query,) if query else None)
         if not urls:
             status = LOOKUP_INCOMPLETE if self._serp.serp_frozen else NOT_FOUND
             reason = FROZEN_CACHE_MISS if self._serp.serp_frozen else NO_SEARCH_RESULTS
@@ -724,7 +840,7 @@ class GroundedLookup:
             except (RuntimeError, ValueError):
                 flags.add(LLM_UNAVAILABLE)
                 continue
-            if not reading.vat_id:
+            if not reading.vat_id or unusable_source(page.url, inp):
                 continue
             result = await self._judge(page, text, reading, inp)
             outcome = result.status
@@ -760,13 +876,17 @@ class GroundedLookup:
 
     async def judge_page(
         self, url: str, reading: Reading, inp: LookupInput, flags: set[str],
+        max_chars: int | None = None,
     ) -> tuple[FoundResult, bool] | None:
         """Gates a–f, VIES and the tier for a *reading* someone else made of the
         page at *url*, checked against that page as fetched HERE (``vat_pages``,
         no fallback paths), and whether the ID's digits are on it. None when
         the page cannot be read: a 403 / 5xx / timeout adds
         ``PAGE_UNAVAILABLE:<status>`` to *flags*, a 404 / 410
-        ``PAGE_UNAVAILABLE:404``. Used by ``vat/lookup_web.py``."""
+        ``PAGE_UNAVAILABLE:404``. *max_chars*: the page text after HTML
+        stripping is cut to that many characters, VAT and Impressum /
+        procurement sections first (:func:`section_first_text`). Used by
+        ``vat/lookup_web.py``."""
         page = await self._fetch(url, flags)
         if page is None:
             return None
@@ -774,6 +894,8 @@ class GroundedLookup:
             flags.add(f"{PAGE_UNAVAILABLE}:{page.status}")
             return None
         text = _readable_text(page.content)
+        if max_chars:
+            text = section_first_text(text, max_chars)
         return await self._judge(page, text, reading, inp), id_on_page(reading.vat_id, text)
 
     async def _judge(
@@ -787,44 +909,58 @@ class GroundedLookup:
         others += [c for c in vat_candidates(text) if _compact(c) not in known]
         if others:
             flags.append(f"{OTHER_VAT_IDS_ON_PAGE}:" + ",".join(others))
-        date = self._pages.fetched_at(page.url) or today()
+        # An archive snapshot is dated by the snapshot, not by our fetch.
+        date = (archive_snapshot_date(page.url) or self._pages.fetched_at(page.url) or today())
+        evidence, issues = self._evidence(page, text, reading, inp, flags)
+        if others:
+            issues.append(ISSUE_OTHER_VAT_IDS)
         common = dict(
             value=value,
             source_url=page.url,
             attributed_to=reading.attributed_to,
             evidence=reading.evidence_quote,
             date=date,
-            **self._evidence(page, text, reading, inp, flags),
+            address_text=address_text(text),
+            **evidence,
         )
         flags.append(address_verdict(text, inp.postal_code, inp.city))
         if failed:
+            if failed in _EVIDENCE_GATES:
+                issues.append(EVIDENCE_NOT_VERIFIED)
             flags = [failed, *flags]
             return FoundResult(GROUNDED, FOUND_UNVERIFIED, flags=tuple(flags),
                                tier=candidate_tier(tuple(flags), FOUND_UNVERIFIED, page.url),
-                               validation_status=NOT_CHECKED, **common)
+                               validation_status=NOT_CHECKED, issues=tuple(issues), **common)
 
+        if not self._vies_in_lookup:  # Step AF-2: the queue asks VIES
+            return FoundResult(GROUNDED, FOUND_PENDING, flags=tuple(flags),
+                               tier=candidate_tier(tuple(flags), FOUND_PENDING, page.url),
+                               validation_status=VALIDATION_PENDING, issues=tuple(issues), **common)
         if self._vies.enabled:
             self._stats.vies_checks += 1
         vies = await self._vies.check(fmt)  # NOT_CHECKED when VIES is off
         if vies.error_code:
             flags.append(f"VIES:{vies.error_code}")
         status = FOUND_VERIFIED if vies.status == VALID else f"{FOUND_UNVERIFIED}:VIES_{vies.status}"
+        # No answer is not a "no": UNAVAILABLE, queued for re-verification.
+        validation = vies.status if vies.status in (VALID, INVALID) else VALIDATION_UNAVAILABLE
         return FoundResult(GROUNDED, status, flags=tuple(flags),
                            tier=candidate_tier(tuple(flags), status, page.url),
-                           validation_status=vies.status, validation_date=vies.request_date,
-                           **common)
+                           validation_status=validation, validation_date=vies.request_date,
+                           issues=tuple(issues), **common)
 
     @staticmethod
     def _evidence(
         page: PageFetchResult, text: str, reading: Reading, inp: LookupInput, flags: list[str],
-    ) -> dict[str, Any]:
-        """The design paper's entity-resolution evidence (§5) and audit
-        fields (§10) for one candidate. Appends the domain, register and
-        legal-form flags to *flags*; decides nothing."""
-        name = _NAME_MATCH[attribution(reading.attributed_to, inp.names)]
-        legal = legal_form_conflict(reading.attributed_to, inp.names)
-        if legal:
-            flags.append(legal)
+    ) -> tuple[dict[str, Any], list[str]]:
+        """The entity-resolution evidence and audit fields for one candidate,
+        and the issues they raise (name, legal form, sister entity,
+        register). Appends the domain and register flags to *flags*; decides
+        nothing."""
+        verdict = name_match(reading.attributed_to, inp.names)
+        issues = list(verdict.issues)
+        if sister_entity_on_page(text, verdict):
+            issues.append(SISTER_ENTITY_ON_PAGE)
         address, elements = address_match(
             text, inp.street, inp.house_number, inp.postal_code, inp.city)
         domain = company_domain(inp.website, inp.email)
@@ -834,12 +970,14 @@ class GroundedLookup:
             flags.append(DOMAIN_MATCH if elements["domain"] else DOMAIN_MISMATCH)
         if elements["register"] is not None:
             flags.append(REGISTER_MATCH if elements["register"] else REGISTER_MISMATCH)
+            if not elements["register"]:
+                issues.append(REGISTER_MISMATCH)
         return dict(
-            source_type=source_type(page.url, directory=is_directory_host(page.url),
-                                    impressum=is_impressum(page), own_domain=elements["domain"]),
+            source_type=source_type(page.url, impressum=is_impressum(page),
+                                    own_domain=elements["domain"], core=verdict.core),
             page_title=(page.content.page_title or None) if page.content else None,
             published_address=address_on_page(reading.published_address, text),
-            name_match=name,
+            name_match=verdict.match,
             address_match=address,
-            match_score=match_score(name, elements),
-        )
+            match_score=match_score(verdict.match, elements),
+        ), issues

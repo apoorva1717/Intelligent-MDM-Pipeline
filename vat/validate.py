@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter, defaultdict
+from dataclasses import replace
 from typing import Any, Iterable, Mapping
 
 from pydantic import AliasChoices
@@ -32,6 +33,9 @@ from vat.lookup import (
     COMPARE_COLUMNS, FOUND_VS_SAP, GROUNDED_VS_SAP, LOOKUP_COLUMNS, SCOPE_ALL, SCOPE_MISSING,
     vs_sap,
 )
+from vat.costs import COST_COLUMNS, cost_columns
+from vat.entity_match import NAME_EXACT, SAP_VAT_OUTDATED, TRUSTED_CLASSES
+from vat.lookup import DIFFERS_FROM_SAP, FoundResult
 from vat.lookup import LookupEngine, LookupInput, in_scope, lookup_kpis, run_lookups
 from vat.name_match import NameMatch, match_name
 from vat.normalize import VatFormat, assess_format
@@ -80,6 +84,8 @@ _LOOKUP_ROLE_FIELDS = {
     "website": "website",
     "email": "email",
     "register_number": "register_number",
+    # SAP's Central Deletion Flag: an archive snapshot may be a source.
+    "deleted": "central_deletion_flag",
 }
 #: Headers EnrichmentRecord does not accept: the SAP export's first name
 #: column is a bare "Name", not "Name 1"; website and register number are
@@ -126,6 +132,22 @@ def _cell(row: Mapping[str, Any], header: str | None) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _flag_set(value: str | None) -> bool:
+    """SAP's ``X`` (and the usual spellings of true)."""
+    return (value or "").strip().lower() in ("x", "true", "1", "yes", "ja")
+
+
+def _sap_outdated(result: FoundResult | None, sap_normalized: str | None, country: str | None):
+    """The result, with ``SAP_VAT_OUTDATED`` when SAP's VAT ID is not the one
+    found: a different, VIES-valid number from a class A / B source naming
+    the exact entity. Only scope ``all`` compares with SAP."""
+    if (result is None or vs_sap(result.value, sap_normalized, country) != DIFFERS_FROM_SAP
+            or result.validation_status != "VALID" or result.name_match != NAME_EXACT
+            or result.source_class not in TRUSTED_CLASSES):
+        return result
+    return replace(result, issues=(*result.issues, SAP_VAT_OUTDATED))
 
 
 def _conflicting_customers(
@@ -228,6 +250,7 @@ async def validate_rows(
                 website=_cell(row, lcols["website"]),
                 email=_cell(row, lcols["email"]),
                 register_number=_cell(row, lcols["register_number"]),
+                deleted=_flag_set(_cell(row, lcols["deleted"])),
             ) if in_scope(fmt, scope) else None
             for row, customer, fmt in zip(rows, customers, formats)
         ]
@@ -238,8 +261,23 @@ async def validate_rows(
             )
         else:
             found, second = await run_lookups(lookup, inputs), None
+        if scope == SCOPE_ALL:
+            found = [_sap_outdated(r, f.normalized, f.country_key) for r, f in zip(found, formats)]
+            if second is not None:
+                second = [_sap_outdated(r, f.normalized, f.country_key)
+                          for r, f in zip(second, formats)]
+        queued = 0
+        if client.enabled and not client.frozen:
+            from vat.vies_retry import ViesRetryQueue, enqueue
+            queue = ViesRetryQueue.for_client(client)
+            queued = enqueue(queue, [*found, *(second or [])])
+            if queued:
+                queue.save()
+        priced = any(r is not None and "costs" in (r.usage or {}) for r in found)
         for row, result in zip(out, found):
             row.update(result.columns() if result else BLANK_COLUMNS)
+            if priced:  # the engine reports cost lines (llm_web): every row gets the columns
+                row.update(cost_columns((result.usage or {}).get("costs") if result else None))
         if scope == SCOPE_ALL:
             for row, inp, fmt, a in zip(out, inputs, formats, found):
                 row[FOUND_VS_SAP] = (
@@ -253,6 +291,7 @@ async def validate_rows(
             "status": dict(Counter(r["VAT_Found_Status"] for r in out if r["VAT_Found_Status"])),
             "kpis": lookup_kpis(found),
             "cost": lookup.stats(),
+            "vies_retry_queued": queued,
         }
         if scope == SCOPE_ALL:
             summary["lookup"]["vs_sap"] = dict(Counter(r[FOUND_VS_SAP] for r in out if r[FOUND_VS_SAP]))
@@ -286,7 +325,8 @@ async def validate_rows(
 #: Every result column, in output order. Which of them a result carries
 #: depends on the run (lookup mode, side-by-side, scope).
 ALL_RESULT_COLUMNS: list[str] = (
-    VAT_COLUMNS + LOOKUP_COLUMNS + [FOUND_VS_SAP] + COMPARE_COLUMNS + [GROUNDED_VS_SAP]
+    VAT_COLUMNS + LOOKUP_COLUMNS + list(COST_COLUMNS.values()) + [FOUND_VS_SAP] + COMPARE_COLUMNS
+    + [GROUNDED_VS_SAP]
 )
 
 

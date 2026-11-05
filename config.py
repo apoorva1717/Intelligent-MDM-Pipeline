@@ -282,6 +282,103 @@ class Settings:
 
     # Search
     serpapi_key: str = field(default_factory=lambda: os.getenv("SERPAPI_KEY", ""))
+    # VAT missing-ID lookup. When False (default) the grounded engine
+    # (SerpAPI + page read) never runs — not as a mode, not side by side,
+    # not as a fallback — and every lookup is llm_web. True allows all three;
+    # llm_web then falls back to it when the model's web search is unavailable.
+    vat_grounded_fallback: bool = field(
+        default_factory=lambda: _bool(os.getenv("VAT_GROUNDED_FALLBACK"), default=False)
+    )
+    # VAT missing-ID lookup: when the web result is not AUTO_ACCEPT, look the
+    # entity up in the public Peppol Directory (vat/peppol.py). Never called
+    # under MOCK_EXTERNAL_CALLS.
+    vat_peppol_enabled: bool = field(
+        default_factory=lambda: _bool(os.getenv("VAT_PEPPOL_ENABLED"), default=True)
+    )
+    # VAT llm_web cost limits (vat/lookup_web.py, vat/llm_cache.py). Hard
+    # limits, enforced in code and stated in the prompt.
+    #: How the searches are made: "hybrid" (search 1 built by code, search 2
+    #: by the model, pages fetched and cut by our code, the model reads them)
+    #: or "model" (the model searches and opens pages itself, Step X).
+    vat_web_query_mode: str = field(
+        default_factory=lambda: os.getenv("VAT_WEB_QUERY_MODE", "hybrid").strip().lower()
+    )
+    #: Web searches per entity. A page opened is not a search.
+    vat_web_max_searches: int = field(
+        default_factory=lambda: int(os.getenv("VAT_WEB_MAX_SEARCHES", "2"))
+    )
+    #: "model" mode only: pages the model may open itself, on top of the
+    #: searches (the API caps searches + opens together at their sum).
+    vat_web_max_opens: int = field(
+        default_factory=lambda: int(os.getenv("VAT_WEB_MAX_OPENS", "3"))
+    )
+    #: "hybrid" mode: characters around each USt-IdNr / VAT / Impressum
+    #: mention given to the reader, and the total kept per page.
+    vat_web_section_window: int = field(
+        default_factory=lambda: int(os.getenv("VAT_WEB_SECTION_WINDOW", "1500"))
+    )
+    vat_web_sections_chars: int = field(
+        default_factory=lambda: int(os.getenv("VAT_WEB_SECTIONS_CHARS", "12000"))
+    )
+    #: Pages our own code fetches per entity, and the characters kept of each
+    #: after HTML stripping (the VAT / Impressum / procurement section first).
+    vat_web_max_fetches: int = field(
+        default_factory=lambda: int(os.getenv("VAT_WEB_MAX_FETCHES", "4"))
+    )
+    #: "hybrid" (Step AF-2): an entity whose search-1 results show at least
+    #: VAT_WEB_MANY_OWN_HOSTS of its own hosts gets this many fetches instead.
+    vat_web_max_fetches_many_hosts: int = field(
+        default_factory=lambda: int(os.getenv("VAT_WEB_MAX_FETCHES_MANY_HOSTS", "6"))
+    )
+    vat_web_many_own_hosts: int = field(
+        default_factory=lambda: int(os.getenv("VAT_WEB_MANY_OWN_HOSTS", "3"))
+    )
+    #: "hybrid": links followed per entity on an own host (Impressum,
+    #: Steuern, Lieferanten …), on top of the fetches.
+    vat_web_max_follows: int = field(
+        default_factory=lambda: int(os.getenv("VAT_WEB_MAX_FOLLOWS", "2"))
+    )
+    vat_web_page_chars: int = field(
+        default_factory=lambda: int(os.getenv("VAT_WEB_PAGE_CHARS", "8000"))
+    )
+    vat_web_reasoning_effort: str = field(
+        default_factory=lambda: os.getenv("VAT_WEB_REASONING_EFFORT", "medium")
+    )
+    #: Output cap of the search call, reasoning included.
+    vat_web_max_output_tokens: int = field(
+        default_factory=lambda: int(os.getenv("VAT_WEB_MAX_OUTPUT_TOKENS", "1500"))
+    )
+    #: Seconds before the single retry of a search call that got HTTP 429 / 5xx.
+    vat_web_retry_backoff_seconds: float = field(
+        default_factory=lambda: float(os.getenv("VAT_WEB_RETRY_BACKOFF_SECONDS", "10"))
+    )
+    #: Stop issuing model calls once the run's cost passes this (USD; 0 = no
+    #: limit). Cost is tokens plus search calls, from the API usage fields
+    #: and the price table (vat/costs.py).
+    vat_web_budget_usd: float = field(
+        default_factory=lambda: float(os.getenv("VAT_WEB_BUDGET_USD", "0"))
+    )
+    #: The price table (config/vat_prices.yaml when empty).
+    vat_prices_file: str = field(default_factory=lambda: os.getenv("VAT_PRICES_FILE", ""))
+    #: The deployment the calls are priced as (the LLM deployment when empty).
+    vat_price_deployment: str = field(default_factory=lambda: os.getenv("VAT_PRICE_DEPLOYMENT", ""))
+    #: The small model for the VAT helper calls (ranking, Name-2 classifier),
+    #: run with reasoning minimal; search and reading stay on the LLM deployment.
+    vat_helper_model: str = field(default_factory=lambda: os.getenv("VAT_HELPER_MODEL", "MDM-Apoorva-gpt-5.4-mini"))
+    #: Hybrid mode's page order: "model" (the helper model ranks the results,
+    #: rule 8 for the rest and on failure) or "heuristic" (rule 8 alone).
+    vat_web_ranking: str = field(default_factory=lambda: os.getenv("VAT_WEB_RANKING", "model"))
+    #: The Name-2 classifier on the helper model (rule 10b).
+    vat_name2_classifier: bool = field(
+        default_factory=lambda: _bool(os.getenv("VAT_NAME2_CLASSIFIER"), default=True))
+    #: The last-step directory search on unternehmensverzeichnis.org (rule 17).
+    vat_aggregator_fallback: bool = field(
+        default_factory=lambda: _bool(os.getenv("VAT_AGGREGATOR_FALLBACK"), default=True))
+    #: Ask VIES inside the lookup, per candidate (the behaviour before Step
+    #: AF-2). Off: a candidate leaves the lookup PENDING and the queue
+    #: (vat/vies_retry.py) verifies it in batches at the end of the run.
+    vat_vies_in_lookup: bool = field(
+        default_factory=lambda: _bool(os.getenv("VAT_VIES_IN_LOOKUP"), default=False))
     # When False (default) the department-domain probe issues at most one
     # SERP call (the site-restricted query). The cross-domain fallback
     # query — which catches departments hosted on a separate brand domain

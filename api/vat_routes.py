@@ -11,10 +11,12 @@
   upload, but VIES is never called: every VIES status is NOT_CHECKED.
 
 ``lookup_missing`` (``none`` | ``grounded`` | ``llm_web`` | ``llm_only``;
-default ``none``) proposes VAT IDs for rows whose VAT Registration No. is
+default ``llm_web``) proposes VAT IDs for rows whose VAT Registration No. is
 empty and whose Country/Region Key is DE, in the ``VAT_Found_*`` columns
 (``vat/lookup.py``). ``none`` is the behaviour from before the lookups
-existed, unchanged.
+existed, unchanged. ``grounded`` — as a mode, side by side, or as llm_web's
+fallback — runs only with ``VAT_GROUNDED_FALLBACK=true``; otherwise asking
+for it is a 400 (``vat/lookup_engines.py``).
 
 **The VAT endpoints never answer from memory.** The LLM lookup here is
 ``llm_web`` (``vat/lookup_web.py``): the model searches the web with high
@@ -40,7 +42,7 @@ from pydantic import BaseModel, Field
 
 from config import Settings, get_settings
 from vat.lookup import COMPARE_COLUMNS, LOOKUP_COLUMNS, LookupEngine
-from vat.lookup_engines import make_lookup
+from vat.lookup_engines import GroundedDisabled, make_lookup
 from vat.validate import VAT_COLUMNS, result_columns, validate_rows
 from vat.vies_client import VIESClient
 from vat.xlsx import validate_workbook
@@ -81,7 +83,7 @@ class VatValidationRequest(BaseModel):
     rows: list[dict[str, Any]] = Field(..., min_length=1)
     #: Propose VAT IDs for rows with an empty VAT Registration No. and key DE.
     #: ``llm_only`` runs ``llm_web`` (web search; never from memory).
-    lookup_missing: LookupMode = "none"
+    lookup_missing: LookupMode = "llm_web"
 
 
 class VatValidationResponse(BaseModel):
@@ -109,6 +111,16 @@ def _get_lookup(mode: str, client: VIESClient) -> LookupEngine | None:
     return make_lookup(mode, get_settings(), client)
 
 
+def _engines(mode: str | None, compare_mode: str | None, client: VIESClient):
+    """``(lookup, compare)``. A grounded request while it is switched off is a 400."""
+    try:
+        lookup = _get_lookup(mode, client)
+        compare = _get_lookup(compare_mode, client) if (lookup is not None and compare_mode) else None
+    except GroundedDisabled as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return lookup, compare
+
+
 async def _close(*engines: LookupEngine | None) -> None:
     for engine in engines:
         if engine is not None:
@@ -121,8 +133,7 @@ async def _validate_json(
 ) -> VatValidationResponse:
     client = _client_or_500()
     mode = _endpoint_mode(mode)
-    lookup = _get_lookup(mode, client)
-    compare = _get_lookup(compare_mode, client) if (lookup is not None and compare_mode) else None
+    lookup, compare = _engines(mode, compare_mode, client)
     logger.info("VAT validation request received: %d rows, lookup_missing=%s, compare=%s",
                 len(rows), mode, compare_mode)
     try:
@@ -141,7 +152,7 @@ async def validate_vat(
     request: VatValidationRequest,
     lookup_missing: Optional[LookupMode] = Query(
         default=None,
-        description="Overrides the body's lookup_missing. Default none: unchanged behaviour.",
+        description="Overrides the body's lookup_missing (default llm_web). none: no lookup.",
     ),
     scope: LookupScope = _SCOPE_MISSING_DEFAULT,
 ) -> VatValidationResponse:
@@ -154,10 +165,10 @@ async def validate_vat(
 
 
 _WITH_GROUNDED = Query(
-    default=True,
+    default=False,
     description="Also run the grounded lookup (SerpAPI + page read) on the same rows and add "
                 "VAT_Grounded_* and VAT_LLM_vs_Grounded for a side-by-side comparison. "
-                "false skips it (no SerpAPI cost).",
+                "Needs VAT_GROUNDED_FALLBACK=true; otherwise true is a 400.",
 )
 
 
@@ -171,8 +182,8 @@ async def validate_vat_llm_only_experiment(
     the web for missing VAT IDs (never from memory) and the code checks the
     page it cites (``vat/lookup_web.py``).
 
-    With ``with_grounded`` (default on) the grounded lookup runs on the same
-    rows and its result is added next to it (``VAT_Grounded_*``,
+    With ``with_grounded`` (off by default; needs VAT_GROUNDED_FALLBACK) the
+    grounded lookup runs on the same rows and its result is added next to it (``VAT_Grounded_*``,
     ``VAT_LLM_vs_Grounded``), so the two can be compared in one response."""
     return await _validate_json(
         request.rows, "llm_web", "grounded" if with_grounded else None, scope=scope,
@@ -183,7 +194,7 @@ async def validate_vat_llm_only_experiment(
 async def validate_vat_file(
     file: UploadFile = File(..., description="SAP export XLSX (sheet 'Data') with a VAT Registration No. column"),
     lookup_missing: LookupMode = Query(
-        default="none", description="Missing-VAT lookup mode. Default none: unchanged behaviour.",
+        default="llm_web", description="Missing-VAT lookup mode (default llm_web). none: no lookup.",
     ),
     scope: LookupScope = _SCOPE_MISSING_DEFAULT,
 ) -> StreamingResponse:
@@ -209,8 +220,8 @@ async def validate_vat_file_llm_only_experiment(
     ``/api/validate/vat/file`` with ``lookup_missing=llm_web``: the model
     searches the web for missing VAT IDs (never from memory) and the code
     checks the page it cites (``vat/lookup_web.py``). The returned file is
-    named ``<name>_vat_llm_web.xlsx``. With ``with_grounded`` (default on) the
-    grounded lookup's result is added next to it.
+    named ``<name>_vat_llm_web.xlsx``. With ``with_grounded`` (off by default;
+    needs VAT_GROUNDED_FALLBACK) the grounded lookup's result is added next to it.
 
     VIES is not called on this endpoint — not for the SAP VAT IDs, the LLM
     lookup's candidates or the grounded ones. Every VIES status is
@@ -248,8 +259,7 @@ async def _validate_upload(
     client = _client_or_500()
     client.enabled = vies
     mode = _endpoint_mode(mode)
-    lookup = _get_lookup(mode, client)
-    compare = _get_lookup(compare_mode, client) if (lookup is not None and compare_mode) else None
+    lookup, compare = _engines(mode, compare_mode, client)
     logger.info("VAT validation file request received: %s, lookup_missing=%s, compare=%s, vies=%s",
                 filename, mode, compare_mode, vies)
     try:

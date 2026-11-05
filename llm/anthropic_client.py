@@ -160,26 +160,53 @@ def visited_urls(content: Any) -> list[str]:
 
 async def web_search(
     client: AsyncAnthropic, system_prompt: str, user_prompt: str, effort: str,
-) -> tuple[str, list[str]]:
-    """``(the final answer's JSON text, every URL visited)`` for one search task."""
+    *, max_uses: int | None = None, max_fetches: int | None = None, max_tokens: int | None = None,
+    with_usage: bool = False,
+):
+    """``(the final answer's JSON text, every URL visited)`` for one search task;
+    with *with_usage* also the usage. *max_uses* caps web_search and
+    *max_fetches* web_fetch (default: *max_uses*), each separately: past it
+    the tool answers ``max_uses_exceeded`` and Claude has to answer with what
+    it has. *max_fetches* 0 leaves web_fetch out."""
     model = llm_model()
     messages: list[dict[str, Any]] = [{"role": "user", "content": user_prompt}]
     visited: list[str] = []
+    caps = {"web_search": max_uses, "web_fetch": max_uses if max_fetches is None else max_fetches}
+    tools = [dict(t, max_uses=caps[t["name"]]) if caps.get(t["name"]) else t
+             for t in WEB_TOOLS if caps.get(t["name"]) != 0]
+    totals = {"input_tokens": 0, "cached_tokens": 0, "cache_write_tokens": 0, "output_tokens": 0,
+              "reasoning_tokens": 0, "tool_calls": 0, "search_calls": 0, "other_tool_calls": 0}
     for _ in range(MAX_PAUSE_CONTINUATIONS + 1):
         async with client.beta.messages.stream(
             model=model,
-            max_tokens=WEB_SEARCH_MAX_TOKENS,
+            max_tokens=max_tokens or WEB_SEARCH_MAX_TOKENS,
             system=system_prompt + JSON_ONLY,
             messages=messages,
-            tools=WEB_TOOLS,
+            tools=tools,
             output_config={"effort": effort},
             **_fallback_kwargs(model),
         ) as stream:
             message = await stream.get_final_message()
         visited += [u for u in visited_urls(message.content) if u not in visited]
+        u = message.usage
+        server = getattr(u, "server_tool_use", None)
+        searches = getattr(server, "web_search_requests", 0) or 0
+        fetches = getattr(server, "web_fetch_requests", 0) or 0
+        cached = getattr(u, "cache_read_input_tokens", 0) or 0
+        written = getattr(u, "cache_creation_input_tokens", 0) or 0
+        totals["input_tokens"] += (u.input_tokens or 0) + cached + written
+        totals["cached_tokens"] += cached
+        totals["cache_write_tokens"] += written
+        totals["output_tokens"] += u.output_tokens or 0
+        totals["search_calls"] += searches
+        totals["other_tool_calls"] += fetches
+        totals["tool_calls"] += searches + fetches
         if message.stop_reason != "pause_turn":
             _check_stop(message)
-            return json_text(_text(message)), visited
+            text = json_text(_text(message))
+            if with_usage:
+                return text, visited, {**totals, "api_status": message.stop_reason}
+            return text, visited
         # A long server-tool turn paused: send it back to let Claude continue.
         messages = [
             {"role": "user", "content": user_prompt},

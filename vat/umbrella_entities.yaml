@@ -1,0 +1,10 @@
+# Umbrella organisations whose institutes have no VAT ID of their own: a
+# department / institute whose page says it belongs to one of these may take
+# the umbrella's number (issue PARENT_ENTITY, AUTO allowed). Any other parent
+# relationship is PARENT_ENTITY_CANDIDATE (review). Read by
+# vat/lookup_web.py (umbrella_entities); one entry per "- name:", aliases
+# are the words that tie a record to it. Extend as needed.
+- name: Fraunhofer-Gesellschaft zur Förderung der angewandten Forschung e.V.
+  aliases: [Fraunhofer]
+- name: Max-Planck-Gesellschaft zur Förderung der Wissenschaften e.V.
+  aliases: [Max-Planck, Max Planck, MPI]

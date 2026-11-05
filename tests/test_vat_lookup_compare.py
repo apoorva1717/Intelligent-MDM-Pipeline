@@ -62,7 +62,7 @@ class _Fake:
 
 @pytest_asyncio.fixture
 async def report(tmp_path):
-    settings = replace(get_settings(), vies_backoff_seconds=0.0, vies_min_interval_ms=0,
+    settings = replace(get_settings(), vat_web_query_mode="model", vies_backoff_seconds=0.0, vies_min_interval_ms=0,
                        vies_requester_vat="", cache_frozen=False)
     engines = {"grounded": _Fake("grounded", A_ANSWERS), "llm_only": _Fake("llm_only", B_ANSWERS)}
 

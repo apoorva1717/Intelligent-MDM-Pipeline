@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from urllib.parse import urljoin, urlparse
 
@@ -33,6 +33,8 @@ REMOVE_TAGS = {"script", "style", "nav", "footer", "header", "aside", "form", "i
 #: and the link lists are the part worth losing. A head slice of a long footer
 #: is a sitemap; a tail slice of one is the sentence that names the company.
 _FOOTER_MAX_CHARS = 600
+#: Links kept per page with ``keep_links``.
+_MAX_LINKS = 400
 
 
 def _log_fetch_failure(url: str, exc: Exception) -> None:
@@ -82,6 +84,10 @@ class PageContent:
     #: consumer opts into. Defaulted, so every existing construction site and
     #: every cache entry written before the field existed stays valid.
     footer_text: str = ""
+    #: ``[text, absolute href]`` of the page's links, in page order; only
+    #: with ``PageFetcher(keep_links=True)`` (the VAT lookup follows
+    #: Impressum links). Empty otherwise and on older cache entries.
+    links: list = field(default_factory=list)
 
     def is_empty(self) -> bool:
         return not any([self.page_title, self.h1, self.breadcrumb, self.body_text])
@@ -135,8 +141,10 @@ class PageFetcher:
         max_chars: int = 1500,
         store: "DiskCache | None" = None,
         remove_tags: "frozenset[str] | set[str]" = frozenset(REMOVE_TAGS),
+        keep_links: bool = False,
     ) -> None:
         self._timeout = timeout
+        self._keep_links = keep_links
         self._max_chars = max_chars
         self._store = store
         #: Tags deleted before `body_text` is taken. Enrichment keeps the
@@ -175,6 +183,7 @@ class PageFetcher:
             "page_title": content.page_title, "h1": content.h1,
             "breadcrumb": content.breadcrumb, "body_text": content.body_text,
             "footer_text": content.footer_text,
+            **({"links": content.links} if content.links else {}),
         }
 
     @staticmethod
@@ -190,6 +199,7 @@ class PageFetcher:
             # replay as a page with no footer, which is exactly the content
             # the run that recorded them saw.
             footer_text=raw.get("footer_text") or "",
+            links=list(raw.get("links") or []),
         )
 
     async def fetch_page_result(
@@ -476,6 +486,14 @@ class PageFetcher:
         if len(footer_text) > _FOOTER_MAX_CHARS:
             footer_text = "…" + footer_text[-(_FOOTER_MAX_CHARS - 1):]
 
+        # Links BEFORE the decompose loop: the Impressum link is in <nav> / <footer>.
+        links: list = []
+        if self._keep_links:
+            for a in soup.find_all("a", href=True)[:_MAX_LINKS]:
+                href = a["href"].strip()
+                if href and not href.startswith(("mailto:", "tel:", "javascript:", "#")):
+                    links.append([a.get_text(" ", strip=True)[:80], urljoin(url, href)])
+
         # Remove non-content elements and extract body text
         for tag in soup.find_all(self._remove_tags):
             tag.decompose()
@@ -492,6 +510,7 @@ class PageFetcher:
             breadcrumb=breadcrumb[:300],
             body_text=body_text,
             footer_text=footer_text,
+            links=links,
         )
 
 

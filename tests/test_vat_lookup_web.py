@@ -65,8 +65,10 @@ class FakeSearch:
 
 
 def _settings():
-    return replace(get_settings(), vies_backoff_seconds=0.0, vies_min_interval_ms=0,
-                   vies_requester_vat="", cache_frozen=False)
+    return replace(get_settings(), vat_web_query_mode="model", vies_backoff_seconds=0.0, vies_min_interval_ms=0,
+                   vies_requester_vat="", cache_frozen=False,
+                   # The inline VIES check these tests were written for (Step AF-2: the queue).
+                   vat_vies_in_lookup=True)
 
 
 def _engine(tmp_path, search=None, web=None, frozen=False, vies_reply=None):
@@ -91,7 +93,7 @@ class TestFound:
             "llm_web", FOUND_VERIFIED, "DE811128135", IMPRESSUM, "PROPOSED")
         assert LLM_WEB_SEARCH in r.flags and "SEARCH_VISITED:1" in r.flags
         assert "ATTRIBUTION_MATCH" in r.flags and "ADDRESS_MATCH" in r.flags
-        assert search.calls[0][2] == REASONING_EFFORT == "high"
+        assert search.calls[0][2] == engine.effort == REASONING_EFFORT == "medium"
         assert "70839" in search.calls[0][1]  # the model is given the address to search with
 
     @pytest.mark.asyncio
@@ -155,7 +157,9 @@ class TestNeverFromMemory:
 
     @pytest.mark.asyncio
     async def test_no_answer(self, tmp_path):
-        engine, _ = _engine(tmp_path, search=FakeSearch({"vat_id": None, "source_url": None}))
+        # No results to read either (the code-side fetch: tests/test_vat_web_limits.py).
+        engine, _ = _engine(tmp_path, search=FakeSearch({"vat_id": None, "source_url": None},
+                                                        visited=[]))
         r = await engine.lookup(BOSCH)
         assert (r.status, r.value) == (NOT_FOUND, None) and LLM_WEB_NO_ANSWER in r.flags
 

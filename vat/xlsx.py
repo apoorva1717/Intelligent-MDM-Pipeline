@@ -190,6 +190,9 @@ def _write_kpis(ws, kpis: dict[str, Any] | None) -> None:
     for group in ("decision", "confidence", "conflicts_by_source_type"):
         for value, n in sorted(kpis.get(group, {}).items()):
             ws.append([f"{group}: {value}", n])
+    for decision, counts in kpis.get("issues", {}).items():
+        for code, n in counts.items():
+            ws.append([f"issues: {decision}: {code}", n])
 
 
 async def validate_workbook(

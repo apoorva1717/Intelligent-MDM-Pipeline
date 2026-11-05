@@ -65,7 +65,7 @@ async def client(stub, tmp_path, monkeypatch):
 
 
 async def _post(client, rows):
-    resp = await client.post(URL, json={"rows": rows})
+    resp = await client.post(URL, json={"rows": rows, "lookup_missing": "none"})
     assert resp.status_code == 200, resp.text
     return resp.json()
 
@@ -232,7 +232,7 @@ XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 async def _upload(client, name, content):
-    return await client.post(FILE_URL, files={"file": (name, content, XLSX)})
+    return await client.post(FILE_URL + "?lookup_missing=none", files={"file": (name, content, XLSX)})
 
 
 def _book(rows):
@@ -363,7 +363,13 @@ _MISSING_DE = {"Customer": "1", "Name": "Acme GmbH", "Country/Region Key": "DE",
 
 class TestLookupMissing:
     @pytest.mark.asyncio
-    async def test_default_is_none_and_output_unchanged(self, client, lookups):
+    async def test_default_is_llm_web(self, client, lookups):
+        body = (await client.post(URL, json={"rows": [_MISSING_DE]})).json()
+        assert body["rows"][0]["VAT_Lookup_Mode"] == "LLM_WEB"
+        assert [e.mode for e in lookups] == ["llm_web"]
+
+    @pytest.mark.asyncio
+    async def test_none_leaves_output_unchanged(self, client, lookups):
         body = await _post(client, [_MISSING_DE])
         assert body["columns"] == VAT_COLUMNS
         assert list(body["rows"][0]) == list(_MISSING_DE) + VAT_COLUMNS
@@ -398,7 +404,7 @@ class TestLookupMissing:
         assert resp.status_code == 200
         row = resp.json()["rows"][0]
         assert row["VAT_Lookup_Mode"] == "LLM_WEB"
-        assert [e.mode for e in lookups] == ["llm_web", "grounded"]  # side by side by default
+        assert [e.mode for e in lookups] == ["llm_web"]  # grounded only when asked for
 
     @pytest.mark.asyncio
     async def test_unknown_mode_is_422(self, client, lookups):
@@ -420,11 +426,19 @@ class TestLookupMissing:
         assert any("Missing-VAT lookup" in str(c) for c in summary_text)
 
     @pytest.mark.asyncio
-    async def test_file_endpoint_default_has_no_lookup_columns(self, client, lookups):
+    async def test_file_endpoint_none_has_no_lookup_columns(self, client, lookups):
         content = _book([["Customer", "Country/Region Key", "VAT Registration No."], ["1", "DE", None]])
-        resp = await client.post(FILE_URL, files={"file": ("x.xlsx", content, XLSX)})
+        resp = await _upload(client, "x.xlsx", content)
         headers, _ = _sheet(load_workbook(io.BytesIO(resp.content)), "Data")
         assert headers[-len(VAT_COLUMNS):] == VAT_COLUMNS and "VAT_Lookup_Mode" not in headers
+
+    @pytest.mark.asyncio
+    async def test_file_endpoint_default_is_llm_web(self, client, lookups):
+        content = _book([["Customer", "Name", "Country/Region Key", "VAT Registration No."],
+                         ["1", "Acme GmbH", "DE", None]])
+        resp = await client.post(FILE_URL, files={"file": ("x.xlsx", content, XLSX)})
+        assert resp.headers["x-vat-lookup-mode"] == "llm_web"
+        assert [e.mode for e in lookups] == ["llm_web"]
 
 
 class TestLlmOnlyExperimentFile:
@@ -440,7 +454,7 @@ class TestLlmOnlyExperimentFile:
         assert resp.headers["content-disposition"] == (
             'attachment; filename="export_vat_llm_web.xlsx"')
         assert resp.headers["x-vat-lookup-mode"] == "llm_web"
-        assert [e.mode for e in lookups] == ["llm_web", "grounded"]
+        assert [e.mode for e in lookups] == ["llm_web"]
         assert all(e.closed for e in lookups)
         wb = load_workbook(io.BytesIO(resp.content))
         _, rows = _sheet(wb, "Data")
@@ -463,7 +477,7 @@ class TestLlmOnlyExperimentFile:
     @pytest.mark.asyncio
     async def test_plain_file_endpoint_keeps_its_name_and_mode(self, client, lookups):
         content = _book([["Customer", "Country/Region Key", "VAT Registration No."], ["1", "DE", None]])
-        resp = await client.post(FILE_URL, files={"file": ("export.xlsx", content, XLSX)})
+        resp = await _upload(client, "export.xlsx", content)
         assert resp.headers["content-disposition"] == 'attachment; filename="export_vat.xlsx"'
         assert resp.headers["x-vat-lookup-mode"] == "none"
 
@@ -471,7 +485,8 @@ class TestLlmOnlyExperimentFile:
 class TestSideBySide:
     @pytest.mark.asyncio
     async def test_json_has_both_results_and_the_agreement(self, client, lookups):
-        resp = await client.post(URL + "/llm-only-experiment", json={"rows": [_MISSING_DE]})
+        resp = await client.post(URL + "/llm-only-experiment?with_grounded=true",
+                                 json={"rows": [_MISSING_DE]})
         body = resp.json()
         assert body["columns"] == (VAT_COLUMNS + LOOKUP_COLUMNS + ["VAT_Found_vs_SAP"]
                                    + COMPARE_COLUMNS + ["VAT_Grounded_vs_SAP"])
@@ -493,7 +508,8 @@ class TestSideBySide:
     @pytest.mark.asyncio
     async def test_out_of_scope_rows_have_blank_comparison(self, client, lookups):
         fr = {"Customer": "2", "Name": "Beta SA", "Country/Region Key": "FR", "VAT Registration No.": None}
-        body = (await client.post(URL + "/llm-only-experiment", json={"rows": [_MISSING_DE, fr]})).json()
+        body = (await client.post(URL + "/llm-only-experiment?with_grounded=true",
+                                  json={"rows": [_MISSING_DE, fr]})).json()
         assert body["rows"][1]["VAT_Grounded_Status"] is None
         assert body["rows"][1]["VAT_LLM_vs_Grounded"] is None
 
@@ -501,7 +517,7 @@ class TestSideBySide:
     async def test_file_has_both_column_blocks(self, client, lookups):
         content = _book([["Customer", "Name", "Country/Region Key", "VAT Registration No."],
                          ["1", "Acme GmbH", "DE", None]])
-        resp = await client.post(FILE_URL.replace("/file", "/llm-only-experiment/file"),
+        resp = await client.post(FILE_URL.replace("/file", "/llm-only-experiment/file?with_grounded=true"),
                                  files={"file": ("export.xlsx", content, XLSX)})
         wb = load_workbook(io.BytesIO(resp.content))
         headers, rows = _sheet(wb, "Data")
@@ -546,7 +562,7 @@ class TestScopeAll:
             {"Customer": "4", "Name": "Delta SA", "Country/Region Key": "FR",
              "VAT Registration No.": "FR40303265045"},
         ]
-        body = (await client.post(URL + "/llm-only-experiment", json={"rows": rows})).json()
+        body = (await client.post(URL + "/llm-only-experiment?with_grounded=true", json={"rows": rows})).json()
         out = body["rows"]
         assert [r["VAT_Found_vs_SAP"] for r in out] == ["MATCHES_SAP", "DIFFERS_FROM_SAP", "SAP_BLANK", None]
         assert [r["VAT_Grounded_vs_SAP"] for r in out] == ["MATCHES_SAP", "DIFFERS_FROM_SAP", "SAP_BLANK", None]

@@ -261,14 +261,24 @@ They are column values, **not** issue codes:
 | `VIES_MAX_CONCURRENCY` | 1 |
 | `VIES_MIN_INTERVAL_MS` | 500 (0 disables pacing; cache replays are never paced) |
 | `VIES_REQUESTER_VAT` | empty |
+| `VAT_GROUNDED_FALLBACK` | false |
 
 `VIES_REQUESTER_VAT` is optional and never hardcoded. When it is set, VIES issues a
 consultation number. A malformed value fails loudly (HTTP 500 from the endpoint) instead of
 failing every row as `INVALID_REQUESTER_INFO`.
 
+`VAT_GROUNDED_FALLBACK` controls the grounded lookup (SerpAPI + page read). When it is false
+(the default) that lookup never runs, and every missing-VAT lookup is `llm_web`. Asking for
+`lookup_missing=grounded` or `with_grounded=true` returns 400. When it is true, both are allowed,
+and `llm_web` falls back to the grounded lookup for a customer whose web search could not run
+(`LOOKUP_INCOMPLETE` with `LLM_UNAVAILABLE`). Such a row has `VAT_Lookup_Mode` GROUNDED and the
+flag `GROUNDED_FALLBACK`. A `NOT_FOUND` from `llm_web` is final.
+
 ### Usage
 
 ```
+lookup_missing (query or body) = llm_web (default) | none | grounded (needs VAT_GROUNDED_FALLBACK)
+
 POST /api/validate/vat   {"rows": [{"Customer": "...", "Country/Region Key": "DE", "VAT Registration No.": "...", ...}]}
 → {"rows": [... input columns + VAT_* ...], "columns": [...], "summary": {...}}
 
@@ -279,10 +289,10 @@ POST /api/validate/vat/file   multipart form field "file" = export.xlsx (.xlsx /
 POST /api/validate/vat/llm-only-experiment        JSON, as /api/validate/vat with lookup_missing=llm_only
 POST /api/validate/vat/llm-only-experiment/file   XLSX, as /api/validate/vat/file with lookup_missing=llm_only
 → export_vat_llm_only_experiment.xlsx   (EXPERIMENT ONLY — not for production use, never written to SAP)
-  ?with_grounded=true (default) also runs the grounded lookup (SerpAPI + page read) on the same rows:
+  ?with_grounded=true (default false; needs VAT_GROUNDED_FALLBACK) also runs the grounded lookup (SerpAPI + page read) on the same rows:
   VAT_Found_* = LLM only · VAT_Grounded_Value/_Status/_Source_URL/_Attributed_To/_Evidence/_Date/_Flags
   = SERP + read · VAT_LLM_vs_Grounded = SAME | DIFFERENT | LLM_ONLY | GROUNDED_ONLY | NEITHER
-  (normalised VAT IDs compared). ?with_grounded=false: LLM only, no SerpAPI cost.
+  (normalised VAT IDs compared). ?with_grounded=false (default): LLM only, no SerpAPI cost.
   ?scope=all (default on the experiment endpoints): every DE row is looked up, VAT ID or not, and
   each proposal is scored against the SAP value — VAT_Found_vs_SAP / VAT_Grounded_vs_SAP =
   MATCHES_SAP | DIFFERS_FROM_SAP | NO_PROPOSAL | SAP_BLANK. The lookups never see the SAP value
@@ -477,7 +487,7 @@ follow the paper.
 | §4 source hierarchy | `VAT_Found_Source_Type`: `COMPANY_IMPRESSUM` / `COMPANY_WEBSITE` (tier 1), `OFFICIAL_REGISTER` (tier 2: handelsregister, unternehmensregister, bundesanzeiger, bzst, e-justice), `SECONDARY` (tier 4: directories, or a page nothing ties to the company). **Changed:** `unternehmensregister` was on the directory list; it is now tier 2. Secondary sources are never AUTO_ACCEPT. |
 | §5 entity resolution | **Legal form preserved (changed):** a name match whose legal form differs ("Example GmbH" / "Example AG", "… GmbH" / "… GmbH & Co. KG") is `ATTRIBUTION_PARTIAL` with `LEGAL_FORM_DIFFERS:<record>/<page>`. Before this change legal forms were dropped and such names matched. Parent, subsidiary and branch handling is unchanged (PARTIAL / QUALIFIER); a branch (`VAT_Found_Name_Match = BRANCH`) is no longer eligible for acceptance. **New:** street + house number check (`str.` / `Straße` folded), address level `EXACT` / `STRONG` / `PARTIAL` / `MISMATCH` / `UNKNOWN`, domain and register-number checks (`DOMAIN_*`, `REGISTER_*` flags), and `VAT_Found_Match_Score` using the paper's weights (name 30, street 25, postal code 15, city 10, domain 10, register 10; elements the record lacks are left out of the denominator). The score is reported only; rules decide. |
 | §6 extraction | `entity_match.vat_candidates`: the paper's `\bDE[ ]?[0-9]{9}\b`, widened to grouped digits ("DE 1477 94 196"); a trailing `-NNNNN` (W-IdNr.) is excluded. Every other ID on the page is listed in `OTHER_VAT_IDS_ON_PAGE`. The prompts now also exclude the W-IdNr., LEI, GLN and D-U-N-S number. |
-| §8 decision model | `vat.lookup.decide` → `VAT_Found_Decision`. **AUTO_ACCEPT**: VIES VALID, tier PROPOSED, name EXACT (not branch or partial, same legal form), address EXACT or STRONG, primary source, cited page actually visited, no `REGISTER_MISMATCH`. **CONFLICT**: `AMBIGUOUS_SAME_NAME` or the new `CONFLICTING_SOURCES` (another gate-passing primary source naming the exact entity, at an address that isn't someone else's, gives a different number). **NOT_FOUND**: no value (NOT_FOUND or LOOKUP_INCOMPLETE). **MANUAL_REVIEW**: every other candidate. `VAT_Found_Confidence`: `VERIFIED` / `HIGH_CONFIDENCE` / `MEDIUM_CONFIDENCE` / `NOT_VERIFIED` / `NOT_FOUND` / `CONFLICT`. AUTO_ACCEPT only marks a candidate as *eligible*; nothing writes `VAT Registration No.`. |
+| §8 decision model | `vat.lookup.decide` → `VAT_Found_Decision`. **AUTO_ACCEPT**: VIES VALID, tier PROPOSED, name EXACT (not branch or partial, same legal form), address EXACT or STRONG, primary source, cited page actually visited, no `REGISTER_MISMATCH`. **CONFLICT**: `AMBIGUOUS_SAME_NAME` or the new `CONFLICTING_SOURCES` (another gate-passing primary source naming the exact entity, at an address that isn't someone else's, gives a different number). **NOT_FOUND**: no value (NOT_FOUND or LOOKUP_INCOMPLETE). **MANUAL_REVIEW**: every other candidate. `VAT_Found_Confidence`: `VERIFIED` / `HIGH_CONFIDENCE` / `MEDIUM_CONFIDENCE` / `LOW_CONFIDENCE` / `NOT_FOUND` / `CONFLICT` (the review tiers of Step AF-2; `NOT_VERIFIED` before). AUTO_ACCEPT only marks a candidate as *eligible*; nothing writes `VAT Registration No.`. |
 | §9 agent instructions | `vat/prompts.py`, `vat_llm_web` **v2** and `vat_impressum_read` **v2**: source order, exact legal entity (legal form; no parent, subsidiary, sister, branch, predecessor or successor), identifier exclusions, never guess or derive, null when nothing is found. |
 | §10 audit trail | New columns: `VAT_Found_Page_Title`, `VAT_Found_Published_Address` (kept only when it appears on the page), `VAT_Found_Name_Match`, `VAT_Found_Address_Match`, `VAT_Found_Validation_Status` and `VAT_Found_Validation_Date` (VIES's answer and `requestDate`; `NOT_CHECKED` when a gate failed), `VAT_Found_Agent_Version` (mode, prompt version, model). Existing columns: source URL, legal name found (`Attributed_To`), evidence, research date. The side-by-side `VAT_Grounded_*` set carries the same columns. KPIs (summary `lookup.kpis` and the Summary sheet), counted per customer: discovery, verification, auto-accept, manual-review and not-found rates, conflicts, conflicts by source type, average seconds per customer. |
 
@@ -489,6 +499,441 @@ approval (§7, §12.8) stays out of scope.
 **Prompt v2 and frozen caches.** The prompt text is part of the LLM cache key. Recordings
 made with v1 (the 2026-10-20 experiment, §3a) do not replay under v2: a `CACHE_FROZEN`
 re-run of that experiment needs the code at `4bd61d1`.
+
+### Decision rules, issue codes and source classes (2026-11-02)
+
+These replace the §5 address levels, the §4 source tiers and the §8 decision rules in the
+table above. Nothing here writes to SAP.
+
+**Address match** (`VAT_Found_Address_Match`, `entity_match.address_match`). Exactly four
+values. Street folding is unchanged (Hauptstr. 5 = Hauptstrasse 5 = Haupt-Straße 5).
+
+| Value | Meaning |
+|---|---|
+| `EXACT` | street, house number, postcode and city all match |
+| `SAME_TOWN` | the town matches (city, or postcode); street, house number or postcode differ, SAP lacks street or postcode, or the page shows only a PO box with that town |
+| `DIFFERENT_TOWN` | the page states an address in another town |
+| `NO_ADDRESS` | no address on the page |
+
+A city match counts only inside a `<postcode> <town>` block when the page has one, so
+"Amtsgericht Stuttgart" (the registry court) is not read as the company's town.
+
+**Why SAME_TOWN is allowed.** In the full DE export (22,259 in-scope records), records
+that share name, legal form and town carry different VAT IDs in 2.9 % of groups, against
+1.9 % for name, legal form and street. A same-name company in the same town is nearly as
+rare as one at the same street, so the town is the test. The street still decides between
+`EXACT` and `SAME_TOWN`, and `SAME_TOWN` is reported as `ADDRESS_DIFFERS`.
+
+**Name and legal form** (`entity_match.name_match`).
+
+* Spelled-out and abbreviated forms are folded before comparing: Aktiengesellschaft = AG,
+  Gesellschaft mit beschränkter Haftung = GmbH, gemeinnützige GmbH = gGmbH,
+  "GmbH + Co. KG" = "GmbH & Co KG" = "GmbH & Co. KG", "e. V." = "e.V.", "SE & Co. KGaA".
+* SAP's 35-character cut is read back: "… Gm" / "… Gmb" → GmbH; "… GmbH & Co" /
+  "… GmbH & C" → GmbH & Co. KG; "… A" is ambiguous and counts as no form.
+* Legal form on both sides and different → `PARTIAL`, `LEGAL_FORM_DIFFERS:<sap>/<page>`.
+  GmbH vs GmbH & Co. KG is the key case: separate companies, often at the same address.
+* Legal form missing in SAP, stated on the page → `EXACT`, `LEGAL_FORM_MISSING_IN_SAP`.
+  If the page shows a second entity of the same name with another form, or names the
+  GmbH as the Komplementär of a KG → `SISTER_ENTITY_ON_PAGE` (forces review).
+* Site words (Werk, Niederlassung, Zweigniederlassung, Standort, Betriebsstätte, Filiale)
+  are stripped; a match of the rest is `EXACT` with `BRANCH`. A branch of a German company
+  has no VAT ID of its own, so `BRANCH` does not block.
+* Department words in Name 2–4 (Institut, Lehrstuhl, Fakultät, Fachbereich, Klinik für,
+  Abteilung, Zentrum, Labor, Professur, Arbeitsgruppe) do not change the match: the legal
+  entity is Name 1. Those records carry `DEPARTMENT`.
+
+**Source class** (`VAT_Found_Source_Class`; `VAT_Found_Source_Type` keeps the detail),
+by who published the number:
+
+| Class | Source types | What |
+|---|---|---|
+| A | `COMPANY_IMPRESSUM`, `COMPANY_WEBSITE`, `PEPPOL_DIRECTORY` | the entity on its own domain (Impressum, and any other page or PDF there: AGB, Lieferanteninformationen, Einkauf, Rechnungsanschrift, order forms); its Peppol Directory entry (scheme 9930 = DE VAT ID, `vat/peppol.py`) |
+| B | `PROCUREMENT_PROFILE`, `OFFICIAL_FILING` | its buyer profile on a Vergabeportal (bund.de, DTVP, evergabe, subreport); a Bundesanzeiger / Unternehmensregister filing |
+| C | `AGGREGATOR`, `WEB_ARCHIVE` | directories (northdata, firmenwissen, companyhouse, implisense, wer-zu-wem …) and pages nothing ties to the entity; archive snapshots, used only for records with the Central Deletion Flag (snapshot date in `VAT_Found_Date`) |
+
+The Handelsregister confirms the legal name and HRB but publishes no VAT IDs. Marketplaces
+and social networks are never a source (`REJECTED_SOURCE`); neither is an archive snapshot
+for an active record (`ARCHIVE_NOT_USED`). A page off the customer's own domain counts as
+its website when the domain is named after it (a distinctive name word, or its initials:
+`uni-stuttgart.de`, `kit.edu`).
+
+**Decision** (`vat/lookup.py`). AUTO_ACCEPT / VERIFIED needs ALL of: source class A or B;
+name `EXACT` (a branch is fine); address `EXACT` or `SAME_TOWN`; VIES VALID or VIES
+unavailable; the number on a page our own code fetched; none of `REGISTER_MISMATCH`,
+`CONFLICTING_SOURCES`, `SISTER_ENTITY_ON_PAGE`. Every other candidate is MANUAL_REVIEW;
+`CONFLICTING_SOURCES` is CONFLICT; no candidate is NOT_FOUND. A source the search did not
+list as visited is recorded (`SOURCE_NOT_VISITED`) but no longer blocks: our own fetch of
+the page is the visit.
+
+| | Before | Now |
+|---|---|---|
+| Address | EXACT or STRONG (postcode + street or city) | EXACT or SAME_TOWN |
+| Branch ("… GmbH Werk Hamburg") | MANUAL_REVIEW | AUTO_ACCEPT, `BRANCH` |
+| Form missing in SAP | AUTO_ACCEPT, no note | AUTO_ACCEPT, `LEGAL_FORM_MISSING_IN_SAP`; review with a sister entity |
+| "Gesellschaft mit beschränkter Haftung" vs GmbH | MANUAL_REVIEW (bug) | AUTO_ACCEPT |
+| SAP name cut at 35 characters | MANUAL_REVIEW | read back; AUTO_ACCEPT when the rest matches |
+| VIES not answered yet | MANUAL_REVIEW | AUTO_ACCEPT, `VIES_PENDING`, queued; never written to SAP until VALID (Step AF-2) |
+| Source on the own domain, not the Impressum | only with a website column | also when the domain is named after the entity |
+| Peppol Directory, Vergabeportal | not used | class A / class B |
+| Source not in the search's visited list | MANUAL_REVIEW | recorded, not blocking |
+
+MANUAL_REVIEW confidence: the review tier (Step AF-2, below): HIGH, MEDIUM or LOW.
+
+**Issue codes** (`VAT_Found_Issues`, `VAT_Grounded_Issues` side by side). Semicolon-
+separated, on every result including AUTO_ACCEPT; empty = clean match. Additive: the
+decision never suppresses one.
+
+| Group | Codes | Blocking |
+|---|---|---|
+| Address (at most one) | `ADDRESS_DIFFERS` (SAME_TOWN), `ADDRESS_MISMATCH` (DIFFERENT_TOWN), `ADDRESS_NOT_ON_PAGE` (NO_ADDRESS) | the last two |
+| Name / entity | `LEGAL_FORM_DIFFERS:<sap>/<page>`, `LEGAL_FORM_MISSING_IN_SAP`, `BRANCH`, `NAME_PARTIAL`, `SISTER_ENTITY_ON_PAGE`, `DEPARTMENT` | `LEGAL_FORM_DIFFERS`, `NAME_PARTIAL`, `SISTER_ENTITY_ON_PAGE` |
+| Source / verification | `SECONDARY_SOURCE`, `OTHER_VAT_IDS_ON_PAGE`, `EXTRACTED_BY_PATTERN`, `VIES_INVALID`, `VIES_UNAVAILABLE`, `VIES_PENDING`, `CONFLICTING_SOURCES`, `REGISTER_MISMATCH`, `EVIDENCE_NOT_VERIFIED` | all but `OTHER_VAT_IDS_ON_PAGE`, `EXTRACTED_BY_PATTERN`, `VIES_UNAVAILABLE` and `VIES_PENDING` |
+| Entity relation (Step AF) | `SUB_ENTITY`, `PARENT_ENTITY` (umbrella list), `PARENT_ENTITY_CANDIDATE`, `SUCCESSOR_CANDIDATE` | the last two |
+| SAP record | `SAP_VAT_OUTDATED`: SAP had a VAT ID, the lookup found a different, VIES-valid one from a class A/B source naming the exact entity (scope `all` only) | no |
+
+`NAME_PARTIAL` also covers a name with nothing in common. Two codes were added to the
+specified list so the invariant below can hold: `REGISTER_MISMATCH` (it blocks, so it must
+be visible) and `EVIDENCE_NOT_VERIFIED` (the quote or digits are not on the page, the
+number is malformed, the page could not be fetched, or there is no page). The invariant,
+tested: every MANUAL_REVIEW or CONFLICT row carries at least one blocking code; no
+AUTO_ACCEPT row carries one. The run KPIs count each code per decision
+(`summary.lookup.kpis.issues`, and the Summary sheet).
+
+**One lookup per legal entity.** Key: normalised Name 1 + legal form + city
+(`lookup.entity_key`). The result is copied to every record with that key; each record
+keeps its own address match (EXACT or SAME_TOWN against the same page), but the decision
+is the entity's. The 9,484 missing-VAT records of the DE export are 7,202 such keys
+(1,602 university records → 338 universities).
+
+**VIES queue** (`vat/vies_retry.py`; out of the lookup path since Step AF-2, below). No
+candidate is sent to VIES while it is looked up. It leaves the lookup with
+`VAT_Found_Validation_Status = PENDING` and `VIES_PENDING`, keeps its decision, and is
+queued in `<EVIDENCE_CACHE_DIR>/vies_retry/queue.json`: due at once, then, while VIES gives
+no answer, hourly for 24 h, then daily for 7 days, then expired (the row stays PENDING).
+
+**Deferred: domain rules.** Accepting a page on the customer's own domain with no or a
+different address waits for a website or email field in the export. Today the only domains
+are free text in Comments (166 of 9,484 records), sometimes a holding's. `DOMAIN_MATCH` stays
+informational.
+
+**Prompt v3 and frozen caches.** `vat_llm_web` v3 adds the source order above and the record
+status (deleted or not); every v2 rule is kept. The prompt text is part of the cache key, so
+recordings made with v1 or v2, including the 2026-10-20 experiment, do not replay under v3.
+
+### Hybrid search (2026-11-04, `VAT_WEB_QUERY_MODE=hybrid`, the default)
+
+Searches and page opens are counted apart: at most `VAT_WEB_MAX_SEARCHES` (2) web searches
+and `VAT_WEB_MAX_FETCHES` page fetches per entity (3 here; 4 since Step AF, 6 for an entity
+with three or more own hosts since Step AF-2), all fetches made by our code. The rules below
+are as of 2026-11-04; Steps AF and AF-2 change several of them (next section).
+
+1. **Search 1, built by code** (`vat/web_query.py`): `<name for search> <city>`, nothing
+   else. The name is Name 1 without "c/o …" / "z. Hd. …", without a site word and what
+   follows (Werk, Niederlassung …), without a department word and what follows when ≥ 2
+   words remain, without a fragment left by SAP's 35-character cut; a standalone "+" / "u."
+   is written "&". Name 2 is appended when it carries the legal form ("& Co. KG", "GmbH",
+   "Deutschland GmbH & Co KG", which replaces Name 1's form) or continues a Name 1 that
+   ends mid-word or on "für" / "des" ("IBQ - Institut für Baustoff-" + "Qualitätssicherung
+   GmbH"); never a department, brand or note. The name is quoted only when complete and
+   at least two words. The city is in its usual spelling (`HATTERSHEIMAMMAIN` →
+   Hattersheim, `MUNSTER` → Münster) and never quoted. The model only runs the query (one
+   tool call) and lists the results with their titles and, for a directory entry, the
+   website it names; the query it ran is logged (`QUERY_NOT_RUN_AS_GIVEN` when it differs).
+2. **Entity-first page selection** (`vat/web_pages.py`). Only the entity's own hosts are
+   fetched: a distinctive name word (≥ 4 letters; not GmbH, Deutschland, International,
+   Group, Institut, Universität, Hochschule, Klinikum …) or the name's initials in the
+   domain; the website a directory entry names; a result titled with the full name on a
+   legal-notice path. For a department, an official parent host (`uni-*.de`, `th-*.de`,
+   `*.mpg.de`, `*.fraunhofer.de`, `kit.edu` …). Nothing else is fetched, even with
+   `/impressum` in its path; directories are pointers only; benefit portals,
+   industryarena, studi.info, tender aggregators, imprint generators and tax-advice sites
+   are never fetched. One page per host (Impressum / legal paths first, then tax, then
+   procurement / AGB, then contact / about; the German page before its `/en/` twin), at
+   most `VAT_WEB_MAX_FETCHES` hosts. PDFs on an own host: at most 2 MB, 20 pages. Last, an
+   Impressum page on another host (not a directory or blocked host) is fetched to verify:
+   its host counts as own only when that page names the entity (J&M Analytik on its
+   parent's pharma-test.de).
+3. **Link following.** On an own or parent host whose page states no VAT ID, the next
+   Impressum / Legal notice / Rechtliche Hinweise / Steuern / Lieferanten / Einkauf / AGB
+   link (from the page or the results), else `/impressum`; `VAT_WEB_MAX_FOLLOWS` (2) per
+   entity, on top of the fetches. When no Impressum with content was reached on an own
+   host (none found, or one rendered by script with no address and no VAT / register
+   mention, as at TIB Chemicals), `/impressum` and `/imprint` are tried as well (as many
+   again). An own host that refuses a page (401 / 403 / 429 / 5xx) gets one retry with a
+   browser's User-Agent, then one Internet Archive snapshot of that URL (class C, review);
+   when nothing is found the status is `LOOKUP_INCOMPLETE:HTTP_<code>`, not NOT_FOUND.
+4. **Host check** (`web_pages.host_check`). A host is rejected only when its page names
+   the entity with another legal form, or, on a legal-notice / contact / tax page, names
+   neither the entity nor its town. Another town alone never rejects: the number is read
+   and the address issue sends it to review (head offices: Grillo-Werke, INGEDE). A
+   homepage is not name-checked. "Names the entity" is the matcher's: its distinctive
+   words, a name the matcher calls EXACT (branch / department variants included), its
+   initials ("HP Deutschland GmbH" for Hewlett-Packard Deutschland GmbH: flag
+   `NAME_ABBREVIATED`, review), or the name the model searched with in search 2. A parent
+   host is not checked (a department's number is the parent's).
+5. **The reader** (no tools) is shown the page head and ±1,500 characters around every
+   USt-IdNr / VAT / Impressum / "Angaben gemäß" mention (at most 12,000 characters per
+   page), plus every DE + 9-digit string on the whole page, and names the number and the
+   page, or lists every number with the company written next to it when it cannot tell
+   (Hochschulen Fresenius: three companies on one Impressum): then the best name match is
+   proposed with `AMBIGUOUS_SAME_NAME:<all numbers>` and the decision is CONFLICT, for a
+   person to pick. The number is then held to every gate on the page as fetched here. A
+   call stopped by Azure's content filter is retried once, then
+   `LOOKUP_INCOMPLETE:CONTENT_FILTER`.
+6. **Search 2, by the model**, only when search 1 showed no own, directory-linked or parent
+   host at all (it found nothing in 22 runs when it also ran after rejected hosts): the current or full legal name, an acronym's expansion, the parent of a
+   department, and the terms Impressum / USt-IdNr / Steuernummer; not search 1 again, no
+   city, one query; without quotes and legal form when search 1 returned nothing.
+   `query`, `name_used` and `why_this_query` are logged. Pages as in 2–5.
+7. **Deleted records** whose own Impressum is 404: one Internet Archive snapshot of it.
+8. **Peppol** for every entity; whether it had a hit is logged. Scheme 9930 entries carry
+   the VAT ID; public bodies are listed under 0204 (Leitweg-ID), and when its fine address
+   is a DE VAT ID (`0204:08222000-de143845342-36`, Universität Mannheim) that is read too
+   (`PEPPOL_LEITWEG_ID`). Universitätsklinikum Tübingen and "Bundesministerium" have no
+   entry at all (checked 2026-11-04).
+9. **Grounded fallback** (only with `VAT_GROUNDED_FALLBACK=true`): an entity still NOT_FOUND
+   gets one SerpAPI search with search 1 and the same fetch limit. `ENGINE:<engine>` flag.
+   On the Step AA run it found 12 numbers, 10 of them on unrelated sites' Impressum pages:
+   keep it off.
+10. **`NOT_FOUND_NO_VAT_EXPECTED`** (decision NOT_FOUND), split in two:
+   `:STATED`: the entity's own page says it has no USt-IdNr. (none, not liable to VAT,
+   a Kleinunternehmer statement; the quote is the evidence); a third party's page never
+   counts. `:INFERRED`: a school / authority and nothing found: an assumption, counted
+   as not found.
+
+The "model" mode (the model searches and opens pages itself) stays available: there the API
+caps searches + opens together (`VAT_WEB_MAX_SEARCHES` + `VAT_WEB_MAX_OPENS`), the prompt
+states the split, and `SEARCH_LIMIT_EXCEEDED` / `OPEN_LIMIT_REACHED` are set from the usage.
+Prompt `vat_llm_web` v4 (budget wording); hybrid prompts `vat_llm_web_hybrid` v3. Each
+search call has its own output schema, and the schema's fields are part of the cache key.
+
+### Step AF: the hybrid baseline (2026-11-05)
+
+The model only ranks results and classifies names; our code opens pages, matches and
+decides. The AUTO gates are unchanged. Helper calls (ranking, Name-2 classifier) run on
+`VAT_HELPER_MODEL`; search and reading stay on `MDM_gpt-6-sol`. Every call goes through the
+cost ledger.
+
+**Budget per entity.** 2 searches, `VAT_WEB_MAX_FETCHES` (4) fetches, `VAT_WEB_MAX_FOLLOWS`
+(2) link follows, 1 probe, 1 Peppol query, 1 archive snapshot.
+
+* **Probe** (one fetch, `/impressum`, else `/imprint`): only on an OWN host that answered
+  (HTTP 200, or a stale link's 404: the host is up; never a host that refused us, timed
+  out or is down) and showed no Impressum-type page.
+* **Blocked host** (403 / 5xx / timeout): one retry as a browser, then the budget moves to
+  the next own host. An archive snapshot only when every own host is blocked;
+  `LOOKUP_INCOMPLETE` (`ALL_OWN_HOSTS_BLOCKED`) only when nothing was found then. Blocked
+  share on the baseline: 4.0 % (50) and 3.8 % (53), under the 5 % at which a headless
+  browser would be worth it.
+
+**Own-host recognition** (`vat/web_pages.py`). Initials of 3+ letters (compound words split:
+"Universitätsmedizin Göttingen" → umg); a domain prefix with 6+ letters in common
+(bundespolizei.de); the city never identifies a host except beside the record's own type
+prefix (uni-, tu-, hs-, uk-) or for a Stadt / Gemeinde / Kreis record; institutional
+domains (`institutional_kind`). A host the code cannot place but the ranking model vouches
+for, an institution's parent domain, or another host's Impressum is unverified
+(CANDIDATE / INSTITUTION / VERIFY): it counts as own only once an Impressum-type page on it
+names the entity (the strict check for a GENERIC name).
+
+**Ranking.** `VAT_WEB_RANKING=model` (default): the helper model orders search 1's results
+(at most 3, `belongs_to_entity`, at most 250 output tokens; no snippets, so the cached
+searches stay valid); the heuristic order (`heuristic_rank`) for the rest and when the call
+fails. `heuristic`: the rule order alone. On the baseline, model ranking found 35 vs 33 (50)
+and 46 vs 45 (53) for about 0.0016 USD per entity. Search 2 runs only when no own host
+showed a real Impressum-type page (`is_gate_page`).
+
+**Name preparation** (`vat/name_prep.py`, `vat/name2_classifier.py`). Name 1 cut by SAP and
+continued in Name 2 (`CONTINUATION_TRUNCATED`: at the 35-character limit, or visibly cut: a
+trailing connector, or Name 2 supplying the institution noun) is joined; a join at the limit
+is never quoted (it may hold a broken word). Department and site words added ("Zentrale
+Dienste", "Standort"). The Name-2 classifier (`VAT_NAME2_CLASSIFIER`, ten hand-labelled
+examples, threshold 0.8) settles OTHER and CONTINUATION_TRUNCATED records: a confident
+DEPARTMENT / SUB_ENTITY / OTHER undoes the join; a CONTINUATION is used only when every word
+of its legal name comes from the record. Evaluated on 936 records (`tools/vat_name2_eval.py`,
+`logs/name2_eval.xlsx`, 0.83 USD).
+
+**Model knowledge.** Search 2 also returns a `domain_hint`, fetched as a CANDIDATE host
+(`DOMAIN_HINT` flag). On the baseline it was given 23 times and was the source of no number;
+kept as is (Step AF-2).
+
+**Extraction and the page check.** `EXTRACTED_BY_PATTERN` only when the page carries exactly
+one number; several numbers and no reader answer is CONFLICT. The name check runs on the
+legal-notice block (`legal_block`); another company named there makes the host
+`PARENT_CANDIDATE` and the number `PARENT_ENTITY_CANDIDATE` (review). A legal form is
+compared only when both sides state one ("Stiftung" written before the name counts): SAP
+without a form is `LEGAL_FORM_MISSING_IN_SAP`, never a failure; a differing form is a
+candidate with `LEGAL_FORM_DIFFERS` (review), not a rejected host.
+
+**Fallbacks.** Peppol unchanged. The aggregator fallback (`VAT_AGGREGATOR_FALLBACK`): one
+site search on unternehmensverzeichnis.org and at most 2 entry fetches, after the no-VAT
+statement and before INFERRED. An entry is used when its heading matches EXACT, or PARTIAL
+with the record's first distinctive word; always MANUAL_REVIEW with `SECONDARY_SOURCE`, never
+shared to the entity's other records (`AGGREGATOR_NOT_SHARED`). An entry listing the record's
+name as a former name is `NAME_PARTIAL` + `SUCCESSOR_CANDIDATE` (LX International for LG
+International). `NOT_FOUND_NO_VAT_EXPECTED:INFERRED` is reported apart, not as correct.
+
+**No-number classes** (`vat/no_number_class.py`), judged from the usage record and SAP's
+number: A no own host answered (none in the results, or none reachable); B an own host was
+in the results but not fetched (fetch limit) and no own Impressum-type page was read; C
+SAP's number is on a fetched page, outside the sections the reader saw; D it is in those
+sections, not extracted; E an own Impressum-type page was fetched and read, and SAP's number
+is on no fetched page; F SAP's number was read and dropped, or is on a rejected host's page.
+A fetched and read own Impressum is only C, D or E.
+
+**Baseline** (cached AF results, model ranking):
+
+| | The 50 | The 53 |
+|---|---|---|
+| Found (Step AD → AF) | 27 → 35 | 31 → 46 |
+| AUTO_ACCEPT | 17, all = SAP | 17; 6 of the 7 with a SAP number = SAP, Kappler (SAP wrong) the 7th |
+| Cost per entity, full price | 0.057 USD | 0.055 USD |
+| Still no number | 12 (A 4, B 4, E 4) | 7 (A 2, B 1, E 4) |
+
+No AUTO value changed from Step AD.
+
+### Step AF-2: closing the baseline (2026-11-05)
+
+**1. VIES out of the lookup path.** `VAT_VIES_IN_LOOKUP=false` (default): the page check
+(`GroundedLookup._judge`) and the Peppol result no longer call VIES. A candidate past gates
+a–f is `FOUND_UNVERIFIED:VIES_PENDING`; `run_lookups` marks every candidate without a VIES
+answer `PENDING` with `VIES_PENDING` (`lookup.vies_pending`), including one reached by name
+reconciliation after a gate stopped it before VIES (Universitätsmedizin Göttingen, Konstanz,
+UK Tübingen, which before had no VIES status at all). A CONFLICT is not queued. The
+decision stays as it is: `VIES_PENDING` is not blocking, so an AUTO_ACCEPT stays one, but
+`lookup.sap_update_eligible` (AUTO_ACCEPT **and** VIES VALID) is what a controlled update
+must check: nothing is written to SAP while PENDING. The run KPIs count both
+(`sap_update_eligible`, `vies_pending`).
+
+The queue verifies PENDING rows in batches (`ViesRetryQueue.process`, one `check_many`
+call: the client's concurrency and pacing). `tools/vat_validate_xlsx.py` drains it at
+start-up (numbers left from earlier runs) and at the end of every run, and writes the
+answers into the output workbook (`vies_retry.apply_to_workbook`):
+
+| VIES answer | Row |
+|---|---|
+| VALID | `VIES_PENDING` cleared; validation status VALID and date set; `FOUND_VERIFIED`; a review row's tier recomputed |
+| INVALID | MANUAL_REVIEW, LOW, `VIES_INVALID` (a CONFLICT stays CONFLICT) |
+| no answer | stays PENDING; asked again hourly for 24 h, then daily for 7 days |
+
+`--no-vies-queue` skips both drains; `tools/vat_vies_retry.py [--workbook out.xlsx]` runs the
+queue alone (a scheduler, hourly). A frozen run never drains it. The queue is kept only
+under an evidence cache root: without one the end-of-run drain finds nothing and the rows
+stay PENDING. `VAT_VIES_IN_LOOKUP=true` restores the inline check.
+
+**2. Review tiers** (`lookup.review_tier`, `VAT_Found_Confidence` of a MANUAL_REVIEW row;
+AUTO_ACCEPT stays `VERIFIED`, CONFLICT keeps its own status). Checked in this order:
+
+| Tier | When |
+|---|---|
+| LOW | `NAME_PARTIAL` together with `ADDRESS_MISMATCH`, `SECONDARY_SOURCE` or `OTHER_VAT_IDS_ON_PAGE`; `EXTRACTED_BY_PATTERN` without a quote; `VIES_INVALID`; `EVIDENCE_NOT_VERIFIED` (a number not checked on a page we read) |
+| MEDIUM | any of `SECONDARY_SOURCE`, `LEGAL_FORM_DIFFERS`, `PARENT_ENTITY_CANDIDATE`, `SUCCESSOR_CANDIDATE`, `ADDRESS_NOT_ON_PAGE`, `VIES_UNAVAILABLE`, `VIES_PENDING` |
+| HIGH | name EXACT (an ABBREVIATED or BRANCH match is EXACT with a flag), address EXACT or SAME_TOWN, source class A or B |
+| MEDIUM | anything else (a partial name alone, another town alone) |
+
+`EVIDENCE_NOT_VERIFIED` as LOW and the last MEDIUM row are additions to the specified lists:
+with them the tier is monotone (another issue never raises it). Recomputed on the cached AF
+results (VIES answers as recorded then):
+
+| Tier | The 50: candidates / with a SAP number / = SAP | The 53 |
+|---|---|---|
+| AUTO_ACCEPT | 17 / 17 / 17 | 17 / 7 / 6 (+ Kappler, SAP wrong) |
+| HIGH | 1 / 1 / 1 | 0 |
+| MEDIUM | 9 / 9 / 6 | 13 / 8 / 5 |
+| LOW | 4 / 4 / 2 | 9 / 5 / 2 |
+| CONFLICT | 4 / 4 / 0 | 7 / 2 / 1 |
+
+**3. Fetch budget.** An entity whose search-1 results show `VAT_WEB_MANY_OWN_HOSTS` (3) or
+more of its own (OWN) hosts gets `VAT_WEB_MAX_FETCHES_MANY_HOSTS` (6) page fetches; the
+others keep `VAT_WEB_MAX_FETCHES` (4). Link follows (2) and the probe (1) are unchanged. The
+usage JSON records `own_hosts_1` and `max_fetches`. The ranking prompt now puts a result
+whose host or path contains legal, impressum, imprint or legal-notice before every other
+result of the entity (the hybrid prompt version changes, so ranking calls are not replayed
+from the AF cache). Both take effect on the next live run; nothing was re-run.
+
+**4.** `domain_hint` stays as it is.
+
+### Cost accounting (2026-11-05, `vat/costs.py`)
+
+**Price table.** `config/vat_prices.yaml` (`VAT_PRICES_FILE`) is loaded at the start of every
+run. Its version and a hash of the file go into every entity's `costs` in the usage JSON and
+into the run's ledger row; changing any price changes the hash, and the next ledger row notes
+the change.
+
+| Deployment | Use | Input / cached input / output, USD per 1M tokens | Type |
+|---|---|---|---|
+| `MDM_gpt-6-sol` (GPT-6 Sol) | search and reading | 2.00 / 0.10 / 10.00 | global, ×1.0 |
+| `MDM-Apoorva-gpt-5.4-mini` (`gpt-5.4-mini-2026-03-17`, `VAT_HELPER_MODEL`) | ranking call, Name-2 classifier (reasoning `none`: the deployment rejects `minimal`) | 0.75 / 0.075 / 4.50 | global, ×1.0 |
+
+Tools: web search 0.014 per call (14 USD per 1,000), a page the model opens itself 0.014
+(model mode only; 0 in hybrid mode), SerpAPI 0.01 per query (grounded engine, off by
+default). Free: our own fetches, link follows, probes, VIES, Peppol, Wayback. Calls are
+priced as `VAT_PRICE_DEPLOYMENT`, by default the LLM deployment; one the table has no price
+for stops the run with an error (under `MOCK_EXTERNAL_CALLS` it is priced at zero, as
+nothing is billed). Data Zone EU deployments would take multiplier 1.2 (Sol) / 1.1 (mini).
+
+**Per call.** Each API call is listed on the entity (`calls` in the usage JSON) with its raw
+counts: deployment, `call_kind` (search / reader / ranking / name2_classifier /
+grounded_reader / agent), input, cached, output and reasoning tokens, `web_search_calls`,
+`page_open_calls`, `serpapi_queries`, HTTP status, seconds and `cache_hit`. Its cost:
+
+    tokens = ((input - cached) * input_per_1m + cached * cached_input_per_1m
+              + output * output_per_1m) / 1e6 * multiplier
+    search = web_search_calls * web_search_per_call
+    opens  = page_open_calls * page_open_per_call
+    serp   = serpapi_queries * serpapi_per_query
+
+Reasoning tokens are part of the output tokens. Prompt-cache reads come from
+`usage.input_tokens_details.cached_tokens` (Responses API; chat completions:
+`prompt_tokens_details.cached_tokens`) and bill at the cached rate; cache writes have no
+separate charge. A response without the count is logged once and its input priced at the
+full rate. In the AD 50 run 37.5 % of the billed input was a cache read: every search call
+read its ~4,100-token static prefix from the cache (40.6 % of search input), the reader
+calls none (their fixed prefix is below the 1,024-token minimum).
+
+**Lines, kept apart.** Per entity (the `VAT_Found_*_USD` columns of the output workbook and
+`costs` in the usage JSON), per run (the Summary sheet's Cost section, the usage JSON and the
+log line):
+
+| Line | What |
+|---|---|
+| `Azure_LLM_Tokens_USD` | tokens, also split by call kind and by deployment |
+| `Azure_WebSearch_USD` | search calls × 0.014 |
+| `Azure_PageOpen_USD` | pages the model opened (model mode) |
+| `SerpAPI_USD` | grounded engine queries |
+| `Other_USD` | always 0, so the split is complete |
+| `Total_USD` | the sum; the usage JSON's `cost_usd` is the same number |
+| `New_Spend_USD` | what the run billed: Total minus the cost of calls replayed from the cache |
+
+**Stop limit.** `VAT_WEB_BUDGET_USD` is checked against the run's spend in `Total_USD` terms
+(tokens + search calls + opens + SerpAPI), not tokens alone; reaching it is logged, and
+every later entity is `LOOKUP_INCOMPLETE` / `BUDGET_EXCEEDED`.
+
+**Ledger.** `tools/vat_validate_xlsx.py` appends one row per run (live, replay, smoke test,
+evaluation, regression) to `logs/vat_cost_ledger.csv` (`--ledger`; `--step` or
+`VAT_RUN_STEP` labels it) and prints the total spent to date. A row holds the run id,
+timestamp, step, input file, engine, entities, calls by kind and deployment, cache hits,
+tokens by type, search / open / SerpAPI counts, every line both as recorded and billed only
+(`New_*`, `billed_*`), the price table's version and hash, and `backfilled` / `estimated`.
+`tools/vat_cost_summary.py` prints the total spent, by step, month, deployment and line, and
+tokens and search calls billed to date, and says what the ledger leaves out.
+
+**Backfill.** `tools/vat_cost_backfill.py` re-priced every usage JSON in `logs/` with the
+table and appended it with its file time and `backfilled = yes`; running it again adds
+nothing (a run id already in the ledger is skipped). Older records are read as they are:
+Step X (model mode) has no per-call list, so the entity's usage is its one `agent` call; a
+missing search count is estimated from `searches`. Runs that kept no usage JSON are rebuilt
+from their LLM cache, where each recorded answer is one billed call with its own usage (the
+X smoke test, AF-1 and AF-1b, the first AA smoke test, earlier AB attempts). Estimated, and
+marked so: Step AA's 27 SerpAPI queries (one per grounded run; the live JSON logged no
+counter) and its 24 grounded-reader answers, recorded without usage (2,500 input + 200 output
+tokens assumed each, 0.17 USD). Runs before Step X (cache `run_fluffy_please_19`, 184 answers
+recorded without usage) are not in the ledger.
+
+Spent to date, Steps X to AF-1b: **14.31 USD**; tokens 7.07, web search 5.61, page opens
+1.36 (Step X), SerpAPI 0.27 (Step AA). 573 of 1,176 calls were replays. With Step AF (Name-2
+evaluation 0.83, focused 10-row run 0.44, baseline runs 2.39): **17.95 USD** over 32 runs.
+Step AF-2 ran nothing.
 
 ---
 

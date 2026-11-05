@@ -66,7 +66,9 @@ QUOTE = "Umsatzsteuer-Identifikationsnummer: DE 811 128 135"
 
 def _settings(**kw):
     return replace(get_settings(), vies_backoff_seconds=0.0, vies_min_interval_ms=0,
-                   vies_requester_vat="", cache_frozen=False, **kw)
+                   vies_requester_vat="", cache_frozen=False,
+                   # The inline VIES check these tests were written for (Step AF-2: the queue).
+                   **{"vat_vies_in_lookup": True, **kw})
 
 
 def _engine(tmp_path, *, search=None, web=None, reader=None, vies_reply=None, frozen=False):

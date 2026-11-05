@@ -18,10 +18,10 @@ Takes an export where some rows already have a VAT ID. For the chosen rows
 value and Country/Region Key DE) it **blanks** ``VAT Registration No.``, keeps
 the original as ground truth, and runs both modes on the blanked file:
 
-* Mode A — ``grounded`` (``vat/lookup_grounded.py``);
+* Mode A — ``grounded`` (``vat/lookup_grounded.py``); runs only with
+  ``VAT_GROUNDED_FALLBACK=true``. Pass ``--modes grounded,llm_web``;
 * Mode W — ``llm_web`` (``vat/lookup_web.py``): the model searches the web,
   the code checks the page it cites; scored like Mode A (tiers included).
-  Pass ``--modes grounded,llm_web``.
 * Mode B — ``llm_only`` (``vat/lookup_llm_only.py``): **an experiment, not for
   production use; its answers are never written to SAP.**
 
@@ -546,7 +546,8 @@ def main() -> int:
     ap.add_argument("--out", help="Output XLSX (default: <input>_lookup_compare.xlsx).")
     ap.add_argument("--rows", help="Sheet rows whose VAT ID is the ground truth, e.g. 2-18.")
     ap.add_argument("--exclude", help="Sheet rows to leave out of --rows, e.g. 9.")
-    ap.add_argument("--modes", default="grounded,llm_only")
+    # grounded needs VAT_GROUNDED_FALLBACK=true (vat/lookup_engines.py).
+    ap.add_argument("--modes", default="llm_web,llm_only")
     ap.add_argument("--frozen", action="store_true", help="CACHE_FROZEN: replay recordings only.")
     ap.add_argument("--cache-dir", default=None, help="Override EVIDENCE_CACHE_DIR.")
     ap.add_argument("--score-existing", action="store_true",

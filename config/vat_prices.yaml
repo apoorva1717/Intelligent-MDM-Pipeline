@@ -1,0 +1,47 @@
+# Prices for the VAT lookups' cost lines (vat/costs.py). Loaded at the start of
+# every run; its version and hash are stamped into the run's usage JSON and its
+# ledger row (logs/vat_cost_ledger.csv). Changing any value changes the hash.
+#
+# Tokens:   ((input - cached) * input_per_1m + cached * cached_input_per_1m
+#            + output * output_per_1m) / 1e6 * multiplier
+# Reasoning tokens are part of output_tokens and bill at the output rate.
+# Azure prompt-cache reads (usage.input_tokens_details.cached_tokens; chat
+# completions: prompt_tokens_details.cached_tokens) bill at the cached rate.
+# Cache writes have no separate charge: they are ordinary input.
+#
+# deployment_type / multiplier: "global" is 1.0 (both deployments). Data Zone
+# EU would be 1.2 for Sol (2.40 / 0.12 / 12.00) and 1.1 for 5.4 mini
+# (0.825 / 0.0825 / 4.95).
+
+version: 1
+
+deployments:
+  # GPT-6 Sol: search and reading.
+  MDM_gpt-6-sol:
+    input_per_1m: 2.00
+    cached_input_per_1m: 0.10
+    output_per_1m: 10.00
+    deployment_type: global
+    multiplier: 1.0
+  # GPT-5.4 mini (VAT_HELPER_MODEL; gpt-5.4-mini-2026-03-17): the ranking call and the Name-2
+  # classifier, run with reasoning "none" (the model rejects "minimal").
+  MDM-Apoorva-gpt-5.4-mini:
+    input_per_1m: 0.75
+    cached_input_per_1m: 0.075
+    output_per_1m: 4.50
+    deployment_type: global
+    multiplier: 1.0
+
+tools:
+  web_search_per_call: 0.014   # $14.00 per 1,000 transactions, Azure
+  page_open_per_call: 0.014    # only when the model opens pages itself (model mode); 0 in hybrid mode
+  serpapi_per_query: 0.01      # grounded engine, off by default
+
+# Our own code, no charge: listed so every action has a price.
+free: [own_fetch, link_follow, probe, vies, peppol, wayback]
+
+meta:
+  currency: USD
+  region: Sweden Central
+  source: Azure pricing pages
+  as_of: 2026-11-05

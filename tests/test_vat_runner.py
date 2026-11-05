@@ -33,7 +33,7 @@ _NOTE_TO_STATUS = {"pass": {"FORMAT_OK"}, "FAIL": {"FORMAT_ERROR"},
 
 
 def _client(tmp_path, stub):
-    settings = replace(get_settings(), vies_backoff_seconds=0.0, vies_min_interval_ms=0,
+    settings = replace(get_settings(), vat_web_query_mode="model", vies_backoff_seconds=0.0, vies_min_interval_ms=0,
                        vies_requester_vat="", cache_frozen=False)
     return VIESClient(settings, cache=EvidenceCache(tmp_path / "cache"),
                       transport=stub.transport)

@@ -20,28 +20,70 @@ Two modes, built to be compared on the same file:
   the grounded mode's gates. Never from memory. The endpoints run it for
   ``llm_only`` too.
 
-**Decision model** (design paper §8). Every result carries an operational
-decision (``AUTO_ACCEPT`` / ``MANUAL_REVIEW`` / ``NOT_FOUND`` / ``CONFLICT``,
+**Decision model.** Every result carries its issue codes
+(``VAT_Found_Issues``, :func:`issues_of`), an operational decision
+(``AUTO_ACCEPT`` / ``MANUAL_REVIEW`` / ``NOT_FOUND`` / ``CONFLICT``,
 :func:`decide`) and an evidence-level confidence (:func:`confidence_of`).
-Both are rules over the evidence the lookup recorded; the weighted match
-score is reported next to them but decides nothing. ``AUTO_ACCEPT`` means
-*eligible* for a controlled update: nothing here writes to SAP.
+The decision is a function of the issues: a candidate with no blocking issue
+(:data:`vat.entity_match.BLOCKING_ISSUES`) is ``AUTO_ACCEPT``, one with any is
+``MANUAL_REVIEW``, ``CONFLICTING_SOURCES`` is ``CONFLICT``. The weighted match
+score is reported but decides nothing. ``AUTO_ACCEPT`` means *eligible* for a
+controlled update: nothing here writes to SAP, and :func:`sap_update_eligible`
+also needs VIES VALID. A MANUAL_REVIEW candidate carries a review tier
+(:func:`review_tier`: HIGH / MEDIUM / LOW) as its confidence.
+
+**VIES is not in the lookup path.** A candidate is not sent to VIES while it
+is looked up: it leaves the lookup as ``VAT_Found_Validation_Status =
+PENDING`` with ``VIES_PENDING`` (:func:`vies_pending`), is queued, and the
+queue (``vat/vies_retry.py``) verifies it in batches at the end of the run.
+
+**One lookup per legal entity** (:func:`entity_key`: Name 1 + legal form +
+City), not per record; the result is copied to every record of the entity.
+Each record keeps its own address match; the decision is the entity's.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from vat.entity_match import (
+    ACCEPTED_ADDRESS,
+    ADDRESS_EXACT,
+    ADDRESS_ISSUE,
+    ADDRESS_MISMATCH,
+    ADDRESS_NOT_EXACT,
+    ADDRESS_NOT_ON_PAGE,
+    CLASS_C,
+    CONFLICTING_SOURCES as ISSUE_CONFLICTING_SOURCES,
+    DEPARTMENT,
+    EVIDENCE_NOT_VERIFIED,
+    EXTRACTED_BY_PATTERN,
     INPUT_INCOMPLETE,
+    ISSUE_NAME_PARTIAL,
+    ISSUE_ORDER,
+    LEGAL_FORM_DIFFERS,
     NAME_EXACT,
-    PRIMARY_SOURCES,
-    REGISTER_MISMATCH,
-    STRONG_ADDRESS,
+    OTHER_VAT_IDS_ON_PAGE,
+    PARENT_ENTITY_CANDIDATE,
+    SECONDARY_SOURCE,
+    SOURCE_CLASS,
+    SUCCESSOR_CANDIDATE,
+    TRUSTED_CLASSES,
+    VIES_INVALID,
+    VIES_PENDING,
+    VIES_UNAVAILABLE,
+    address_match as _address_match,
+    fold,
+    has_department,
+    is_blocking,
+    issue_code,
+    parse_name,
+    sort_issues,
 )
 from vat.normalize import MISSING, VatFormat
 
@@ -79,6 +121,9 @@ LOOKUP_COLUMNS: list[str] = [
     "VAT_Found_Validation_Status",
     "VAT_Found_Validation_Date",
     "VAT_Found_Agent_Version",
+    # Who published the number (A / B / C) and every issue the evidence raises.
+    "VAT_Found_Source_Class",
+    "VAT_Found_Issues",
 ]
 
 # ── VAT_Found_Status ─────────────────────────────────────────────────────────
@@ -89,6 +134,13 @@ FOUND_VERIFIED = "FOUND_VERIFIED"
 FOUND_UNVERIFIED = "FOUND_UNVERIFIED"
 #: The lookup ran completely and no page offered a VAT ID.
 NOT_FOUND = "NOT_FOUND"
+#: No VAT ID, and none is expected (decision NOT_FOUND). STATED: a page says
+#: the entity has none (not liable to VAT, Kleinunternehmer); the quote is the
+#: evidence. INFERRED: a school / authority, and no page found states one —
+#: an assumption, not evidence, so it is still counted as not found.
+NOT_FOUND_NO_VAT_EXPECTED = "NOT_FOUND_NO_VAT_EXPECTED"
+NO_VAT_STATED = f"{NOT_FOUND_NO_VAT_EXPECTED}:STATED"
+NO_VAT_INFERRED = f"{NOT_FOUND_NO_VAT_EXPECTED}:INFERRED"
 #: The lookup could not look everywhere it would have (LLM failure, a frozen
 #: cache miss) and found nothing — not evidence that there is nothing.
 LOOKUP_INCOMPLETE = "LOOKUP_INCOMPLETE"
@@ -122,11 +174,15 @@ DECISIONS = (AUTO_ACCEPT, MANUAL_REVIEW, DECISION_NOT_FOUND, CONFLICT)
 CONF_VERIFIED = "VERIFIED"
 CONF_HIGH = "HIGH_CONFIDENCE"
 CONF_MEDIUM = "MEDIUM_CONFIDENCE"
+#: MANUAL_REVIEW, weakest tier (Step AF-2). Replaces NOT_VERIFIED for review rows.
+CONF_LOW = "LOW_CONFIDENCE"
 CONF_NOT_VERIFIED = "NOT_VERIFIED"
 CONF_NOT_FOUND = "NOT_FOUND"
 CONF_CONFLICT = "CONFLICT"
-CONFIDENCES = (CONF_VERIFIED, CONF_HIGH, CONF_MEDIUM, CONF_NOT_VERIFIED, CONF_NOT_FOUND,
+CONFIDENCES = (CONF_VERIFIED, CONF_HIGH, CONF_MEDIUM, CONF_LOW, CONF_NOT_FOUND,
                CONF_CONFLICT)
+#: The review tiers, strongest first.
+REVIEW_TIERS = (CONF_HIGH, CONF_MEDIUM, CONF_LOW)
 
 # ── Flags the decision reads (set by the engines) ───────────────────────────
 #: Prefix: several candidates in the winning tier with different numbers.
@@ -134,8 +190,23 @@ AMBIGUOUS_SAME_NAME = "AMBIGUOUS_SAME_NAME"
 #: Prefix: another candidate whose page names this exact entity, at an
 #: address that is not someone else's, states a different number.
 CONFLICTING_SOURCES = "CONFLICTING_SOURCES"
-#: LLM_WEB: source_url is not one of the URLs the search visited.
+#: LLM_WEB: source_url is not one of the URLs the search visited. Recorded,
+#: not blocking: our own fetch of the page is the visit the rules ask for.
 SOURCE_NOT_VISITED = "SOURCE_NOT_VISITED"
+
+# ── VAT_Found_Validation_Status ──────────────────────────────────────────────
+#: VIES did not answer (MS_UNAVAILABLE, a timeout, a service error) or was
+#: switched off. Not blocking; the number is queued for re-verification
+#: (``vat/vies_retry.py``).
+VALIDATION_UNAVAILABLE = "UNAVAILABLE"
+#: Queued for VIES, no answer yet (:func:`vies_pending`). Never written to SAP.
+VALIDATION_PENDING = "PENDING"
+#: Gates a–f passed, VIES not asked yet.
+FOUND_PENDING = f"{FOUND_UNVERIFIED}:VIES_{VALIDATION_PENDING}"
+#: VIES statuses that mean "no answer", not "no".
+VIES_NO_ANSWER = frozenset({"SERVICE_UNAVAILABLE", "ERROR", VALIDATION_UNAVAILABLE})
+#: VIES's own answers; anything else on a candidate becomes PENDING.
+VIES_ANSWERED = frozenset({"VALID", "INVALID"})
 
 #: Country/Region Keys in scope.
 SCOPE_COUNTRIES = frozenset({"DE"})
@@ -144,7 +215,7 @@ SCOPE_COUNTRIES = frozenset({"DE"})
 #: waiting on SerpAPI, web pages and the LLM, so this divides the wall time.
 #: VIES is unaffected: its client keeps one concurrency limit and one pacing
 #: interval across every in-flight lookup.
-LOOKUP_CONCURRENCY = 5
+LOOKUP_CONCURRENCY = int(os.getenv("VAT_LOOKUP_CONCURRENCY", "5"))
 
 
 @dataclass(frozen=True)
@@ -162,6 +233,8 @@ class LookupInput:
     website: str | None = None
     email: str | None = None
     register_number: str | None = None
+    #: SAP's Central Deletion Flag is set: an archive snapshot may be a source.
+    deleted: bool = False
 
     def missing_mandatory(self) -> tuple[str, ...]:
         """The design paper's mandatory inputs (§2) this record lacks."""
@@ -203,14 +276,37 @@ class FoundResult:
     agent_version: str | None = None
     #: Wall time of the lookup in seconds (summary only; not a column).
     seconds: float | None = None
+    #: The engine's issue codes (name, legal form, sister entity, other IDs,
+    #: register, evidence, department); :func:`issues_of` adds the address,
+    #: source, VIES and conflict ones.
+    issues: tuple[str, ...] = ()
+    #: The page text an address match reads (``entity_match.address_text``),
+    #: so every record of the entity can be matched against it. Not a column.
+    address_text: str | None = None
+    #: The entity this result was looked up for (:func:`entity_key`). Not a column.
+    entity: str | None = None
+    #: A record's copy of its entity's result keeps the entity's decision.
+    entity_decision: str | None = None
+    entity_confidence: str | None = None
+    #: llm_web: the entity's API usage, tool calls, page fetches and cost
+    #: (summary / run reports only; not a column).
+    usage: dict[str, Any] | None = None
+
+    @property
+    def source_class(self) -> str | None:
+        return SOURCE_CLASS.get(self.source_type or "")
+
+    @property
+    def all_issues(self) -> tuple[str, ...]:
+        return issues_of(self)
 
     @property
     def decision(self) -> str | None:
-        return decide(self)
+        return self.entity_decision or decide(self)
 
     @property
     def confidence(self) -> str | None:
-        return confidence_of(self)
+        return self.entity_confidence or confidence_of(self)
 
     def columns(self) -> dict[str, Any]:
         return {
@@ -234,34 +330,73 @@ class FoundResult:
             "VAT_Found_Validation_Status": self.validation_status,
             "VAT_Found_Validation_Date": self.validation_date,
             "VAT_Found_Agent_Version": self.agent_version,
+            "VAT_Found_Source_Class": self.source_class,
+            "VAT_Found_Issues": "; ".join(self.all_issues) or None,
         }
 
 
-def decide(r: FoundResult) -> str | None:
-    """The design paper's operational decision (§8). None when the lookup
-    did not run.
+def _is_candidate(r: FoundResult) -> bool:
+    return bool(r.value) and r.status not in (NOT_RUN, NOT_FOUND, NO_VAT_STATED, NO_VAT_INFERRED,
+                                              LOOKUP_INCOMPLETE)
 
-    ``AUTO_ACCEPT`` needs every one of: VIES VALID (``FOUND_VERIFIED``), tier
-    ``PROPOSED``, a page naming the *exact* legal entity (not a branch, not a
-    partial name, not another legal form), an exact or strong address match,
-    a primary source (§4 tiers 1–2), a page the search really visited, and no
-    register entry on the page that contradicts the record's."""
+
+def issues_of(r: FoundResult) -> tuple[str, ...]:
+    """Every issue code for a result, in :data:`vat.entity_match.ISSUE_ORDER`.
+    Empty without a candidate, and for a clean match.
+
+    AUTO_ACCEPT needs ALL of: source class A or B, name EXACT (a branch is
+    fine), address EXACT or SAME_TOWN, VIES VALID or unavailable, the number
+    read on a page our own code fetched, and no register mismatch, conflicting
+    source or sister entity. Each unmet condition is a blocking issue here,
+    so :func:`decide` only has to look at the issues."""
+    if not _is_candidate(r):
+        return ()
+    issues = list(r.issues)
+    if r.address_match in ADDRESS_ISSUE:
+        issues.append(ADDRESS_ISSUE[r.address_match])
+    if r.source_class == CLASS_C:
+        issues.append(SECONDARY_SOURCE)
+    if r.validation_status == "INVALID" or r.status.endswith(":VIES_INVALID"):
+        issues.append(VIES_INVALID)
+    elif r.validation_status == VALIDATION_PENDING:
+        issues.append(VIES_PENDING)
+    elif r.validation_status in VIES_NO_ANSWER:
+        issues.append(VIES_UNAVAILABLE)
+    if any(f.startswith((AMBIGUOUS_SAME_NAME, CONFLICTING_SOURCES)) for f in r.flags):
+        issues.append(ISSUE_CONFLICTING_SOURCES)
+    # A GENERIC name or an initials match is weaker evidence: AUTO only with
+    # the address EXACT (SAME_TOWN → review, HIGH).
+    if ({"GENERIC_NAME", "NAME_ABBREVIATED"} & set(r.flags)) and r.address_match != ADDRESS_EXACT:
+        issues.append(ADDRESS_NOT_EXACT)
+    if not r.source_url:
+        issues.append(EVIDENCE_NOT_VERIFIED)
+    unmet = (r.name_match != NAME_EXACT or r.address_match not in ACCEPTED_ADDRESS
+             or r.source_class not in TRUSTED_CLASSES)
+    if unmet and not any(is_blocking(i) for i in issues):
+        # A condition no specific code covers (no name or address was read).
+        issues.append(EVIDENCE_NOT_VERIFIED)
+    return sort_issues(issues)
+
+
+def decide(r: FoundResult) -> str | None:
+    """The operational decision. None when the lookup did not run.
+    ``CONFLICT`` on CONFLICTING_SOURCES; ``MANUAL_REVIEW`` on any other
+    blocking issue; ``AUTO_ACCEPT`` otherwise (see :func:`issues_of`)."""
     if r.status == NOT_RUN:
         return None
-    if not r.value or r.status in (NOT_FOUND, LOOKUP_INCOMPLETE):
+    if not _is_candidate(r):
         return DECISION_NOT_FOUND
-    if any(f.startswith((AMBIGUOUS_SAME_NAME, CONFLICTING_SOURCES)) for f in r.flags):
+    issues = issues_of(r)
+    if any(issue_code(i) == ISSUE_CONFLICTING_SOURCES for i in issues):
         return CONFLICT
-    if (r.status == FOUND_VERIFIED and r.tier == TIER_PROPOSED
-            and r.name_match == NAME_EXACT and r.address_match in STRONG_ADDRESS
-            and r.source_type in PRIMARY_SOURCES
-            and not {SOURCE_NOT_VISITED, REGISTER_MISMATCH} & set(r.flags)):
-        return AUTO_ACCEPT
-    return MANUAL_REVIEW
+    if any(is_blocking(i) for i in issues):
+        return MANUAL_REVIEW
+    return AUTO_ACCEPT
 
 
 def confidence_of(r: FoundResult) -> str | None:
-    """The evidence-level classification (§8), alongside the decision."""
+    """The evidence level, alongside the decision: VERIFIED for AUTO_ACCEPT,
+    the review tier (:func:`review_tier`) for MANUAL_REVIEW."""
     d = decide(r)
     if d is None:
         return None
@@ -271,13 +406,63 @@ def confidence_of(r: FoundResult) -> str | None:
         return CONF_CONFLICT
     if d == AUTO_ACCEPT:
         return CONF_VERIFIED
-    if r.status.endswith(":VIES_INVALID"):
-        return CONF_NOT_VERIFIED
-    if r.tier == TIER_PROPOSED:
-        return CONF_HIGH
-    if r.tier == TIER_LIKELY:
+    return review_tier(r.name_match, r.address_match, r.source_class, issues_of(r), r.evidence)
+
+
+#: Step AF-2: each of these makes a review candidate MEDIUM.
+MEDIUM_ISSUES = frozenset({
+    SECONDARY_SOURCE, LEGAL_FORM_DIFFERS, PARENT_ENTITY_CANDIDATE, SUCCESSOR_CANDIDATE,
+    ADDRESS_NOT_ON_PAGE, VIES_UNAVAILABLE, VIES_PENDING,
+})
+#: NAME_PARTIAL together with one of these is LOW.
+_LOW_WITH_PARTIAL = frozenset({ADDRESS_MISMATCH, SECONDARY_SOURCE, OTHER_VAT_IDS_ON_PAGE})
+
+
+def review_tier(name_match: str | None, address_match: str | None, source_class: str | None,
+                issues: Any, evidence: str | None = None) -> str:
+    """A MANUAL_REVIEW candidate's tier (Step AF-2), from the columns a row
+    carries, so the VIES queue can recompute it on a written row:
+
+    * LOW — NAME_PARTIAL with ADDRESS_MISMATCH, SECONDARY_SOURCE or
+      OTHER_VAT_IDS_ON_PAGE; EXTRACTED_BY_PATTERN without a quote;
+      VIES_INVALID; and a number not checked on a page we read
+      (EVIDENCE_NOT_VERIFIED);
+    * MEDIUM — any of :data:`MEDIUM_ISSUES`;
+    * HIGH — name EXACT (an ABBREVIATED or BRANCH match is EXACT with a
+      flag), address EXACT or SAME_TOWN, source class A or B;
+    * anything else (a partial name alone, another town alone): MEDIUM.
+
+    The order keeps the tier monotone: another issue never raises it."""
+    codes = {issue_code(i) for i in issues or ()}
+    if ((ISSUE_NAME_PARTIAL in codes and codes & _LOW_WITH_PARTIAL)
+            or (EXTRACTED_BY_PATTERN in codes and not (evidence or "").strip())
+            or VIES_INVALID in codes or EVIDENCE_NOT_VERIFIED in codes):
+        return CONF_LOW
+    if codes & MEDIUM_ISSUES:
         return CONF_MEDIUM
-    return CONF_NOT_VERIFIED
+    if (name_match == NAME_EXACT and address_match in ACCEPTED_ADDRESS
+            and source_class in TRUSTED_CLASSES):
+        return CONF_HIGH
+    return CONF_MEDIUM
+
+
+def vies_pending(r: FoundResult) -> FoundResult:
+    """A candidate leaves the lookup without a VIES call: one with no VIES
+    answer (never asked, or no answer) becomes ``PENDING`` with
+    ``VIES_PENDING``, for the queue (``vat/vies_retry.py``). This covers a
+    candidate whose name was reconciled after a gate stopped it before VIES
+    (Göttingen, Konstanz, UK Tübingen). A CONFLICT is not queued."""
+    if not _is_candidate(r) or r.validation_status in VIES_ANSWERED or decide(r) == CONFLICT:
+        return r
+    status = FOUND_PENDING if r.status.startswith(f"{FOUND_UNVERIFIED}:VIES_") else r.status
+    return replace(r, status=status, validation_status=VALIDATION_PENDING, validation_date=None,
+                   entity_decision=None, entity_confidence=None)
+
+
+def sap_update_eligible(decision: str | None, validation_status: str | None) -> bool:
+    """May a controlled update write this number to SAP? Only an
+    AUTO_ACCEPT that VIES has said VALID: never while PENDING."""
+    return decision == AUTO_ACCEPT and validation_status == "VALID"
 
 
 #: VAT_Found_* for a row outside the lookup's scope: every column blank.
@@ -380,12 +565,13 @@ def vs_sap(proposal: str | None, sap_normalized: str | None, country: str | None
 
 
 def lookup_kpis(results: list[FoundResult | None]) -> dict[str, Any]:
-    """The design paper's reporting measures (§10), per customer researched
-    (a customer's result is fanned out to its rows; it counts once). Rates
-    are fractions of the customers researched; NOT_RUN is not researched."""
+    """The reporting measures, per entity researched (an entity's result is
+    copied to its records; it counts once). Rates are fractions of the
+    entities researched; NOT_RUN is not researched. ``issues`` counts each
+    issue code per decision segment."""
     from collections import Counter
 
-    unique = list({id(r): r for r in results if r is not None}.values())
+    unique = list({r.entity or id(r): r for r in results if r is not None}.values())
     researched = [r for r in unique if r.status != NOT_RUN]
     n = len(researched)
     decisions = Counter(r.decision for r in researched)
@@ -399,14 +585,26 @@ def lookup_kpis(results: list[FoundResult | None]) -> dict[str, Any]:
         "discovery_rate": rate(sum(1 for r in researched if r.value)),
         "verification_rate": rate(sum(1 for r in researched if r.status == FOUND_VERIFIED)),
         "auto_accept_rate": rate(decisions[AUTO_ACCEPT]),
+        # AUTO_ACCEPT and VIES VALID: what a controlled update may write.
+        "sap_update_eligible": sum(
+            1 for r in researched if sap_update_eligible(r.decision, r.validation_status)),
+        "vies_pending": sum(1 for r in researched if r.validation_status == VALIDATION_PENDING),
         "manual_review_rate": rate(decisions[MANUAL_REVIEW]),
         "not_found_rate": rate(decisions[DECISION_NOT_FOUND]),
         "conflicts": decisions[CONFLICT],
+        "no_vat_stated": sum(1 for r in researched if r.status == NO_VAT_STATED),
+        "no_vat_inferred": sum(1 for r in researched if r.status == NO_VAT_INFERRED),
         "avg_seconds_per_customer": round(sum(seconds) / len(seconds), 2) if seconds else None,
         "decision": {d: decisions[d] for d in DECISIONS if decisions[d]},
         "confidence": dict(Counter(r.confidence for r in researched if r.confidence)),
         "conflicts_by_source_type": dict(Counter(
             r.source_type or "(none)" for r in researched if r.decision == CONFLICT)),
+        "issues": {
+            d: dict(sorted(Counter(
+                issue_code(i) for r in researched if r.decision == d for i in r.all_issues
+            ).items(), key=lambda kv: ISSUE_ORDER.index(kv[0])))
+            for d in DECISIONS if decisions[d]
+        },
     }
 
 
@@ -414,42 +612,92 @@ def today() -> str:
     return datetime.now(timezone.utc).date().isoformat()
 
 
+def entity_key(inp: LookupInput) -> str | None:
+    """The legal entity a record belongs to: normalised Name 1, legal form
+    (Name 1's, else Name 1–4's) and City. None without a Name 1."""
+    if not inp.name_1:
+        return None
+    from vat.name_prep import prepare  # the entity Name 1–4 describe (Step AD)
+
+    plan = prepare(inp.names)
+    name = parse_name(plan.entity, sap=not plan.complete)
+    return "|".join((" ".join(name.core), plan.form or name.form or "", fold(inp.city)))
+
+
+def for_record(entity: FoundResult, inp: LookupInput) -> FoundResult:
+    """The entity's result as written to one of its records: the record's
+    own address match against the same page, DEPARTMENT when its Name 2–4
+    hold a department, INPUT_INCOMPLETE for what it lacks. The decision and
+    confidence stay the entity's."""
+    flags, issues, address = entity.flags, entity.issues, entity.address_match
+    missing = inp.missing_mandatory()
+    if missing:
+        flags = (*flags, f"{INPUT_INCOMPLETE}:{','.join(missing)}")
+    if _is_candidate(entity) and any(has_department(n) for n in inp.names[1:]):
+        issues = (*issues, DEPARTMENT)
+    if entity.address_text and entity.address_match in ACCEPTED_ADDRESS:
+        own, _ = _address_match(entity.address_text, inp.street, inp.house_number,
+                                inp.postal_code, inp.city)
+        # Only between the two accepted levels: the decision is the entity's.
+        if own in ACCEPTED_ADDRESS:
+            address = own
+    return replace(entity, flags=flags, issues=issues, address_match=address,
+                   entity_decision=entity.decision, entity_confidence=entity.confidence)
+
+
 async def run_lookups(
     engine: LookupEngine,
     inputs: list[LookupInput | None],
     concurrency: int = LOOKUP_CONCURRENCY,
 ) -> list[FoundResult | None]:
-    """One lookup per Customer (per row when a row has no Customer), up to
-    *concurrency* customers at a time; the answer is fanned out to every row
-    of it, in input order. ``None`` in, ``None`` out (row out of scope).
+    """One lookup per legal entity (:func:`entity_key`; per row when a row
+    has no Name 1), up to *concurrency* at a time; the answer is copied to
+    every record of the entity (:func:`for_record`), in input order. ``None``
+    in, ``None`` out (row out of scope).
 
-    Parallelism changes only the wall time: each customer's lookup is
-    independent, every external answer is cached under a key of its own
-    request, and the output order is the input order."""
+    Parallelism changes only the wall time: each lookup is independent, every
+    external answer is cached under a key of its own request, and the output
+    order is the input order."""
     keys: list[Any] = []
     first: dict[Any, LookupInput] = {}
     for index, inp in enumerate(inputs):
         if inp is None:
             keys.append(None)
             continue
-        key = ("customer", inp.customer) if inp.customer else ("row", index)
+        entity = entity_key(inp)
+        key = ("entity", entity) if entity else ("row", index)
         keys.append(key)
         first.setdefault(key, inp)
 
     semaphore = asyncio.Semaphore(max(1, concurrency))
     version = getattr(engine, "agent_version", None)
 
-    async def one(inp: LookupInput) -> FoundResult:
+    async def one(key: Any, inp: LookupInput) -> FoundResult:
         async with semaphore:
             started = time.perf_counter()
-            result = await engine.lookup(inp)
-            flags = result.flags
-            missing = inp.missing_mandatory()
-            if missing:
-                flags = (*flags, f"{INPUT_INCOMPLETE}:{','.join(missing)}")
-            return replace(result, flags=flags, agent_version=result.agent_version or version,
-                           seconds=round(time.perf_counter() - started, 3))
+            result = vies_pending(await engine.lookup(inp))
+            return replace(result, agent_version=result.agent_version or version,
+                           entity=repr(key), seconds=round(time.perf_counter() - started, 3))
 
-    results = await asyncio.gather(*(one(inp) for inp in first.values()))
+    results = await asyncio.gather(*(one(k, inp) for k, inp in first.items()))
     by_key = dict(zip(first, results))
-    return [by_key[k] if k is not None else None for k in keys]
+    return [(_not_shared(by_key[k]) if _aggregator_only(by_key[k]) and inp is not first[k]
+             else for_record(by_key[k], inp)) if k is not None else None
+            for k, inp in zip(keys, inputs)]
+
+
+#: Flags: the number was read on a directory entry (unternehmensverzeichnis.org,
+#: ``vat/lookup_web.py``); a sibling record of the entity did not get it.
+AGGREGATOR_FALLBACK = "AGGREGATOR_FALLBACK"
+AGGREGATOR_NOT_SHARED = "AGGREGATOR_NOT_SHARED"
+
+
+def _aggregator_only(result: FoundResult) -> bool:
+    return bool(result.value) and AGGREGATOR_FALLBACK in result.flags
+
+
+def _not_shared(result: FoundResult) -> FoundResult:
+    """A directory's candidate stays with the record it was looked up for;
+    the entity's other records get NOT_FOUND (Step AF rule 17)."""
+    return FoundResult(result.mode, NOT_FOUND, flags=(AGGREGATOR_NOT_SHARED,), agent_version=result.agent_version,
+                       entity=result.entity)
