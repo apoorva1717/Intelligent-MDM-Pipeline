@@ -133,7 +133,8 @@ def read(answer):
 def _settings(**kw):
     # The Step AF helpers (ranking call, Name-2 classifier, aggregator search)
     # are off unless a test turns them on: the scripts below list the core calls.
-    kw = {"vat_web_ranking": "heuristic", "vat_name2_classifier": False, "vat_aggregator_fallback": False, **kw}
+    kw = {"vat_web_ranking": "heuristic", "vat_name2_classifier": False, "vat_aggregator_fallback": False,
+          "vat_web_operator_follow": False, "vat_web_site_search": False, **kw}
     return replace(get_settings(), vat_web_query_mode="hybrid", vies_backoff_seconds=0.0,
                    vies_min_interval_ms=0, vies_requester_vat="", cache_frozen=False,
                    vat_web_retry_backoff_seconds=0.0, **kw)
@@ -384,7 +385,7 @@ class TestFlow:
                  "https://www.bosch.example/steuern": page("https://www.bosch.example/steuern", "Robert Bosch GmbH")}
         model = Model(run=[run("q", [HOME])], read=[read(NOTHING)])
         r = await _engine(tmp_path, model, pages).lookup(BOSCH)
-        assert r.status == NOT_FOUND and r.usage["follows"] == 2
+        assert r.status.split(":")[0] == NOT_FOUND and r.usage["follows"] == 2
         # Its pages are near-empty (rendered by script): the host did not
         # answer, so search 2 runs; nothing VAT-like: no reader call.
         assert [k for k, _ in model.calls] == ["run", "second"] and r.usage["needs_js"] >= 1
@@ -398,7 +399,7 @@ class TestFlow:
         web = FakeWeb({u: page(u, "Impressum Robert Bosch GmbH 70839 Gerlingen") for u in urls})
         r = await _engine(tmp_path, model, {}, web=web, vat_web_max_follows=0,
                           vat_web_many_own_hosts=99).lookup(BOSCH)
-        assert r.status == NOT_FOUND and r.usage["fetches"] == 4 and len(web.fetched) == 4
+        assert r.status.split(":")[0] == NOT_FOUND and r.usage["fetches"] == 4 and len(web.fetched) == 4
         assert [n["url"] for n in r.usage["not_fetched"]] == urls[4:]
 
     @pytest.mark.asyncio
@@ -411,7 +412,7 @@ class TestFlow:
         r = await _engine(tmp_path, model, pages).lookup(braun)
         assert r.usage["hosts"]["braun.example"]["rejected"] == "NAME_NOT_ON_PAGE"
         # A rejected host did not answer: search 2 runs.
-        assert r.status == NOT_FOUND and [k for k, _ in model.calls] == ["run", "second"]
+        assert r.status.split(":")[0] == NOT_FOUND and [k for k, _ in model.calls] == ["run", "second"]
 
     @pytest.mark.asyncio
     async def test_head_office_in_another_town_is_read_and_reviewed(self, tmp_path):
@@ -579,7 +580,7 @@ class TestFlow:
     async def test_number_not_on_the_page_is_dropped(self, tmp_path):
         model = Model(run=[run("q", [IMPRESSUM])], read=[read(found(vat="DE129274202"))])
         r = await _engine(tmp_path, model, {IMPRESSUM: page(IMPRESSUM, BODY)}).lookup(BOSCH)
-        assert r.status == NOT_FOUND and r.value is None
+        assert r.status.split(":")[0] == NOT_FOUND and r.value is None
         assert r.usage["dropped"][0]["vat_id"] == "DE129274202"
 
     @pytest.mark.asyncio
@@ -599,7 +600,7 @@ class TestNoVatExpected:
         url = "https://www.steuer-ratgeber.example/impressum"
         model = Model(run=[run("q", [url])], second=[NO_SEARCH_2], read=[read(NOTHING)])
         r = await _engine(tmp_path, model, {url: page(url, "Wir sind Kleinunternehmer.")}).lookup(verein)
-        assert r.status == NOT_FOUND
+        assert r.status.split(":")[0] == NOT_FOUND
         assert r.usage["hosts"]["steuer-ratgeber.example"]["rejected"] in ("NAME_NOT_ON_PAGE", "NOT_VERIFIED")
 
     @pytest.mark.asyncio
@@ -625,7 +626,7 @@ class TestNoVatExpected:
     async def test_school_with_nothing_read_is_not_found(self, tmp_path):
         school = replace(BOSCH, names=("Grundschule am Park", None, None, None))
         r = await _engine(tmp_path, Model(run=[run("q", [])], read=[read(NOTHING)]), {}).lookup(school)
-        assert r.status == NOT_FOUND  # INFERRED needs its own Impressum read
+        assert r.status.split(":")[0] == NOT_FOUND  # INFERRED needs its own Impressum read
 
 
 class TestGroundedFallback:

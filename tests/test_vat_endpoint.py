@@ -609,3 +609,115 @@ class TestScopeAll:
     def test_vs_sap(self, proposal, sap, expected):
         from vat.lookup import vs_sap
         assert vs_sap(proposal, sap, "DE") == expected
+
+
+class TestAgentPassParameter:
+    """Step AG on the endpoints: ``agent_pass`` per request (default VAT_AGENT_PASS, off)."""
+
+    @pytest.fixture
+    def agents(self, monkeypatch):
+        from vat import lookup_agent
+
+        made: list = []
+
+        class _Agent:
+            context: dict = {}
+            usage_log: list = []
+
+            def __init__(self):
+                self.closed = False
+                self.meter = type("M", (), {"spent": 0.0, "budget": 8.0, "table": None, "overrides": None})()
+                made.append(self)
+
+            def stats(self):
+                return {}
+
+            async def aclose(self):
+                self.closed = True
+
+        monkeypatch.setattr(lookup_agent, "make_agent", lambda settings, client: _Agent())
+        return made
+
+    @pytest.mark.asyncio
+    async def test_file_endpoint_builds_and_closes_the_agent(self, client, lookups, agents):
+        content = _book([["Customer", "Name", "Country/Region Key", "VAT Registration No."],
+                         ["1", "Acme GmbH", "DE", None]])
+        resp = await client.post(FILE_URL + "?agent_pass=true", files={"file": ("x.xlsx", content, XLSX)})
+        assert resp.status_code == 200, resp.text
+        assert len(agents) == 1 and agents[0].closed
+        # the fake lookup found a number for the only row: nothing for the agent
+        assert resp.headers["x-vat-agent-found"] == "0"
+
+    @pytest.mark.asyncio
+    async def test_off_by_default_and_without_a_lookup(self, client, lookups, agents):
+        content = _book([["Customer", "Name", "Country/Region Key", "VAT Registration No."],
+                         ["1", "Acme GmbH", "DE", None]])
+        assert (await client.post(FILE_URL, files={"file": ("x.xlsx", content, XLSX)})).status_code == 200
+        resp = await client.post(FILE_URL + "?agent_pass=true&lookup_missing=none",
+                                 files={"file": ("x.xlsx", content, XLSX)})
+        assert resp.status_code == 200 and agents == []
+
+    @pytest.mark.asyncio
+    async def test_json_body_flag(self, client, lookups, agents):
+        resp = await client.post(URL, json={"rows": [_MISSING_DE], "lookup_missing": "llm_web", "agent_pass": True})
+        assert resp.status_code == 200, resp.text
+        assert len(agents) == 1 and "agent_pass" in resp.json()["summary"]["lookup"]
+
+
+class TestLookupAllRowsFlag:
+    """VAT_LOOKUP_ALL_ROWS: the default scope of the plain endpoints."""
+
+    ROWS = [["Customer", "Name", "Country/Region Key", "VAT Registration No."],
+            ["1", "Acme GmbH", "DE", None], ["2", "Beta GmbH", "DE", "DE136695976"]]
+
+    @pytest.fixture
+    def flag(self, monkeypatch):
+        def set_(on: bool):
+            settings = replace(get_settings(), vat_lookup_all_rows=on)
+            monkeypatch.setattr(vat_routes, "get_settings", lambda: settings)
+        return set_
+
+    async def _calls(self, client, lookups, query=""):
+        resp = await client.post(FILE_URL + query, files={"file": ("x.xlsx", _book(self.ROWS), XLSX)})
+        assert resp.status_code == 200, resp.text
+        return lookups[-1].calls, load_workbook(io.BytesIO(resp.content))
+
+    @pytest.mark.asyncio
+    async def test_off_only_the_missing_row(self, client, lookups, flag):
+        flag(False)
+        calls, wb = await self._calls(client, lookups)
+        assert calls == 1
+        headers, _ = _sheet(wb, "Data")
+        assert "VAT_Found_vs_SAP" not in headers
+
+    @pytest.mark.asyncio
+    async def test_on_every_row_and_compared_with_sap(self, client, lookups, flag):
+        flag(True)
+        calls, wb = await self._calls(client, lookups)
+        assert calls == 2
+        headers, rows = _sheet(wb, "Data")
+        vs = [r["VAT_Found_vs_SAP"] for r in rows]
+        assert vs == ["SAP_BLANK", "MATCHES_SAP"]
+
+    @pytest.mark.asyncio
+    async def test_the_request_overrides_the_flag(self, client, lookups, flag):
+        flag(True)
+        calls, _ = await self._calls(client, lookups, "?scope=missing")
+        assert calls == 1
+        flag(False)
+        calls, _ = await self._calls(client, lookups, "?scope=all")
+        assert calls == 2
+
+    @pytest.mark.asyncio
+    async def test_json_endpoint_follows_the_flag(self, client, lookups, flag):
+        flag(True)
+        rows = [dict(zip(self.ROWS[0], r)) for r in self.ROWS[1:]]
+        resp = await client.post(URL, json={"rows": rows, "lookup_missing": "llm_web"})
+        assert resp.status_code == 200 and lookups[-1].calls == 2
+        assert resp.json()["summary"]["lookup"]["scope"] == "all"
+
+
+def test_default_scope():
+    from vat.lookup import default_scope
+    assert default_scope(replace(get_settings(), vat_lookup_all_rows=True)) == "all"
+    assert default_scope(replace(get_settings(), vat_lookup_all_rows=False)) == "missing"

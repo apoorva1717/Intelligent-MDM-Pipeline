@@ -61,12 +61,20 @@ def _endpoint_mode(mode: str | None) -> str | None:
     return _ENDPOINT_MODES.get(mode, mode) if mode else mode
 LookupScope = Literal["missing", "all"]
 
-#: Plain endpoints: look up only rows with no VAT ID (production behaviour).
+#: Plain endpoints: the scope VAT_LOOKUP_ALL_ROWS sets (off: only rows with
+#: no VAT ID), unless the request says.
 _SCOPE_MISSING_DEFAULT = Query(
-    default="missing",
+    default=None,
     description="missing: only rows with no VAT ID. all: every DE row, VAT ID or not, "
-                "with the proposal compared to the SAP value (evaluation).",
+                "with the proposal compared to the SAP value. Default: all when "
+                "VAT_LOOKUP_ALL_ROWS is on, else missing.",
 )
+
+
+def _scope(scope: Optional[str]) -> str:
+    from vat.lookup import default_scope
+
+    return scope or default_scope(get_settings())
 #: Experiment endpoints: every DE row, so each proposal can be scored against SAP.
 _SCOPE_ALL_DEFAULT = Query(
     default="all",
@@ -81,6 +89,9 @@ class VatValidationRequest(BaseModel):
     Registration No.``; every other column is passed through unchanged."""
 
     rows: list[dict[str, Any]] = Field(..., min_length=1)
+    #: Step AG: the agentic pass on the rows the lookup left without a number
+    #: (NOT_FOUND / LOOKUP_INCOMPLETE). None: VAT_AGENT_PASS (off by default).
+    agent_pass: Optional[bool] = None
     #: Propose VAT IDs for rows with an empty VAT Registration No. and key DE.
     #: ``llm_only`` runs ``llm_web`` (web search; never from memory).
     lookup_missing: LookupMode = "llm_web"
@@ -121,6 +132,31 @@ def _engines(mode: str | None, compare_mode: str | None, client: VIESClient):
     return lookup, compare
 
 
+#: Step AG on the endpoints: per request, else VAT_AGENT_PASS.
+_AGENT_PASS = Query(
+    default=None,
+    description="Run the agentic pass (Step AG: the model searches and opens pages itself, 5 searches / "
+                "8 opens, gated like the lookup) on the rows the lookup left NOT_FOUND or LOOKUP_INCOMPLETE. "
+                "Not on rows where no VAT ID is expected. Default: VAT_AGENT_PASS (off). Its stop limit is "
+                "VAT_AGENT_BUDGET_USD per request.",
+)
+
+
+def _agent_or_none(agent_pass: Optional[bool], mode: str | None, lookup: LookupEngine | None,
+                   client: VIESClient):
+    """The agent engine when the pass is asked for (and there is an llm_web lookup to follow)."""
+    from vat.lookup import LLM_WEB
+    from vat.lookup_agent import make_agent
+
+    settings = get_settings()
+    wanted = settings.vat_agent_pass if agent_pass is None else agent_pass
+    if not wanted or lookup is None:
+        return None
+    if mode != LLM_WEB:
+        raise HTTPException(status_code=400, detail="agent_pass needs lookup_missing=llm_web.")
+    return make_agent(settings, client)
+
+
 async def _close(*engines: LookupEngine | None) -> None:
     for engine in engines:
         if engine is not None:
@@ -129,21 +165,22 @@ async def _close(*engines: LookupEngine | None) -> None:
 
 async def _validate_json(
     rows: list[dict[str, Any]], mode: str, compare_mode: str | None = None,
-    scope: str = "missing",
+    scope: str = "missing", agent_pass: Optional[bool] = None,
 ) -> VatValidationResponse:
     client = _client_or_500()
     mode = _endpoint_mode(mode)
     lookup, compare = _engines(mode, compare_mode, client)
-    logger.info("VAT validation request received: %d rows, lookup_missing=%s, compare=%s",
-                len(rows), mode, compare_mode)
+    agent = _agent_or_none(agent_pass, mode, lookup, client)
+    logger.info("VAT validation request received: %d rows, lookup_missing=%s, compare=%s, agent_pass=%s",
+                len(rows), mode, compare_mode, agent is not None)
     try:
         out, summary = await validate_rows(
-            rows, client, lookup=lookup, compare_lookup=compare, scope=scope,
+            rows, client, lookup=lookup, compare_lookup=compare, scope=scope, agent=agent,
         )
     except ValueError as exc:  # no VAT column
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:
-        await _close(lookup, compare)
+        await _close(lookup, compare, agent)
     return VatValidationResponse(rows=out, columns=result_columns(out), summary=summary)
 
 
@@ -154,14 +191,17 @@ async def validate_vat(
         default=None,
         description="Overrides the body's lookup_missing (default llm_web). none: no lookup.",
     ),
-    scope: LookupScope = _SCOPE_MISSING_DEFAULT,
+    scope: Optional[LookupScope] = _SCOPE_MISSING_DEFAULT,
+    agent_pass: Optional[bool] = _AGENT_PASS,
 ) -> VatValidationResponse:
     """Normalise and format-check every row's VAT Registration No., ask VIES
     once per unique valid-format number, and fan the answer out to every row
     of the customer. A VIES outage is ``SERVICE_UNAVAILABLE``, never
     ``INVALID``. ``lookup_missing`` (query or body) adds the ``VAT_Found_*``
-    proposals for rows with no VAT ID."""
-    return await _validate_json(request.rows, lookup_missing or request.lookup_missing, scope=scope)
+    proposals for rows with no VAT ID; ``agent_pass`` (query or body) the
+    agentic pass on the rows it found nothing for."""
+    return await _validate_json(request.rows, lookup_missing or request.lookup_missing, scope=_scope(scope),
+                                agent_pass=agent_pass if agent_pass is not None else request.agent_pass)
 
 
 _WITH_GROUNDED = Query(
@@ -196,7 +236,8 @@ async def validate_vat_file(
     lookup_missing: LookupMode = Query(
         default="llm_web", description="Missing-VAT lookup mode (default llm_web). none: no lookup.",
     ),
-    scope: LookupScope = _SCOPE_MISSING_DEFAULT,
+    scope: Optional[LookupScope] = _SCOPE_MISSING_DEFAULT,
+    agent_pass: Optional[bool] = _AGENT_PASS,
 ) -> StreamingResponse:
     """VAT validation for an uploaded workbook; returns the workbook.
 
@@ -207,7 +248,8 @@ async def validate_vat_file(
     did not answer — non-zero means a re-run is worthwhile, and it will ask
     VIES for only those.
     """
-    return await _validate_upload(file, lookup_missing, out_suffix="_vat", scope=scope)
+    return await _validate_upload(file, lookup_missing, out_suffix="_vat", scope=_scope(scope),
+                                  agent_pass=agent_pass)
 
 
 @router.post("/api/validate/vat/llm-only-experiment/file")
@@ -235,7 +277,7 @@ async def validate_vat_file_llm_only_experiment(
 
 async def _validate_upload(
     file: UploadFile, mode: str, *, out_suffix: str, compare_mode: str | None = None,
-    scope: str = "missing", vies: bool = True,
+    scope: str = "missing", vies: bool = True, agent_pass: Optional[bool] = None,
 ) -> StreamingResponse:
     """The shared body of both file endpoints."""
     from openpyxl import load_workbook
@@ -260,16 +302,17 @@ async def _validate_upload(
     client.enabled = vies
     mode = _endpoint_mode(mode)
     lookup, compare = _engines(mode, compare_mode, client)
-    logger.info("VAT validation file request received: %s, lookup_missing=%s, compare=%s, vies=%s",
-                filename, mode, compare_mode, vies)
+    agent = _agent_or_none(agent_pass, mode, lookup, client)
+    logger.info("VAT validation file request received: %s, lookup_missing=%s, compare=%s, vies=%s, "
+                "agent_pass=%s", filename, mode, compare_mode, vies, agent is not None)
     try:
         summary = await validate_workbook(
-            wb, client, source=filename, lookup=lookup, compare_lookup=compare, scope=scope,
+            wb, client, source=filename, lookup=lookup, compare_lookup=compare, scope=scope, agent=agent,
         )
     except ValueError as exc:  # no header / no rows / no VAT column
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:
-        await _close(lookup, compare)
+        await _close(lookup, compare, agent)
 
     out = io.BytesIO()
     wb.save(out)
@@ -283,5 +326,6 @@ async def _validate_upload(
             "X-VAT-Rows": str(summary["rows"]),
             "X-VAT-Service-Unavailable": str(summary["vies_service_unavailable_vat_ids"]),
             "X-VAT-Lookup-Mode": mode,
+            "X-VAT-Agent-Found": str(((summary.get("lookup") or {}).get("agent_pass") or {}).get("found", "")),
         },
     )

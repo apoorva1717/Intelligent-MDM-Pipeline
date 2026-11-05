@@ -133,7 +133,7 @@ def _write_summary(wb, summary: dict[str, Any], meta: list[tuple[str, Any]]) -> 
         if lookup["mode"] == "llm_web":
             ws.append(["LLM web search (never from memory): every number is checked against the page "
                        "the model read it on; one without such a page is dropped."])
-        scope_text = ("every DE row, VAT ID or not — evaluation against SAP"
+        scope_text = ("every DE row, VAT ID or not, compared with SAP"
                       if lookup.get("scope") == "all" else "VAT blank, Country/Region Key DE")
         ws.append([f"Rows in scope ({scope_text})", lookup["rows_in_scope"]])
         for status, n in sorted(lookup["status"].items()):
@@ -187,7 +187,10 @@ def _write_kpis(ws, kpis: dict[str, Any] | None) -> None:
                 "auto_accept_rate", "manual_review_rate", "not_found_rate", "conflicts",
                 "avg_seconds_per_customer"):
         ws.append([key, kpis.get(key)])
-    for group in ("decision", "confidence", "conflicts_by_source_type"):
+    for key in ("sap_update_eligible", "vies_pending"):
+        if key in kpis:
+            ws.append([key, kpis[key]])
+    for group in ("decision", "confidence", "conflicts_by_source_type", "not_found_reasons"):
         for value, n in sorted(kpis.get(group, {}).items()):
             ws.append([f"{group}: {value}", n])
     for decision, counts in kpis.get("issues", {}).items():
@@ -197,7 +200,7 @@ def _write_kpis(ws, kpis: dict[str, Any] | None) -> None:
 
 async def validate_workbook(
     wb, client: VIESClient, *, source: str, lookup: LookupEngine | None = None,
-    compare_lookup: LookupEngine | None = None, scope: str = "missing",
+    compare_lookup: LookupEngine | None = None, scope: str = "missing", agent: Any = None,
 ) -> dict[str, Any]:
     """Validate *wb* in place (result columns + Summary sheet). Returns the
     summary. *source* names the input on the Summary sheet. With a *lookup*
@@ -214,6 +217,7 @@ async def validate_workbook(
 
     results, summary = await validate_rows(
         [r for _, r in rows], client, lookup=lookup, compare_lookup=compare_lookup, scope=scope,
+        agent=agent,
     )
     written = result_columns(results)
     _write_results(ws, header_idx, headers, rows, results, written)

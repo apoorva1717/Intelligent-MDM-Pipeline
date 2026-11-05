@@ -537,6 +537,12 @@ SCOPE_ALL = "all"
 SCOPES = (SCOPE_MISSING, SCOPE_ALL)
 
 
+def default_scope(settings: Any) -> str:
+    """The lookup scope when none is given: ``all`` with VAT_LOOKUP_ALL_ROWS
+    (every row, VAT ID or not), else ``missing`` (rows with no VAT ID)."""
+    return SCOPE_ALL if getattr(settings, "vat_lookup_all_rows", False) else SCOPE_MISSING
+
+
 def in_scope(fmt: VatFormat, scope: str = SCOPE_MISSING) -> bool:
     """A row the lookup is for: Country/Region Key DE, and — unless *scope* is
     ``all`` — no VAT value."""
@@ -594,6 +600,9 @@ def lookup_kpis(results: list[FoundResult | None]) -> dict[str, Any]:
         "conflicts": decisions[CONFLICT],
         "no_vat_stated": sum(1 for r in researched if r.status == NO_VAT_STATED),
         "no_vat_inferred": sum(1 for r in researched if r.status == NO_VAT_INFERRED),
+        # Step AH: why the NOT_FOUND ones are (``NOT_FOUND:<reason>``).
+        "not_found_reasons": dict(Counter(
+            r.status.split(":", 1)[1] for r in researched if r.status.startswith(f"{NOT_FOUND}:"))),
         "avg_seconds_per_customer": round(sum(seconds) / len(seconds), 2) if seconds else None,
         "decision": {d: decisions[d] for d in DECISIONS if decisions[d]},
         "confidence": dict(Counter(r.confidence for r in researched if r.confidence)),

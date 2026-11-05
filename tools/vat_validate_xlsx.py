@@ -55,7 +55,7 @@ sys.path.insert(0, str(_ROOT))
 
 
 async def run(input_path: Path, out_path: Path, client, lookup=None,
-              vies_queue: bool = True) -> dict[str, Any]:
+              vies_queue: bool = True, agent=None, scope: str = "missing") -> dict[str, Any]:
     """Validate *input_path* into *out_path*. Returns the summary. With
     *vies_queue*, the VIES queue is drained before the lookups and after
     them, and its answers are written into the output."""
@@ -70,12 +70,15 @@ async def run(input_path: Path, out_path: Path, client, lookup=None,
             print(f"VIES queue at start-up: {summary_line(asked)}")
     wb = load_workbook(input_path)
     try:
-        summary = await validate_workbook(wb, client, source=str(input_path), lookup=lookup)
+        summary = await validate_workbook(wb, client, source=str(input_path), lookup=lookup, agent=agent,
+                                          scope=scope)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     finally:
         if lookup is not None:
             await lookup.aclose()
+        if agent is not None:
+            await agent.aclose()
     if vies_queue and lookup is not None:
         queue, asked = await drain(client)
         changed = apply_to_workbook(wb, queue.answers())
@@ -89,12 +92,13 @@ def _ledger(args, lookup, input_path: Path, out_path: Path, started: datetime) -
     ledger's total to date."""
     from vat import costs
 
-    run = costs.run_costs(lookup.usage_log, lookup.meter.table, lookup.meter.overrides)
+    log = [*lookup.usage_log, *(getattr(args, "_agent_log", None) or [])]
+    run = costs.run_costs(log, lookup.meter.table, lookup.meter.overrides)
     print("  cost: " + " ".join(f"{k}={run[k]:.4f}" for k in costs.LINES)
           + f" web_search_calls={run['web_search_calls']} cache_hits={run['cache_hits']}/{run['calls']}"
           + f" price_table={run['price_table_hash']}")
     for warning in costs.helper_reasoning_warnings(
-            costs.raw_counts(c) for u in lookup.usage_log for c in u.get("calls") or []):
+            costs.raw_counts(c) for u in log for c in u.get("calls") or []):
         print(f"  WARNING helper call not at reasoning minimal: {warning}")
     row = costs.ledger_row(
         run, run_id=f"{started:%Y%m%dT%H%M%S}_{out_path.stem}", timestamp=started.isoformat(timespec="seconds"),
@@ -121,6 +125,12 @@ def main() -> int:
                          "and cost (from the API usage fields) to this JSON file.")
     ap.add_argument("--step", default=os.getenv("VAT_RUN_STEP", ""),
                     help="Label of this run in the cost ledger (default VAT_RUN_STEP).")
+    ap.add_argument("--scope", choices=("missing", "all"), default=None,
+                    help="missing: rows with no VAT ID; all: every DE row, VAT ID or not, compared "
+                         "with SAP (default: all with VAT_LOOKUP_ALL_ROWS, else missing).")
+    ap.add_argument("--agent-pass", action="store_true", default=None,
+                    help="Step AG: the agentic pass on the rows the lookup left without a number "
+                         "(default VAT_AGENT_PASS; stop limit VAT_AGENT_BUDGET_USD).")
     ap.add_argument("--no-vies-queue", action="store_true",
                     help="Do not ask VIES for the queued numbers (rows stay PENDING).")
     ap.add_argument("--ledger", default=None,
@@ -149,10 +159,21 @@ def main() -> int:
     settings = get_settings()
     client = VIESClient(settings)
     lookup = make_lookup(args.lookup_missing, settings, client)
+    agent = None
+    if lookup is not None and args.lookup_missing == "llm_web" and (
+            settings.vat_agent_pass if args.agent_pass is None else args.agent_pass):
+        from vat.lookup_agent import make_agent
+        agent = make_agent(settings, client)
     started = datetime.now(timezone.utc).astimezone()
-    summary = asyncio.run(run(input_path, out_path, client, lookup, vies_queue=not args.no_vies_queue))
+    from vat.lookup import default_scope
+    scope = args.scope or default_scope(settings)
+    summary = asyncio.run(run(input_path, out_path, client, lookup, vies_queue=not args.no_vies_queue,
+                              agent=agent, scope=scope))
+    args._agent_log = agent.usage_log if agent is not None else []
     print(f"Wrote {out_path}")
     usage_log = getattr(lookup, "usage_log", None)
+    if usage_log is not None and agent is not None:
+        usage_log = [*usage_log, *({**u, "pass": "agent"} for u in agent.usage_log)]
     if args.usage_out and usage_log is not None:
         import json
         Path(args.usage_out).write_text(json.dumps(usage_log, indent=1, ensure_ascii=False),
@@ -167,6 +188,8 @@ def main() -> int:
     print(f"  format: {summary['format_status']}")
     if "lookup" in summary:
         print(f"  lookup ({summary['lookup']['mode']}): {summary['lookup']['status']}")
+        if "agent_pass" in summary["lookup"]:
+            print(f"  agent pass: {summary['lookup']['agent_pass']}")
     print(f"  vies:   {summary['vies_status']}")
     return 0
 

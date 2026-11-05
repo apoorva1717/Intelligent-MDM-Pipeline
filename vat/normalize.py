@@ -68,8 +68,9 @@ _PREFIX_COUNTRY_KEYS: dict[str, frozenset[str]] = {
     "XI": frozenset({"GB", "XI"}),
 }
 
-#: Separators removed before anything else: whitespace, dots, dashes.
-_SEPARATORS = re.compile(r"[\s.\-]+")
+#: Separators removed before anything else: whitespace, dots, dashes,
+#: slashes ("DE 212/275/725"; Step AH).
+_SEPARATORS = re.compile(r"[\s.\-/]+")
 
 
 @dataclass(frozen=True)

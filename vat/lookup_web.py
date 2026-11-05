@@ -154,13 +154,18 @@ from vat.web_pages import (
     is_legal_page,
     is_university,
     name_on_page,
+    defunct_statement,
     never_fetch,
+    operator_host_matches,
+    operator_link,
     page_key,
     select_pages,
     with_scheme,
 )
 from vat.web_query import no_vat_statement, page_sections, query_for
 
+#: Step AH rule 3: pages fetched from the on-site search's results.
+SITE_SEARCH_FETCHES = 3
 #: Reasoning effort of the search call when settings carry none
 #: (``VAT_WEB_REASONING_EFFORT``, default medium).
 REASONING_EFFORT = "medium"
@@ -405,6 +410,9 @@ class WebSearchLookup:
         #: Step AF-2: the fetch budget of an entity with many own hosts.
         self.max_fetches_many_hosts = int(g("vat_web_max_fetches_many_hosts", 6))
         self.many_own_hosts = int(g("vat_web_many_own_hosts", 3))
+        #: Step AH: the operator follow and the on-site document search.
+        self.operator_follow = bool(g("vat_web_operator_follow", True))
+        self.site_search = bool(g("vat_web_site_search", True))
         self.max_follows = int(g("vat_web_max_follows", 2))
         self.page_chars = int(g("vat_web_page_chars", 8000))
         self.section_window = int(g("vat_web_section_window", 1500))
@@ -516,7 +524,7 @@ class WebSearchLookup:
             m_inp = replace(inp, names=(plan.entity, None, None, None))
             web = await self._web(m_inp, plan, usage)
             result = await self._finish(m_inp, await self._with_peppol(m_inp, web), plan)
-            return self._with_plan(result, plan)
+            return with_not_found_reason(self._with_plan(result, plan))
         web = await self._web(inp)
         if web.decision == AUTO_ACCEPT:
             return web
@@ -773,7 +781,7 @@ class WebSearchLookup:
     ) -> tuple[dict[str, Any], list[str]] | FoundResult:
         """Search *n*: one web search, no page opened (``max_tool_calls`` 1).
         ``"agg"``: the aggregator search, run as given like search 1."""
-        limits = self._run_search if n in (1, "agg") else self._own_search
+        limits = self._run_search if n in (1, "agg", "site") else self._own_search
         out = await self._call(f"search_{n}", system, user, limits, usage)
         if isinstance(out, FoundResult):
             return out
@@ -817,7 +825,7 @@ class WebSearchLookup:
         hits = vat_candidates(text)
         info.update(status=page.status, chars=len(text), sections_chars=len(sections), hits=hits,
                     hits_in_sections=[h for h in hits if id_on_page(h, sections)],
-                    no_vat=no_vat_statement(text))
+                    no_vat=no_vat_statement(text), defunct=defunct_statement(text, inp.names))
         # A short page that still states a number or an address is a small
         # site, not one rendered by script.
         if len(text) < NEEDS_JS_CHARS and not info["pdf"] and kind != VERIFY and not hits \
@@ -948,7 +956,55 @@ class WebSearchLookup:
                 continue
             if entry.get("rejected") is None:
                 read += mine
+        if self.operator_follow and read and not usage.get("operator_follows") \
+                and not any(p["hits"] for p in read):
+            await self._operator(n, read, inp, usage, pages, hosts)
         return read
+
+    async def _operator(
+        self, n: int | str, read: list[dict[str, Any]], inp: LookupInput, usage: dict[str, Any],
+        pages: dict[str, dict[str, Any]], hosts: dict[str, dict[str, Any]],
+    ) -> None:
+        """Step AH rule 2: an own legal page with no number names another
+        organisation as its operator, Träger or parent (ENI-G: "a Joint
+        Initiative of the University Medical Center Göttingen (UMG)"): one
+        fetch of that organisation's Impressum, its own allowance on top of
+        VAT_WEB_MAX_FETCHES (the budget is often spent on the entity's own
+        pages by then: ENI-G on the AH run). Own-host rules apply to it
+        (:func:`vat.web_pages.operator_host_matches`); a number there is the
+        parent's (PARENT_ENTITY_CANDIDATE, review). A host rejected before
+        only for not naming the entity is fetched again: the operator
+        relation is the evidence it lacked."""
+        for p in list(read):
+            if p.get("kind") != OWN or not is_gate_page(p["url"]):
+                continue
+            op = operator_link(p["text"], p["links"], p["url"])
+            if op is None:
+                continue
+            name, url = op
+            host = host_of(url)
+            old = hosts.get(host)
+            if old is not None and (old.get("blocked") or old.get("rejected") not in (
+                    None, "NOT_VERIFIED", "NAME_NOT_ON_PAGE")):
+                continue
+            usage["fetches"] += 1
+            usage["operator_follows"] = 1
+            usage["operator"] = {"name": name, "url": url, "from": p["url"]}
+            entry = hosts[host] = {**(old or {}), "kind": PARENT, "round": n,
+                                   "fetched": [*(old or {}).get("fetched", []), url], "rejected": None,
+                                   "answered": False, "operator": name}
+            got = await self._get(url, n, "operator", PARENT, inp, usage, pages)
+            if got is None:
+                entry["blocked"] = (pages.get(url) or {}).get("blocked") or (pages.get(url) or {}).get("status")
+                return
+            if not operator_host_matches(url, name, got["text"]):
+                entry["rejected"] = pages[url]["rejected"] = "OPERATOR_NOT_ON_PAGE"
+                return
+            got["name_on_page"] = pages[url]["name_on_page"] = PARENT_CANDIDATE
+            entry["answered"] = is_gate_page(got["url"])
+            usage["operator"]["read"] = True
+            read.append(got)
+            return
 
     async def _read(
         self, n: int | str, read: list[dict[str, Any]], inp: LookupInput, usage: dict[str, Any],
@@ -987,7 +1043,8 @@ class WebSearchLookup:
         vat_id = _clean(answer.get("vat_id"))
         ambiguous: tuple[str, ...] = ()
         extracted = False
-        named_pages = [p for p in worth if p.get("name_on_page") in ("EXACT", "ABBREVIATED", "NAME_USED")]
+        named_pages = [p for p in worth if p.get("name_on_page") in ("EXACT", "ABBREVIATED", "NAME_USED")
+                       or p.get("via") == "operator"]
         if not vat_id:
             # The reader named none. Rule 12: a page that names the entity
             # and states exactly one number → that number
@@ -1024,6 +1081,8 @@ class WebSearchLookup:
         # A group page (chain, holding, industrial park): the number in the
         # block that names the entity, never just the first one.
         passing, every = block_numbers(page["text"], plan.acceptable, alt)
+        if page.get("via") == "operator" and len(every) == 1:  # the operator's own notice: its number
+            passing = every
         block_flag = None
         if len(every) >= 2 and not ambiguous:
             norm = assess_format(vat_id, "DE").normalized or vat_id
@@ -1236,6 +1295,13 @@ class WebSearchLookup:
         usage["own_host_seen_1"] = any(kind in (OWN, POINTER, PARENT) for _, kind in picked)
         usage["own_host_answered_1"] = answered_1
         n_results = len(results_1)
+        site_host = self._site_host(hosts, pages) if (
+            self.site_search and not self._usable(best) and answered_1 and self.limits.max_searches > 1) else None
+        if site_host:
+            second = await self._site_search(site_host, inp, usage, pages, hosts, base, plan)
+            if isinstance(second, FoundResult) and second.status.startswith(LOOKUP_INCOMPLETE):
+                return replace(best, flags=(*best.flags, *second.flags)) if best and best.value else second
+            best = self._better(best, second)
         if not self._usable(best) and not answered_1 and self.limits.max_searches > 1:
             user = LLM_WEB_SECOND_USER_PROMPT_TEMPLATE.format(
                 query_1=q1, results_1=self._results_listing(results_1, skipped),
@@ -1293,6 +1359,58 @@ class WebSearchLookup:
             return FoundResult(LLM_WEB, f"{LOOKUP_INCOMPLETE}:{HTTP_BLOCKED}_{code}",
                                flags=(*base, f"{HTTP_BLOCKED}_{code}", ALL_OWN_HOSTS_BLOCKED))
         return FoundResult(LLM_WEB, NOT_FOUND, flags=(*base, LLM_WEB_NO_ANSWER))
+
+    @staticmethod
+    def _site_host(hosts: dict[str, dict[str, Any]], pages: dict[str, dict[str, Any]]) -> str | None:
+        """Step AH rule 3: the first own host that answered (an Impressum-type
+        page read) and showed no number on any page fetched there."""
+        for host, h in hosts.items():
+            if h.get("kind") == OWN and h.get("answered") and not h.get("rejected") and not h.get("blocked") \
+                    and not any((pages.get(u) or {}).get("hits") for u in h.get("fetched") or []):
+                return host
+        return None
+
+    async def _site_search(
+        self, host: str, inp: LookupInput, usage: dict[str, Any], pages: dict[str, dict[str, Any]],
+        hosts: dict[str, dict[str, Any]], base: tuple[str, ...], plan: NamePlan,
+    ) -> FoundResult | None:
+        """Step AH rule 3: one search ``site:<host> <search name> USt-IdNr``
+        (it is the entity's search 2). The specified ``site:<host> "USt-IdNr"
+        OR "Umsatzsteuer-Identifikationsnummer"`` returned no result at all on
+        the AH run (5 of 5 hosts); ``site:<host> USt-IdNr`` returns the host's
+        own documents (the district's, at kreis-calw.de); with the search name
+        the entity's document comes first (Kreiskliniken Calw);
+        its results on that host, PDFs first, read like any own page: a
+        number in a document that names the entity is class A. Its hits get
+        :data:`SITE_SEARCH_FETCHES` fetches of their own: it replaces search
+        2, and by then the entity's own pages have usually spent the budget
+        (Kreiskliniken Calw: 4 of 4, its letter the 4th hit)."""
+        q = f"site:{host} {plan.search_name} USt-IdNr"
+        usage["site_search"] = {"host": host, "query": q}
+        out = await self._search("site", LLM_WEB_RUN_SYSTEM_PROMPT,
+                                 LLM_WEB_RUN_USER_PROMPT_TEMPLATE.format(query=q), usage)
+        if isinstance(out, FoundResult):
+            return out
+        results = self._results(out[1], out[0])
+        done = {page_key(u) for h in hosts.values() for u in h.get("fetched") or []}
+        urls = [r["url"] for r in results
+                if (host_of(r["url"]) == host or host_of(r["url"]).endswith("." + host))
+                and page_key(r["url"]) not in done]
+        usage["site_search"].update(results=len(results), on_host=len(urls))
+        if not urls:
+            return None
+        urls = sorted(urls, key=lambda u: not is_pdf_url(u))  # documents first, else in result order
+        picked = [(u, OWN) for u in urls[:SITE_SEARCH_FETCHES]]
+        cap = usage.get("max_fetches")
+        usage["max_fetches"] = usage["fetches"] + len(picked)
+        try:
+            read = await self._fetch_hosts("site", picked, inp, usage, pages, hosts, urls, plan=plan)
+        finally:
+            usage["max_fetches"] = cap
+        found = await self._read("site", read, inp, usage, base, plan) if read else None
+        if isinstance(found, FoundResult) and found.value:
+            usage["site_search"]["found"] = found.value
+        return found
 
     async def _blocked_archive(
         self, inp: LookupInput, hosts: dict[str, dict[str, Any]], pages: dict[str, dict[str, Any]],
@@ -1538,8 +1656,17 @@ class WebSearchLookup:
                 h = heading(r.get("title")) or slug(r["url"])
                 entries.append((r["url"], h, name_match(h, names).match))
         first_word = next(iter(distinctive_tokens(plan.entity)), None) or (_fold(plan.entity).split() or [""])[0]
+        # A PARTIAL entry that swaps a distinctive word of the record for one
+        # of its own is another entity ("Kreiskliniken Calw" ↔ "Kreiskliniken
+        # Reutlingen", Step AH); one that only drops or adds words is not.
+        mine = set(distinctive_tokens(plan.entity))
+
+        def swapped(heading_: str) -> bool:
+            theirs = set(distinctive_tokens(heading_))
+            return bool(theirs - mine) and bool(mine - theirs)
+
         matching = [e for e in entries if e[2] == NAME_EXACT or (
-            e[2] == _PARTIAL and first_word and first_word in _fold(e[1]))][:2]
+            e[2] == _PARTIAL and first_word and first_word in _fold(e[1]) and not swapped(e[1]))][:2]
         # A successor check only for an entry whose name differs from the
         # record's in its first word alone (LX / LG International).
         record_words = _fold(plan.entity).split()
@@ -1587,3 +1714,58 @@ class WebSearchLookup:
             return replace(found, mode=LLM_WEB, issues=tuple(dict.fromkeys(issues)),
                            flags=(*found.flags, AGGREGATOR_FALLBACK, f"{ENGINE}:aggregator", *base))
         return None
+
+
+# ── Step AH rule 4: why an entity is NOT_FOUND ───────────────────────────────
+
+#: Flag prefix: the reason, also the status suffix (``NOT_FOUND:<reason>``).
+NOT_FOUND_REASON = "NOT_FOUND_REASON"
+#: A page says the entity is insolvent, dissolved, deleted or merged (the quote is the evidence).
+ENTITY_DEFUNCT = "ENTITY_DEFUNCT"
+#: An own host's Impressum-type page was read; no number for the entity.
+NO_NUMBER_ON_OWN_SITE = "NO_NUMBER_ON_OWN_SITE"
+#: Only a parent's / institution's / operator's site answered, with no number.
+PARENT_ONLY = "PARENT_ONLY"
+#: The own host(s) returned only script-rendered (empty) pages.
+OWN_SITE_SCRIPT_ONLY = "OWN_SITE_SCRIPT_ONLY"
+#: An own host refused us or timed out (every one: LOOKUP_INCOMPLETE instead).
+OWN_SITE_BLOCKED = "OWN_SITE_BLOCKED"
+#: No own host in the results at all.
+NO_OWN_SITE = "NO_OWN_SITE"
+NOT_FOUND_REASONS = (ENTITY_DEFUNCT, NO_NUMBER_ON_OWN_SITE, PARENT_ONLY, OWN_SITE_SCRIPT_ONLY, OWN_SITE_BLOCKED,
+                     NO_OWN_SITE)
+
+
+def not_found_reason(usage: dict[str, Any]) -> tuple[str, str | None, str | None]:
+    """``(reason, quote, url)`` for an entity left NOT_FOUND, from what its
+    lookup fetched: the first of :data:`NOT_FOUND_REASONS` that applies. The
+    quote and URL only for ENTITY_DEFUNCT."""
+    pages, hosts = usage.get("pages") or {}, usage.get("hosts") or {}
+    for url, p in pages.items():
+        if p.get("defunct"):
+            return ENTITY_DEFUNCT, p["defunct"], url
+    own = [h for h in hosts.values() if h.get("kind") in (OWN, POINTER)]
+    live = [h for h in own if not h.get("rejected")]
+    if any(h.get("answered") for h in live):
+        return NO_NUMBER_ON_OWN_SITE, None, None
+    if any(h.get("answered") and not h.get("rejected") for h in hosts.values()
+           if h.get("kind") in (PARENT, INSTITUTION)):
+        return PARENT_ONLY, None, None
+    if any((pages.get(u) or {}).get("needs_js") or (pages.get(u) or {}).get("empty")
+           for h in live for u in h.get("fetched") or []):
+        return OWN_SITE_SCRIPT_ONLY, None, None
+    if any(h.get("blocked") for h in own):
+        return OWN_SITE_BLOCKED, None, None
+    return NO_OWN_SITE, None, None
+
+
+def with_not_found_reason(result: FoundResult) -> FoundResult:
+    """A plain NOT_FOUND gets its reason: status ``NOT_FOUND:<reason>`` and the
+    flag ``NOT_FOUND_REASON:<reason>``; ENTITY_DEFUNCT keeps its quote as the
+    evidence and its page as the source."""
+    if result.status != NOT_FOUND:
+        return result
+    reason, quote, url = not_found_reason(result.usage or {})
+    usage = dict(result.usage or {}, not_found_reason=reason)
+    return replace(result, status=f"{NOT_FOUND}:{reason}", flags=(*result.flags, f"{NOT_FOUND_REASON}:{reason}"),
+                   evidence=quote or result.evidence, source_url=url or result.source_url, usage=usage)

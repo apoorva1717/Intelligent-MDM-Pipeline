@@ -640,3 +640,104 @@ def block_numbers(text: str, names, alt_names=()) -> tuple[list[str], list[str]]
             passing.append(vat)
         start = start + m.end()
     return passing, list(hits)
+
+
+# ── Step AH: the operator of a page's site, and a defunct entity ────────────
+
+#: Rule AH-2: the legal notice names another organisation as the site's
+#: operator, Träger or parent; the organisation's name follows the phrase.
+_OPERATOR_RE = re.compile(
+    r"(?:eine?\s+gemeinsame\s+Einrichtung\s+(?:der|des|von)|eine?\s+(?:zentrale\s+)?Einrichtung\s+(?:der|des)"
+    r"|Betreiber(?:in)?(?:\s+(?:der|dieser)\s+(?:Web)?(?:seite|site|Website|Internetseite))?\s*:"
+    r"|Träger(?:in)?\s*:|ist\s+eine?\s+(?:Unternehmen|Tochter(?:gesellschaft|unternehmen)?|Gesellschaft|Marke)\s+der"
+    r"|(?:a\s+)?joint\s+(?:initiative|institution|facility)\s+of(?:\s+the)?"
+    r"|(?:an\s+)?organi[sz]ational\s+unit\s+(?:within|of)(?:\s+the)?"
+    r"|(?:is\s+)?operated\s+by(?:\s+the)?|(?:is\s+)?a\s+(?:company|subsidiary)\s+of(?:\s+the)?)"
+    r"\s*(?P<name>[^\n.;:]{3,120})", re.I)
+_OPERATOR_STOP_RE = re.compile(r"\s+(?:and|und|sowie|as|im\s+Sinne|gemäß|nach|within|innerhalb)\s+|\s*,\s*", re.I)
+_IMPRINT_ANCHOR_RE = re.compile(r"impressum|imprint|legal\s*notice|rechtliche", re.I)
+
+
+def _operator_tokens(name: str) -> tuple[set[str], set[str]]:
+    """Distinctive words (≥ 4 letters) and acronyms (in parentheses, or the
+    initials) of an operator's name."""
+    acronyms = {a.lower() for a in re.findall(r"\(([A-ZÄÖÜ][A-Za-zÄÖÜ\-]{1,9})\)", name)}
+    words = [w for w in re.findall(r"[A-Za-zÄÖÜäöüß]+", fold(re.sub(r"\([^)]*\)", " ", name)))]
+    distinct = {w for w in words if len(w) >= 4 and w not in GENERIC_WORDS and w not in _GENERIC_WORDS}
+    initials = "".join(w[0] for w in words if w not in _GENERIC_WORDS and len(w) > 2)
+    if len(initials) >= 3:
+        acronyms.add(initials)
+    return distinct, acronyms
+
+
+def operator_link(text: str | None, links, page_url: str) -> tuple[str, str] | None:
+    """``(operator name, its Impressum URL)`` when the page's legal notice
+    names another organisation as operator / Träger / parent ("a Joint
+    Initiative of the University Medical Center Göttingen (UMG)", "Träger:",
+    "ist ein Unternehmen der …") and a link on the page leads to that
+    organisation's site: its imprint link when the page has one ("Click here
+    for the imprint of UMG"), else ``<its host>/impressum``. None otherwise."""
+    block = legal_block(text) or (text or "")[:4000]
+    own = registrable_domain(page_url)
+    for m in _OPERATOR_RE.finditer(block):
+        name = _OPERATOR_STOP_RE.split(m.group("name").replace("↗", " ").strip(), maxsplit=1)[0].strip()
+        full = m.group("name")
+        distinct, acronyms = _operator_tokens(full if "(" in full[:len(name) + 12] else name)
+        distinct |= _operator_tokens(name)[0]
+        if not (distinct or acronyms):
+            continue
+        best: tuple[int, str] | None = None
+        for anchor, href in links or ():
+            href = urljoin(page_url, href or "")
+            if not href.startswith(("http://", "https://")) or registrable_domain(href) == own or never_fetch(href):
+                continue
+            label = (registrable_domain(href) or "").rsplit(".", 1)[0]
+            anchor_f = fold(anchor or "")
+            hit = any(a in re.split(r"[^a-z0-9]+", anchor_f) or a == label for a in acronyms) \
+                or any(w in anchor_f or w in label for w in distinct)
+            if not hit:
+                continue
+            score = 2 if _IMPRINT_ANCHOR_RE.search(anchor or "") or is_gate_page(href) else 1
+            if best is None or score > best[0]:
+                target = href if score == 2 else f"{urlparse(href).scheme}://{urlparse(href).netloc}/impressum"
+                best = (score, target)
+        if best:
+            return name, best[1]
+    return None
+
+
+#: Rule AH-4: the page says the entity no longer trades as itself.
+_DEFUNCT_RE = re.compile(
+    r"\b(?:in\s+Insolvenz|Insolvenzverfahren|insolvent|aufgelöst|gelöscht|erloschen|in\s+Liquidation|i\.\s?L\.|"
+    r"in\s+Abwicklung|verschmolzen|umfirmiert|merged\s+(?:into|with)|dissolved|liquidated|ceased\s+(?:trading|operations))",
+    re.I)
+
+
+def defunct_statement(text: str | None, names) -> str | None:
+    """A passage (≤ 200 characters) where the page says the entity is
+    insolvent, dissolved, deleted or merged, within 200 characters of one
+    of its distinctive words; None otherwise."""
+    text = text or ""
+    tokens = set()
+    for n in names or ():
+        if n:
+            tokens |= set(distinctive_tokens(n))
+    if not tokens:
+        return None
+    for m in _DEFUNCT_RE.finditer(text):
+        lo, hi = max(0, m.start() - 200), min(len(text), m.end() + 200)
+        if any(t in fold(text[lo:hi]) for t in tokens):
+            return " ".join(text[max(0, m.start() - 100):m.end() + 100].split())
+    return None
+
+
+def operator_host_matches(url: str, name: str, text: str | None) -> bool:
+    """Own-host rules on an operator's page: its domain carries the
+    operator's name or acronym (``umg.eu`` for "… Göttingen (UMG)"), or the
+    page names the operator."""
+    distinct, acronyms = _operator_tokens(name)
+    label = (registrable_domain(url) or "").rsplit(".", 1)[0]
+    parts = set(re.split(r"[^a-z0-9]+", label))
+    if acronyms & parts or resembles(url, name):
+        return True
+    return bool(name_on_page(text or "", (re.sub(r"\s*\([^)]*\)", "", name).strip(),)))

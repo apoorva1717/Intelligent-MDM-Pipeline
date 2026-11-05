@@ -787,9 +787,10 @@ def source_type(
 #: The design paper's pattern, verbatim.
 VAT_PATTERN = re.compile(r"\bDE[ ]?[0-9]{9}\b")
 #: The same with the digit grouping legal notices use ("DE 1477 94 196",
-#: "DE 811.128.135"). A trailing ``-NNNNN`` is a Wirtschafts-Identifikations-
-#: nummer (W-IdNr.), not a VAT ID.
-_GROUPED_PATTERN = re.compile(r"\bDE[ ]?((?:\d[ .]?){8}\d)\b(?!-\d{5})")
+#: "DE 811.128.135", "DE 212/275/725" at UKM, "DE-212275725"; Step AH): a
+#: space, dot, slash or hyphen between groups. A trailing ``-NNNNN`` is a
+#: Wirtschafts-Identifikationsnummer (W-IdNr.), not a VAT ID.
+_GROUPED_PATTERN = re.compile(r"\bDE[ \-]?((?:\d[ ./\-]?){8}\d)\b(?!-\d{5})")
 
 
 def vat_candidates(text: str | None) -> list[str]:

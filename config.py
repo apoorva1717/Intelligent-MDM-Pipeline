@@ -374,6 +374,28 @@ class Settings:
     #: The last-step directory search on unternehmensverzeichnis.org (rule 17).
     vat_aggregator_fallback: bool = field(
         default_factory=lambda: _bool(os.getenv("VAT_AGGREGATOR_FALLBACK"), default=True))
+    #: Step AH: follow the operator / Träger / parent a legal notice names to
+    #: its Impressum (one fetch; a number there is PARENT_ENTITY_CANDIDATE).
+    vat_web_operator_follow: bool = field(
+        default_factory=lambda: _bool(os.getenv("VAT_WEB_OPERATOR_FOLLOW"), default=True))
+    #: Step AH: an own host answered with no number: one site: search for the
+    #: USt-IdNr on it, as search 2 (PDFs allowed).
+    vat_web_site_search: bool = field(
+        default_factory=lambda: _bool(os.getenv("VAT_WEB_SITE_SEARCH"), default=True))
+    #: Which rows the missing-VAT lookup runs on when a request / run does not
+    #: say (``scope``): off (default) only rows with no VAT Registration No.;
+    #: on every row, VAT ID or not, each proposal compared with the SAP value.
+    #: Rows outside Country/Region Key DE are never looked up.
+    vat_lookup_all_rows: bool = field(
+        default_factory=lambda: _bool(os.getenv("VAT_LOOKUP_ALL_ROWS"), default=False))
+    #: Step AG: after the hybrid lookup, the agentic pass (vat/lookup_agent.py)
+    #: on the rows still NOT_FOUND / LOOKUP_INCOMPLETE. Off by default; the
+    #: endpoints take ``agent_pass`` per request, the runner ``--agent-pass``.
+    vat_agent_pass: bool = field(
+        default_factory=lambda: _bool(os.getenv("VAT_AGENT_PASS"), default=False))
+    #: The agent pass's own stop limit per run / request, in USD (Step AG: 8).
+    vat_agent_budget_usd: float = field(
+        default_factory=lambda: float(os.getenv("VAT_AGENT_BUDGET_USD", "8")))
     #: Ask VIES inside the lookup, per candidate (the behaviour before Step
     #: AF-2). Off: a candidate leaves the lookup PENDING and the queue
     #: (vat/vies_retry.py) verifies it in batches at the end of the run.

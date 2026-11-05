@@ -198,6 +198,7 @@ async def validate_rows(
     lookup: LookupEngine | None = None,
     compare_lookup: LookupEngine | None = None,
     scope: str = SCOPE_MISSING,
+    agent: Any = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Every row, unchanged, with :data:`VAT_COLUMNS` appended; plus a summary.
 
@@ -209,6 +210,13 @@ async def validate_rows(
     experiment), the same in-scope rows are looked up a second time and
     :data:`vat.lookup.COMPARE_COLUMNS` are appended: that engine's result and
     ``VAT_LLM_vs_Grounded``.
+
+    With an *agent* (``vat.lookup_agent.make_agent``), the agentic pass of
+    Step AG runs after the lookup on every row it left NOT_FOUND or
+    LOOKUP_INCOMPLETE (never NOT_FOUND_NO_VAT_EXPECTED), with the lookup's
+    result and the VAT IDs on the upload's other records of the same entity
+    as context; a number it finds replaces the row's result, gated like the
+    lookup's. ``summary.lookup.agent_pass`` reports it.
 
     *scope* ``all`` (evaluation) looks up every DE row, VAT ID or not, and adds
     ``VAT_Found_vs_SAP`` (and ``VAT_Grounded_vs_SAP``): each proposal against
@@ -261,6 +269,12 @@ async def validate_rows(
             )
         else:
             found, second = await run_lookups(lookup, inputs), None
+        agent_summary = None
+        if agent is not None:
+            from vat.lookup_agent import agent_pass
+            found, agent_summary = await agent_pass(
+                agent, inputs, found, sap=[f.normalized if scope == SCOPE_ALL else None for f in formats],
+                siblings=_sibling_vat_ids(rows, cols, lcols, customers, formats, inputs))
         if scope == SCOPE_ALL:
             found = [_sap_outdated(r, f.normalized, f.country_key) for r, f in zip(found, formats)]
             if second is not None:
@@ -293,6 +307,9 @@ async def validate_rows(
             "cost": lookup.stats(),
             "vies_retry_queued": queued,
         }
+        if agent_summary is not None:
+            summary["lookup"]["agent_pass"] = agent_summary
+            summary["lookup"]["agent_cost"] = agent.stats()
         if scope == SCOPE_ALL:
             summary["lookup"]["vs_sap"] = dict(Counter(r[FOUND_VS_SAP] for r in out if r[FOUND_VS_SAP]))
         if compare_lookup is not None:
@@ -320,6 +337,28 @@ async def validate_rows(
     # After the lookup: its writes go through the same cache and counter.
     summary["cache_write_failures"] = client.write_failures.count
     return out, summary
+
+
+def _sibling_vat_ids(rows, cols, lcols, customers, formats, inputs) -> dict[str, list[str]]:
+    """``customer → VAT IDs`` (FORMAT_OK, normalised) on the upload's other
+    records of the same entity key, for the looked-up customers (Step AG's
+    context; the record's own number is never in it)."""
+    from vat.lookup import entity_key
+
+    wanted = {str(i.customer): entity_key(i) for i in inputs if i is not None}
+    if not wanted:
+        return {}
+    by_key: dict[str, set[tuple[str, str]]] = {}
+    for row, customer, fmt in zip(rows, customers, formats):
+        if not (fmt.vies_eligible and fmt.normalized):
+            continue
+        key = entity_key(LookupInput(
+            customer=customer, names=tuple(_cell(row, cols[f"name_{n}"]) for n in range(1, 5)),
+            street=None, house_number=None, postal_code=None,
+            city=_cell(row, lcols["city"]), country=fmt.country_key))
+        if key:
+            by_key.setdefault(key, set()).add((str(customer), fmt.normalized))
+    return {c: sorted({v for o, v in by_key.get(k, ()) if o != c}) for c, k in wanted.items() if k}
 
 
 #: Every result column, in output order. Which of them a result carries
