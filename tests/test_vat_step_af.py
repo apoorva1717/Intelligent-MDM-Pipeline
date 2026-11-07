@@ -343,6 +343,25 @@ class TestExtraction:
         r = await _engine(tmp_path, model, {IMPRESSUM: page(IMPRESSUM, body)}).lookup(BOSCH)
         assert r.decision == CONFLICT and "EXTRACTED_BY_PATTERN" not in r.all_issues
 
+    @pytest.mark.asyncio
+    async def test_the_page_names_whose_number_it_is(self, tmp_path):
+        """2026-11-06: no model named the company; the notice's own name is
+        compared (here the AG, not SAP's GmbH: LEGAL_FORM_DIFFERS)."""
+        model = Model(run=[run("q", [IMPRESSUM])], read=[read(NOTHING)])
+        body = BODY_BOSCH.replace("Robert Bosch GmbH", "Robert Bosch AG")
+        r = await _engine(tmp_path, model, {IMPRESSUM: page(IMPRESSUM, body)}).lookup(BOSCH)
+        assert r.attributed_to == "Robert Bosch AG"
+        assert "LEGAL_FORM_DIFFERS:gmbh/ag" in r.all_issues
+        assert r.usage["evidence_snippet"].startswith("Impressum Robert Bosch AG Robert-Bosch-Platz 1")
+        assert "DE811128135" in r.usage["evidence_snippet"].replace(" ", "")
+
+    @pytest.mark.asyncio
+    async def test_a_candidate_from_two_numbers_has_its_companys_name(self, tmp_path):
+        body = BODY_BOSCH + " Bosch Rexroth AG Umsatzsteuer-ID: DE 811 164 473"
+        model = Model(run=[run("q", [IMPRESSUM])], read=[read(NOTHING)])
+        r = await _engine(tmp_path, model, {IMPRESSUM: page(IMPRESSUM, body)}).lookup(BOSCH)
+        assert (r.value, r.attributed_to) == ("DE811128135", "Robert Bosch GmbH")
+
 
 class TestLegalNotice:
     """Rules 13 and 14, and the legal-form principle."""

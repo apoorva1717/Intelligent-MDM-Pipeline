@@ -154,6 +154,8 @@ from vat.web_pages import (
     is_legal_page,
     is_university,
     name_on_page,
+    number_holder,
+    number_snippet,
     defunct_statement,
     never_fetch,
     operator_host_matches,
@@ -1054,13 +1056,13 @@ class WebSearchLookup:
                 passing, every = block_numbers(p["text"], plan.acceptable, alt)
                 if len(every) == 1:
                     answer = dict(answer, vat_id=every[0], source_url=p["url"], evidence_quote=None,
-                                  attributed_to=None)
+                                  attributed_to=number_holder(p["text"], every[0], plan.acceptable))
                     vat_id, extracted = every[0], True
                     break
                 if len(every) >= 2:
                     pick = passing[0] if len(passing) == 1 else every[0]
                     answer = dict(answer, vat_id=pick, source_url=p["url"], evidence_quote=None,
-                                  attributed_to=None)
+                                  attributed_to=number_holder(p["text"], pick, plan.acceptable))
                     vat_id, ambiguous = pick, tuple(sorted(every))
                     break
         if not vat_id:
@@ -1087,7 +1089,8 @@ class WebSearchLookup:
         if len(every) >= 2 and not ambiguous:
             norm = assess_format(vat_id, "DE").normalized or vat_id
             if len(passing) == 1 and passing[0] != norm:
-                answer = dict(answer, vat_id=passing[0], evidence_quote=None, attributed_to=None)
+                answer = dict(answer, vat_id=passing[0], evidence_quote=None,
+                              attributed_to=number_holder(page["text"], passing[0], plan.acceptable))
                 vat_id, block_flag = passing[0], BLOCK_SELECTED
             elif not passing or len(passing) > 1:
                 ambiguous = tuple(sorted(passing or every))
@@ -1142,7 +1145,8 @@ class WebSearchLookup:
             extra.append(f"{AMBIGUOUS_SAME_NAME}:{','.join(ambiguous)}")
             extra.append(AMBIGUOUS_ON_PAGE)
         usage.update(found_by=n, source_page=page["url"], pdf_used=page["pdf"],
-                     found_via=page.get("via"), found_kind=page.get("kind"))
+                     found_via=page.get("via"), found_kind=page.get("kind"),
+                     evidence_snippet=number_snippet(page["text"], judged.value or vat_id))
         return replace(judged, mode=LLM_WEB, flags=(*judged.flags, *extra, *base))
 
     @staticmethod

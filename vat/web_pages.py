@@ -642,6 +642,82 @@ def block_numbers(text: str, names, alt_names=()) -> tuple[list[str], list[str]]
     return passing, list(hits)
 
 
+# ── The company a page gives a number to (2026-11-06) ───────────────────────
+
+_HOLDER_WORD = r"[A-ZÄÖÜ0-9][\w&.+'\-]*"
+_HOLDER_JOINER = r"(?:für|fuer|und|der|des|die|von|zu|&|-|–)"
+_HOLDER_FORM = (r"(?:gGmbH|GmbH|AG|SE|UG)\s?&\s?Co\.\s?(?:KGaA|KG|OHG)|gGmbH|GmbH|mbH|AG|SE|KGaA|KG|OHG"
+                r"|UG(?:\s?\(haftungsbeschränkt\))?|e\.\s?V\.|eG|e\.\s?K(?:fm|fr)?\.|Stiftung|Aktiengesellschaft")
+#: "<words> <legal form>" on one line: lower-case joiners ("Gesellschaft für
+#: Chemische Technik und Biotechnologie e.V."), "& Co. KG", "e. V.", "e.Kfm.".
+_HOLDER_RE = re.compile(
+    rf"({_HOLDER_WORD}(?:[ \t]+(?:{_HOLDER_WORD}|{_HOLDER_JOINER})){{0,10}}?)[ \t]*,?[ \t]+({_HOLDER_FORM})(?!\w)")
+#: Where an Impressum's own entity follows.
+_HOLDER_ANCHOR_RE = re.compile(
+    r"impressum|imprint|legal notice|angaben gem(?:ä|ae)(?:ß|ss)|anschrift|herausgeber|anbieter", re.I)
+#: The general partner or a representative, not the holder of the number.
+_HOLDER_SKIP_RE = re.compile(r"komplement|persönlich haftende|vertreten durch|gesellschafterin|geschäftsführende", re.I)
+_HOLDER_NOISE = frozenset({"impressum", "imprint", "kontakt", "kontaktadressen", "anschrift", "name", "und",
+                           "office", "ddg", "tmg", "herausgeber", "anbieter", "menu", "menue", "home"})
+
+
+def _number_re(vat: str) -> re.Pattern:
+    digits = vat[2:]
+    return re.compile(r"DE[ ]?" + "".join(d + r"[ .]?" for d in digits[:-1]) + digits[-1])
+
+
+#: Characters of page text kept before and after a number in its snippet.
+SNIPPET_BEFORE, SNIPPET_AFTER = 240, 80
+
+
+def number_snippet(text: str | None, vat_id: str | None) -> str | None:
+    """The page text around *vat_id* as fetched here (whitespace folded):
+    where the number stands, whoever picked it. None when it is not on the page."""
+    vat = re.sub(r"[\s.]", "", (vat_id or "")).upper()
+    hit = _number_re(vat).search(text or "") if len(vat) > 3 else None
+    if hit is None:
+        return None
+    start, end = max(0, hit.start() - SNIPPET_BEFORE), hit.end() + SNIPPET_AFTER
+    snippet = " ".join(text[start:end].split())
+    return ("…" if start else "") + snippet + ("…" if end < len(text) else "")
+
+
+def number_holder(text: str | None, vat_id: str | None, names=()) -> str | None:
+    """The company a page names for *vat_id* when no model said whose number
+    it is (EXTRACTED_BY_PATTERN, a number picked from a group page): the
+    first "<name> <legal form>" of its legal notice before the number, since
+    the previous number, at most 1500 characters back. A general partner
+    (Komplementärin) is skipped; words before the name are cut at the first
+    word of SAP's name (*names*), else noise words ("Impressum", "Kontakt").
+    So the matcher sees "Refratechnik Holding GmbH" for Refratechnik Ceramics
+    GmbH. None when the page writes no such name."""
+    vat = re.sub(r"[\s.]", "", (vat_id or "")).upper()
+    hit = _number_re(vat).search(text or "") if len(vat) > 3 else None
+    if hit is None:
+        return None
+    region = text[max(0, hit.start() - 1500):hit.start()]
+    ends = [m.end() for v in vat_candidates(region) for m in _number_re(v).finditer(region)]
+    if ends:
+        region = region[max(ends):]
+    for anchor in reversed(list(_HOLDER_ANCHOR_RE.finditer(region))):
+        if _HOLDER_RE.search(region[anchor.end():]):
+            region = region[anchor.end():]
+            break
+    sap = {w for w in fold(" ".join(str(n) for n in names if n)).split() if w not in _HOLDER_NOISE}
+    for m in _HOLDER_RE.finditer(region):
+        if _HOLDER_SKIP_RE.search(region[max(0, m.start() - 60):m.start()]):
+            continue
+        words = m.group(1).split()
+        first = next((i for i, w in enumerate(words) if fold(w) in sap), None)
+        if first is not None:
+            words = words[first:]
+        else:
+            while len(words) > 1 and (fold(words[0]).strip(":") in _HOLDER_NOISE or words[0][0].isdigit()):
+                words = words[1:]
+        return " ".join([*words, m.group(2)])
+    return None
+
+
 # ── Step AH: the operator of a page's site, and a defunct entity ────────────
 
 #: Rule AH-2: the legal notice names another organisation as the site's

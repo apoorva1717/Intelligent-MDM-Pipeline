@@ -55,7 +55,8 @@ sys.path.insert(0, str(_ROOT))
 
 
 async def run(input_path: Path, out_path: Path, client, lookup=None,
-              vies_queue: bool = True, agent=None, scope: str = "missing") -> dict[str, Any]:
+              vies_queue: bool = True, agent=None, scope: str = "missing",
+              log_columns: bool = False) -> dict[str, Any]:
     """Validate *input_path* into *out_path*. Returns the summary. With
     *vies_queue*, the VIES queue is drained before the lookups and after
     them, and its answers are written into the output."""
@@ -71,7 +72,7 @@ async def run(input_path: Path, out_path: Path, client, lookup=None,
     wb = load_workbook(input_path)
     try:
         summary = await validate_workbook(wb, client, source=str(input_path), lookup=lookup, agent=agent,
-                                          scope=scope)
+                                          scope=scope, log_columns=log_columns)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     finally:
@@ -168,7 +169,7 @@ def main() -> int:
     from vat.lookup import default_scope
     scope = args.scope or default_scope(settings)
     summary = asyncio.run(run(input_path, out_path, client, lookup, vies_queue=not args.no_vies_queue,
-                              agent=agent, scope=scope))
+                              agent=agent, scope=scope, log_columns=settings.vat_log_columns))
     args._agent_log = agent.usage_log if agent is not None else []
     print(f"Wrote {out_path}")
     usage_log = getattr(lookup, "usage_log", None)

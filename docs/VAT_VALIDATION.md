@@ -262,6 +262,7 @@ They are column values, **not** issue codes:
 | `VIES_MIN_INTERVAL_MS` | 500 (0 disables pacing; cache replays are never paced) |
 | `VIES_REQUESTER_VAT` | empty |
 | `VAT_GROUNDED_FALLBACK` | false |
+| `VAT_LOG_COLUMNS` | true (research log + `VAT_Found_Entity_Status`, see 3b) |
 
 `VIES_REQUESTER_VAT` is optional and never hardcoded. When it is set, VIES issues a
 consultation number. A malformed value fails loudly (HTTP 500 from the endpoint) instead of
@@ -852,6 +853,83 @@ result of the entity (the hybrid prompt version changes, so ranking calls are no
 from the AF cache). Both take effect on the next live run; nothing was re-run.
 
 **4.** `domain_hint` stays as it is.
+
+### Research log columns and entity status (2026-11-06, `vat/lookup_log.py`)
+
+With `VAT_LOG_COLUMNS=true` (the default), the endpoint (`/api/validate/vat`,
+`/api/validate/vat/file`) and `tools/vat_validate_xlsx.py` add these columns after the cost
+columns. They hold what the run reports used to show from the usage JSON. Every cell is read
+from the entity's usage record and the upload's other records, so they cost nothing and make
+no call. A row that was not looked up has them blank.
+
+| Column | Content |
+|---|---|
+| `VAT_Found_Entity_Status` | What the lookup learned about the entity, one `CODE: detail` per line (below) |
+| `VAT_Found_Name_vs_SAP` | The name the source gives the number to (`VAT_Found_Attributed_To`) against SAP's Name 1–4: `EXACT` / `PARTIAL` / `MISMATCH; SAP: …; found: …; legal form gmbh → ag; only in SAP: …; only found: …` |
+| `VAT_Found_Evidence_Snippet` | The page text around the number (240 characters before, 80 after) as our code fetched it, with the URL; also when the code picked the number and `VAT_Found_Evidence` (the model's quote) is blank. Sources without a fetched page (aggregator, Peppol) show their own quote. Display only: it never counts as an evidence quote for gate a |
+| `VAT_Log_Name_Class` | Name-prep class (and the Name-2 classifier's verdict when it changed the plan) |
+| `VAT_Log_Search_Name` | Search name, the entity name if it differs, search 2's name, the accepted names |
+| `VAT_Log_Queries` | Search 1, search 2, the site search and the aggregator query, as run |
+| `VAT_Log_Ranking` | URLs picked per search (ranking model / heuristic) and the domain hint |
+| `VAT_Log_Hosts` | Each host: kind, then answered / rejected (why) / blocked (code); operator |
+| `VAT_Log_Pages` | Every page fetched: HTTP status, how it was reached, numbers on it, rejected, script-only, no-VAT or defunct statement |
+| `VAT_Log_Not_Fetched` | Results not fetched (fetch limit) |
+| `VAT_Log_Dropped` | Numbers read and dropped, with the reason |
+| `VAT_Log_Operator` | The operator followed (name, URL, the page that named it, read or not) |
+| `VAT_Log_Peppol` | Peppol entries and whether one matched |
+| `VAT_Log_Aggregator` | The aggregator's entries |
+| `VAT_Log_No_Number_Class` | A–F class and why (rows without a number; C/D/F need scope `all`) |
+| `VAT_Log_Agent` | The agent pass: relation, confidence, value, source, notes, searches, opens |
+| `VAT_Log_Counts` | Searches, fetches, follows, probes, PDF / archive fetches, seconds |
+
+`VAT_Found_Published_Address` (the address on the number's page) is a lookup column and is
+always written.
+
+**`VAT_Found_Entity_Status` codes.** These describe what was seen, not a registry check. A
+company that none of the fetched pages discusses is not reported as dissolved.
+
+- `INSOLVENT`, `IN_LIQUIDATION`, `DISSOLVED`, `MERGED`, `RENAMED`: the SAP name says so ("in
+  Insolvenz", "i. L."), or a fetched page does near the entity's name (quote and URL).
+- `SUCCESSOR`: the agent judged the number's page to be a renamed or successor entity, or the
+  page names another entity (`SUCCESSOR_CANDIDATE`).
+- `VAT_FROM_PARENT`: the umbrella parent's number was accepted (`PARENT_ENTITY`), or the agent
+  says it is the parent's.
+- `VAT_MAY_BE_PARENTS`: the page names a parent or group, not the record, or the number was
+  read on a parent or institution site, or the page gives the number to a holding / group name
+  ("Refratechnik Holding GmbH" for Refratechnik Ceramics GmbH).
+- `OTHER_ENTITY_HOLDS_VAT`: the page gives the number to a company whose name is not the
+  record's (not just spelling: name cores under 90% similar), e.g. "CPT GmbH" for CPT Zwei GmbH.
+- `VAT_FROM_OPERATOR`: the number came from the operator's site. `OPERATED_BY`: the operator's
+  site was followed, with no number for the record.
+- `ONLY_PARENT_SITE`: no number; only a parent's site answered.
+- `SUB_UNIT_OF`: the record is a department, branch or sub-entity; the legal entity was looked
+  up.
+- `SISTER_ENTITY_ON_PAGE`: the number's page also names a sister company.
+- `LEGAL_FORM_DIFFERS`: the legal form on the page differs from SAP's (possibly a conversion).
+- `SAME_AS_SIBLING`: the number equals the one on another SAP record with the same name and
+  town. `SIBLING_HAS_OTHER_VAT`: that record has a different number. `SIBLING_HAS_VAT`: no
+  number was found, but that record has one.
+- `NO_VAT_STATED` (the quote), `PUBLIC_BODY_NO_VAT_INFERRED` (an assumption),
+  `SAP_VAT_OUTDATED`, `DELETED_IN_SAP`, `FROM_ARCHIVE_SNAPSHOT`.
+- `PARENT_HINT`, `SUCCESSOR_HINT`, `DEFUNCT_HINT` (marked "search result, unverified"): the
+  ranking model's one-line reason for a search result. It saw only the title and snippet. At
+  most 2 per kind.
+
+**The name of a number no model attributed (2026-11-06, `web_pages.number_holder`).** When the
+code picks the number itself (`EXTRACTED_BY_PATTERN`, a candidate from a page with several
+numbers, a block-selected number), `VAT_Found_Attributed_To` used to be blank, so the matcher
+had no name to compare and could not raise `LEGAL_FORM_DIFFERS` or `PARENT_ENTITY_CANDIDATE`.
+It is now the first "<name> <legal form>" in the legal notice before the number (since the
+previous number, at most 1,500 characters back; a Komplementärin is skipped). On the reviewed
+FINAL 50 file this filled all 7 `CONFLICT` rows the manual review marked as a parent's or another company's:
+Vitesco Technologies Group AG (gmbh → ag), FSKZ e. V. (gmbh → ev), Refratechnik Holding GmbH,
+DECHEMA Gesellschaft für Chemische Technik und Biotechnologie e.V., LMB - Laser-
+Materialbearbeitungs GmbH, CPT GmbH, and Kranich-Apotheke Matthias Schwartz e.Kfm. The
+decision is unchanged: these numbers have no evidence quote, so they stay in review.
+
+On the saved AH 19, AF 53 and AG 19 logs, no fetched page carried a defunct statement. Veritas
+was flagged `INSOLVENT` from its SAP name, with 2 `DEFUNCT_HINT`s. The parent hints covered
+Allessa → WeylChem, VAMED → Fresenius, Infracor → Evonik and Hewlett-Packard → HPE.
 
 ### Cost accounting (2026-11-05, `vat/costs.py`)
 

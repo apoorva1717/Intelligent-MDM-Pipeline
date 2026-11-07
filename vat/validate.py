@@ -34,6 +34,7 @@ from vat.lookup import (
     vs_sap,
 )
 from vat.costs import COST_COLUMNS, cost_columns
+from vat.lookup_log import LOG_COLUMNS, log_columns as research_log
 from vat.entity_match import NAME_EXACT, SAP_VAT_OUTDATED, TRUSTED_CLASSES
 from vat.lookup import DIFFERS_FROM_SAP, FoundResult
 from vat.lookup import LookupEngine, LookupInput, in_scope, lookup_kpis, run_lookups
@@ -199,6 +200,7 @@ async def validate_rows(
     compare_lookup: LookupEngine | None = None,
     scope: str = SCOPE_MISSING,
     agent: Any = None,
+    log_columns: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Every row, unchanged, with :data:`VAT_COLUMNS` appended; plus a summary.
 
@@ -222,6 +224,12 @@ async def validate_rows(
     ``VAT_Found_vs_SAP`` (and ``VAT_Grounded_vs_SAP``): each proposal against
     the SAP value. The lookups never see that value — :class:`LookupInput`
     carries name and address only.
+
+    With *log_columns* (``VAT_LOG_COLUMNS``) every looked-up row also gets
+    :data:`vat.lookup_log.LOG_COLUMNS`: the research log (search name,
+    queries, hosts, pages …) and ``VAT_Found_Entity_Status`` (dissolved,
+    merged, a parent's or sibling's number …), read from what the lookup
+    already gathered — no extra call.
 
     Raises ``ValueError`` when no row has a VAT Registration No. column.
     """
@@ -270,11 +278,13 @@ async def validate_rows(
         else:
             found, second = await run_lookups(lookup, inputs), None
         agent_summary = None
+        siblings = (_siblings(rows, cols, lcols, customers, formats, inputs)
+                    if agent is not None or log_columns else {})
         if agent is not None:
             from vat.lookup_agent import agent_pass
             found, agent_summary = await agent_pass(
                 agent, inputs, found, sap=[f.normalized if scope == SCOPE_ALL else None for f in formats],
-                siblings=_sibling_vat_ids(rows, cols, lcols, customers, formats, inputs))
+                siblings={c: sorted({v for _, v in pairs}) for c, pairs in siblings.items()})
         if scope == SCOPE_ALL:
             found = [_sap_outdated(r, f.normalized, f.country_key) for r, f in zip(found, formats)]
             if second is not None:
@@ -292,6 +302,13 @@ async def validate_rows(
             row.update(result.columns() if result else BLANK_COLUMNS)
             if priced:  # the engine reports cost lines (llm_web): every row gets the columns
                 row.update(cost_columns((result.usage or {}).get("costs") if result else None))
+        if log_columns:
+            for row, inp, fmt, result in zip(out, inputs, formats, found):
+                row.update(research_log(
+                    result, siblings.get(str(inp.customer)) if inp is not None else None,
+                    deleted=inp is not None and inp.deleted,
+                    sap_vat=fmt.normalized if scope == SCOPE_ALL else None,
+                    names=inp.names if inp is not None else ()))
         if scope == SCOPE_ALL:
             for row, inp, fmt, a in zip(out, inputs, formats, found):
                 row[FOUND_VS_SAP] = (
@@ -339,10 +356,11 @@ async def validate_rows(
     return out, summary
 
 
-def _sibling_vat_ids(rows, cols, lcols, customers, formats, inputs) -> dict[str, list[str]]:
-    """``customer → VAT IDs`` (FORMAT_OK, normalised) on the upload's other
-    records of the same entity key, for the looked-up customers (Step AG's
-    context; the record's own number is never in it)."""
+def _siblings(rows, cols, lcols, customers, formats, inputs) -> dict[str, list[tuple[str, str]]]:
+    """``customer → [(other customer, VAT ID)]`` (FORMAT_OK, normalised) on
+    the upload's other records of the same entity key, for the looked-up
+    customers (Step AG's context and VAT_Found_Entity_Status; the record's
+    own number is never in it)."""
     from vat.lookup import entity_key
 
     wanted = {str(i.customer): entity_key(i) for i in inputs if i is not None}
@@ -358,13 +376,14 @@ def _sibling_vat_ids(rows, cols, lcols, customers, formats, inputs) -> dict[str,
             city=_cell(row, lcols["city"]), country=fmt.country_key))
         if key:
             by_key.setdefault(key, set()).add((str(customer), fmt.normalized))
-    return {c: sorted({v for o, v in by_key.get(k, ()) if o != c}) for c, k in wanted.items() if k}
+    return {c: sorted({(o, v) for o, v in by_key.get(k, ()) if o != c}) for c, k in wanted.items() if k}
 
 
 #: Every result column, in output order. Which of them a result carries
 #: depends on the run (lookup mode, side-by-side, scope).
 ALL_RESULT_COLUMNS: list[str] = (
-    VAT_COLUMNS + LOOKUP_COLUMNS + list(COST_COLUMNS.values()) + [FOUND_VS_SAP] + COMPARE_COLUMNS
+    VAT_COLUMNS + LOOKUP_COLUMNS + list(COST_COLUMNS.values()) + [FOUND_VS_SAP] + LOG_COLUMNS
+    + COMPARE_COLUMNS
     + [GROUNDED_VS_SAP]
 )
 

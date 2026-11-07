@@ -388,6 +388,12 @@ class Settings:
     #: Rows outside Country/Region Key DE are never looked up.
     vat_lookup_all_rows: bool = field(
         default_factory=lambda: _bool(os.getenv("VAT_LOOKUP_ALL_ROWS"), default=False))
+    #: The research log columns (VAT_Log_*: search name, queries, hosts, pages
+    #: …) and VAT_Found_Entity_Status (dissolved, merged, a parent's or
+    #: sibling's number …) on every looked-up row. Read from what the lookup
+    #: gathered: no extra call, no cost.
+    vat_log_columns: bool = field(
+        default_factory=lambda: _bool(os.getenv("VAT_LOG_COLUMNS"), default=True))
     #: Step AG: after the hybrid lookup, the agentic pass (vat/lookup_agent.py)
     #: on the rows still NOT_FOUND / LOOKUP_INCOMPLETE. Off by default; the
     #: endpoints take ``agent_pass`` per request, the runner ``--agent-pass``.

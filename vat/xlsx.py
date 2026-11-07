@@ -201,6 +201,7 @@ def _write_kpis(ws, kpis: dict[str, Any] | None) -> None:
 async def validate_workbook(
     wb, client: VIESClient, *, source: str, lookup: LookupEngine | None = None,
     compare_lookup: LookupEngine | None = None, scope: str = "missing", agent: Any = None,
+    log_columns: bool = False,
 ) -> dict[str, Any]:
     """Validate *wb* in place (result columns + Summary sheet). Returns the
     summary. *source* names the input on the Summary sheet. With a *lookup*
@@ -217,7 +218,7 @@ async def validate_workbook(
 
     results, summary = await validate_rows(
         [r for _, r in rows], client, lookup=lookup, compare_lookup=compare_lookup, scope=scope,
-        agent=agent,
+        agent=agent, log_columns=log_columns,
     )
     written = result_columns(results)
     _write_results(ws, header_idx, headers, rows, results, written)

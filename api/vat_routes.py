@@ -176,6 +176,7 @@ async def _validate_json(
     try:
         out, summary = await validate_rows(
             rows, client, lookup=lookup, compare_lookup=compare, scope=scope, agent=agent,
+            log_columns=get_settings().vat_log_columns,
         )
     except ValueError as exc:  # no VAT column
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -308,6 +309,7 @@ async def _validate_upload(
     try:
         summary = await validate_workbook(
             wb, client, source=filename, lookup=lookup, compare_lookup=compare, scope=scope, agent=agent,
+            log_columns=get_settings().vat_log_columns,
         )
     except ValueError as exc:  # no header / no rows / no VAT column
         raise HTTPException(status_code=422, detail=str(exc)) from exc

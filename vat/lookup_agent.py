@@ -397,12 +397,17 @@ async def agent_pass(
         calls = [*(hybrid.usage or {}).get("calls", []), *(a.usage or {}).get("calls", [])]
         costs = entity_costs({"calls": calls}, agent.meter.table, agent.meter.overrides)
         if a.value:
-            out.append(replace(a, usage={**(a.usage or {}), "costs": costs, "hybrid_status": hybrid.status}))
+            # The hybrid record stays for the research log (its searches and hosts).
+            kept = {k: v for k, v in (hybrid.usage or {}).items() if k not in ("calls", "costs")}
+            out.append(replace(a, usage={**(a.usage or {}), "costs": costs, "hybrid_status": hybrid.status,
+                                         "hybrid_usage": kept}))
         else:
             flag = AGENT_SKIPPED_BUDGET if BUDGET_EXCEEDED in a.flags else AGENT_TRIED
+            told = {k: v for k, v in (a.usage or {}).items() if k in (
+                "agent_notes", "agent_relation", "agent_confidence", "agent_searches", "agent_opens",
+                "agent_pages_opened")}
             out.append(replace(hybrid, flags=(*hybrid.flags, flag),
-                               usage={**(hybrid.usage or {}), "costs": costs, "agent_notes":
-                                      (a.usage or {}).get("agent_notes")}))
+                               usage={**(hybrid.usage or {}), "costs": costs, "agent_notes": None, **told}))
     tried = [r for r, a in zip(out, ran) if a is not None]
     summary = {
         "rows_eligible": len(tried),
