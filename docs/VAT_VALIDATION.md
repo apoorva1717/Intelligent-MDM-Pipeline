@@ -262,7 +262,17 @@ They are column values, **not** issue codes:
 | `VIES_MIN_INTERVAL_MS` | 500 (0 disables pacing; cache replays are never paced) |
 | `VIES_REQUESTER_VAT` | empty |
 | `VAT_GROUNDED_FALLBACK` | false |
-| `VAT_LOG_COLUMNS` | true (research log + `VAT_Found_Entity_Status`, see 3b) |
+| `VAT_LOG_COLUMNS` | false (research log + `VAT_Found_Entity_Status`, see 3b; on, after the reviewer's columns) |
+| `VAT_OUTPUT_COLUMNS` | `review` (the reviewer's columns, see "Output columns for the reviewer"); `full` = the technical columns as before 2026-11-08 |
+| `VAT_LOOKUP_CONCURRENCY` | 20 (was 5; see "Throughput and large uploads") |
+| `VAT_AZURE_TPM` / `VAT_AZURE_RPM` | empty: from Azure's `x-ratelimit-limit-*` headers. Per deployment: `VAT_AZURE_TPM_<NAME>` |
+| `VAT_AZURE_QUOTA_SHARE` | 0.85 |
+| `VAT_AZURE_MAX_RETRIES` | 6 (HTTP 429 / 5xx; all waits together at most 180 s) |
+| `VAT_WEB_RETRY_BACKOFF_SECONDS` | 5 (first wait without a Retry-After; doubled per retry, at most 60 s) |
+| `PAGE_FETCH_MAX_CONCURRENCY` | 20 |
+| `VAT_JOB_DIR` | `logs/vat_jobs` (on Azure: a folder under `/home`) |
+| `VAT_JOB_CHUNK_ROWS` | 200 |
+| `VAT_JOB_LEASE_SECONDS` | 900 |
 
 `VIES_REQUESTER_VAT` is optional and never hardcoded. When it is set, VIES issues a
 consultation number. A malformed value fails loudly (HTTP 500 from the endpoint) instead of
@@ -854,9 +864,98 @@ from the AF cache). Both take effect on the next live run; nothing was re-run.
 
 **4.** `domain_hint` stays as it is.
 
+### NAME_CONTAINED: a contained name may be AUTO_ACCEPT (2026-11-07)
+
+Most MANUAL_REVIEW rows in the AD 50 and FINAL 50 reviews were right, and the largest group
+had one blocking issue: `NAME_PARTIAL`, where the page's company name holds SAP's name plus
+more words. Examples: "LMU Klinikum" vs "LMU Klinikum München, Anstalt des öffentlichen
+Rechts"; "Universität Bielefeld" vs "Universität Bielefeld, Centrum für Biotechnologie".
+
+- **Definition** (`entity_match.name_contained`): every word of SAP's name core appears, in
+  order, among the page name's words.
+  - Comparison is after folding: case, ß/ss, umlauts, hyphen/space.
+  - A plural "s" doesn't matter.
+  - SAP's last word may be cut at 35 characters, from 6 letters ("Textilforschungsinst").
+  - Legal forms aren't part of a core; a different legal form still raises
+    `LEGAL_FORM_DIFFERS`.
+  - Extra page words are fine unless one names another company (Holding, Group, Gruppe,
+    Konzern, Verwaltung, Beteiligung, Management). That keeps "Vitesco Technologies Group AG"
+    and "Refratechnik Holding GmbH" out.
+  - When it holds, the matcher writes `NAME_CONTAINED` instead of `NAME_PARTIAL`; the match
+    level stays `PARTIAL`.
+- **Gate** (`lookup.name_contained_ok`): a contained name counts as matched for AUTO_ACCEPT
+  only when all of these hold:
+  - source class A (the organisation's own site);
+  - address EXACT or SAME_TOWN;
+  - no `OTHER_VAT_IDS_ON_PAGE`;
+  - not `EXTRACTED_BY_PATTERN`.
+
+  Otherwise it is reported as `NAME_PARTIAL`, exactly as before. Every other blocking code
+  still blocks (parent candidate, successor, legal form, sister entity, secondary source).
+  The SAP update still needs VIES VALID.
+- **Measured:**
+  - AD 50 replayed from cache ($0.002); FINAL 50 re-scored from its 2026-11-06 output.
+  - AUTO_ACCEPT went from 37 to 46 and MANUAL_REVIEW from 35 to 27, of 100 records.
+  - The 9 new auto-accepts: TU Chemnitz, Kronen-Apotheke Marxen, Helmholtz Zentrum für
+    Infektionsforschung, TCS Terminal Chemical Services, Sächsisches
+    Textilforschungsinstitut, Universität Bielefeld, Universität Flensburg, LMU Klinikum, NMI.
+  - 8 of the 9 carry SAP's own number.
+  - NMI carries DE146484816, while SAP's record has DE222612959. The found number is on 4
+    other NMI records in SAP, so SAP itself is inconsistent there.
+  - Staatliches Bauamt Erlangen should also qualify in a fresh run; SAP has no number to
+    check it against.
+  - Reh-Apotheke stays in review, correctly: SAP names the owner Dirk Voss e.K. and the page
+    names Marc Happ e.K., so it is a different sole trader.
+
+### Output columns for the reviewer (2026-11-08, `vat/review_columns.py`)
+
+With `VAT_OUTPUT_COLUMNS=review` (the default), the endpoint and the batch runner write every
+input column as it came, then these, then the 7 cost columns. Nothing else: the technical
+columns come back with `full`. No call and no decision changes; everything is read from the
+lookup's result.
+
+| Column | Values |
+|---|---|
+| `VAT_Proposed` | the number found |
+| `VAT_Decision` | Auto-accept / Review / Conflict / Not found |
+| `VAT_Found_Confidence` | VERIFIED / HIGH_CONFIDENCE / MEDIUM_CONFIDENCE / LOW_CONFIDENCE / CONFLICT / NOT_FOUND (unchanged) |
+| `VAT_Found_Match_Score` | 0–100 weighted name/address similarity (informational; no rule uses it) |
+| `VAT_Why` | one or two plain sentences, from templates; no codes |
+| `Found_Name` | the company name the page gives the number to |
+| `Found_Address` | the address the reader copied; else the page's address block with SAP's postcode or town |
+| `Name_Check` | SAME_NAME / SAP_NAME_PLUS_MORE / SIMILAR_NAME / DIFFERENT_NAME |
+| `Address_Check` | SAME_ADDRESS / OTHER_STREET_SAME_TOWN / OTHER_TOWN / NO_ADDRESS_ON_PAGE |
+| `Issue_Flags` | what else to check (below) |
+| `Not_Found_Reason` | NO_WEBSITE_FOUND / WEBSITE_HAS_NO_VAT_ID / WEBSITE_NOT_READABLE / WEBSITE_BLOCKED_US / ONLY_PARENT_SITE_FOUND / PAGE_SAYS_COMPANY_CLOSED / PAGE_SAYS_NO_VAT_ID / PUBLIC_BODY_NO_VAT / NO_NUMBER_FOUND. A search that could not finish says why (from the lookup's flags, 2026-11-08): MODEL_SERVICE_FAILED (`LLM_UNAVAILABLE`; Azure's status and message are in the server log as "VAT model call … failed") / MODEL_ANSWER_UNREADABLE / CONTENT_FILTER_STOPPED / NOT_IN_REPLAY / COST_CAP_REACHED; SEARCH_INCOMPLETE only when none applies |
+| `VIES` | Valid / Invalid / Pending / Unavailable / Not checked |
+| `VAT_Found_Source_URL`, `_Source_Type`, `_Source_Class`, `_Page_Title`, `_Agent_Version` | as before |
+| `VAT_Found_Evidence` | the reader's quote; without one, the page text around the number, marked "(text around the number)" |
+
+**`Issue_Flags`**, each one a question for the reviewer:
+
+| Flag | Check | From |
+|---|---|---|
+| `SEVERAL_NUMBERS_ON_PAGE` | is the proposed one the right company's? | another number on the page (not the proposed one spaced differently), AMBIGUOUS_* |
+| `OTHER_SOURCE_OTHER_NUMBER` | which source is right? | CONFLICTING_SOURCES |
+| `FROM_DIRECTORY` | confirm on the company's own site | source class C (not an archive) |
+| `FROM_OLD_ARCHIVE` | still current? | ARCHIVE_SOURCE / WEB_ARCHIVE |
+| `NUMBER_NOT_QUOTED` | find the number on the page | no quote, QUOTE_NOT_IN_PAGE, EXTRACTED_BY_PATTERN, EVIDENCE_NOT_VERIFIED |
+| `MAYBE_PARENT_COMPANY` | does the customer have its own number? | PARENT_ENTITY_CANDIDATE, PARENT_ENTITY |
+| `MAYBE_RENAMED_OR_SUCCESSOR` | still the same company? | SUCCESSOR_CANDIDATE |
+| `SISTER_COMPANY_ON_PAGE` | the right company of the group? | SISTER_ENTITY_ON_PAGE |
+| `LEGAL_FORM_DIFFERS` | GmbH vs AG: which is the customer? | LEGAL_FORM_DIFFERS |
+| `REGISTER_NO_DIFFERS` | HRB differs: another company? | REGISTER_MISMATCH |
+| `DEPARTMENT_OR_UNIT` | the central number is expected | DEPARTMENT, SUB_ENTITY |
+| `SITE_OR_PLANT` | the head office's number is expected | BRANCH |
+| `NAME_SHARED_BY_OTHERS` | the street (or HRB) must match too | GENERIC_NAME, NAME_ABBREVIATED |
+
+The VIES re-check at the end of a batch run updates `VIES`, `VAT_Decision`,
+`VAT_Found_Confidence` and `VAT_Why` on the written rows (`review_columns.apply_vies`), as it
+updates the technical columns with `full`.
+
 ### Research log columns and entity status (2026-11-06, `vat/lookup_log.py`)
 
-With `VAT_LOG_COLUMNS=true` (the default), the endpoint (`/api/validate/vat`,
+With `VAT_LOG_COLUMNS=true` (off by default since 2026-11-08), the endpoint (`/api/validate/vat`,
 `/api/validate/vat/file`) and `tools/vat_validate_xlsx.py` add these columns after the cost
 columns. They hold what the run reports used to show from the usage JSON. Every cell is read
 from the entity's usage record and the upload's other records, so they cost nothing and make
@@ -1012,6 +1111,89 @@ Spent to date, Steps X to AF-1b: **14.31 USD**; tokens 7.07, web search 5.61, pa
 1.36 (Step X), SerpAPI 0.27 (Step AA). 573 of 1,176 calls were replays. With Step AF (Name-2
 evaluation 0.83, focused 10-row run 0.44, baseline runs 2.39): **17.95 USD** over 32 runs.
 Step AF-2 ran nothing.
+
+### Throughput and large uploads (2026-11-08)
+
+**Why.** 10,000 records at the AD 50 live pace take too long. One company took about 24 s
+(median 23, slowest 87): 57% web search calls, 10% model page reads, 33% page downloads,
+ranking and Peppol. At the old 5 companies at once that is about 13 h; at 1, about 67 h.
+
+Running more at once used to break rows. A model call that got HTTP 429 had one retry
+after 10 s, then the company became `LOOKUP_INCOMPLETE` / `LLM_UNAVAILABLE`.
+
+**Requirement: results do not change.** Every change below affects only *when* things
+happen: the same queries, prompts, models, effort, pages, rules and decisions.
+
+Checked on the AD 50 cached run: concurrency 1 vs 20, and a job vs a direct `/file` run,
+give cell-identical output (cost columns aside).
+
+| Change | Where | Why it cannot change a result |
+|---|---|---|
+| Calls paced to the Azure quota (one limiter per deployment for the process, tokens and requests per minute, about 85% of the quota) | `vat/rate_limit.py`, `VatLLM.search` | It only delays a call. A cached replay never waits. |
+| HTTP 429 / 5xx retried up to 6 times, after Azure's Retry-After (else 5, 10, 20 … 60 s). A 429 pauses the whole deployment | `vat/llm_cache.py` | A row that used to break gets its normal answer. |
+| 20 companies at once | `VAT_LOOKUP_CONCURRENCY` | Each lookup is independent; the output keeps input order. |
+| The Peppol query runs alongside the web lookup | `vat/lookup_web.py::_lookup` | Same query, judged in the same place. |
+| The first page of each picked host is downloaded at once, at most 20 downloads in the process | `_prefetch`, `GroundedLookup.fetch_network` | Pages are read in the same order by the same rules. A page the rules would not have read is dropped uncounted. Nothing is cached until it is read. |
+
+The limiter learns the quota from Azure's response headers (logged once per deployment:
+"Azure quota of …"), unless `VAT_AZURE_TPM` / `VAT_AZURE_RPM` set it.
+
+Throughput is the smaller of two limits: companies at once ÷ 24 s, and the quota ÷ about
+32k tokens per company. At 1M tokens a minute that is about 30 companies a minute
+(10,000 in about 5.5 h); at 300k, about 9 a minute (about 18 h). Cost per company is
+unchanged, about 0.063 USD.
+
+**Large uploads as jobs** (`vat/jobs.py`). These endpoints take the same upload and
+options as `/file`:
+
+| Endpoint | What it does |
+|---|---|
+| `POST /api/validate/vat/file/jobs` (202) | Answers at once with `id`, `rows`, `unique_companies`, `chunks_total` and `estimated_cost_usd`. |
+| `GET …/jobs/{id}` | Status (`QUEUED`, `RUNNING`, `ASSEMBLING`, `DONE`, `STOPPED_BUDGET`, `CANCELLED`, `FAILED`), chunks and rows done, companies per minute, `http_retries`, `rate_limit_wait_s`, `spent_usd`, `estimated_seconds_left`. |
+| `GET …/jobs/{id}/result` | The workbook, as `/file` returns it. 409 until it is done; `?partial=true` gives the rows of the chunks finished so far. |
+| `POST …/jobs/{id}/resume[?max_cost_usd=]` | Continues a stopped job from its next unfinished chunk. |
+| `DELETE …/jobs/{id}` | Cancels after the current chunk. `?purge=true` deletes a stopped job's files. |
+
+How a job works:
+
+1. **Chunks.** About `VAT_JOB_CHUNK_ROWS` rows each, cut only between groups of rows
+   linked by a Customer or a legal entity (`vat.validate.row_groups`). An entity's first
+   record, its siblings and its one lookup are therefore the same as in one request. Each
+   chunk is saved before the next starts.
+2. **Assembly.** `validate_workbook` on the whole upload, which is exactly `/file`, now
+   answered from the cache. What is not cached (a failed call, a timed-out page) is asked
+   again: the retry pass.
+3. **VIES** (`vies_after`, on by default). Asks VIES for the proposals and writes the
+   answers in, as the batch tool does. This is the only intended difference from `/file`;
+   with `vies_after=false` the result is identical.
+
+**Failures.** Job state is files in `VAT_JOB_DIR/<id>/` (`job.json`, `input.xlsx`,
+`chunks/`, `result.xlsx`); there is no database.
+
+- **Lease.** A worker holds a lease in `job.json`, renewed every `lease/3`.
+- **Restart, recycle or deployment.** The lease runs out. The Function's timer trigger
+  (`function_app.py`, every minute) continues the job from its next unfinished chunk.
+  Calls already answered replay from the cache at $0, so a crash loses at most the calls
+  in flight.
+- **A failing chunk** is tried 3 times, then the job is `FAILED`. It can be resumed.
+- **One job at a time per process**, so one limiter paces everything. Uploads made
+  meanwhile wait in order.
+- **Locally (uvicorn, no timer):** `POST …/resume` continues a job after a restart.
+
+**Budget.** `max_cost_usd` (else `VAT_WEB_BUDGET_USD`; 0 = none) is checked between
+chunks, never inside one, so no row is cut off with `BUDGET_EXCEEDED`. A chunk can pass
+the cap by its own cost (200 rows at 0.063 USD is about 12.6 USD). The job then stops as
+`STOPPED_BUDGET`.
+
+**To check on Azure:**
+
+- `VAT_JOB_DIR` and `EVIDENCE_CACHE_DIR` must point at storage that survives a restart:
+  `/home` on Windows, Premium or Dedicated plans. Otherwise a restart redoes paid calls.
+  On a Linux Consumption plan there is no such disk; jobs and the cache would need Blob
+  Storage, which is not built.
+- Always On should be enabled, so background work is not frozen between requests.
+- Before a 10k run, one live job of 200–500 rows measures companies per minute and 429s
+  against the real quota.
 
 ---
 

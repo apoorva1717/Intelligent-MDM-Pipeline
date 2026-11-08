@@ -2,7 +2,7 @@
 
 Two tool calls per entity (the API refuses a third), the output cap and strict
 JSON schema, the static prompt prefix, no retry on a model error or malformed
-output, one retry on HTTP 429 / 5xx, the page cut to 8,000 characters with the
+output, retries on HTTP 429 / 5xx (VAT_AZURE_MAX_RETRIES), the page cut to 8,000 characters with the
 VAT section first, usage and cost per entity, and the run budget.
 """
 
@@ -180,16 +180,25 @@ class TestRetries:
         assert (r.status, search.calls) == (LOOKUP_INCOMPLETE, 1)
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("status", [429, 500, 503])
-    async def test_one_retry_on_429_or_5xx(self, tmp_path, status):
-        search = Script(_HTTPError(status), (json.dumps(ANSWER), [IMPRESSUM], USAGE))
-        r = await _engine(tmp_path, search).lookup(BOSCH)
-        assert (r.value, search.calls, r.usage["http_retries"]) == ("DE811128135", 2, 1)
+    @pytest.mark.parametrize("mode", ["model", "hybrid"])
+    async def test_a_failed_model_call_is_logged_with_azures_message(self, tmp_path, caplog, mode):
+        search = Script(_HTTPError(404))
+        with caplog.at_level("WARNING", logger="vat.lookup_web"):
+            r = await _engine(tmp_path, search, vat_web_query_mode=mode).lookup(BOSCH)
+        assert r.status.startswith(LOOKUP_INCOMPLETE) and "LLM_UNAVAILABLE" in r.flags
+        assert any("failed" in m and "HTTP 404" in m for m in caplog.messages)
 
     @pytest.mark.asyncio
-    async def test_never_more_than_one_retry(self, tmp_path):
-        search = Script(_HTTPError(429), _HTTPError(429), (json.dumps(ANSWER), [IMPRESSUM], USAGE))
+    @pytest.mark.parametrize("status", [429, 500, 503])
+    async def test_retried_on_429_or_5xx(self, tmp_path, status):
+        search = Script(_HTTPError(status), _HTTPError(status), (json.dumps(ANSWER), [IMPRESSUM], USAGE))
         r = await _engine(tmp_path, search).lookup(BOSCH)
+        assert (r.value, search.calls, r.usage["http_retries"]) == ("DE811128135", 3, 2)
+
+    @pytest.mark.asyncio
+    async def test_never_more_than_the_retries_allowed(self, tmp_path):
+        search = Script(_HTTPError(429), _HTTPError(429), (json.dumps(ANSWER), [IMPRESSUM], USAGE))
+        r = await _engine(tmp_path, search, vat_azure_max_retries=1).lookup(BOSCH)
         assert (r.status, search.calls) == (LOOKUP_INCOMPLETE, 2)
 
     @pytest.mark.asyncio

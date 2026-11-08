@@ -99,9 +99,10 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import os
 import re
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Awaitable
 from urllib.parse import urlparse
 
 import requests
@@ -257,6 +258,21 @@ _PAGE_SEPARATORS = re.compile(r"[\s.\-/ ]+")
 # ---------------------------------------------------------------------------
 
 logger = logging.getLogger(__name__)
+
+#: Page downloads at once in the process (PAGE_FETCH_MAX_CONCURRENCY), so many
+#: lookups in parallel, each prefetching, do not swamp the network or proxy.
+PAGE_FETCH_MAX_CONCURRENCY = int(os.getenv("PAGE_FETCH_MAX_CONCURRENCY", "20"))
+_PAGE_SLOTS: dict[Any, asyncio.Semaphore] = {}
+
+
+def _page_slots() -> asyncio.Semaphore:
+    """The process's page-download semaphore, one per event loop."""
+    loop = asyncio.get_running_loop()
+    slots = _PAGE_SLOTS.get(loop)
+    if slots is None:
+        _PAGE_SLOTS.clear()  # an old loop's semaphore is never used again
+        slots = _PAGE_SLOTS[loop] = asyncio.Semaphore(max(1, PAGE_FETCH_MAX_CONCURRENCY))
+    return slots
 
 
 def is_pdf_url(url: str) -> bool:
@@ -696,10 +712,34 @@ class GroundedLookup:
                     urls.append(q[rank])
         return urls[:MAX_RESULT_URLS]
 
+    @property
+    def replay_only(self) -> bool:
+        """A frozen run: pages come from ``vat_pages`` or not at all."""
+        return bool(self._pages.replay_only)
+
+    def cached_page(self, url: str) -> bool:
+        """*url* is in ``vat_pages``: :meth:`_fetch` would not go to the network."""
+        return isinstance(self._pages.get(url), dict)
+
+    async def fetch_network(self, url: str) -> Any:
+        """The network part of :meth:`_fetch` alone: no cache, no counts.
+        Also what a prefetch runs (``vat/lookup_web.py``); at most
+        PAGE_FETCH_MAX_CONCURRENCY at a time in the process."""
+        async with _page_slots():
+            res = None
+            if is_pdf_url(url):
+                res = await asyncio.get_running_loop().run_in_executor(None, fetch_pdf, url)
+            if res is None:
+                res = await self._fetcher.fetch_page_result(url)
+            return res
+
     async def _fetch(
         self, url: str, flags: set[str], budget: "_Budget | None" = None,
+        prefetched: "Awaitable[Any] | None" = None,
     ) -> PageFetchResult | None:
-        """One page attempt through ``vat_pages``. None when nothing usable."""
+        """One page attempt through ``vat_pages``. None when nothing usable.
+        *prefetched*: the network answer, already requested (the same
+        request :meth:`fetch_network` makes); everything else is unchanged."""
         self._stats.page_attempts += 1
         if budget is not None:
             budget.used += 1
@@ -718,11 +758,7 @@ class GroundedLookup:
                 flags.add(FROZEN_CACHE_MISS)
             return None
         self._stats.pages_fetched += 1
-        res = None
-        if is_pdf_url(url):
-            res = await asyncio.get_running_loop().run_in_executor(None, fetch_pdf, url)
-        if res is None:
-            res = await self._fetcher.fetch_page_result(url)
+        res = await (prefetched if prefetched is not None else self.fetch_network(url))
         status = res.status or 0
         if 200 <= status < 300 or status in (404, 410):
             # Definitive answers only. A timeout / 5xx / transport error is
@@ -837,7 +873,8 @@ class GroundedLookup:
             except LLMUnavailableFrozen:
                 flags.add(FROZEN_CACHE_MISS)
                 continue
-            except (RuntimeError, ValueError):
+            except (RuntimeError, ValueError) as e:
+                logger.warning("VAT model call read on %s failed: %s", llm_model(), str(e)[:500])
                 flags.add(LLM_UNAVAILABLE)
                 continue
             if not reading.vat_id or unusable_source(page.url, inp):

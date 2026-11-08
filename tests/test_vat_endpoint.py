@@ -62,7 +62,8 @@ async def client(stub, tmp_path, monkeypatch):
     monkeypatch.setattr(vat_routes, "_get_vies_client", factory)
     # The endpoint's flags at their defaults, whatever the local .env says
     # (log columns on is tested on its own).
-    pinned = replace(settings, vat_log_columns=False, vat_lookup_all_rows=False, vat_agent_pass=False)
+    pinned = replace(settings, vat_log_columns=False, vat_lookup_all_rows=False, vat_agent_pass=False,
+                     vat_output_columns="full")
     monkeypatch.setattr(vat_routes, "get_settings", lambda: pinned)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
@@ -691,6 +692,20 @@ class TestLookupAllRowsFlag:
         headers, rows = _sheet(wb, "Data")
         assert set(LOG_COLUMNS) <= set(headers)
         assert rows[1]["VAT_Found_Entity_Status"] is None               # has a VAT ID: not looked up
+
+    @pytest.mark.asyncio
+    async def test_the_reviewers_layout(self, client, lookups, monkeypatch):
+        from vat.review_columns import REVIEW_COLUMNS
+
+        settings = replace(vat_routes.get_settings(), vat_output_columns="review")
+        monkeypatch.setattr(vat_routes, "get_settings", lambda: settings)
+        _, wb = await self._calls(client, lookups)
+        headers, rows = _sheet(wb, "Data")
+        added = headers[len(self.ROWS[0]):]
+        assert added[:len(REVIEW_COLUMNS)] == REVIEW_COLUMNS and "VAT_Found_Value" not in headers
+        records = [dict(zip(self.ROWS[0], r)) for r in self.ROWS[1:]]
+        body = (await client.post(URL, json={"rows": records})).json()
+        assert body["columns"][:len(REVIEW_COLUMNS)] == REVIEW_COLUMNS
 
     async def _calls(self, client, lookups, query=""):
         resp = await client.post(FILE_URL + query, files={"file": ("x.xlsx", _book(self.ROWS), XLSX)})

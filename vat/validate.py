@@ -35,6 +35,7 @@ from vat.lookup import (
 )
 from vat.costs import COST_COLUMNS, cost_columns
 from vat.lookup_log import LOG_COLUMNS, log_columns as research_log
+from vat.review_columns import REVIEW_COLUMNS, review_columns
 from vat.entity_match import NAME_EXACT, SAP_VAT_OUTDATED, TRUSTED_CLASSES
 from vat.lookup import DIFFERS_FROM_SAP, FoundResult
 from vat.lookup import LookupEngine, LookupInput, in_scope, lookup_kpis, run_lookups
@@ -194,6 +195,73 @@ def _result_columns(
     }
 
 
+def _lookup_input(row: Mapping[str, Any], cols: dict[str, str | None], lcols: dict[str, str | None],
+                  customer: str | None, fmt: Any) -> LookupInput:
+    """The lookup's view of one row: names and address, never the VAT ID."""
+    return LookupInput(
+        customer=customer,
+        names=tuple(_cell(row, cols[f"name_{n}"]) for n in range(1, 5)),
+        street=_cell(row, lcols["street"]),
+        house_number=_cell(row, lcols["house_number"]),
+        postal_code=_cell(row, lcols["postal_code"]),
+        city=_cell(row, lcols["city"]),
+        country=fmt.country_key,
+        website=_cell(row, lcols["website"]),
+        email=_cell(row, lcols["email"]),
+        register_number=_cell(row, lcols["register_number"]),
+        deleted=_flag_set(_cell(row, lcols["deleted"])),
+    )
+
+
+def row_groups(rows: list[Mapping[str, Any]], scope: str = SCOPE_MISSING) -> tuple[list[list[int]], int]:
+    """Rows that must be validated together, as lists of row indexes in
+    input order: one group per set of rows linked by a Customer or a legal
+    entity (:func:`vat.lookup.entity_key`; also the rows with a VAT ID, the
+    agent pass's and the research log's siblings). A job (``vat/jobs.py``)
+    cuts its chunks only between groups, so chunking never changes which
+    record is an entity's first, what is looked up together, or a sibling.
+    Also returns the number of legal entities in scope (lookups to make).
+
+    Raises ``ValueError`` when no row has a VAT Registration No. column."""
+    from vat.lookup import entity_key
+
+    headers: dict[str, None] = {}
+    for row in rows:
+        headers.update(dict.fromkeys(row))
+    cols = resolve_columns(headers)
+    if cols["vat"] is None:
+        raise ValueError("No 'VAT Registration No.' column in the input rows.")
+    lcols = resolve_columns(headers, _LOOKUP_ROLE_FIELDS)
+    parent = list(range(len(rows)))
+
+    def root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    first: dict[Any, int] = {}
+    entities: set[Any] = set()
+    for i, row in enumerate(rows):
+        customer = _cell(row, cols["customer"])
+        fmt = assess_format(_cell(row, cols["vat"]), _cell(row, cols["country"]))
+        inp = _lookup_input(row, cols, lcols, customer, fmt)
+        entity = entity_key(inp)
+        if in_scope(fmt, scope):
+            entities.add(("entity", entity) if entity else ("row", i))
+        for key in (("customer", customer) if customer else None, ("entity", entity) if entity else None):
+            if key is None:
+                continue
+            if key in first:
+                parent[root(i)] = root(first[key])
+            else:
+                first[key] = i
+    groups: dict[int, list[int]] = {}
+    for i in range(len(rows)):
+        groups.setdefault(root(i), []).append(i)
+    return sorted(groups.values(), key=lambda g: g[0]), len(entities)
+
+
 async def validate_rows(
     rows: list[Mapping[str, Any]], client: VIESClient,
     lookup: LookupEngine | None = None,
@@ -201,6 +269,7 @@ async def validate_rows(
     scope: str = SCOPE_MISSING,
     agent: Any = None,
     log_columns: bool = False,
+    output_columns: str = "full",
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Every row, unchanged, with :data:`VAT_COLUMNS` appended; plus a summary.
 
@@ -254,22 +323,8 @@ async def validate_rows(
 
     if lookup is not None:
         lcols = resolve_columns(headers, _LOOKUP_ROLE_FIELDS)
-        inputs = [
-            LookupInput(
-                customer=customer,
-                names=tuple(_cell(row, cols[f"name_{n}"]) for n in range(1, 5)),
-                street=_cell(row, lcols["street"]),
-                house_number=_cell(row, lcols["house_number"]),
-                postal_code=_cell(row, lcols["postal_code"]),
-                city=_cell(row, lcols["city"]),
-                country=fmt.country_key,
-                website=_cell(row, lcols["website"]),
-                email=_cell(row, lcols["email"]),
-                register_number=_cell(row, lcols["register_number"]),
-                deleted=_flag_set(_cell(row, lcols["deleted"])),
-            ) if in_scope(fmt, scope) else None
-            for row, customer, fmt in zip(rows, customers, formats)
-        ]
+        inputs = [_lookup_input(row, cols, lcols, customer, fmt) if in_scope(fmt, scope) else None
+                  for row, customer, fmt in zip(rows, customers, formats)]
         if compare_lookup is not None:
             # Independent of each other: run side by side, not one after the other.
             found, second = await asyncio.gather(
@@ -298,8 +353,11 @@ async def validate_rows(
             if queued:
                 queue.save()
         priced = any(r is not None and "costs" in (r.usage or {}) for r in found)
-        for row, result in zip(out, found):
+        for row, result, inp in zip(out, found, inputs):
             row.update(result.columns() if result else BLANK_COLUMNS)
+            row.update(review_columns(
+                result, " ".join(n for n in inp.names if n) if inp is not None else None,
+                inp.postal_code if inp is not None else None, inp.city if inp is not None else None))
             if priced:  # the engine reports cost lines (llm_web): every row gets the columns
                 row.update(cost_columns((result.usage or {}).get("costs") if result else None))
         if log_columns:
@@ -353,7 +411,7 @@ async def validate_rows(
                     Counter(r[GROUNDED_VS_SAP] for r in out if r[GROUNDED_VS_SAP]))
     # After the lookup: its writes go through the same cache and counter.
     summary["cache_write_failures"] = client.write_failures.count
-    return out, summary
+    return select_output(out, output_columns), summary
 
 
 def _siblings(rows, cols, lcols, customers, formats, inputs) -> dict[str, list[tuple[str, str]]]:
@@ -381,17 +439,46 @@ def _siblings(rows, cols, lcols, customers, formats, inputs) -> dict[str, list[t
 
 #: Every result column, in output order. Which of them a result carries
 #: depends on the run (lookup mode, side-by-side, scope).
-ALL_RESULT_COLUMNS: list[str] = (
+_TECHNICAL_COLUMNS: list[str] = (
     VAT_COLUMNS + LOOKUP_COLUMNS + list(COST_COLUMNS.values()) + [FOUND_VS_SAP] + LOG_COLUMNS
     + COMPARE_COLUMNS
     + [GROUNDED_VS_SAP]
 )
+#: The reviewer's columns that are not technical ones under another name.
+_REVIEW_ONLY = [c for c in REVIEW_COLUMNS if c not in _TECHNICAL_COLUMNS]
+ALL_RESULT_COLUMNS: list[str] = _TECHNICAL_COLUMNS + _REVIEW_ONLY
+
+#: VAT_OUTPUT_COLUMNS (2026-11-08): ``review`` — after the input, the
+#: reviewer's columns (vat/review_columns.py) and the cost columns, nothing
+#: technical; ``full`` — the technical columns as before 2026-11-08.
+OUTPUT_REVIEW, OUTPUT_FULL = "review", "full"
+#: What ``review`` keeps besides the reviewer's and cost columns, when a run
+#: produced them: the evaluation and side-by-side columns, the research log.
+_REVIEW_EXTRAS = [FOUND_VS_SAP, *LOG_COLUMNS, *COMPARE_COLUMNS, GROUNDED_VS_SAP]
+
+
+def select_output(out: list[dict[str, Any]], mode: str = OUTPUT_FULL) -> list[dict[str, Any]]:
+    """The rows as written: every input column, then the result columns
+    *mode* keeps. Without a lookup (validation of SAP's own VAT IDs only)
+    both modes write the VIES columns."""
+    if not out or "VAT_Proposed" not in out[0]:
+        return out
+    if mode != OUTPUT_REVIEW:
+        return [{k: v for k, v in row.items() if k not in _REVIEW_ONLY} for row in out]
+    keep = [c for c in dict.fromkeys(REVIEW_COLUMNS + list(COST_COLUMNS.values()) + _REVIEW_EXTRAS)]
+    results = set(ALL_RESULT_COLUMNS)
+    # The input as it came, then the kept result columns in the reviewer's order.
+    return [{**{k: v for k, v in row.items() if k not in results}, **{c: row[c] for c in keep if c in row}}
+            for row in out]
 
 
 def result_columns(out: list[dict[str, Any]]) -> list[str]:
     """The result columns these rows carry, in output order."""
     present = set(out[0]) if out else set()
-    return [c for c in ALL_RESULT_COLUMNS if c in present]
+    # The reviewer's layout: their columns first, the rest in the usual order.
+    order = (list(dict.fromkeys(REVIEW_COLUMNS + ALL_RESULT_COLUMNS)) if "VAT_Proposed" in present
+             else ALL_RESULT_COLUMNS)
+    return [c for c in order if c in present]
 
 
 def summarize(

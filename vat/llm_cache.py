@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -50,6 +51,7 @@ from llm.openai_client import (
 )
 from utils.cache import DiskCache, llm_disk_key
 from vat.cache_guard import WriteFailures
+from vat.rate_limit import estimate_tokens, limiter_for, retry_after
 from vat.costs import (
     DEFAULT_DEPLOYMENT, TOTAL, ZERO_PRICE, DeploymentPrice, PriceTable, PriceTableError, call_lines, raw_counts,
 )
@@ -64,6 +66,10 @@ Search = Callable[[str, str, str], Awaitable[tuple[str, list[str]]]]
 #: Seconds one web-search call may take: a high-effort reasoning model that
 #: searches several times needs far more than a chat completion's read timeout.
 WEB_SEARCH_TIMEOUT = 300.0
+
+#: Backoff cap of one retry, and of all retries of one call together.
+MAX_BACKOFF = 60.0
+MAX_RETRY_WAIT = 180.0
 
 #: Process-wide, like ``openai_client._SEED_SUPPORTED``: the model does not
 #: change mid-process, so the first rejection of temperature 0 drops it for
@@ -92,7 +98,12 @@ class SearchLimits:
     #: ``prompt_cache_key``: one key for every customer, so the static prefix
     #: is served from the prompt cache.
     cache_key: str = "vat_llm_web"
-    retry_backoff: float = 10.0
+    #: First wait after an HTTP 429 / 5xx without a Retry-After; doubled per
+    #: retry up to :data:`MAX_BACKOFF` (VAT_WEB_RETRY_BACKOFF_SECONDS).
+    retry_backoff: float = 5.0
+    #: Retries after HTTP 429 / 5xx (VAT_AZURE_MAX_RETRIES); all of them
+    #: together wait at most :data:`MAX_RETRY_WAIT` seconds.
+    max_retries: int = 6
     #: The deployment for this call (the helper model); None: the LLM
     #: deployment. Part of the cache key.
     model: str | None = None
@@ -397,15 +408,18 @@ class VatLLM:
             if limits.schema:
                 kwargs["text"] = {"format": {"type": "json_schema", "name": "vat_lookup",
                                              "schema": limits.schema, "strict": True}}
-        response = await self._client.with_options(
-            timeout=WEB_SEARCH_TIMEOUT, max_retries=0,
-        ).responses.create(
-            model=(limits.model if limits is not None and limits.model else llm_model()),
-            instructions=system,
-            input=user,
-            reasoning={"effort": effort},
-            **kwargs,
-        )
+        deployment = limits.model if limits is not None and limits.model else llm_model()
+        responses = self._client.with_options(timeout=WEB_SEARCH_TIMEOUT, max_retries=0).responses
+        create = dict(model=deployment, instructions=system, input=user, reasoning={"effort": effort}, **kwargs)
+        raw_api = getattr(responses, "with_raw_response", None)
+        if raw_api is not None:
+            # The raw response carries Azure's x-ratelimit-* headers: the
+            # deployment's quota for the limiter (vat/rate_limit.py).
+            raw = await raw_api.create(**create)
+            limiter_for(deployment).learn(getattr(raw, "headers", None))
+            response = raw.parse()
+        else:
+            response = await responses.create(**create)
         return response.output_text or "", visited_urls(response.output), response_usage(response)
 
     def _search_key(self, system: str, user: str, effort: str,
@@ -441,6 +455,16 @@ class VatLLM:
         answer = await self.search(system, user, reasoning_effort=reasoning_effort)
         return answer.response, answer.visited
 
+    @staticmethod
+    def _backoff(exc: BaseException, limits: "SearchLimits | None", attempt: int) -> float:
+        """Seconds before retry *attempt* + 1: Azure's Retry-After, else the
+        doubling backoff with ±20% jitter (so waiting callers spread out)."""
+        asked = retry_after(exc)
+        if asked is not None:
+            return min(asked, MAX_BACKOFF)
+        base = limits.retry_backoff if limits is not None else 0.0
+        return min(base * 2 ** attempt, MAX_BACKOFF) * random.uniform(0.8, 1.2)
+
     async def search(
         self, system: str, user: str, *, reasoning_effort: str,
         limits: "SearchLimits | None" = None,
@@ -450,9 +474,13 @@ class VatLLM:
         miss, ``RuntimeError`` when the call fails, ``ValueError`` when the
         output is not a JSON object.
 
-        No retry on a model error or malformed output. With *limits*, one
-        retry on HTTP 429 / 5xx after ``limits.retry_backoff`` seconds, never
-        more."""
+        No retry on a model error or malformed output. With *limits*, a live
+        call first waits for its deployment's quota (``vat/rate_limit.py``),
+        and HTTP 429 / 5xx is retried up to ``limits.max_retries`` times:
+        after the Retry-After Azure sends, else ``limits.retry_backoff``
+        doubled per retry (at most :data:`MAX_BACKOFF`), all waits together
+        at most :data:`MAX_RETRY_WAIT`. A 429 pauses the deployment for every
+        caller. Only the timing changes, never what is sent."""
         key = self._search_key(system, user, reasoning_effort, limits)
         recorded = self._store.get(key)
         if isinstance(recorded, dict) and "response" in recorded:
@@ -464,27 +492,43 @@ class VatLLM:
             raise LLMUnavailableFrozen("no recorded web search for this prompt")
 
         search = self._search or self._default_search
-        attempts = 2 if limits is not None else 1
+        attempts = 1 + max(0, limits.max_retries) if limits is not None else 1
+        limiter = limiter_for(limits.model if limits is not None and limits.model else llm_model())
+        reserved = estimate_tokens(system, user, limits.max_output_tokens if limits else 0,
+                                   limits.max_searches if limits else 0)
         started = time.perf_counter()
+        queued = backoff_total = slept = 0.0
         for attempt in range(attempts):
+            queued += await limiter.acquire(reserved)
             self.network_calls += 1
             try:
                 out = await (search(system, user, reasoning_effort, limits)
                              if search == self._default_search else search(system, user, reasoning_effort))
                 break
             except Exception as e:  # noqa: BLE001
-                if attempt + 1 < attempts and _retryable(e):
-                    logger.warning("VAT web search got %s; one retry in %.0fs", _status(e),
-                                   limits.retry_backoff)
-                    await asyncio.sleep(limits.retry_backoff)
+                limiter.settle(reserved, 0)
+                wait = self._backoff(e, limits, attempt)
+                if attempt + 1 < attempts and _retryable(e) and backoff_total + wait <= MAX_RETRY_WAIT:
+                    logger.warning("VAT web search got %s; retry %d of %d in %.0fs", _status(e),
+                                   attempt + 1, attempts - 1, wait)
+                    backoff_total += wait
+                    if _status(e) == 429:
+                        limiter.pause(wait)  # every caller of the deployment waits (in acquire)
+                    else:
+                        await asyncio.sleep(wait)
+                        slept += wait
                     continue
                 if isinstance(e, (RuntimeError, ValueError, LLMUnavailableFrozen)):
                     raise
                 raise RuntimeError(f"web search call failed: {e}") from e
         raw, visited = out[0] or "", out[1]
         usage = dict(out[2]) if len(out) > 2 and out[2] else {}
+        limiter.settle(reserved, (usage.get("input_tokens") or 0) + (usage.get("output_tokens") or 0)
+                       if usage.get("input_tokens") is not None else None)
         usage["seconds"] = round(time.perf_counter() - started, 2)
         usage["http_retries"] = attempt
+        if queued or slept:
+            usage["rate_limit_wait_s"] = round(queued + slept, 2)
         fence = _FENCE_RE.search(raw)
         if fence:
             raw = fence.group(1)

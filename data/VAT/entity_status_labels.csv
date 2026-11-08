@@ -1,0 +1,101 @@
+file,customer,name,test_category,expected,label_source
+AD_50,13354344,Allessa Produktion Gmbh,company_plain,CHANGED,review note: formerly Allessa Produktion GmbH / AllessaChemie GmbH (WeylChem)
+AD_50,13142453,Alltech Coppens GmbH,company_plain,ACTIVE,no change noted in review
+AD_50,13140168,Bayer HealthCare AG,company_plain,CHANGED,review note: Bayer AG merged
+AD_50,13029626,J H Ziegler Natural Nonwovens GmbH,company_plain,ACTIVE,no change noted in review
+AD_50,13096656,ODERSUN AG,company_plain,CHANGED,review note: company shut down; Step AI list: ODERSUN LIQUIDATED
+AD_50,13018757,AixMinerals,company_no_form,ACTIVE,no change noted in review
+AD_50,13193385,BMW Group Werk Landshut,company_branch,ACTIVE,no change noted in review
+AD_50,13057860,Europäische Kommission,public_eu_body,ACTIVE,no change noted in review
+AD_50,13093750,Papiertechnische Stiftung,company_no_form,MUST_NOT_FLAG,Step AI must-not-flag list
+AD_50,13091964,Sony Europe B.V.,company_foreign_branch,ACTIVE,no change noted in review
+AD_50,13082634,CMO-SYS GmbH,company_generic,ACTIVE,no change noted in review
+AD_50,13181284,GDF GmbH,company_generic,ACTIVE,no change noted in review
+AD_50,13221856,Hoffmann Engineering Services GmbH,company_generic,MUST_NOT_FLAG,Step AI must-not-flag list
+AD_50,13091012,CiS Forschungsinstitut für,company_name2_form,ACTIVE,no change noted in review
+AD_50,13211235,ThyssenKrupp Industrial Solutions,company_name2_form,ACTIVE,no change noted in review
+AD_50,13239296,Ceramaret Meissen GmbH,supplier_LIEF,ACTIVE,no change noted in review
+AD_50,13231843,H. KNUPPEL,supplier_LIEF,ACTIVE,no change noted in review
+AD_50,13236589,Held + Team Design,supplier_LIEF,ACTIVE,no change noted in review
+AD_50,13212163,Technische Universität Chemnitz,uni_department,MUST_NOT_FLAG,Step AI must-not-flag list
+AD_50,13180417,Universität Heidelberg,uni_department,MUST_NOT_FLAG,Step AI must-not-flag list
+AD_50,13221949,Johannes Gutenberg-Universität Mainz,uni_truncated_dept,MUST_NOT_FLAG,Step AI must-not-flag list
+AD_50,13093045,Technische Universität Braunschweig,uni_truncated_dept,MUST_NOT_FLAG,Step AI must-not-flag list
+AD_50,13212123,FAU Erlangen-Nürnberg,uni_sub_entity_negative,ACTIVE,no change noted in review
+AD_50,13010735,NMI Naturwissenschaftliches und,research_an_institut,MUST_NOT_FLAG,Step AI must-not-flag list
+AD_50,13221010,Universität zu Lübeck,uni_sub_entity_negative,MUST_NOT_FLAG,Step AI must-not-flag list
+AD_50,13016374,Charité CFM Facility Management,uni_hospital_sub_gmbh,ACTIVE,no change noted in review
+AD_50,13028419,Universitätsklinikum Freiburg,uni_hospital,MUST_NOT_FLAG,Step AI must-not-flag list
+AD_50,13165729,Universitätsklinikum Münster,uni_hospital,MUST_NOT_FLAG,Step AI must-not-flag list
+AD_50,13220606,Universitätsmedizin Göttingen,uni_hospital,MUST_NOT_FLAG,Step AI must-not-flag list
+AD_50,13351396,Diakonie Klinikum Kirchen GmbH,hospital_chain,ACTIVE,no change noted in review
+AD_50,13180883,Stiftung Kreuznacher Diakonie,hospital_chain,ACTIVE,no change noted in review
+AD_50,13083959,VAMED VSB-Medizintechnik Mitte GmbH,hospital_chain_c_o,CHANGED,Step AI list: VAMED VSB-Medizintechnik Mitte MERGED
+AD_50,13180723,Kronen-Apotheke Marxen,healthcare_small,ACTIVE,no change noted in review
+AD_50,13002614,Löwen-Apotheke,healthcare_small,ACTIVE,no change noted in review
+AD_50,13180724,Reh-Apotheke am Barbarossaplatz,healthcare_small,ACTIVE,no change noted in review
+AD_50,13142262,Chemisches und Veterinaer,public_with_vat,ACTIVE,no change noted in review
+AD_50,13221111,Infraserv GmbH & Co. Höchst KG,company_site_dept,ACTIVE,no change noted in review
+AD_50,13013102,Landeskriminalamt Rheinland-Pfalz,public_with_vat,ACTIVE,no change noted in review
+AD_50,13010862,Paul-Ehrlich-Institut,public_with_vat,ACTIVE,no change noted in review
+AD_50,13125902,Bundeskriminalamt Berlin,public_no_vat,ACTIVE,no change noted in review
+AD_50,13375833,Bundespolizeiabteilung Blumberg,public_no_vat,ACTIVE,no change noted in review
+AD_50,13028353,European Neuroscience Institute,research_parent_id,ACTIVE,no change noted in review
+AD_50,13001035,Hahn-Schickard-Gesellschaft für,research,ACTIVE,no change noted in review
+AD_50,13218984,Helmholtz Zentrum Berlin für,research,ACTIVE,no change noted in review
+AD_50,13221199,Helmholtz Zentrum für,research,ACTIVE,no change noted in review
+AD_50,13002206,Baufeld Mineralölraffinerie,deleted,ACTIVE,no change noted in review
+AD_50,13031701,FTA Mineral GmbH,deleted,ACTIVE,no change noted in review
+AD_50,13237883,OWIS GmbH,deleted,ACTIVE,no change noted in review
+AD_50,13003094,SGS Germany GmbH,deleted,ACTIVE,no change noted in review
+AD_50,13207923,Technische Universität Dresden,deleted,MUST_NOT_FLAG,Step AI must-not-flag list
+FINAL_50,13221520,A.Lindemann GmbH Schleiftechnik,company,ACTIVE,no change noted in review
+FINAL_50,13193413,CERATIZIT Balzheim GmbH & Co. KG,company,ACTIVE,no change noted in review
+FINAL_50,13000793,CPT Zwei GmbH,company,ACTIVE,no change noted in review
+FINAL_50,13015533,HEWI Heinrich Wilke GmbH,company,ACTIVE,no change noted in review
+FINAL_50,13354412,Han-Meitner-Institut Berlin Gmbh,company_merged,CHANGED,Step AI list: Hahn-Meitner-Institut MERGED into Helmholtz-Zentrum Berlin
+FINAL_50,13238500,LMB Automation GmbH,company,ACTIVE,no change noted in review
+FINAL_50,13082492,Refratechnik Ceramics GmbH,company,MUST_NOT_FLAG,Step AI must-not-flag list
+FINAL_50,13000935,RoodMicrotec GmbH,company,CHANGED,Step AI list: RoodMicrotec ACQUIRED
+FINAL_50,13093763,SKZ-Testing GmbH,company,MUST_NOT_FLAG,Step AI must-not-flag list
+FINAL_50,13029564,STEULER-KCH GmbH,company,ACTIVE,no change noted in review
+FINAL_50,13002753,TCS Terminal Chemical Services GmbH,company,ACTIVE,no change noted in review
+FINAL_50,13221870,Vitesco Technologies GmbH,company_merged,MUST_NOT_FLAG,Step AI must-not-flag list
+FINAL_50,13016463,W.L. Gore & Associates GmbH,company,MUST_NOT_FLAG,Step AI must-not-flag list
+FINAL_50,13082440,Würth Leasing GmbH & Co KG,company,MUST_NOT_FLAG,Step AI must-not-flag list
+FINAL_50,13029812,BETESO Electronics,company_no_form,ACTIVE,no change noted in review
+FINAL_50,13347415,Boehringer Ingelheim,company_no_form,ACTIVE,no change noted in review
+FINAL_50,13083522,Peter Tillmann,company_person_name1,ACTIVE,no change noted in review
+FINAL_50,13058000,Deutsche Forschungsgemeinschaft eV,company_small,ACTIVE,no change noted in review
+FINAL_50,13001829,L Bau GbR,company_small,MUST_NOT_FLAG,Step AI must-not-flag list
+FINAL_50,13003566,Sächsisches Textilforschungsinst eV,company_small,ACTIVE,no change noted in review
+FINAL_50,13150656,AGILENT TECHNOLOGIE Sales & Service,supplier_LIEF,MUST_NOT_FLAG,Step AI must-not-flag list
+FINAL_50,13235055,GRAETZ Strahlungsmeßtechnik GmbH,supplier_LIEF,ACTIVE,no change noted in review
+FINAL_50,13235190,KVH Hartung GmbH,supplier_LIEF,ACTIVE,no change noted in review
+FINAL_50,13231712,SECO Northern Europe GmbH,supplier_LIEF,MUST_NOT_FLAG,Step AI must-not-flag list
+FINAL_50,13141717,Friedrich-Alexander-Universität,uni_plain,MUST_NOT_FLAG,Step AI must-not-flag list
+FINAL_50,13091027,Technische Hochschule Lübeck,uni_plain,MUST_NOT_FLAG,Step AI must-not-flag list
+FINAL_50,13003936,Universität Ulm,uni_plain,MUST_NOT_FLAG,Step AI must-not-flag list
+FINAL_50,13211890,Technische Universität Berlin,uni_department,MUST_NOT_FLAG,Step AI must-not-flag list
+FINAL_50,13095412,Universität Bayreuth,uni_department,MUST_NOT_FLAG,Step AI must-not-flag list
+FINAL_50,13211370,Universität Bielefeld,uni_department,MUST_NOT_FLAG,Step AI must-not-flag list
+FINAL_50,13207620,Universität Flensburg,uni_department,MUST_NOT_FLAG,Step AI must-not-flag list
+FINAL_50,13092054,Universität des Saarlandes,uni_department,MUST_NOT_FLAG,Step AI must-not-flag list
+FINAL_50,13028887,LMU Klinikum,uni_hospital,ACTIVE,no change noted in review
+FINAL_50,13348851,Universitätsmedizin Essen AöR,uni_hospital,MUST_NOT_FLAG,Step AI must-not-flag list
+FINAL_50,13220509,KME Klinik Medizintechnik Eppendorf,healthcare,CHANGED,review note: no longer an active standalone company
+FINAL_50,13057822,Kranich-Apotheke Oliver Pelzer eK,healthcare,ACTIVE,no change noted in review
+FINAL_50,13009058,MVZ Medizinische Labore Dessau,healthcare,ACTIVE,no change noted in review
+FINAL_50,13181580,Sankt Barbara Apotheke,healthcare,ACTIVE,no change noted in review
+FINAL_50,13356123,Prinz Eugen Apotheke,healthcare_no_vat,ACTIVE,no change noted in review
+FINAL_50,13003282,Bundesanstalt für Materialforschung,public_with_vat,ACTIVE,no change noted in review
+FINAL_50,13219649,Physikalisch-Technische,public_with_vat,ACTIVE,no change noted in review
+FINAL_50,13003442,Stadtwerke Düsseldorf AG,company,ACTIVE,no change noted in review
+FINAL_50,13136516,Staatliches Bauamt Erlangen,public_no_vat,ACTIVE,no change noted in review
+FINAL_50,13228995,Stadt Backnang,public_no_vat,MUST_NOT_FLAG,Step AI must-not-flag list
+FINAL_50,13220790,DECHEMA Forschungsinstitut,research,MUST_NOT_FLAG,Step AI must-not-flag list
+FINAL_50,13002771,Fraunhofer-Institut für Zerstörungs,research,ACTIVE,no change noted in review
+FINAL_50,13083307,IBQ Inst für Baustoff-,deleted,ACTIVE,no change noted in review
+FINAL_50,13082695,IFG Institute for Scientific Instruments,deleted,CHANGED,review note: no longer exists as its own company
+FINAL_50,13091559,Schaper & Brümmer GmbH & Co. KG,deleted,ACTIVE,no change noted in review
+FINAL_50,13207778,Universität Hamburg,deleted,MUST_NOT_FLAG,Step AI must-not-flag list

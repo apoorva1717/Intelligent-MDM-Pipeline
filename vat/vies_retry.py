@@ -225,10 +225,20 @@ def apply_to_workbook(wb: Any, answers: dict[str, tuple[str, str | None]]) -> in
         return 0
     headers = ["" if c.value is None else str(c.value).strip() for c in rows[0]]
     changed = 0
+    from vat.review_columns import apply_vies
+    from vat.validate import _LOOKUP_ROLE_FIELDS, resolve_columns
+
+    present = dict.fromkeys(h for h in headers if h)
+    cols, lcols = resolve_columns(present), resolve_columns(present, _LOOKUP_ROLE_FIELDS)
     for cells in rows[1:]:
         row = {h: c.value for h, c in zip(headers, cells) if h}
         before = dict(row)
-        if apply_answers([row], answers):
+        # The technical columns (VAT_OUTPUT_COLUMNS=full) and the reviewer's (both modes).
+        raw = apply_answers([row], answers)
+        sap_name = " ".join(str(row[cols[f"name_{n}"]]) for n in range(1, 5)
+                            if cols.get(f"name_{n}") and row.get(cols[f"name_{n}"]))
+        review = apply_vies(row, answers, sap_name or None, row.get(lcols["city"]) if lcols.get("city") else None)
+        if raw or review:
             changed += 1
             for h, c in zip(headers, cells):
                 if h and row.get(h) != before.get(h):

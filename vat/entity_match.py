@@ -101,6 +101,11 @@ LEGAL_FORM_DIFFERS = "LEGAL_FORM_DIFFERS"      # prefix: ``LEGAL_FORM_DIFFERS:<s
 LEGAL_FORM_MISSING_IN_SAP = "LEGAL_FORM_MISSING_IN_SAP"
 BRANCH = "BRANCH"
 ISSUE_NAME_PARTIAL = "NAME_PARTIAL"
+#: A partial name in which SAP's name stands whole, in order, inside the
+#: page's ("LMU Klinikum" in "LMU Klinikum München, AöR"): instead of
+#: NAME_PARTIAL. Not blocking on an own-site page in the right town
+#: (:func:`vat.lookup.issues_of`); anywhere else it counts as NAME_PARTIAL.
+NAME_CONTAINED = "NAME_CONTAINED"
 SISTER_ENTITY_ON_PAGE = "SISTER_ENTITY_ON_PAGE"
 DEPARTMENT = "DEPARTMENT"
 SECONDARY_SOURCE = "SECONDARY_SOURCE"
@@ -137,8 +142,8 @@ ADDRESS_NOT_EXACT = "ADDRESS_NOT_EXACT"
 SUCCESSOR_CANDIDATE = "SUCCESSOR_CANDIDATE"
 ISSUE_ORDER: tuple[str, ...] = (
     ADDRESS_DIFFERS, ADDRESS_MISMATCH, ADDRESS_NOT_ON_PAGE, ADDRESS_NOT_EXACT,
-    LEGAL_FORM_DIFFERS, LEGAL_FORM_MISSING_IN_SAP, BRANCH, ISSUE_NAME_PARTIAL, SUCCESSOR_CANDIDATE,
-    SISTER_ENTITY_ON_PAGE, DEPARTMENT, SUB_ENTITY, PARENT_ENTITY, PARENT_ENTITY_CANDIDATE,
+    LEGAL_FORM_DIFFERS, LEGAL_FORM_MISSING_IN_SAP, BRANCH, ISSUE_NAME_PARTIAL, NAME_CONTAINED,
+    SUCCESSOR_CANDIDATE, SISTER_ENTITY_ON_PAGE, DEPARTMENT, SUB_ENTITY, PARENT_ENTITY, PARENT_ENTITY_CANDIDATE,
     EXTRACTED_BY_PATTERN,
     SECONDARY_SOURCE, OTHER_VAT_IDS_ON_PAGE, VIES_INVALID, VIES_UNAVAILABLE, VIES_PENDING,
     CONFLICTING_SOURCES, REGISTER_MISMATCH, EVIDENCE_NOT_VERIFIED,
@@ -369,13 +374,49 @@ class NameVerdict:
 _MATCH_RANK = {NAME_EXACT: 0, NAME_PARTIAL: 1, NAME_MISMATCH: 2}
 
 
+#: Words that never count in a containment check ("&" is gone after fold).
+_CONTAINED_JOINERS = frozenset({"und", "and"})
+#: An extra page word that makes the page's name another company's (a
+#: holding, a group, the general partner), never the record's own.
+_CONTAINED_OTHER_ENTITY = frozenset({
+    "holding", "holdings", "group", "gruppe", "konzern", "verwaltung", "verwaltungs", "beteiligung",
+    "beteiligungs", "beteiligungsgesellschaft", "management",
+})
+#: A last SAP word cut at 35 characters matches a page word it begins, from this length.
+_CONTAINED_PREFIX_MIN = 6
+
+
+def name_contained(record: tuple[str, ...], page: tuple[str, ...]) -> bool:
+    """Every word of SAP's name, in order, among the page name's words
+    (folded: ß/ss, umlauts, hyphen/space, case; legal forms are not part of
+    a core). A plural "s" does not matter ("Chemical" / "Chemicals"); SAP's
+    last word may be cut ("Textilforschungsinst"). Extra page words are
+    fine, unless one names another company (Holding, Gruppe, Verwaltung …).
+    "Staatliches Bauamt Erlangen Nürnberg" ⊂ "Staatliches Bauamt
+    Erlangen-Nürnberg"; "CPT Zwei" ⊄ "CPT"."""
+    rec = [t for t in record if t not in _CONTAINED_JOINERS]
+    words = [t for t in page if t not in _CONTAINED_JOINERS]
+    if not rec or len(rec) > len(words):
+        return False
+    i, extra = 0, []
+    for w in words:
+        a = rec[i] if i < len(rec) else None
+        if a is not None and (w == a or w == a + "s" or a == w + "s"
+                              or (i == len(rec) - 1 and len(a) >= _CONTAINED_PREFIX_MIN and w.startswith(a))):
+            i += 1
+        else:
+            extra.append(w)
+    return i == len(rec) and not set(extra) & _CONTAINED_OTHER_ENTITY
+
+
 def _compare(page: EntityName, record: EntityName, extra: tuple[str, ...]) -> NameVerdict:
     issues = list(extra)
     if set(page.core) == set(record.core):
         match = NAME_EXACT
     elif set(page.core) & set(record.core) or fuzz.token_sort_ratio(
             " ".join(page.core), " ".join(record.core)) >= NAME_FUZZY_THRESHOLD:
-        match, issues = NAME_PARTIAL, [*issues, ISSUE_NAME_PARTIAL]
+        match = NAME_PARTIAL
+        issues.append(NAME_CONTAINED if name_contained(record.core, page.core) else ISSUE_NAME_PARTIAL)
     else:
         match, issues = NAME_MISMATCH, [*issues, ISSUE_NAME_PARTIAL]
     if page.form and record.form and page.form != record.form:
@@ -419,7 +460,7 @@ def name_match(page_name: str | None, names: tuple[str | None, ...]) -> NameVerd
         for r, r_extra in _variants(record, departments=True)
         for p, p_extra in _variants(page, departments=False)
     ]
-    return min(verdicts, key=lambda v: (_MATCH_RANK[v.match], len(v.issues)))
+    return min(verdicts, key=lambda v: (_MATCH_RANK[v.match], NAME_CONTAINED not in v.issues, len(v.issues)))
 
 
 def forms_on_page(page_text: str | None, core: tuple[str, ...]) -> set[str]:

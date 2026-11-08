@@ -67,6 +67,7 @@ from vat.entity_match import (
     ISSUE_NAME_PARTIAL,
     ISSUE_ORDER,
     LEGAL_FORM_DIFFERS,
+    NAME_CONTAINED,
     NAME_EXACT,
     OTHER_VAT_IDS_ON_PAGE,
     PARENT_ENTITY_CANDIDATE,
@@ -214,8 +215,10 @@ SCOPE_COUNTRIES = frozenset({"DE"})
 #: Customers looked up at the same time. The time per customer is almost all
 #: waiting on SerpAPI, web pages and the LLM, so this divides the wall time.
 #: VIES is unaffected: its client keeps one concurrency limit and one pacing
-#: interval across every in-flight lookup.
-LOOKUP_CONCURRENCY = int(os.getenv("VAT_LOOKUP_CONCURRENCY", "5"))
+#: interval across every in-flight lookup. 20 since the Azure calls are paced
+#: to the quota (vat/rate_limit.py, 2026-11-08): this caps open connections
+#: and page downloads; the limiter sets the real pace.
+LOOKUP_CONCURRENCY = int(os.getenv("VAT_LOOKUP_CONCURRENCY", "20"))
 
 
 @dataclass(frozen=True)
@@ -340,18 +343,38 @@ def _is_candidate(r: FoundResult) -> bool:
                                               LOOKUP_INCOMPLETE)
 
 
+#: Codes that keep a contained name from counting as the entity's own:
+#: other numbers on the page, a number our code picked without a quote.
+_NOT_WITH_CONTAINED = frozenset({OTHER_VAT_IDS_ON_PAGE, EXTRACTED_BY_PATTERN})
+
+
+def name_contained_ok(r: FoundResult) -> bool:
+    """2026-11-07: SAP's name stands whole inside the page's
+    (NAME_CONTAINED: "LMU Klinikum" in "LMU Klinikum München, AöR") and the
+    page is the organisation's own (source class A), at its address or in its
+    town, with no other number on it and a number the reader quoted. Then the
+    name counts as matched for AUTO_ACCEPT. On the AD 50 / FINAL 50 reviews,
+    12 of the 13 such records with a SAP number had SAP's own number."""
+    codes = {issue_code(i) for i in r.issues}
+    return (NAME_CONTAINED in codes and r.source_class == "A" and r.address_match in ACCEPTED_ADDRESS
+            and not codes & _NOT_WITH_CONTAINED)
+
+
 def issues_of(r: FoundResult) -> tuple[str, ...]:
     """Every issue code for a result, in :data:`vat.entity_match.ISSUE_ORDER`.
     Empty without a candidate, and for a clean match.
 
     AUTO_ACCEPT needs ALL of: source class A or B, name EXACT (a branch is
-    fine), address EXACT or SAME_TOWN, VIES VALID or unavailable, the number
-    read on a page our own code fetched, and no register mismatch, conflicting
-    source or sister entity. Each unmet condition is a blocking issue here,
-    so :func:`decide` only has to look at the issues."""
+    fine) or contained (:func:`name_contained_ok`), address EXACT or
+    SAME_TOWN, VIES VALID or unavailable, the number read on a page our own
+    code fetched, and no register mismatch, conflicting source or sister
+    entity. Each unmet condition is a blocking issue here, so :func:`decide`
+    only has to look at the issues."""
     if not _is_candidate(r):
         return ()
-    issues = list(r.issues)
+    contained = name_contained_ok(r)
+    # NAME_CONTAINED outside its conditions is what it was before: NAME_PARTIAL.
+    issues = [i if i != NAME_CONTAINED or contained else ISSUE_NAME_PARTIAL for i in r.issues]
     if r.address_match in ADDRESS_ISSUE:
         issues.append(ADDRESS_ISSUE[r.address_match])
     if r.source_class == CLASS_C:
@@ -370,7 +393,7 @@ def issues_of(r: FoundResult) -> tuple[str, ...]:
         issues.append(ADDRESS_NOT_EXACT)
     if not r.source_url:
         issues.append(EVIDENCE_NOT_VERIFIED)
-    unmet = (r.name_match != NAME_EXACT or r.address_match not in ACCEPTED_ADDRESS
+    unmet = ((r.name_match != NAME_EXACT and not contained) or r.address_match not in ACCEPTED_ADDRESS
              or r.source_class not in TRUSTED_CLASSES)
     if unmet and not any(is_blocking(i) for i in issues):
         # A condition no specific code covers (no name or address was read).

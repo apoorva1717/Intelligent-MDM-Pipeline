@@ -48,6 +48,8 @@ completion at temperature 0, may get a different answer.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
 import time
 
@@ -166,6 +168,8 @@ from vat.web_pages import (
 )
 from vat.web_query import no_vat_statement, page_sections, query_for
 
+logger = logging.getLogger(__name__)
+
 #: Step AH rule 3: pages fetched from the on-site search's results.
 SITE_SEARCH_FETCHES = 3
 #: Reasoning effort of the search call when settings carry none
@@ -245,6 +249,15 @@ SUCCESSOR_CANDIDATE = "SUCCESSOR_CANDIDATE"
 #: Every own host refused us.
 ALL_OWN_HOSTS_BLOCKED = "ALL_OWN_HOSTS_BLOCKED"
 #: Usage fields summed over an entity's calls.
+def _log_failed_call(label: str, deployment: str, exc: BaseException) -> None:
+    """A model call that failed (the entity becomes LOOKUP_INCOMPLETE,
+    LLM_UNAVAILABLE): Azure's status and message in the log, so a wrong API
+    version, deployment or key is visible. The message never holds the key."""
+    status = getattr(exc.__cause__, "status_code", None) or getattr(exc, "status_code", None)
+    logger.warning("VAT model call %s on %s failed (HTTP %s): %s", label, deployment, status or "-",
+                   str(exc)[:500])
+
+
 _SUM_KEYS = ("input_tokens", "cached_tokens", "cache_write_tokens", "output_tokens",
              "reasoning_tokens", "tool_calls", "search_calls", "other_tool_calls")
 
@@ -406,7 +419,8 @@ class WebSearchLookup:
             max_opens=int(g("vat_web_max_opens", 3)),
             max_output_tokens=int(g("vat_web_max_output_tokens", 1500)),
             schema=LLM_WEB_ANSWER_SCHEMA,
-            retry_backoff=float(g("vat_web_retry_backoff_seconds", 10.0)),
+            retry_backoff=float(g("vat_web_retry_backoff_seconds", 5.0)),
+            max_retries=int(g("vat_azure_max_retries", 6)),
         )
         self.max_fetches = int(g("vat_web_max_fetches", 3))
         #: Step AF-2: the fetch budget of an entity with many own hosts.
@@ -433,8 +447,10 @@ class WebSearchLookup:
         self.aggregator_enabled = bool(g("vat_aggregator_fallback", True))
         self._rank_limits = SearchLimits(max_searches=0, max_opens=0, max_output_tokens=RANK_MAX_OUTPUT_TOKENS,
                                          schema=LLM_WEB_RANK_SCHEMA, cache_key="vat_rank",
-                                         retry_backoff=self.limits.retry_backoff, model=self.helper_model)
-        self._name2_limits = name2_classifier.limits(self.helper_model or "", self.limits.retry_backoff)
+                                         retry_backoff=self.limits.retry_backoff,
+                                         max_retries=self.limits.max_retries, model=self.helper_model)
+        self._name2_limits = replace(name2_classifier.limits(self.helper_model or "", self.limits.retry_backoff),
+                                     max_retries=self.limits.max_retries)
         # The SerpAPI engine, run once with search 1 for an entity still
         # NOT_FOUND (only when VAT_GROUNDED_FALLBACK is set: lookup_engines).
         self._grounded = grounded
@@ -524,22 +540,31 @@ class WebSearchLookup:
             usage: dict[str, Any] = {"fetches": 0, "cost_usd": 0.0}
             plan = await self._name2(inp, plan, usage)
             m_inp = replace(inp, names=(plan.entity, None, None, None))
-            web = await self._web(m_inp, plan, usage)
-            result = await self._finish(m_inp, await self._with_peppol(m_inp, web), plan)
+            # The Peppol query runs while the web lookup does (only the timing
+            # changes: the same query, judged in the same place).
+            peppol = asyncio.create_task(self._peppol.search(peppol_name(m_inp.name_1)))
+            try:
+                web = await self._web(m_inp, plan, usage)
+            except BaseException:
+                peppol.cancel()
+                raise
+            result = await self._finish(m_inp, await self._with_peppol(m_inp, web, peppol), plan)
             return with_not_found_reason(self._with_plan(result, plan))
         web = await self._web(inp)
         if web.decision == AUTO_ACCEPT:
             return web
         return await self._with_peppol(inp, web)
 
-    async def _with_peppol(self, inp: LookupInput, web: FoundResult) -> FoundResult:
+    async def _with_peppol(self, inp: LookupInput, web: FoundResult,
+                           started: "asyncio.Task[Any] | None" = None) -> FoundResult:
         """One Peppol query per entity ("model" mode: only when the web result
         is not AUTO_ACCEPT; "hybrid": always, and whether it had a hit is
-        logged), combined with the web result."""
+        logged), combined with the web result. *started*: the hybrid query,
+        already sent alongside the web lookup."""
         self._peppol_asks += 1
         usage = dict(web.usage or {}, peppol_queries=1)
         if self.query_mode == HYBRID:
-            entries = await self._peppol.search(peppol_name(inp.name_1))
+            entries = await (started if started is not None else self._peppol.search(peppol_name(inp.name_1)))
             usage["peppol_entries"] = len(entries or [])
         web = replace(web, usage=usage)
         peppol = await peppol_result(
@@ -662,7 +687,8 @@ class WebSearchLookup:
         except MalformedOutput as e:
             self._account(usage, e.usage, False)
             return FoundResult(LLM_WEB, LOOKUP_INCOMPLETE, flags=(LLM_WEB_SEARCH, MALFORMED_OUTPUT))
-        except (RuntimeError, ValueError):
+        except (RuntimeError, ValueError) as e:
+            _log_failed_call("search", llm_model(), e)
             return FoundResult(LLM_WEB, LOOKUP_INCOMPLETE, flags=(LLM_WEB_SEARCH, LLM_UNAVAILABLE))
         self._account(usage, answer.usage, answer.from_cache)
         visited = answer.visited
@@ -745,7 +771,7 @@ class WebSearchLookup:
         usage.setdefault("calls", []).append({
             "call": label, "from_cache": from_cache, "cost_usd": round(lines[TOTAL], 5),
             "new_spend_usd": round(lines[NEW_SPEND], 5), **counts,
-            **{k: call.get(k) for k in (*_SUM_KEYS, "queries", "api_status")},
+            **{k: call.get(k) for k in (*_SUM_KEYS, "queries", "api_status", "http_retries", "rate_limit_wait_s")},
         })
         return lines[TOTAL]
 
@@ -773,7 +799,8 @@ class WebSearchLookup:
                 if attempt:  # stopped twice: never NOT_FOUND
                     return FoundResult(LLM_WEB, f"{LOOKUP_INCOMPLETE}:{CONTENT_FILTER}",
                                        flags=(LLM_WEB_SEARCH, CONTENT_FILTER))
-            except (RuntimeError, ValueError):
+            except (RuntimeError, ValueError) as e:
+                _log_failed_call(label, limits.model or llm_model(), e)
                 return FoundResult(LLM_WEB, LOOKUP_INCOMPLETE, flags=(LLM_WEB_SEARCH, LLM_UNAVAILABLE))
         self._add_call(usage, label, {**answer.usage, **on}, answer.from_cache)
         return answer.response, answer.visited
@@ -794,15 +821,39 @@ class WebSearchLookup:
         usage[f"result_urls_{n}"] = list(out[1])
         return out
 
+    def _prefetch(self, picked: list[tuple[str, str]], usage: dict[str, Any],
+                  hosts: dict[str, dict[str, Any]]) -> dict[str, "asyncio.Task[Any]"]:
+        """The first page of each picked host that :meth:`_fetch_hosts` may
+        fetch (within the fetch budget left, not cached, not on a refused or
+        rejected host), requested at once instead of one after another. Only
+        the waiting overlaps: the pages are still read in the same order by
+        the same rules, a page never asked for is dropped uncounted, and
+        nothing is cached until it is read."""
+        if self._pages.replay_only:
+            return {}
+        left = self._fetch_cap(usage) - usage["fetches"]
+        tasks: dict[str, asyncio.Task[Any]] = {}
+        for url, _kind in picked:
+            if len(tasks) >= left:
+                break
+            h = hosts.get(host_of(url)) or {}
+            if h.get("rejected") or h.get("blocked") or url in tasks or self._pages.cached_page(url):
+                continue
+            task = asyncio.create_task(self._pages.fetch_network(url))
+            task.add_done_callback(lambda t: t.cancelled() or t.exception())  # an unused one's error is dropped
+            tasks[url] = task
+        return tasks
+
     async def _get(
         self, url: str, n: int | str, via: str, kind: str, inp: LookupInput, usage: dict[str, Any],
-        pages: dict[str, dict[str, Any]],
+        pages: dict[str, dict[str, Any]], prefetch: dict[str, "asyncio.Task[Any]"] | None = None,
     ) -> dict[str, Any] | None:
         """One page: fetched (``vat_pages``), its full text, its sections, the
         VAT-ID-shaped strings on the whole page and a no-VAT statement.
-        *pages* records every attempt with how it was reached."""
+        *pages* records every attempt with how it was reached; *prefetch*
+        may hold its download, already requested (:meth:`_prefetch`)."""
         flags: set[str] = set()
-        page = await self._pages._fetch(url, flags)
+        page = await self._pages._fetch(url, flags, prefetched=prefetch.pop(url, None) if prefetch else None)
         info: dict[str, Any] = {"url": url, "round": n, "via": via, "kind": kind, "pdf": is_pdf_url(url)}
         pages[url] = info
         if page is None or not (page.ok and page.content):
@@ -867,6 +918,26 @@ class WebSearchLookup:
         plan = plan or prepare(inp.names)
         university = is_university(plan)
         read: list[dict[str, Any]] = []
+        prefetch = self._prefetch(picked, usage, hosts)
+        try:
+            await self._fetch_picked(n, picked, inp, usage, pages, hosts, result_urls, alt_names, plan,
+                                     university, read, prefetch)
+        finally:
+            for task in prefetch.values():
+                task.cancel()
+        if self.operator_follow and read and not usage.get("operator_follows") \
+                and not any(p["hits"] for p in read):
+            await self._operator(n, read, inp, usage, pages, hosts)
+        return read
+
+    async def _fetch_picked(
+        self, n: int | str, picked: list[tuple[str, str]], inp: LookupInput, usage: dict[str, Any],
+        pages: dict[str, dict[str, Any]], hosts: dict[str, dict[str, Any]], result_urls: list[str],
+        alt_names: tuple[str, ...], plan: NamePlan, university: bool, read: list[dict[str, Any]],
+        prefetch: dict[str, "asyncio.Task[Any]"],
+    ) -> None:
+        """:meth:`_fetch_hosts`' loop over the picked hosts; the pages kept
+        are appended to *read*."""
         for url, kind in picked:
             host = host_of(url)
             if host in hosts and (hosts[host].get("rejected") or hosts[host].get("blocked")):
@@ -880,7 +951,7 @@ class WebSearchLookup:
             entry["fetched"].append(url)
             fetched_keys = {page_key(url)}
             queue: list[str] = []
-            got = await self._get(url, n, "rank", kind, inp, usage, pages)
+            got = await self._get(url, n, "rank", kind, inp, usage, pages, prefetch)
             if got is None and pages.get(url, {}).get("blocked"):
                 entry["blocked"] = pages[url]["blocked"]  # rule 2: the next own host
                 continue
@@ -957,11 +1028,7 @@ class WebSearchLookup:
                     pages[p["url"]]["unverified"] = True
                 continue
             if entry.get("rejected") is None:
-                read += mine
-        if self.operator_follow and read and not usage.get("operator_follows") \
-                and not any(p["hits"] for p in read):
-            await self._operator(n, read, inp, usage, pages, hosts)
-        return read
+                read.extend(mine)
 
     async def _operator(
         self, n: int | str, read: list[dict[str, Any]], inp: LookupInput, usage: dict[str, Any],
@@ -1175,13 +1242,13 @@ class WebSearchLookup:
         names the entity but gives another organisation's number is
         PARENT_ENTITY_CANDIDATE (review)."""
         from vat.entity_match import (
-            ISSUE_NAME_PARTIAL, LEGAL_FORM_DIFFERS, LEGAL_FORM_MISSING_IN_SAP, NAME_MISMATCH as _MISMATCH,
+            ISSUE_NAME_PARTIAL, LEGAL_FORM_DIFFERS, LEGAL_FORM_MISSING_IN_SAP, NAME_CONTAINED, NAME_MISMATCH as _MISMATCH,
             PARENT_ENTITY, PARENT_ENTITY_CANDIDATE, name_match, parse_name as _pn,
         )
 
         if result.name_match == NAME_EXACT or not result.attributed_to:
             return result
-        drop = (ISSUE_NAME_PARTIAL, LEGAL_FORM_DIFFERS)
+        drop = (ISSUE_NAME_PARTIAL, NAME_CONTAINED, LEGAL_FORM_DIFFERS)
         keep = tuple(i for i in result.issues if not i.startswith(drop))
         umbrella = umbrella_of(result.attributed_to, plan)
         if umbrella:

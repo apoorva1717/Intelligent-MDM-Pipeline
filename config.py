@@ -348,9 +348,28 @@ class Settings:
     vat_web_max_output_tokens: int = field(
         default_factory=lambda: int(os.getenv("VAT_WEB_MAX_OUTPUT_TOKENS", "1500"))
     )
-    #: Seconds before the single retry of a search call that got HTTP 429 / 5xx.
+    #: First wait before retrying a model call that got HTTP 429 / 5xx with no
+    #: Retry-After; doubled per retry, at most 60 s (vat/llm_cache.py).
     vat_web_retry_backoff_seconds: float = field(
-        default_factory=lambda: float(os.getenv("VAT_WEB_RETRY_BACKOFF_SECONDS", "10"))
+        default_factory=lambda: float(os.getenv("VAT_WEB_RETRY_BACKOFF_SECONDS", "5"))
+    )
+    #: Retries of a model call after HTTP 429 / 5xx (all waits together at
+    #: most 180 s). The calls are paced to the quota first (vat/rate_limit.py:
+    #: VAT_AZURE_TPM / VAT_AZURE_RPM, per deployment VAT_AZURE_TPM_<NAME>,
+    #: else Azure's x-ratelimit headers; VAT_AZURE_QUOTA_SHARE 0.85).
+    vat_azure_max_retries: int = field(
+        default_factory=lambda: int(os.getenv("VAT_AZURE_MAX_RETRIES", "6"))
+    )
+    #: Large uploads as jobs (vat/jobs.py): the job folders (the
+    #: Function's persistent /home storage on Azure), rows per chunk.
+    vat_job_dir: str = field(default_factory=lambda: os.getenv("VAT_JOB_DIR", "logs/vat_jobs"))
+    vat_job_chunk_rows: int = field(
+        default_factory=lambda: int(os.getenv("VAT_JOB_CHUNK_ROWS", "200"))
+    )
+    #: Seconds a job's worker lease lasts without renewal; after that the
+    #: timer trigger takes the job over.
+    vat_job_lease_seconds: int = field(
+        default_factory=lambda: int(os.getenv("VAT_JOB_LEASE_SECONDS", "900"))
     )
     #: Stop issuing model calls once the run's cost passes this (USD; 0 = no
     #: limit). Cost is tokens plus search calls, from the API usage fields
@@ -391,9 +410,16 @@ class Settings:
     #: The research log columns (VAT_Log_*: search name, queries, hosts, pages
     #: …) and VAT_Found_Entity_Status (dissolved, merged, a parent's or
     #: sibling's number …) on every looked-up row. Read from what the lookup
-    #: gathered: no extra call, no cost.
+    #: gathered: no extra call, no cost. Off by default since the reviewer's
+    #: columns (2026-11-08); on, they follow them.
     vat_log_columns: bool = field(
-        default_factory=lambda: _bool(os.getenv("VAT_LOG_COLUMNS"), default=True))
+        default_factory=lambda: _bool(os.getenv("VAT_LOG_COLUMNS"), default=False))
+    #: Which result columns are written after the input (vat/validate.py
+    #: select_output): ``review`` (default) — the reviewer's columns
+    #: (vat/review_columns.py) and the cost columns; ``full`` — those, then
+    #: every technical column (VAT_Found_*, the VIES check of SAP's own VAT ID).
+    vat_output_columns: str = field(
+        default_factory=lambda: (os.getenv("VAT_OUTPUT_COLUMNS", "review").strip().lower() or "review"))
     #: Step AG: after the hybrid lookup, the agentic pass (vat/lookup_agent.py)
     #: on the rows still NOT_FOUND / LOOKUP_INCOMPLETE. Off by default; the
     #: endpoints take ``agent_pass`` per request, the runner ``--agent-pass``.

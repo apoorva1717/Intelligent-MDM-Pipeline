@@ -9,6 +9,11 @@
   Proposals only, never written to SAP.
 * ``POST /api/validate/vat/llm-only-experiment/file`` — the same for an XLSX
   upload, but VIES is never called: every VIES status is NOT_CHECKED.
+* ``POST /api/validate/vat/file/jobs`` — ``/file`` for large uploads, as a
+  background job (``vat/jobs.py``): ``GET …/jobs/{id}`` (progress),
+  ``GET …/jobs/{id}/result``, ``POST …/jobs/{id}/resume``,
+  ``DELETE …/jobs/{id}`` (cancel). The Function's timer trigger continues a
+  job whose worker is gone (:func:`resume_vat_jobs`).
 
 ``lookup_missing`` (``none`` | ``grounded`` | ``llm_web`` | ``llm_only``;
 default ``llm_web``) proposes VAT IDs for rows whose VAT Registration No. is
@@ -176,7 +181,7 @@ async def _validate_json(
     try:
         out, summary = await validate_rows(
             rows, client, lookup=lookup, compare_lookup=compare, scope=scope, agent=agent,
-            log_columns=get_settings().vat_log_columns,
+            log_columns=get_settings().vat_log_columns, output_columns=get_settings().vat_output_columns,
         )
     except ValueError as exc:  # no VAT column
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -276,6 +281,175 @@ async def validate_vat_file_llm_only_experiment(
     )
 
 
+# ── Large uploads as jobs (vat/jobs.py, 2026-11-08) ──────────────────────────
+
+_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _job_store():
+    from vat.jobs import JobStore
+
+    return JobStore(get_settings().vat_job_dir)
+
+
+def _job_engines(options: dict[str, Any]):
+    """The engines one chunk (or the assembly) of a job runs with: the same
+    factories as ``/file``. No stop limit inside a chunk: the job's cap is
+    checked between chunks (vat/jobs.py)."""
+    from vat.jobs import Engines
+
+    client = _get_vies_client()
+    client.enabled = bool(options.get("vies", True))
+    mode = options["mode"]
+    lookup, compare = _engines(mode, options.get("compare_mode"), client)
+    agent = _agent_or_none(options.get("agent_pass"), mode, lookup, client)
+    for engine in (lookup, compare):
+        meter = getattr(engine, "meter", None)
+        if meter is not None:
+            meter.budget = 0.0
+    return Engines(client, lookup, compare, agent)
+
+
+def _job_or_404(job_id: str) -> dict[str, Any]:
+    try:
+        return _job_store().read(job_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"No VAT job {job_id}.") from None
+
+
+def resume_vat_jobs() -> Optional[str]:
+    """The Function's timer trigger (function_app.py): continue a waiting job,
+    or one whose worker is gone, in the background. The job id, or None."""
+    from vat.jobs import resume_jobs
+
+    return resume_jobs(_job_store(), _job_engines, get_settings().vat_job_lease_seconds)
+
+
+@router.post("/api/validate/vat/file/jobs", status_code=202)
+async def create_vat_file_job(
+    file: UploadFile = File(..., description="SAP export XLSX (sheet 'Data') with a VAT Registration No. column"),
+    lookup_missing: LookupMode = Query(
+        default="llm_web", description="Missing-VAT lookup mode (default llm_web). none: no lookup.",
+    ),
+    scope: Optional[LookupScope] = _SCOPE_MISSING_DEFAULT,
+    agent_pass: Optional[bool] = _AGENT_PASS,
+    max_cost_usd: Optional[float] = Query(
+        default=None, ge=0,
+        description="Stop the job once its new spend reaches this (USD), checked between chunks; resume with "
+                    "a higher cap. Default: VAT_WEB_BUDGET_USD (0 = no cap).",
+    ),
+    vies_after: bool = Query(
+        default=True,
+        description="At the end, ask VIES for the proposed numbers and write the answers into the result "
+                    "(VIES, VAT_Decision, VAT_Why). Off: the result equals /file's exactly.",
+    ),
+) -> dict[str, Any]:
+    """``/file`` for large uploads: the same input, options and result, worked
+    in the background. Answers at once with the job id; poll
+    ``GET …/jobs/{id}`` and download ``GET …/jobs/{id}/result``. A restart
+    of the app does not lose the job: it continues from its next chunk."""
+    from vat.jobs import create_job, progress, start
+
+    filename = file.filename or ""
+    if not filename.lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(status_code=400, detail="Uploaded file must be an .xlsx (or .xlsm) workbook.")
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    settings = get_settings()
+    options = {"mode": _endpoint_mode(lookup_missing), "scope": _scope(scope), "agent_pass": agent_pass,
+               "vies": True, "vies_after": vies_after, "log_columns": settings.vat_log_columns,
+               "output_columns": settings.vat_output_columns}
+    await _job_engines(options).aclose()  # a bad option is a 400 now, not a failed job later
+    store = _job_store()
+    try:
+        job = create_job(store, contents, filename, options, settings.vat_job_chunk_rows,
+                         max_cost_usd if max_cost_usd is not None else (settings.vat_web_budget_usd or None))
+    except Exception as exc:  # noqa: BLE001 - unreadable workbook, no rows, no VAT column
+        raise HTTPException(status_code=422, detail=f"Could not use the upload: {exc}") from exc
+    started = start(store, _job_engines, settings.vat_job_lease_seconds, job["id"])
+    logger.info("VAT job %s created: %s, %d rows, %d companies, %d chunks, est. $%.2f%s", job["id"], filename,
+                job["rows"], job["unique_companies"], len(job["chunks"]), job["estimated_cost_usd"],
+                "" if started else " (queued behind the running job)")
+    return progress(job)
+
+
+@router.get("/api/validate/vat/file/jobs/{job_id}")
+async def get_vat_file_job(job_id: str) -> dict[str, Any]:
+    """Status and progress: chunks and rows done, companies per minute,
+    retries after HTTP 429 / 5xx, spend so far, estimated seconds left."""
+    from vat.jobs import progress
+
+    return progress(_job_or_404(job_id))
+
+
+@router.get("/api/validate/vat/file/jobs/{job_id}/result")
+async def get_vat_file_job_result(
+    job_id: str,
+    partial: bool = Query(default=False, description="The finished chunks' rows so far (no Summary sheet)."),
+) -> StreamingResponse:
+    """The finished workbook, as ``/file`` returns it. 409 while the job is
+    not done (``partial=true``: the rows finished so far)."""
+    from vat.jobs import DONE, partial_workbook
+
+    job = _job_or_404(job_id)
+    stem = (job["filename"].rsplit("/", 1)[-1].rsplit(".", 1)[0] or "export")
+    if partial:
+        body, name = partial_workbook(_job_store(), job_id), f"{stem}_vat_partial.xlsx"
+    elif job["status"] != DONE:
+        raise HTTPException(status_code=409, detail=f"VAT job {job_id} is {job['status']}; "
+                                                    "partial=true gives the rows finished so far.")
+    else:
+        body, name = (_job_store().path(job_id) / "result.xlsx").read_bytes(), f"{stem}_vat.xlsx"
+    return StreamingResponse(io.BytesIO(body), media_type=_XLSX,
+                             headers={"Content-Disposition": f'attachment; filename="{name}"',
+                                      "X-VAT-Job-Status": job["status"]})
+
+
+@router.post("/api/validate/vat/file/jobs/{job_id}/resume", status_code=202)
+async def resume_vat_file_job(
+    job_id: str,
+    max_cost_usd: Optional[float] = Query(default=None, ge=0, description="A new cap (USD); 0 = none."),
+) -> dict[str, Any]:
+    """Continue a job that stopped (budget cap, cancel, failure) from its next
+    unfinished chunk; finished chunks are kept."""
+    from vat.jobs import DONE, QUEUED, progress, start
+
+    job = _job_or_404(job_id)
+    if job["status"] == DONE:
+        raise HTTPException(status_code=409, detail=f"VAT job {job_id} is done.")
+    store = _job_store()
+    fields: dict[str, Any] = {"status": QUEUED, "cancel": False, "finished_at": None, "assembly_attempts": 0,
+                              "chunks": [dict(c, attempts=0) for c in job["chunks"]]}
+    if max_cost_usd is not None:
+        fields["max_cost_usd"] = max_cost_usd or None
+    job = store.update(job_id, **fields)
+    start(store, _job_engines, get_settings().vat_job_lease_seconds, job_id)
+    return progress(job)
+
+
+@router.delete("/api/validate/vat/file/jobs/{job_id}")
+async def cancel_vat_file_job(
+    job_id: str,
+    purge: bool = Query(default=False, description="Also delete the job's files (only once it has stopped)."),
+) -> dict[str, Any]:
+    """Cancel a job: it stops after the chunk it is working on (finished
+    chunks are kept; resume continues). With ``purge`` a stopped job's files
+    are deleted."""
+    from vat.jobs import CANCELLED, FINAL, QUEUED, progress
+
+    job = _job_or_404(job_id)
+    store = _job_store()
+    if purge:
+        if job["status"] not in FINAL:
+            raise HTTPException(status_code=409, detail="Cancel the job first; purge once it has stopped.")
+        store.delete(job_id)
+        return {"id": job_id, "deleted": True}
+    if job["status"] == QUEUED and not job.get("lease"):  # no worker to notice the flag
+        return progress(store.update(job_id, cancel=True, status=CANCELLED))
+    return progress(store.update(job_id, cancel=True))
+
+
 async def _validate_upload(
     file: UploadFile, mode: str, *, out_suffix: str, compare_mode: str | None = None,
     scope: str = "missing", vies: bool = True, agent_pass: Optional[bool] = None,
@@ -309,7 +483,7 @@ async def _validate_upload(
     try:
         summary = await validate_workbook(
             wb, client, source=filename, lookup=lookup, compare_lookup=compare, scope=scope, agent=agent,
-            log_columns=get_settings().vat_log_columns,
+            log_columns=get_settings().vat_log_columns, output_columns=get_settings().vat_output_columns,
         )
     except ValueError as exc:  # no header / no rows / no VAT column
         raise HTTPException(status_code=422, detail=str(exc)) from exc
