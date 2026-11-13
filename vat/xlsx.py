@@ -16,6 +16,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+
 from vat.lookup import COMPARE_COLUMNS, LOOKUP_COLUMNS, LookupEngine
 from vat.name_match import MATCH, MISMATCH, NOT_AVAILABLE, PARTIAL
 from vat.normalize import FORMAT_ERROR, FORMAT_OK, MISSING, NOT_EU
@@ -66,7 +68,17 @@ def _read(ws, result_columns: list[str]):
     return header_idx, headers, rows
 
 
+def cell_value(value: Any) -> Any:
+    """*value* as a worksheet can hold it: control characters a web page
+    carried (a title with ``\\x03``) are dropped, or openpyxl refuses the cell."""
+    return ILLEGAL_CHARACTERS_RE.sub("", value) if isinstance(value, str) else value
+
+
 def _write_results(ws, header_idx, headers, rows, results, result_columns) -> None:
+    """The result columns into the sheet: an existing one (an earlier run's
+    output uploaded again) is overwritten, blanks included; an earlier run's
+    result column this run does not write is emptied, so no stale value
+    stays next to this run's result."""
     col_of: dict[str, int] = {}
     next_col = len(headers) + 1
     for name in result_columns:
@@ -75,10 +87,14 @@ def _write_results(ws, header_idx, headers, rows, results, result_columns) -> No
         else:
             col_of[name] = next_col
             next_col += 1
-        ws.cell(row=header_idx, column=col_of[name], value=name)
+        ws.cell(row=header_idx, column=col_of[name]).value = name
+    stale = [i + 1 for i, h in enumerate(headers) if h in ALL_RESULT_COLUMNS and h not in col_of]
     for (row_idx, _), result in zip(rows, results):
+        # .value, not cell(value=...): openpyxl's cell() ignores value=None.
         for name in result_columns:
-            ws.cell(row=row_idx, column=col_of[name], value=result[name])
+            ws.cell(row=row_idx, column=col_of[name]).value = cell_value(result[name])
+        for col in stale:
+            ws.cell(row=row_idx, column=col).value = None
 
 
 def _write_summary(wb, summary: dict[str, Any], meta: list[tuple[str, Any]]) -> None:

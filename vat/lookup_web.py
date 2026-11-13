@@ -61,6 +61,7 @@ from urllib.parse import urlparse
 from config import llm_model
 from llm.openai_client import LLMUnavailableFrozen
 from vat.entity_match import (
+    ACCEPTED_ADDRESS,
     CONFLICTING_SOURCES,
     EVIDENCE_NOT_VERIFIED,
     NAME_EXACT,
@@ -380,6 +381,15 @@ def _url_key(url: str) -> tuple[str, str]:
     return host, (p.path or "/").rstrip("/") or "/"
 
 
+def exact_name_query(plan: NamePlan) -> str | None:
+    """Step AL route A: ``"<full legal name>" Impressum USt-IdNr`` — the name
+    with its legal form quoted, the keywords not, no town. None when name
+    prep found no legal form (a bare name quoted finds every namesake)."""
+    if not plan.form or not plan.entity:
+        return None
+    return f'"{plan.entity}" Impressum USt-IdNr'
+
+
 def was_visited(url: str, visited: list[str]) -> bool:
     key = _url_key(url)
     return any(_url_key(v) == key for v in visited)
@@ -428,6 +438,8 @@ class WebSearchLookup:
         self.many_own_hosts = int(g("vat_web_many_own_hosts", 3))
         #: Step AH: the operator follow and the on-site document search.
         self.operator_follow = bool(g("vat_web_operator_follow", True))
+        #: An own host's probe also tries /de-de/impressum, /impressum.html … (off).
+        self.extended_probes = bool(g("vat_web_extended_probes", False))
         self.site_search = bool(g("vat_web_site_search", True))
         self.max_follows = int(g("vat_web_max_follows", 2))
         self.page_chars = int(g("vat_web_page_chars", 8000))
@@ -445,6 +457,7 @@ class WebSearchLookup:
         self.ranking = (g("vat_web_ranking", MODEL_RANKING) or MODEL_RANKING).lower()
         self.name2_enabled = bool(g("vat_name2_classifier", True)) and bool(self.helper_model)
         self.aggregator_enabled = bool(g("vat_aggregator_fallback", True))
+        self.exact_name_search = bool(g("vat_exact_name_search", False))
         self._rank_limits = SearchLimits(max_searches=0, max_opens=0, max_output_tokens=RANK_MAX_OUTPUT_TOKENS,
                                          schema=LLM_WEB_RANK_SCHEMA, cache_key="vat_rank",
                                          retry_backoff=self.limits.retry_backoff,
@@ -1021,6 +1034,18 @@ class WebSearchLookup:
                         entry["fetched"].append(second[0])
                         fetched_keys.add(page_key(second[0]))
                         got = await self._get(second[0], n, "probe", kind, inp, usage, pages)
+                    if got is None and self.extended_probes:
+                        # VAT_WEB_EXTENDED_PROBES: the language and file
+                        # variants, still the same probe; the first that
+                        # answers is read.
+                        for extra in impressum_probes(url, set(), extended=True)[2:]:
+                            if extra in entry["fetched"]:
+                                continue
+                            entry["fetched"].append(extra)
+                            fetched_keys.add(page_key(extra))
+                            got = await self._get(extra, n, "probe", kind, inp, usage, pages)
+                            if got is not None:
+                                break
             if entry["kind"] in UNVERIFIED:
                 if entry.get("rejected") is None:
                     entry["rejected"] = "NOT_VERIFIED"  # nothing on it named the entity
@@ -1243,7 +1268,7 @@ class WebSearchLookup:
         PARENT_ENTITY_CANDIDATE (review)."""
         from vat.entity_match import (
             ISSUE_NAME_PARTIAL, LEGAL_FORM_DIFFERS, LEGAL_FORM_MISSING_IN_SAP, NAME_CONTAINED, NAME_MISMATCH as _MISMATCH,
-            PARENT_ENTITY, PARENT_ENTITY_CANDIDATE, name_match, parse_name as _pn,
+            PARENT_ENTITY, PARENT_ENTITY_CANDIDATE, leading_acronym, name_match, parse_name as _pn,
         )
 
         if result.name_match == NAME_EXACT or not result.attributed_to:
@@ -1256,6 +1281,15 @@ class WebSearchLookup:
                            issues=tuple(dict.fromkeys([*keep, PARENT_ENTITY])))
         for name in plan.acceptable[1:]:
             verdict = name_match(result.attributed_to, (name, None, None, None))
+            if verdict.match == NAME_EXACT:
+                return replace(result, name_match=NAME_EXACT,
+                               issues=tuple(dict.fromkeys([*keep, *verdict.issues])))
+        # Name 1 is only the acronym of Name 1–4 ("ZOEK gGmbH" + "Zentrum für
+        # Organische Elektronik" + "Köln"), and the page names them in full.
+        names = [n for n in plan.names if n]
+        if len(names) > 1 and len(_pn(names[0], sap=True).core) == 1 \
+                and leading_acronym(_pn(" ".join(names), sap=True).core):
+            verdict = name_match(result.attributed_to, tuple(names))
             if verdict.match == NAME_EXACT:
                 return replace(result, name_match=NAME_EXACT,
                                issues=tuple(dict.fromkeys([*keep, *verdict.issues])))
@@ -1373,7 +1407,18 @@ class WebSearchLookup:
             if isinstance(second, FoundResult) and second.status.startswith(LOOKUP_INCOMPLETE):
                 return replace(best, flags=(*best.flags, *second.flags)) if best and best.value else second
             best = self._better(best, second)
-        if not self._usable(best) and not answered_1 and self.limits.max_searches > 1:
+        exact = None
+        if self.exact_name_search and not site_host and self.limits.max_searches > 1 \
+                and not (best and best.value and best.address_match in ACCEPTED_ADDRESS):
+            exact = exact_name_query(plan)
+        if exact:
+            # Step AL (VAT_EXACT_NAME_SEARCH): no candidate in SAP's town after
+            # search 1: the exact legal name, no town, as search 2.
+            second = await self._named_search("exact", exact, inp, usage, pages, hosts, base, plan)
+            if isinstance(second, FoundResult) and second.status.startswith(LOOKUP_INCOMPLETE):
+                return replace(best, flags=(*best.flags, *second.flags)) if best and best.value else second
+            best = self._better(best, second)
+        elif not self._usable(best) and not answered_1 and self.limits.max_searches > 1:
             user = LLM_WEB_SECOND_USER_PROMPT_TEMPLATE.format(
                 query_1=q1, results_1=self._results_listing(results_1, skipped),
                 zero_results_rule=LLM_WEB_ZERO_RESULTS_RULE if not results_1 else "",
@@ -1430,6 +1475,30 @@ class WebSearchLookup:
             return FoundResult(LLM_WEB, f"{LOOKUP_INCOMPLETE}:{HTTP_BLOCKED}_{code}",
                                flags=(*base, f"{HTTP_BLOCKED}_{code}", ALL_OWN_HOSTS_BLOCKED))
         return FoundResult(LLM_WEB, NOT_FOUND, flags=(*base, LLM_WEB_NO_ANSWER))
+
+    async def _named_search(
+        self, label: str, query: str, inp: LookupInput, usage: dict[str, Any], pages: dict[str, dict[str, Any]],
+        hosts: dict[str, dict[str, Any]], base: tuple[str, ...], plan: NamePlan,
+    ) -> FoundResult | None:
+        """One search built by code, run as given (like search 1), then the
+        hybrid path on its results: ranking, own-host rules, fetches, reader.
+        Hosts already fetched are not fetched again. *label* names its calls
+        and usage keys (``search_<label>``, ``query_<label>``)."""
+        out = await self._call(f"search_{label}", LLM_WEB_RUN_SYSTEM_PROMPT,
+                               LLM_WEB_RUN_USER_PROMPT_TEMPLATE.format(query=query), self._run_search, usage)
+        if isinstance(out, FoundResult):
+            return out
+        usage["searches"] = usage.get("search_calls") or 0
+        queries = usage["calls"][-1].get("queries") or []
+        results = self._results(out[1], out[0])
+        usage.update({f"query_{label}": query, f"query_{label}_run": queries[0] if queries else None,
+                      f"results_{label}": len(results), f"result_urls_{label}": [r["url"] for r in results]})
+        picked, skipped = select_pages(results, inp, plan=plan, done_hosts=frozenset(hosts))
+        picked = await self._rank(label, results, picked, inp, plan, usage, done_hosts=frozenset(hosts))
+        usage[f"picked_{label}"], usage[f"skipped_{label}"] = picked, skipped
+        read = await self._fetch_hosts(label, picked, inp, usage, pages, hosts, [r["url"] for r in results],
+                                       plan=plan)
+        return await self._read(label, read, inp, usage, base, plan) if read else None
 
     @staticmethod
     def _site_host(hosts: dict[str, dict[str, Any]], pages: dict[str, dict[str, Any]]) -> str | None:

@@ -270,6 +270,7 @@ They are column values, **not** issue codes:
 | `VAT_AZURE_MAX_RETRIES` | 6 (HTTP 429 / 5xx; all waits together at most 180 s) |
 | `VAT_WEB_RETRY_BACKOFF_SECONDS` | 5 (first wait without a Retry-After; doubled per retry, at most 60 s) |
 | `PAGE_FETCH_MAX_CONCURRENCY` | 20 |
+| `VAT_AGENT_CONCURRENCY` | 10 (was 1). At `VAT_AGENT_BUDGET_USD`, calls already under way finish: the spend can pass the cap by up to this many agent calls |
 | `VAT_JOB_DIR` | `logs/vat_jobs` (on Azure: a folder under `/home`) |
 | `VAT_JOB_CHUNK_ROWS` | 200 |
 | `VAT_JOB_LEASE_SECONDS` | 900 |
@@ -926,7 +927,8 @@ lookup's result.
 | `Name_Check` | SAME_NAME / SAP_NAME_PLUS_MORE / SIMILAR_NAME / DIFFERENT_NAME |
 | `Address_Check` | SAME_ADDRESS / OTHER_STREET_SAME_TOWN / OTHER_TOWN / NO_ADDRESS_ON_PAGE |
 | `Issue_Flags` | what else to check (below) |
-| `Not_Found_Reason` | NO_WEBSITE_FOUND / WEBSITE_HAS_NO_VAT_ID / WEBSITE_NOT_READABLE / WEBSITE_BLOCKED_US / ONLY_PARENT_SITE_FOUND / PAGE_SAYS_COMPANY_CLOSED / PAGE_SAYS_NO_VAT_ID / PUBLIC_BODY_NO_VAT / NO_NUMBER_FOUND. A search that could not finish says why (from the lookup's flags, 2026-11-08): MODEL_SERVICE_FAILED (`LLM_UNAVAILABLE`; Azure's status and message are in the server log as "VAT model call … failed") / MODEL_ANSWER_UNREADABLE / CONTENT_FILTER_STOPPED / NOT_IN_REPLAY / COST_CAP_REACHED; SEARCH_INCOMPLETE only when none applies |
+| `Not_Found_Reason` | NO_WEBSITE_FOUND / WEBSITE_HAS_NO_VAT_ID / WEBSITE_NOT_READABLE / WEBSITE_BLOCKED_US / ONLY_PARENT_SITE_FOUND / PAGE_SAYS_COMPANY_CLOSED / PAGE_SAYS_NO_VAT_ID / PUBLIC_BODY_NO_VAT / NO_NUMBER_FOUND / INVALID_VAT_NUMBER (2026-11-10: the number found fails the format or check digit, or carries another country's prefix; never proposed, the agent pass looks again, and VAT_Why names the rejected number). A search that could not finish says why (from the lookup's flags, 2026-11-08): MODEL_SERVICE_FAILED (`LLM_UNAVAILABLE`; Azure's status and message are in the server log as "VAT model call … failed") / MODEL_ANSWER_UNREADABLE / CONTENT_FILTER_STOPPED / NOT_IN_REPLAY / COST_CAP_REACHED; SEARCH_INCOMPLETE only when none applies |
+| `Agent_Pass` | what the agent pass did on the row (2026-11-08): Found (the proposal is the agent's) / Tried, nothing found / Skipped (cost cap); blank when it did not run there (off, or the lookup already had a number or expects none). From `VAT_Found_Flags` (`AGENT_TRIED`, `AGENT_SKIPPED_BUDGET`) |
 | `VIES` | Valid / Invalid / Pending / Unavailable / Not checked |
 | `VAT_Found_Source_URL`, `_Source_Type`, `_Source_Class`, `_Page_Title`, `_Agent_Version` | as before |
 | `VAT_Found_Evidence` | the reader's quote; without one, the page text around the number, marked "(text around the number)" |
@@ -935,7 +937,8 @@ lookup's result.
 
 | Flag | Check | From |
 |---|---|---|
-| `SEVERAL_NUMBERS_ON_PAGE` | is the proposed one the right company's? | another number on the page (not the proposed one spaced differently), AMBIGUOUS_* |
+| `SEVERAL_NUMBERS_ON_PAGE` | is the proposed one the right company's? | another EU VAT ID in OTHER_VAT_IDS_ON_PAGE or AMBIGUOUS_SAME_NAME (not the proposed one spaced differently, not a tax or register number; 2026-11-13) |
+| `NUMBER_NOT_CONFIRMED` | whose number is it? | AMBIGUOUS_SAME_NAME holding only the proposed number: the reader named none and the code took the page's only number; the decision stays Conflict (2026-11-13) |
 | `OTHER_SOURCE_OTHER_NUMBER` | which source is right? | CONFLICTING_SOURCES |
 | `FROM_DIRECTORY` | confirm on the company's own site | source class C (not an archive) |
 | `FROM_OLD_ARCHIVE` | still current? | ARCHIVE_SOURCE / WEB_ARCHIVE |
@@ -1111,6 +1114,93 @@ Spent to date, Steps X to AF-1b: **14.31 USD**; tokens 7.07, web search 5.61, pa
 1.36 (Step X), SerpAPI 0.27 (Step AA). 573 of 1,176 calls were replays. With Step AF (Name-2
 evaluation 0.83, focused 10-row run 0.44, baseline runs 2.39): **17.95 USD** over 32 runs.
 Step AF-2 ran nothing.
+
+### Name and address rules from the full DE export (2026-11-08)
+
+The rules below come from the 27,442 records of `CMD_DE_2026-10-21.xlsx`, not from a test sample.
+The counts are from that export. All rules are in `vat/entity_match.py`.
+
+**Address.**
+
+- The export's `Street` already ends with the house number in 22,290 of 25,801 records
+  ("Im Altenschemel 49" with House Number "49"). The check used to look for "… 49 49" on
+  the page, so nearly every same address came out `OTHER_STREET_SAME_TOWN`. The number is
+  now not added a second time.
+- What follows "//" in a street is a building or floor note ("Amalienbadstrasse 41 // Bau
+  53", 15 records). It is ignored.
+- The export has two `Street` columns. The first holds the street without a number, the
+  second the street with it; the second is the one read.
+
+**Names.** Words are read written out wherever a name is split into words, on the SAP side
+and the page side alike:
+
+| Written | Read as | Records |
+|---|---|---|
+| Inst., Fak., Abt./Abtlg., Dez., Zentr. | Institut, Fakultät, Abteilung, Dezernat, Zentrum | 2,683 / 619 / 397 / 174 / 7 |
+| f., u. | für, und | 352 / 492 |
+| TU, TH, FH, HS, Uni/Univ | Technische Universität, Technische Hochschule, Fachhochschule, Hochschule, Universität | 114 / 16 / 6 / 7 / 14 |
+| LMU, RWTH, MPI, MPG | Ludwig-Maximilians-Universität, Rheinisch-Westfälische Technische Hochschule, Max-Planck-Institut, Max-Planck-Gesellschaft | 152 / 178 / 8 / 3 |
+| St., Gebr., Ges., Nachf., techn., angew., Intl | Sankt, Gebrüder, Gesellschaft, Nachfolger, technische, angewandte, International | 99 / 27 / 43 / 2 / 9 / 6 / – |
+
+Legal forms:
+
+- AöR and KöR are the long forms (about 170 records).
+- e.K. and e.Kfr., gAG and PartG(mbB) are now recognised forms.
+- A whole word cut at 35 characters ("Max-Planck-Ges") is not read as a cut legal form.
+
+Departments:
+
+- "Abt. …", "Inst. f. …" and "Dez. …" in Name 2–4 are recognised as departments. That is
+  2,878 more records, where Name 1 is the legal entity.
+- "Dezernat" is a department word.
+
+Acronyms:
+
+- A first word that is the initials of the rest ("BSH Bosch und Siemens Hausgeräte",
+  132 records) may be missing on the page.
+- Name 1 that is only the acronym of Name 1–4 ("ZOEK gGmbH" + "Zentrum für Organische
+  Elektronik" + "Köln", 23 records) matches the full name on the page.
+
+Effect on the export:
+
+- 17,886 entities become 17,820. 64 groups now join records of one organisation spelled
+  two ways ("TU Dresden" / "Technische Universität Dresden"), which are then looked up once.
+- Replays of AD 50 and Test50 (replay-only, $0) change no search query.
+- On Test50, both fixes together: 3 more correct auto-accepts, no new wrong ones.
+
+### Fixes from the 100-row sample of missing-VAT rows (2026-11-08)
+
+The sample (`data/VAT/DE_VAT_SAMPLE_100_einvoicing.xlsx`, 99 companies, $8.97 with the
+agent pass) gave 38 auto-accept, 27 review, 13 conflict and 22 not found. Five things put
+good rows in Review or hid a check:
+
+1. **Text that is not plain text.** Soft hyphens ("Wasser&shy;technik", bwt.com),
+   zero-width spaces ("Umsatzsteuer-&#8203;ID", uniklinik-ulm.de) and UTF-8 read as
+   Windows-1252 ("UniversitÃ¤t", lmu.de). `entity_match.clean_text` drops and repairs
+   them. It is applied in `fold` (every name and address comparison), in the quote check
+   (`lookup_grounded._ws`) and in Found_Name, Found_Address and VAT_Found_Evidence.
+   Prompts and page text sent to the model are unchanged, so cached answers still replay.
+2. **English town names.** "Munich", "Cologne", "Nuremberg", "Hanover" and "Brunswick"
+   count as the German town.
+3. **Same address written another way:**
+   - Street plus number with the postcode **or** the town is `EXACT`. The other one may
+     be SAP's typo ("VILLINGEN SCHWENNIGEN"), an old postcode or a district name.
+   - The linking "s" before "straße" is ignored ("UniversitätStr" = "Universitätsstraße").
+   - A note after a comma in Street is dropped ("Im Neuenheimer Feld 280, Stockwerk").
+4. **Agent rows our fetch could not confirm** (`_unverified`) now get Name_Check and
+   Address_Check from the agent's own answer. `EVIDENCE_NOT_VERIFIED` still keeps them in
+   Review. "Anstalt/Körperschaft öffentlichen Rechts" without "des" is AöR/KöR.
+5. **Companies in liquidation.** A page name with "i.L.", "in Liquidation", "in
+   Abwicklung" or "i. Abw." adds `IN_LIQUIDATION`. It is blocking (Review), shows as an
+   Issue_Flag and has its own VAT_Why sentence.
+
+Replay of the sample ($0) after the fixes:
+
+- 4 rows move from Review to Auto-accept: LMU ×2, BWT and in.vent.
+- 1 row moves from Auto-accept to Review (in liquidation).
+- 10 Address_Checks become SAME_ADDRESS.
+
+On Test50, no decision changes.
 
 ### Throughput and large uploads (2026-11-08)
 

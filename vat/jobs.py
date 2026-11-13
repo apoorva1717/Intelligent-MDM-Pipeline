@@ -481,6 +481,8 @@ def partial_workbook(store: JobStore, job_id: str) -> bytes:
     The final result is ``result.xlsx``, written by the assembly."""
     from openpyxl import Workbook
 
+    from vat.xlsx import cell_value
+
     rows = [r for _, r in partial_rows(store, job_id)]
     wb = Workbook()
     ws = wb.active
@@ -488,7 +490,7 @@ def partial_workbook(store: JobStore, job_id: str) -> bytes:
     headers = list(dict.fromkeys(k for r in rows for k in r))
     ws.append(headers)
     for r in rows:
-        ws.append([r.get(h) for h in headers])
+        ws.append([cell_value(r.get(h)) for h in headers])
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()

@@ -42,6 +42,13 @@ _CARE_OF_RE = re.compile(
     r"(?=\s|$|:)"
     r".*$", re.IGNORECASE)
 _NOTE_RE = re.compile(r"^\s*(?:>>.*|[\d\s./-]+)$")
+#: Six or more digits in a run (a single space, dot, slash or dash between
+#: them): an SAP code or a reference, never part of a name ("EK0000043252",
+#: "USE 315791", "LN 10155737", "P.O. BOX 30 02 43"; 2026-11-12, all 7,358
+#: DE rows: no name has one). Four or five digits stay: years, "Kreis 2000".
+_LONG_NUMBER = r"\d(?:[\s./-]?\d){5,}"
+_LONG_NUMBER_RE = re.compile(_LONG_NUMBER)
+_LONG_NUMBER_PART_RE = re.compile(rf"\([^()]*{_LONG_NUMBER}[^()]*\)|[^\s()]*{_LONG_NUMBER}[^\s()]*")
 _TITLE_RE = re.compile(r"^(?:(?:dr|prof|dipl\.?-?\s?ing|dipl|ing)\.[-\s]*)+", re.IGNORECASE)
 #: Common first names (folded): a Name 2–4 that is a first name + a surname,
 #: with no legal form, is a contact person.
@@ -93,9 +100,15 @@ def _is_person(text: str) -> bool:
 
 
 def clean(names) -> tuple[tuple[str | None, ...], tuple[str, ...]]:
-    """``(Name 1–4 cleaned, contact parts removed)``. Name 1 is kept as it is."""
+    """``(Name 1–4 cleaned, contact parts removed)``. Name 1 is kept as it is,
+    but for a long number in it (with its brackets): "#INTERTEK DEUTSCHLAND
+    (USE 315791)" → "#INTERTEK DEUTSCHLAND". A Name 2–4 with a long number is
+    a note, dropped whole (">> LIEFERUNG IMMER an 309395", "1087319 nehmen")."""
     names = [(" ".join(str(n).split()) if n else None) for n in (list(names) + [None] * 4)[:4]]
-    out, contact = [names[0]], []
+    name_1 = names[0]
+    if name_1 and _LONG_NUMBER_RE.search(name_1):
+        name_1 = " ".join(_LONG_NUMBER_PART_RE.sub(" ", name_1).split()).strip(" -/,;") or name_1
+    out, contact = [name_1], []
     for n in names[1:]:
         if not n:
             out.append(None)
@@ -105,7 +118,7 @@ def clean(names) -> tuple[tuple[str | None, ...], tuple[str, ...]]:
             contact.append(n[m.start():].strip(" /"))
             n = n[:m.start()]
         n = n.strip(" /,;")
-        if _NOTE_RE.match(n or ""):
+        if _NOTE_RE.match(n or "") or _LONG_NUMBER_RE.search(n or ""):
             n = ""
         elif _is_person(n):
             contact.append(n)
@@ -217,6 +230,10 @@ _SITE_RE = re.compile(
     r"filiale\b|zentrallager\b).*$", re.IGNORECASE)
 #: "… Zweigniederlassung der Bruker Daltonics GmbH & Co. KG": a branch of that entity.
 _BRANCH_OF_RE = re.compile(r"\b(?:zweig)?niederlassung\s+(?:der|des)\s+(.+)$", re.IGNORECASE)
+#: The first legal form in a name, with "& Co. KG" (for :func:`name_up_to_form`).
+_FIRST_FORM_RE = re.compile(
+    r"\b(?:g?gmbh|mbh|ag|se|kg|kgaa|ohg|ug|e\.\s?v\.|eg)\b(?:\s*(?:&|\+)\s*co\.?\s*(?:kg|kgaa|ohg)\b)?\.?",
+    re.IGNORECASE)
 _TRAILING_FORM_RE = re.compile(
     r"\s((?:g?gmbh|mbh|ag|se|kg|kgaa|ohg|ug|e\.?\s?v\.?|eg)(?:\s*(?:&|\+)\s*co\.?\s*(?:kg|kgaa|ohg)?)?\.?)\s*$",
     re.IGNORECASE)
@@ -246,6 +263,16 @@ _PUBLIC_RE = re.compile(
     r"\b(?:landes|landrats|landeskriminal|bundes|untersuchungs)?amt\b|\b\w*amt\b(?<!markt)|\bbundes\w+|"
     r"\bpolizei\w*|\bstadt\b|\bgemeinde\b|\blandkreis\b|\bministerium\b|\bkommission\b|\bbeh(?:ö|oe)rde\b|"
     r"(?<!hoch)(?<!fachhoch)schule\b|\bgymnasium\b|untersuchungsamt", re.IGNORECASE)
+
+
+def name_up_to_form(name: str | None) -> str | None:
+    """The name cut after its first legal form when words follow it ("Arrow
+    Central Europe GmbH Büro Hamb" → "Arrow Central Europe GmbH": an office
+    or site of that legal entity); None when nothing follows the form."""
+    m = _FIRST_FORM_RE.search(name or "")
+    if not m or not name[m.end():].strip(" -,/;"):
+        return None
+    return name[:m.end()].strip()
 
 
 def is_public_body(*names: str | None) -> bool:

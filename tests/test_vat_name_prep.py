@@ -41,6 +41,28 @@ class TestClean:
     def test_notes_and_attention_lines(self, name_2):
         assert clean(("Muster GmbH", name_2, None, None))[0][1] is None
 
+    @pytest.mark.parametrize("name_2", ["EK0000041993", "0000040242", ">> LIEFERUNG IMMER an 309395",
+                                        "1087319 nehmen", "LN 10155737", "P.O. BOX 30 02 43",
+                                        "Inhj REQ0001521937P-BMS", "Geb.131/0 110"])
+    def test_a_long_number_makes_name_2_a_note(self, name_2):
+        assert clean(("Muster GmbH", name_2, None, None))[0][1] is None
+
+    @pytest.mark.parametrize("name_2", ["Abt 4651/2", "SG 37/410", "Eintracht 1898", "RAUM: 01-104"])
+    def test_four_or_five_digits_stay(self, name_2):
+        assert clean(("Muster GmbH", name_2, None, None))[0][1] == name_2
+
+    def test_a_long_number_is_cut_from_name_1(self):
+        assert clean(("#INTERTEK DEUTSCHLAND (USE 315791)", None, None, None))[0][0] == "#INTERTEK DEUTSCHLAND"
+        assert clean(("Aktiv Sensor GmbH EK0000042299", None, None, None))[0][0] == "Aktiv Sensor GmbH"
+        assert clean(("Kreis 2000 GmbH", None, None, None))[0][0] == "Kreis 2000 GmbH"
+        assert clean(("EK0000042299", None, None, None))[0][0] == "EK0000042299"  # nothing else left
+
+    def test_the_code_never_reaches_the_search_name(self):
+        plan = prepare(("MOCAP Ltd. Zweigniederlassung Deuts", "EK0000041993", None, None))
+        assert "EK0000041993" not in plan.search_name
+        plan = prepare(("Nordantec GmbH Norddeutsche Analyti", "EK0000040678", None, None))
+        assert "EK" not in plan.search_name and plan.search_name.startswith("Nordantec GmbH")
+
     def test_owner_with_legal_form_is_kept(self):
         assert clean(("Reh-Apotheke am Barbarossaplatz", "Dirk Voss e.K.", None, None))[0][1] == "Dirk Voss e.K."
 

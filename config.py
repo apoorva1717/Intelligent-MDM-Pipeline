@@ -399,8 +399,29 @@ class Settings:
         default_factory=lambda: _bool(os.getenv("VAT_WEB_OPERATOR_FOLLOW"), default=True))
     #: Step AH: an own host answered with no number: one site: search for the
     #: USt-IdNr on it, as search 2 (PDFs allowed).
+    #: An own host that answered but showed no Impressum: its probe also tries
+    #: the language and file variants (/de-de/impressum, /impressum.html,
+    #: /legal-notice …), still one fetch of the budget. Off until tested
+    #: (2026-11-13: 4 of 18 "no website" rows had a site whose Impressum the
+    #: two root probes missed).
+    vat_web_extended_probes: bool = field(
+        default_factory=lambda: _bool(os.getenv("VAT_WEB_EXTENDED_PROBES"), default=False))
     vat_web_site_search: bool = field(
         default_factory=lambda: _bool(os.getenv("VAT_WEB_SITE_SEARCH"), default=True))
+    #: Step AL: a candidate on a page in another town that names another or a
+    #: similar company (Name_Check SIMILAR / DIFFERENT_NAME) is withdrawn:
+    #: NOT_FOUND:ONLY_OTHER_COMPANY_FOUND, the number in VAT_Withdrawn_*. The
+    #: same name in another town stays a review candidate. Off since
+    #: 2026-11-13: in the reviewer's 80-row check it would have withdrawn 14
+    #: numbers, 9 of them right (branches, departments, public bodies).
+    vat_reject_other_name_other_town: bool = field(
+        default_factory=lambda: _bool(os.getenv("VAT_REJECT_OTHER_NAME_OTHER_TOWN"), default=False))
+    #: Step AL: an entity with a legal form whose search 1 (name + town)
+    #: gives no candidate in SAP's town gets one more search by its exact
+    #: legal name, without the town, instead of the model's search 2. Off
+    #: until Step AL's results show its hit rate and cost.
+    vat_exact_name_search: bool = field(
+        default_factory=lambda: _bool(os.getenv("VAT_EXACT_NAME_SEARCH"), default=False))
     #: Which rows the missing-VAT lookup runs on when a request / run does not
     #: say (``scope``): off (default) only rows with no VAT Registration No.;
     #: on every row, VAT ID or not, each proposal compared with the SAP value.

@@ -542,11 +542,25 @@ def is_university(plan: NamePlan) -> bool:
     return bool(_UNIVERSITY_RE.search(plan.entity))
 
 
-def impressum_probes(page_url: str, fetched: set[tuple[str, str]]) -> list[str]:
-    """``/impressum`` and ``/imprint`` on the host of *page_url*, unless fetched."""
+#: The extended probe's paths after ``/impressum`` and ``/imprint``; ``{lang}``
+#: is the language prefix of the page the host was reached on ("/de-pl").
+_EXTENDED_PROBES = ("{lang}/impressum", "/de/impressum", "/de-de/impressum", "/impressum.html", "/legal-notice",
+                    "/en/imprint")
+_PAGE_LANG_RE = re.compile(r"^/([a-z]{2}(?:[-_][a-z]{2})?)(?=/)", re.I)
+
+
+def impressum_probes(page_url: str, fetched: set[tuple[str, str]], *, extended: bool = False) -> list[str]:
+    """``/impressum`` and ``/imprint`` on the host of *page_url*, unless
+    fetched. *extended* (VAT_WEB_EXTENDED_PROBES): then the language and file
+    variants of :data:`_EXTENDED_PROBES` (TFP Fertility: /de-pl/ pages, no
+    root /impressum)."""
     p = urlparse(page_url)
+    paths = ["/impressum", "/imprint"]
+    if extended:
+        lang = _PAGE_LANG_RE.match(p.path or "")
+        paths += [x.format(lang=f"/{lang.group(1)}" if lang else "") for x in _EXTENDED_PROBES]
     out = []
-    for path in ("/impressum", "/imprint"):
+    for path in dict.fromkeys(paths):
         url = f"{p.scheme or 'https'}://{p.hostname}{path}"
         if (host_of(url), path) not in fetched:
             out.append(url)

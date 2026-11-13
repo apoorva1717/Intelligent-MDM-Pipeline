@@ -38,7 +38,8 @@ from vat.lookup_log import LOG_COLUMNS, log_columns as research_log
 from vat.review_columns import REVIEW_COLUMNS, review_columns
 from vat.entity_match import NAME_EXACT, SAP_VAT_OUTDATED, TRUSTED_CLASSES
 from vat.lookup import DIFFERS_FROM_SAP, FoundResult
-from vat.lookup import LookupEngine, LookupInput, in_scope, lookup_kpis, run_lookups
+from vat.lookup import (LookupEngine, LookupInput, in_scope, lookup_kpis, reject_invalid_number,
+                        reject_other_name_other_town, run_lookups)
 from vat.name_match import NameMatch, match_name
 from vat.normalize import VatFormat, assess_format
 #: VAT_VIES_Status for a row VIES was not asked about (not FORMAT_OK, or VIES
@@ -85,6 +86,8 @@ _LOOKUP_ROLE_FIELDS = {
     # when a workbook carries them, ignored otherwise.
     "website": "website",
     "email": "email",
+    # Step AL (2026-11-11): the SAP export's second address, the clerk's.
+    "email_2": "email_2",
     "register_number": "register_number",
     # SAP's Central Deletion Flag: an archive snapshot may be a source.
     "deleted": "central_deletion_flag",
@@ -95,6 +98,10 @@ _LOOKUP_ROLE_FIELDS = {
 _EXTRA_HEADERS = {
     "name_1": ("Name",),
     "website": ("Website", "Web Site", "Homepage", "URL", "Domain", "Email Domain"),
+    # Step AL (2026-11-11): the SAP export's columns, unread before (the
+    # lookup took only "email" / "Email", so company_domain never saw one).
+    "email": ("E-Mail Address",),
+    "email_2": ("Clrk's internet add.",),
     "register_number": (
         "Commercial Register Number", "Commercial Register No.", "Register Number",
         "Handelsregisternummer", "Handelsregister", "Registernummer", "HRB",
@@ -195,6 +202,15 @@ def _result_columns(
     }
 
 
+def _email(*values: str | None) -> str | None:
+    """The address whose domain is the company's (not a mailbox provider's),
+    else the first one given."""
+    from vat.entity_match import company_domain
+
+    given = [v for v in values if v]
+    return next((v for v in given if company_domain(None, v)), given[0] if given else None)
+
+
 def _lookup_input(row: Mapping[str, Any], cols: dict[str, str | None], lcols: dict[str, str | None],
                   customer: str | None, fmt: Any) -> LookupInput:
     """The lookup's view of one row: names and address, never the VAT ID."""
@@ -207,7 +223,7 @@ def _lookup_input(row: Mapping[str, Any], cols: dict[str, str | None], lcols: di
         city=_cell(row, lcols["city"]),
         country=fmt.country_key,
         website=_cell(row, lcols["website"]),
-        email=_cell(row, lcols["email"]),
+        email=_email(_cell(row, lcols["email"]), _cell(row, lcols["email_2"])),
         register_number=_cell(row, lcols["register_number"]),
         deleted=_flag_set(_cell(row, lcols["deleted"])),
     )
@@ -270,8 +286,18 @@ async def validate_rows(
     agent: Any = None,
     log_columns: bool = False,
     output_columns: str = "full",
+    reject_invalid: bool = True,
+    reject_other_town: bool | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Every row, unchanged, with :data:`VAT_COLUMNS` appended; plus a summary.
+
+    A found number that cannot be the record's VAT ID (format, check digit,
+    another country's prefix) is never proposed
+    (:func:`vat.lookup.reject_invalid_number`); *reject_invalid* False keeps
+    it, for ``tools/vat_lookup_compare.py``, which measures what an engine
+    proposes. A number from a page in another town that names another or a
+    similar company is withdrawn (:func:`vat.lookup.reject_other_name_other_town`)
+    when *reject_other_town* is true (None: ``VAT_REJECT_OTHER_NAME_OTHER_TOWN``).
 
     With a *lookup* engine (``vat/lookup.py``), the :data:`LOOKUP_COLUMNS` are
     appended too, filled for in-scope rows (VAT blank, key DE) and blank for
@@ -332,6 +358,19 @@ async def validate_rows(
             )
         else:
             found, second = await run_lookups(lookup, inputs), None
+        # A number that cannot be the record's VAT ID is never proposed (and
+        # the agent pass, below, looks again for it).
+        if reject_invalid:
+            found = _valid_numbers_only(found, inputs)
+            if second is not None:
+                second = _valid_numbers_only(second, inputs)
+        if reject_other_town is None:
+            from config import get_settings
+            reject_other_town = get_settings().vat_reject_other_name_other_town
+        if reject_other_town:
+            # Step AL: another company's number in another town is withdrawn
+            # (and the agent pass, below, looks again), here and after the pass.
+            found = [reject_other_name_other_town(r) if r is not None else r for r in found]
         agent_summary = None
         siblings = (_siblings(rows, cols, lcols, customers, formats, inputs)
                     if agent is not None or log_columns else {})
@@ -340,6 +379,8 @@ async def validate_rows(
             found, agent_summary = await agent_pass(
                 agent, inputs, found, sap=[f.normalized if scope == SCOPE_ALL else None for f in formats],
                 siblings={c: sorted({v for _, v in pairs}) for c, pairs in siblings.items()})
+            if reject_other_town:
+                found = [reject_other_name_other_town(r) if r is not None else r for r in found]
         if scope == SCOPE_ALL:
             found = [_sap_outdated(r, f.normalized, f.country_key) for r, f in zip(found, formats)]
             if second is not None:
@@ -412,6 +453,13 @@ async def validate_rows(
     # After the lookup: its writes go through the same cache and counter.
     summary["cache_write_failures"] = client.write_failures.count
     return select_output(out, output_columns), summary
+
+
+def _valid_numbers_only(found: list[FoundResult | None],
+                        inputs: list[LookupInput | None]) -> list[FoundResult | None]:
+    """:func:`vat.lookup.reject_invalid_number` on each row's result."""
+    return [reject_invalid_number(r, inp.country) if r is not None and inp is not None else r
+            for r, inp in zip(found, inputs)]
 
 
 def _siblings(rows, cols, lcols, customers, formats, inputs) -> dict[str, list[tuple[str, str]]]:

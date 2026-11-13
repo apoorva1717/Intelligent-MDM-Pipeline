@@ -76,6 +76,20 @@ def _reset_evidence_cache():
     set_active_evidence_cache(None)
 
 
+@pytest.fixture(autouse=True)
+def _no_azure_quota_from_env(monkeypatch):
+    """The Azure rate limits in a developer's ``.env`` (VAT_AZURE_TPM/RPM)
+    are for live runs: in tests they would pace the fakes and serialise
+    the parallel ones. Tests that test the limiter set their own."""
+    from vat import rate_limit
+
+    for name in ("VAT_AZURE_TPM", "VAT_AZURE_RPM"):
+        monkeypatch.delenv(name, raising=False)
+    rate_limit.reset()
+    yield
+    rate_limit.reset()
+
+
 @pytest.fixture
 def test_settings() -> Settings:
     """Settings with test-appropriate defaults."""

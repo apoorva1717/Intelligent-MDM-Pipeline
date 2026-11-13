@@ -32,6 +32,7 @@ Every search and page open is billed (``web_search_calls``,
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import replace
 from typing import Any
@@ -41,6 +42,9 @@ from vat.entity_match import (
     NAME_EXACT,
     PARENT_ENTITY_CANDIDATE,
     SUCCESSOR_CANDIDATE,
+    address_match,
+    name_match,
+    sort_issues,
 )
 from vat.lookup import (
     AUTO_ACCEPT,
@@ -300,12 +304,20 @@ class AgentLookup(WebSearchLookup):
 
     def _unverified(self, inp: LookupInput, reading: Reading, source: str | None,
                     flags: tuple[str, ...]) -> FoundResult:
-        """A number the agent reported that our code could not check on its page."""
+        """A number the agent reported that our code could not check on its page.
+        The name and address checks read the agent's own answer, so the
+        reviewer sees them (2026-11-08: Helios Krefeld, UK Leipzig had both
+        blank); EVIDENCE_NOT_VERIFIED keeps it in review."""
         fmt = assess_format(reading.vat_id, inp.country)
+        verdict = name_match(reading.attributed_to, inp.names) if reading.attributed_to else None
+        level = address_match(reading.published_address, inp.street, inp.house_number, inp.postal_code,
+                              inp.city)[0] if reading.published_address else None
         return FoundResult(LLM_WEB, FOUND_UNVERIFIED, value=fmt.normalized or reading.vat_id, source_url=source,
                            attributed_to=reading.attributed_to, evidence=reading.evidence_quote, date=today(),
                            flags=flags, tier=TIER_REVIEW, validation_status="NOT_CHECKED",
-                           issues=(EVIDENCE_NOT_VERIFIED,))
+                           published_address=reading.published_address, address_text=reading.published_address,
+                           name_match=verdict.match if verdict else None, address_match=level,
+                           issues=sort_issues((EVIDENCE_NOT_VERIFIED, *(verdict.issues if verdict else ()))))
 
 
 # ── The agent pass after the hybrid lookup (endpoint, batch runner) ──────────
@@ -314,6 +326,14 @@ class AgentLookup(WebSearchLookup):
 #: the run's agent budget was used up before this entity.
 AGENT_TRIED = "AGENT_TRIED"
 AGENT_SKIPPED_BUDGET = "AGENT_SKIPPED_BUDGET"
+
+#: Entities the agent pass looks up at the same time (VAT_AGENT_CONCURRENCY;
+#: 1 before 2026-11-08). Each lookup is independent and its calls are paced
+#: to the Azure quota (vat/rate_limit.py), so only the wall time changes —
+#: except at the stop limit (VAT_AGENT_BUDGET_USD): calls already under way
+#: finish, so the spend can pass it by up to this many agent calls, and
+#: which entities are left AGENT_SKIPPED_BUDGET depends on timing.
+AGENT_CONCURRENCY = int(os.getenv("VAT_AGENT_CONCURRENCY", "10"))
 
 
 def agent_eligible(result: FoundResult | None) -> bool:
@@ -381,14 +401,16 @@ async def agent_pass(
     ``AGENT_TRIED`` (or ``AGENT_SKIPPED_BUDGET``). Either way the row's
     cost lines include the agent's calls. Returns the results and a summary."""
     from vat.costs import entity_costs
-    from vat.lookup import run_lookups
+    from vat.lookup import reject_invalid_number, run_lookups
 
     sap = sap or [None] * len(inputs)
     picked = [inp if inp is not None and agent_eligible(r) else None for inp, r in zip(inputs, found)]
     agent.context = {str(inp.customer): context_for(r, s, (siblings or {}).get(str(inp.customer), []))
                      for inp, r, s in zip(picked, found, sap) if inp is not None}
     spent_before = agent.meter.spent
-    ran = await run_lookups(agent, picked, concurrency=1) if agent.context else [None] * len(inputs)
+    ran = await run_lookups(agent, picked, concurrency=AGENT_CONCURRENCY) if agent.context else [None] * len(inputs)
+    # An invalid number from the agent does not replace the hybrid result.
+    ran = [reject_invalid_number(a, inp.country) if a is not None else None for a, inp in zip(ran, picked)]
     out: list[FoundResult | None] = []
     for hybrid, a in zip(found, ran):
         if a is None:

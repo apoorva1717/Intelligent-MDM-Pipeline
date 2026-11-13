@@ -251,7 +251,8 @@ async def compare(
         engine = make_engine(mode, settings, client)
         started = time.perf_counter()
         try:
-            out, summary = await validate_rows(blanked, client, lookup=engine)
+            # Every proposal as the engine made it: WRONG_FORMAT is one of the outcomes.
+            out, summary = await validate_rows(blanked, client, lookup=engine, reject_invalid=False)
         finally:
             await engine.aclose()
         results[mode] = out

@@ -132,6 +132,7 @@ from vat.entity_match import (
     address_match,
     address_text,
     archive_snapshot_date,
+    clean_text,
     company_domain,
     domain_match,
     entity_name_on_page,
@@ -428,7 +429,9 @@ def deterministic_reading(text: str, names: tuple[str | None, ...]) -> "Reading 
 
 
 def _ws(text: str) -> str:
-    return re.sub(r"\s+", " ", (text or "").replace(" ", " ")).strip()
+    # clean_text: a zero-width space or soft hyphen in the page or the quote is
+    # not a difference (Ulm's "Umsatzsteuer-ID", 2026-11-08).
+    return re.sub(r"\s+", " ", clean_text(text).replace(" ", " ")).strip()
 
 
 def _id_body(vat_id: str) -> str:

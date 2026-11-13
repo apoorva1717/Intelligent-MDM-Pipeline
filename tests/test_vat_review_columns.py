@@ -5,6 +5,7 @@ Impressum data from the fixtures."""
 
 from __future__ import annotations
 
+import io
 import re
 
 import pytest
@@ -61,6 +62,29 @@ class TestTheChecks:
         assert "SEVERAL_NUMBERS_ON_PAGE" not in issue_flags(r)
         assert "SEVERAL_NUMBERS_ON_PAGE" in issue_flags(_found(flags=("OTHER_VAT_IDS_ON_PAGE:DE129274235",)))
 
+    @pytest.mark.parametrize("flags, several, not_confirmed", [
+        # The pattern took the page's only number: the list holds it alone.
+        (("AMBIGUOUS_SAME_NAME:DE811128135", "AMBIGUOUS_ON_PAGE"), False, True),
+        (("AMBIGUOUS_SAME_NAME:DE129274235,DE811128135", "AMBIGUOUS_ON_PAGE"), True, False),
+        # A real second VAT ID among the reader's other IDs: several, not both.
+        (("AMBIGUOUS_SAME_NAME:DE811128135", "OTHER_VAT_IDS_ON_PAGE:DE129274235"), True, False),
+        # A tax or register number the reader listed is not a VAT ID.
+        (("OTHER_VAT_IDS_ON_PAGE:332/5783/0411",), False, False),
+        (("OTHER_VAT_IDS_ON_PAGE:HRB 7886",), False, False),
+        (("OTHER_VAT_IDS_ON_PAGE:ATU12345678",), True, False),
+    ])
+    def test_several_numbers_only_with_another_vat_id(self, flags, several, not_confirmed):
+        got = issue_flags(_found(flags=flags))
+        assert ("SEVERAL_NUMBERS_ON_PAGE" in got) is several
+        assert ("NUMBER_NOT_CONFIRMED" in got) is not_confirmed
+
+    def test_a_one_number_conflict_stays_conflict_with_the_right_flag(self):
+        row = _row(_found(flags=("AMBIGUOUS_SAME_NAME:DE811128135", "AMBIGUOUS_ON_PAGE")))
+        assert row["VAT_Decision"] == "Conflict"
+        assert "NUMBER_NOT_CONFIRMED" in row["Issue_Flags"] and "SEVERAL" not in row["Issue_Flags"]
+        assert "the code took the only number on the page" in row["VAT_Why"]
+        assert "several VAT IDs" not in row["VAT_Why"]
+
     @pytest.mark.parametrize("kw, flag", [
         (dict(issues=("PARENT_ENTITY_CANDIDATE",)), "MAYBE_PARENT_COMPANY"),
         (dict(issues=("SUCCESSOR_CANDIDATE",)), "MAYBE_RENAMED_OR_SUCCESSOR"),
@@ -71,7 +95,8 @@ class TestTheChecks:
         (dict(issues=("SISTER_ENTITY_ON_PAGE",)), "SISTER_COMPANY_ON_PAGE"),
         (dict(source_type="AGGREGATOR"), "FROM_DIRECTORY"),
         (dict(flags=("CONFLICTING_SOURCES:DE129274235",)), "OTHER_SOURCE_OTHER_NUMBER"),
-        (dict(flags=("AMBIGUOUS_ON_PAGE",)), "SEVERAL_NUMBERS_ON_PAGE"),
+        (dict(flags=("AMBIGUOUS_SAME_NAME:DE129274235,DE811128135", "AMBIGUOUS_ON_PAGE")),
+         "SEVERAL_NUMBERS_ON_PAGE"),
         (dict(evidence=None), "NUMBER_NOT_QUOTED"),
         (dict(flags=("GENERIC_NAME",)), "NAME_SHARED_BY_OTHERS"),
     ])
@@ -109,6 +134,22 @@ class TestTheChecks:
         assert row["Not_Found_Reason"] == reason and words in row["VAT_Why"]
         assert "budget ran out" not in row["VAT_Why"]
 
+    @pytest.mark.parametrize("flags, usage, expected", [
+        ((), {}, None),
+        (("AGENT_TRIED",), {}, "Tried, nothing found"),
+        (("AGENT_SKIPPED_BUDGET",), {}, "Skipped (cost cap)"),
+    ])
+    def test_agent_pass_on_a_not_found_row(self, flags, usage, expected):
+        row = _row(FoundResult("llm_web", "NOT_FOUND:NO_OWN_SITE", flags=flags, usage=usage))
+        assert row["Agent_Pass"] == expected
+
+    def test_agent_pass_found_the_number(self):
+        r = _found(usage={"hybrid_status": "NOT_FOUND:NO_OWN_SITE"}, agent_version="vat_agent_ag_v1")
+        assert _row(r)["Agent_Pass"] == "Found" and _row(_found())["Agent_Pass"] is None
+
+    def test_the_proposal_in_standard_form(self):
+        assert _row(_found(value="DE 196 867 425"))["VAT_Proposed"] == "DE196867425"
+
     def test_a_row_not_looked_up_is_blank(self):
         assert review_columns(None) == dict.fromkeys(REVIEW_COLUMNS)
 
@@ -127,13 +168,29 @@ class TestFoundAddressAndEvidence:
         r = _found(evidence=None, usage={"evidence_snippet": "Muster GmbH USt-IdNr. DE 811 128 135"})
         assert _row(r)["VAT_Found_Evidence"] == AROUND_THE_NUMBER + "Muster GmbH USt-IdNr. DE 811 128 135"
 
+    def test_text_the_page_garbled_is_shown_clean(self):
+        # BWT's soft hyphens, lmu.de's UTF-8 read as Windows-1252 (2026-11-08)
+        r = _found(attributed_to="Muster Wasser­technik GmbH", published_address="Indus­trie­straße 7",
+                   evidence="UniversitÃ¤t USt-IdNr.: DE 811 128 135")
+        row = _row(r)
+        assert row["Found_Name"] == "Muster Wassertechnik GmbH" and row["Found_Address"] == "Industriestraße 7"
+        assert row["VAT_Found_Evidence"] == "Universität USt-IdNr.: DE 811 128 135"
+
+
+class TestLiquidation:
+    def test_flag_and_why(self):
+        row = _row(_found(attributed_to="Muster GmbH i.L.", issues=("IN_LIQUIDATION",)))
+        assert row["Issue_Flags"] == "IN_LIQUIDATION" and row["VAT_Decision"] == "Review"
+        assert row["VAT_Why"].startswith("The page names 'Muster GmbH i.L.' as in liquidation")
+
 
 class TestWhy:
     @pytest.mark.parametrize("kw", [
         dict(issues=("PARENT_ENTITY_CANDIDATE",), name_match="MISMATCH", attributed_to="Muster Holding GmbH"),
         dict(source_type="AGGREGATOR", name_match="PARTIAL", issues=("NAME_PARTIAL",)),
         dict(address_match="DIFFERENT_TOWN"), dict(address_match="NO_ADDRESS"),
-        dict(flags=("AMBIGUOUS_ON_PAGE",), evidence=None), dict(issues=("LEGAL_FORM_DIFFERS:gmbh/ag",)),
+        dict(flags=("AMBIGUOUS_SAME_NAME:DE129274235,DE811128135", "AMBIGUOUS_ON_PAGE"), evidence=None),
+        dict(issues=("LEGAL_FORM_DIFFERS:gmbh/ag",)),
         dict(issues=("BRANCH",), address_match="DIFFERENT_TOWN"), dict(validation_status="INVALID"),
         dict(attributed_to=None, name_match=None), dict(issues=("DEPARTMENT",)),
     ])
@@ -189,6 +246,38 @@ class TestTheLayout:
         assert added == [c for c in REVIEW_COLUMNS + list(COST_COLUMNS.values()) if c in added]
         assert set(REVIEW_COLUMNS) <= set(out[0]) and "VAT_Found_Value" not in out[0]
         assert all(k in out[0] and out[0][k] == v for k, v in rows[0].items())  # every input field as it was
+
+    @pytest.mark.asyncio
+    async def test_an_earlier_output_uploaded_again_keeps_no_stale_value(self, tmp_path):
+        from vat.xlsx import validate_workbook
+
+        rows = _rows()
+        headers = list(rows[0]) + ["Not_Found_Reason", "Issue_Flags", "VAT_Found_Status"]
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Data"
+        ws.append(headers)
+        for r in rows:  # an earlier, failed run's values in every row
+            ws.append([*r.values(), "SEARCH_INCOMPLETE", "SEVERAL_NUMBERS_ON_PAGE", "LOOKUP_INCOMPLETE"])
+        await validate_workbook(wb, _vies(tmp_path), source="x", lookup=_Hybrid(), output_columns="review")
+        out = list(ws.iter_rows(values_only=True))
+        h = list(out[0])
+        found = next(r for r in out[1:] if r[h.index("VAT_Proposed")])
+        assert found[h.index("Not_Found_Reason")] is None
+        assert all(r[h.index("Issue_Flags")] != "SEVERAL_NUMBERS_ON_PAGE" for r in out[1:])  # this run's own
+        assert all(r[h.index("VAT_Found_Status")] is None for r in out[1:])  # not written in review: emptied
+
+    def test_a_control_character_from_a_page_does_not_stop_the_workbook(self):
+        from vat.xlsx import _write_results
+
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["Customer"])
+        ws.append(["1"])
+        title = "F. Scholz GmbH \x03Metallschleiferei\x03\x03"  # a real page title, 2026-11-09
+        _write_results(ws, 1, ["Customer"], [(2, {})], [{"VAT_Found_Page_Title": title}], ["VAT_Found_Page_Title"])
+        assert ws.cell(row=2, column=2).value == "F. Scholz GmbH Metallschleiferei"
+        wb.save(io.BytesIO())
 
     @pytest.mark.asyncio
     async def test_full_is_the_old_layout(self, tmp_path):

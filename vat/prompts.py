@@ -416,6 +416,105 @@ NAME2_PROMPT_VERSION = prompt_version(
     "vat_name2_classifier", "v1", NAME2_SYSTEM_PROMPT, NAME2_USER_PROMPT_TEMPLATE,
 )
 
+PERSON_SYSTEM_PROMPT = (
+    "You read German customer master data. The customer's name may be a private "
+    "person, a person trading under their own name, or an organisation. Names "
+    "come from any country: German, Turkish, Chinese, Indian, Arabic and others. "
+    "You say which, and for a person write the person's name as in the record. "
+    "You never look anything up. Return valid JSON only. No markdown."
+)
+
+#: Invented records (no customer data), labelled by hand.
+PERSON_EXAMPLES = (
+    ("Thomas Brenner | MÜNCHEN", "PERSON", "Thomas Brenner", 0.95, "a first name and a surname, nothing else"),
+    ("Li Wei | Zhang Hao | BERLIN", "PERSON", "Li Wei", 0.9, "Chinese personal names"),
+    ("Herrn Dr. Mehmet Yıldız | KÖLN", "PERSON", "Mehmet Yıldız", 0.95, "salutation, title and a Turkish name"),
+    ("Priya Raghunathan | c/o Institut für Chemie | AACHEN", "PERSON", "Priya Raghunathan", 0.9,
+     "a person reached through an institute"),
+    ("Karl Obermeier Elektrotechnik | PASSAU", "PERSON_BUSINESS", "Karl Obermeier", 0.9,
+     "a person's name with a trade"),
+    ("Dr. med. Anna Vogelsang | Praxis für Allgemeinmedizin | KIEL", "PERSON_BUSINESS", "Anna Vogelsang", 0.95,
+     "a doctor's own practice"),
+    ("Löwen-Apotheke | Inhaber Jan Petersen | HUSUM", "ORGANISATION", None, 0.85,
+     "the pharmacy is the customer; the owner is a contact"),
+    ("Stadtverwaltung Musterstadt | Ordnungsamt | MUSTERSTADT", "ORGANISATION", None, 0.95, "a public authority"),
+    ("Steinfeld Analytik | LEIPZIG", "ORGANISATION", None, 0.7, "a company name, no person named"),
+    ("Hansen & Partner Ingenieure | HAMBURG", "ORGANISATION", None, 0.8, "a firm of several partners"),
+    ("Dres. med. Karin Holm und Peter Lindqvist | Gemeinschaftspraxis | ROSTOCK", "ORGANISATION", None, 0.85,
+     "a joint practice of several doctors"),
+)
+
+
+def _person_example(record, cls, name, conf, why) -> str:
+    import json
+
+    answer = json.dumps({"class": cls, "person_name": name, "confidence": conf, "reason": why}, ensure_ascii=False)
+    return f"Record: {record}\nAnswer: {answer}".replace("{", "{{").replace("}", "}}")
+
+
+PERSON_USER_PROMPT_TEMPLATE = (
+    "class: PERSON (a private person), PERSON_BUSINESS (a person trading under "
+    "their own name: a sole trader, a craftsman, a doctor's or lawyer's own "
+    "practice) or ORGANISATION (a company, pharmacy, authority, institute, "
+    "association, or a firm of several people). person_name: PERSON and "
+    "PERSON_BUSINESS only, first name(s) and surname without salutation or "
+    "title; else null. confidence: 0 to 1. reason: at most 15 words.\n\nExamples:\n"
+    + "\n\n".join(_person_example(*e) for e in PERSON_EXAMPLES)
+    + "\n\nRecord: {record}\nAnswer:"
+)
+
+PERSON_SCHEMA: dict = {
+    "type": "object", "additionalProperties": False,
+    "required": ["class", "person_name", "confidence", "reason"],
+    "properties": {
+        "class": {"type": "string", "enum": ["PERSON", "PERSON_BUSINESS", "ORGANISATION"]},
+        "person_name": {"type": ["string", "null"]},
+        "confidence": {"type": "number"},
+        "reason": {"type": "string"},
+    },
+}
+
+PERSON_PROMPT_VERSION = prompt_version(
+    # v1 — person-name classifier: ten invented records as few-shot examples.
+    # v2 — an eleventh: a joint practice of several doctors is an ORGANISATION.
+    "vat_person_classifier", "v2", PERSON_SYSTEM_PROMPT, PERSON_USER_PROMPT_TEMPLATE,
+)
+
+CONFLICT_SYSTEM_PROMPT = (
+    "You read the VAT identification numbers (USt-IdNr.) one web page lists, "
+    "each with the page text around it, and say which one belongs to one "
+    "customer from German master data. A page often lists a group: the parent, "
+    "subsidiaries, sister companies. A number belongs to the customer only when "
+    "the text ties it to the customer's own company name; a parent's, sister's "
+    "or acquirer's number is not the customer's. SAP names are often cut or "
+    "abbreviated. When no number is clearly the customer's, answer null. You "
+    "never look anything up. Return valid JSON only. No markdown."
+)
+
+CONFLICT_USER_PROMPT_TEMPLATE = (
+    "number: one number from the list exactly as written there, or null. "
+    "quote: the shortest text copied word for word from that number's context "
+    "that contains both the company name and the number (null when number is "
+    "null). confidence: 0 to 1. reason: at most 20 words.\n\n"
+    "Customer: {record}\n\nNumbers on {url}:\n{numbers}\n\nAnswer:"
+)
+
+CONFLICT_SCHEMA: dict = {
+    "type": "object", "additionalProperties": False,
+    "required": ["number", "quote", "confidence", "reason"],
+    "properties": {
+        "number": {"type": ["string", "null"]},
+        "quote": {"type": ["string", "null"]},
+        "confidence": {"type": "number"},
+        "reason": {"type": "string"},
+    },
+}
+
+CONFLICT_PROMPT_VERSION = prompt_version(
+    # v1 — the Conflict picker: which of a page's numbers is the customer's.
+    "vat_conflict_picker", "v1", CONFLICT_SYSTEM_PROMPT, CONFLICT_USER_PROMPT_TEMPLATE,
+)
+
 #: Search 2's extra rule when search 1 returned nothing.
 LLM_WEB_ZERO_RESULTS_RULE = (
     "5. The first search returned no results at all: leave out the quotes and "

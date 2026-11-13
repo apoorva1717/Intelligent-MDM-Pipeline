@@ -51,7 +51,7 @@ from vat.prompts import (
     NAME2_SYSTEM_PROMPT,
 )
 from vat.vies_client import VIESClient
-from vat.web_pages import OWN, PARENT, POINTER, VERIFY, follow_targets, host_check, select_pages
+from vat.web_pages import OWN, PARENT, POINTER, VERIFY, follow_targets, host_check, impressum_probes, select_pages
 from vat.web_query import (
     first_query,
     is_public_body,
@@ -447,6 +447,19 @@ class TestFlow:
         assert r.value == "DE811128135" and r.usage["probes"] == 1 and r.usage["found_via"] == "probe"
 
     @pytest.mark.asyncio
+    async def test_extended_probe_finds_a_language_impressum(self, tmp_path):
+        # TFP Fertility: no root /impressum or /imprint; the notice is under /de-de/.
+        de_de = "https://www.bosch.example/de-de/impressum"
+        pages = {HOME: linked(HOME, "Robert Bosch GmbH Produkte Karriere", []), de_de: page(de_de, BODY)}
+        model = Model(run=[run("q", [HOME])], read=[read(found(url=de_de))])
+        r = await _engine(tmp_path, model, pages, vat_web_extended_probes=True).lookup(BOSCH)
+        assert r.value == "DE811128135" and r.usage["source_page"] == de_de and r.usage["probes"] == 1
+        # Off (the default): only the two root probes, nothing found.
+        model = Model(run=[run("q", [HOME])], read=[read(NOTHING)])
+        r = await _engine(tmp_path / "off", model, pages).lookup(BOSCH)
+        assert r.value is None and de_de not in r.usage["pages"]
+
+    @pytest.mark.asyncio
     async def test_verified_host_becomes_own(self, tmp_path):
         jm = replace(BOSCH, names=("J&M Analytik AG", None, None, None), postal_code="73457", city="ESSINGEN")
         url = "https://www.pharma-test.example/en/jm/imprint/"
@@ -762,3 +775,21 @@ class TestStepAD:
     def test_public_body_query(self):
         assert first_query("Bundeskriminalamt Berlin", "BERLIN").endswith(" USt-IdNr")
         assert first_query("GDF GmbH", "ROSBACH V.D.H.", "Gesellschaft für dentale") == "GDF GmbH Rosbach"
+
+
+class TestImpressumProbes:
+    def test_default_is_the_two_root_probes(self):
+        assert impressum_probes("https://x.example/de-pl/ueber-uns", set()) == [
+            "https://x.example/impressum", "https://x.example/imprint"]
+
+    def test_extended_adds_language_and_file_variants(self):
+        got = impressum_probes("https://x.example/de-pl/ueber-uns", set(), extended=True)
+        assert got[:3] == ["https://x.example/impressum", "https://x.example/imprint",
+                           "https://x.example/de-pl/impressum"]
+        assert {"https://x.example/de-de/impressum", "https://x.example/impressum.html",
+                "https://x.example/legal-notice", "https://x.example/en/imprint"} <= set(got)
+        assert len(got) == len(set(got))
+
+    def test_extended_on_a_root_page_has_no_duplicate(self):
+        got = impressum_probes("https://x.example/", set(), extended=True)
+        assert got.count("https://x.example/impressum") == 1

@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from urllib.parse import urlparse
 
 from rapidfuzz import fuzz
@@ -140,10 +140,14 @@ ADDRESS_NOT_EXACT = "ADDRESS_NOT_EXACT"
 #: A directory entry under another name lists the record's as a former
 #: name (LX International for LG International): review, never AUTO.
 SUCCESSOR_CANDIDATE = "SUCCESSOR_CANDIDATE"
+#: The page names the entity "i.L." / "in Liquidation" / "in Abwicklung": the
+#: number may be about to lapse and SAP may hold a closed customer. Review,
+#: never AUTO (2026-11-08 sample: "Zentrum für Werkstoffanalytik Lauf GmbH i.L.").
+IN_LIQUIDATION = "IN_LIQUIDATION"
 ISSUE_ORDER: tuple[str, ...] = (
     ADDRESS_DIFFERS, ADDRESS_MISMATCH, ADDRESS_NOT_ON_PAGE, ADDRESS_NOT_EXACT,
     LEGAL_FORM_DIFFERS, LEGAL_FORM_MISSING_IN_SAP, BRANCH, ISSUE_NAME_PARTIAL, NAME_CONTAINED,
-    SUCCESSOR_CANDIDATE, SISTER_ENTITY_ON_PAGE, DEPARTMENT, SUB_ENTITY, PARENT_ENTITY, PARENT_ENTITY_CANDIDATE,
+    SUCCESSOR_CANDIDATE, IN_LIQUIDATION, SISTER_ENTITY_ON_PAGE, DEPARTMENT, SUB_ENTITY, PARENT_ENTITY, PARENT_ENTITY_CANDIDATE,
     EXTRACTED_BY_PATTERN,
     SECONDARY_SOURCE, OTHER_VAT_IDS_ON_PAGE, VIES_INVALID, VIES_UNAVAILABLE, VIES_PENDING,
     CONFLICTING_SOURCES, REGISTER_MISMATCH, EVIDENCE_NOT_VERIFIED,
@@ -154,7 +158,7 @@ BLOCKING_ISSUES = frozenset({
     LEGAL_FORM_DIFFERS, ISSUE_NAME_PARTIAL, SISTER_ENTITY_ON_PAGE, SECONDARY_SOURCE,
     VIES_INVALID, CONFLICTING_SOURCES, ADDRESS_MISMATCH, ADDRESS_NOT_ON_PAGE,
     REGISTER_MISMATCH, EVIDENCE_NOT_VERIFIED, PARENT_ENTITY_CANDIDATE, ADDRESS_NOT_EXACT,
-    SUCCESSOR_CANDIDATE,
+    SUCCESSOR_CANDIDATE, IN_LIQUIDATION,
 })
 ADDRESS_ISSUE = {
     ADDRESS_SAME_TOWN: ADDRESS_DIFFERS, ADDRESS_DIFFERENT_TOWN: ADDRESS_MISMATCH,
@@ -192,11 +196,33 @@ WEIGHTS: dict[str, int] = {
 _NAME_CREDIT = {NAME_EXACT: 1.0, NAME_PARTIAL: 0.5, NAME_MISMATCH: 0.0}
 
 
+#: Characters a page carries that are not text: soft hyphen ("Wasser&shy;technik" on bwt.com),
+#: zero-width space and joiners, word joiner, byte order mark.
+_INVISIBLE_RE = re.compile("[­​-‍⁠﻿]")
+#: UTF-8 read as Windows-1252: "UniversitÃ¤t" for "Universität" (lmu.de).
+_MOJIBAKE_RE = re.compile("[ÂÃ].")
+
+
+def _unmojibake(m: re.Match) -> str:
+    try:
+        return m.group().encode("cp1252").decode("utf-8")
+    except UnicodeError:
+        return m.group()  # a real "Ã" ("São") stays
+
+
+def clean_text(text: str | None) -> str:
+    """Text as it reads: invisible characters dropped, UTF-8 that was read as
+    Windows-1252 repaired (2026-11-08 sample: BWT's soft-hyphenated
+    "Wassertechnik", LMU's "UniversitÃ¤t", Ulm's zero-width "Umsatzsteuer-ID")."""
+    t = _INVISIBLE_RE.sub("", text or "")
+    return _MOJIBAKE_RE.sub(_unmojibake, t) if "Â" in t or "Ã" in t else t
+
+
 def fold(text: str | None, *, umlaut_e: bool = True) -> str:
     """Lower case, umlauts folded (``ü`` → ``ue``, or → ``u`` with
     *umlaut_e* False), ``ß`` → ``ss``, other accents dropped, everything that
     is not a letter or digit a single space."""
-    t = (text or "").lower().replace("ß", "ss")
+    t = clean_text(text).lower().replace("ß", "ss")
     if umlaut_e:
         t = t.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue")
     t = "".join(c for c in unicodedata.normalize("NFKD", t) if not unicodedata.combining(c))
@@ -216,6 +242,13 @@ _LONG_FORMS: tuple[tuple[str, str], ...] = (
     ("eingetragener verein", "ev"),
     ("koerperschaft des oeffentlichen rechts", "kdoer"),
     ("anstalt des oeffentlichen rechts", "adoer"),
+    ("koerperschaft oeffentlichen rechts", "kdoer"),  # without "des" (UK Leipzig's legal notice)
+    ("anstalt oeffentlichen rechts", "adoer"),
+    ("aoer", "adoer"),  # AöR (2026-11-08; about 170 records in the DE export)
+    ("koer", "kdoer"),  # KöR
+    ("e kfr", "ek"),    # e. Kfr. (eingetragene Kauffrau); e. K. joins to "ek"
+    ("ekfr", "ek"),
+    ("partgmbb", "partg"),
     ("societas europaea", "se"),
     ("unternehmergesellschaft", "ug"),
     ("kommanditgesellschaft", "kg"),
@@ -229,7 +262,24 @@ _LONG_FORMS: tuple[tuple[str, str], ...] = (
 _FORMS = frozenset({
     "gmbh", "ggmbh", "ag", "kgaa", "kg", "ohg", "se", "ug", "ev", "eg", "kdoer", "adoer",
     "gbr", "ltd", "inc", "llc", "plc", "bv", "nv", "sa", "sarl", "sas", "spa", "srl",
+    "ek", "gag", "partg",
 })
+#: Abbreviated words read as the word, wherever a name is split into words
+#: (2026-11-08, from the DE export's 27,442 records: Inst. 2,683, Fak. 619,
+#: u. 492, Abt. 397, f. 352, RWTH 178, Dez. 174, LMU 152, TU 114 …). Only
+#: abbreviations that stand for nothing else in a customer name; the page
+#: side is read the same way, so "TU" on a page still equals "TU" in SAP.
+_ABBREVIATIONS: dict[str, str] = {
+    "inst": "institut", "fak": "fakultaet", "abt": "abteilung", "abtlg": "abteilung", "abtl": "abteilung",
+    "dez": "dezernat", "zentr": "zentrum", "f": "fuer", "u": "und",
+    "univ": "universitaet", "uni": "universitaet", "tu": "technische universitaet",
+    "th": "technische hochschule", "fh": "fachhochschule", "hs": "hochschule",
+    "lmu": "ludwig maximilians universitaet",
+    "rwth": "rheinisch westfaelische technische hochschule",
+    "mpi": "max planck institut", "mpg": "max planck gesellschaft",
+    "ges": "gesellschaft", "gebr": "gebrueder", "nachf": "nachfolger", "st": "sankt",
+    "techn": "technische", "angew": "angewandte", "intl": "international",
+}
 #: "& Co." between two forms; never part of the name.
 _CONNECTORS = frozenset({"co", "cie"})
 #: SAP cuts Name 1 at this many characters.
@@ -254,7 +304,7 @@ def _form_tokens(name: str) -> list[str]:
     text = f" {' '.join(joined)} "
     for long, short in _LONG_FORMS:
         text = text.replace(f" {long} ", f" {short} ")
-    return text.split()
+    return " ".join(_ABBREVIATIONS.get(t, t) for t in text.split()).split()
 
 
 def _canonical(forms: list[str]) -> str | None:
@@ -285,7 +335,8 @@ def _truncated(tokens: list[str]) -> tuple[list[str], str | None, bool]:
         if len(tail) < 5:
             continue
         for long, short in _LONG_FORMS:
-            if len(long) > len(tail) and long.startswith(tail):
+            # A whole first word alone is not a cut form: "… Max-Planck-Ges(ellschaft)".
+            if len(long) > len(tail) and long.startswith(tail) and tail != long.split()[0]:
                 return tokens[:-k], short, True
     if len(last) == 1:
         return tokens[:-1], None, True
@@ -341,7 +392,7 @@ SITE_WORDS: tuple[str, ...] = (
 #: A department of the entity (usually in Name 2–4): the entity is Name 1.
 DEPARTMENT_WORDS: tuple[tuple[str, ...], ...] = tuple(tuple(w.split()) for w in (
     "institut", "lehrstuhl", "fakultaet", "fachbereich", "klinik fuer", "abteilung",
-    "zentrum", "labor", "professur", "arbeitsgruppe",
+    "zentrum", "labor", "professur", "arbeitsgruppe", "dezernat",
 ))
 
 
@@ -358,7 +409,7 @@ def _split_at(tokens: tuple[str, ...], phrases) -> tuple[str, ...] | None:
 
 
 def has_department(text: str | None) -> bool:
-    tokens = tuple(fold(text).split())
+    tokens = tuple(_form_tokens(text or ""))  # "Abt. Einkauf", "Dez. 4" read as written out
     return any(_starts_with(tokens, i, p) for i in range(len(tokens)) for p in DEPARTMENT_WORDS)
 
 
@@ -409,6 +460,21 @@ def name_contained(record: tuple[str, ...], page: tuple[str, ...]) -> bool:
     return i == len(rec) and not set(extra) & _CONTAINED_OTHER_ENTITY
 
 
+#: Small words a leading acronym skips ("ZOEK" = Zentrum für Organische Elektronik Köln).
+_ACRONYM_SKIP = frozenset({"fuer", "und", "der", "die", "das", "des", "den", "dem", "am", "an", "im", "in",
+                           "zu", "zur", "zum", "of", "for", "and", "the"})
+
+
+def leading_acronym(core: tuple[str, ...]) -> bool:
+    """The first word is the initials of the words after it ("zoek zentrum
+    fuer organische elektronik koeln"), small words skipped: it repeats the
+    name, it is not part of it."""
+    if len(core) < 3 or not 2 <= len(core[0]) <= 8 or not core[0].isalpha():
+        return False
+    initials = "".join(w[0] for w in core[1:] if w not in _ACRONYM_SKIP)
+    return initials.startswith(core[0]) and len(initials) == len(core[0])
+
+
 def _compare(page: EntityName, record: EntityName, extra: tuple[str, ...]) -> NameVerdict:
     issues = list(extra)
     if set(page.core) == set(record.core):
@@ -431,6 +497,8 @@ def _variants(name: EntityName, *, departments: bool) -> list[tuple[EntityName, 
     """The name as given, without a site phrase (BRANCH) and, for the
     record, without a department phrase (DEPARTMENT)."""
     out = [(name, ())]
+    if leading_acronym(name.core):
+        out.append((EntityName(name.core[1:], name.form), ()))
     site = _split_at(name.core, [(w,) for w in SITE_WORDS])
     if site:
         out.append((EntityName(site, name.form), (BRANCH,)))
@@ -452,15 +520,31 @@ def name_match(page_name: str | None, names: tuple[str | None, ...]) -> NameVerd
         return NameVerdict(NAME_MISMATCH, (ISSUE_NAME_PARTIAL,))
     records = [parse_name(parts[0], sap=True)]
     extra = parts[1:]
-    if extra and not any(has_department(p) for p in extra):
-        records.append(parse_name(" ".join(parts), sap=True))
+    joined = parse_name(" ".join(parts), sap=True) if extra else None
+    # Name 2-4 with a department word still describe the entity when Name 1
+    # is only their acronym ("ZOEK gGmbH" + "Zentrum für Organische Elektronik Köln").
+    if joined and (not any(has_department(p) for p in extra)
+                   or (len(records[0].core) == 1 and leading_acronym(joined.core))):
+        records.append(joined)
     verdicts = [
         _compare(p, r, p_extra + r_extra)
         for record in records
         for r, r_extra in _variants(record, departments=True)
         for p, p_extra in _variants(page, departments=False)
     ]
-    return min(verdicts, key=lambda v: (_MATCH_RANK[v.match], NAME_CONTAINED not in v.issues, len(v.issues)))
+    best = min(verdicts, key=lambda v: (_MATCH_RANK[v.match], NAME_CONTAINED not in v.issues, len(v.issues)))
+    if in_liquidation(page_name):
+        best = replace(best, issues=sort_issues((*best.issues, IN_LIQUIDATION)))
+    return best
+
+
+_LIQUIDATION_RE = re.compile(r"\bi\.\s?L\.|\bin\s+(?:Liquidation|Abwicklung)\b|\bi\.\s?Abw\.", re.IGNORECASE)
+
+
+def in_liquidation(name: str | None) -> bool:
+    """The name carries a liquidation suffix: "GmbH i.L.", "in Liquidation",
+    "in Abwicklung", "i. Abw."."""
+    return bool(_LIQUIDATION_RE.search(clean_text(name)))
 
 
 def forms_on_page(page_text: str | None, core: tuple[str, ...]) -> set[str]:
@@ -532,6 +616,9 @@ def sister_entity_on_page(page_text: str | None, verdict: NameVerdict) -> bool:
 #: A German address block: a 5-digit postcode followed by a capitalised word.
 ADDRESS_BLOCK_RE = re.compile(r"(?<![\d-])(?:D-?\s?)?(\d{5})\s+(?=[A-ZÄÖÜ])([^\n]{0,40})")
 _STREET_SUFFIX_RE = re.compile(r"\b([a-z]+?)\s?(?:strasse|str)\b")
+#: The linking "s" before "strasse", dropped on both sides: SAP's
+#: "UniversitätStr 31" is the page's "Universitätsstraße 31" (Regensburg).
+_LINKING_S_RE = re.compile(r"(?<=[a-z])s(?=strasse\b)")
 _POSTFACH_RE = re.compile(r"\bpostfach\b|\bp\s?o\s?box\b", re.IGNORECASE)
 
 
@@ -539,7 +626,7 @@ def _street_norm(text: str | None) -> str:
     """Folded, with the street suffix abbreviation undone and joined to its
     word: "Hauptstr. 5", "Haupt-Straße 5" and "Hauptstrasse 5" all become
     ``hauptstrasse 5``."""
-    return _STREET_SUFFIX_RE.sub(r"\1strasse", fold(text))
+    return _LINKING_S_RE.sub("", _STREET_SUFFIX_RE.sub(r"\1strasse", fold(text)))
 
 
 def street_on_page(page_text: str, street: str | None, house_number: str | None) -> bool | None:
@@ -547,7 +634,13 @@ def street_on_page(page_text: str, street: str | None, house_number: str | None)
     record has no street. "Platz 1" does not match "Platz 12"."""
     if not street:
         return None
-    wanted = _street_norm(" ".join(p for p in (street, house_number) if p))
+    # "Amalienbadstrasse 41 // Bau 53", "Im Neuenheimer Feld 280, Stockwerk":
+    # what follows // or a comma is a building or floor note.
+    wanted, number = _street_norm(re.split(r"//|,", street, maxsplit=1)[0]), _street_norm(house_number)
+    # The SAP export often carries the number in Street as well ("Im
+    # Altenschemel 49" + House Number "49"): it is not looked for twice.
+    if number and not f" {wanted} ".endswith(f" {number} "):
+        wanted = f"{wanted} {number}"
     if not wanted:
         return None
     return f" {wanted} " in f" {_street_norm(page_text)} "
@@ -560,14 +653,22 @@ def postal_code_on_page(page_text: str, postal_code: str | None) -> bool | None:
     return bool(re.search(rf"(?<!\d){plz}(?!\d)", page_text or ""))
 
 
+#: English names of German towns, as English pages write them ("D-80539 Munich", lmu.de).
+_EXONYMS = {"munich": "München", "cologne": "Köln", "nuremberg": "Nürnberg", "hanover": "Hannover",
+            "brunswick": "Braunschweig"}
+_EXONYM_RE = re.compile(r"\b(?:" + "|".join(_EXONYMS) + r")\b", re.IGNORECASE)
+
+
 def city_on_page(page_text: str, city: str | None) -> bool | None:
     """The City on the page: in a ``<postcode> <town>`` block when the page
     has one (so "Amtsgericht Stuttgart" is not the town), anywhere otherwise
     ("Postfach 30 02 20, Gerlingen"). Umlaut-folded either way; the City's
-    longest token is enough ("FRANKFURT AM MAIN" vs "60549 Frankfurt")."""
+    longest token is enough ("FRANKFURT AM MAIN" vs "60549 Frankfurt"). An
+    English town name counts as the German one ("Munich" for "MÜNCHEN")."""
     if not fold(city):
         return None
-    blocks = [m.group(2) for m in ADDRESS_BLOCK_RE.finditer(page_text or "")]
+    page_text = _EXONYM_RE.sub(lambda m: _EXONYMS[m.group().lower()], page_text or "")
+    blocks = [m.group(2) for m in ADDRESS_BLOCK_RE.finditer(page_text)]
     for umlaut_e in (True, False):
         sap_city = fold(city, umlaut_e=umlaut_e)
         main = max(sap_city.split(), key=len)
@@ -605,7 +706,10 @@ def address_match(
         "postal_code": postal_code_on_page(page_text, postal_code),
         "city": city_on_page(page_text, city),
     }
-    if all(parts.values()):
+    # Street and number with the postcode or the town is the same address: the
+    # other one may be SAP's typo ("VILLINGEN SCHWENNIGEN"), an old postcode or
+    # the district the page names ("Übrigshausen" for Untermünkheim).
+    if parts["street"] and (parts["postal_code"] or parts["city"]):
         level = ADDRESS_EXACT
     elif parts["postal_code"] or parts["city"]:
         level = ADDRESS_SAME_TOWN

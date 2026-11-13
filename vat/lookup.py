@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -53,6 +54,7 @@ from typing import Any, Protocol
 
 from vat.entity_match import (
     ACCEPTED_ADDRESS,
+    ADDRESS_DIFFERENT_TOWN,
     ADDRESS_EXACT,
     ADDRESS_ISSUE,
     ADDRESS_MISMATCH,
@@ -69,7 +71,10 @@ from vat.entity_match import (
     LEGAL_FORM_DIFFERS,
     NAME_CONTAINED,
     NAME_EXACT,
+    NAME_MISMATCH,
+    NAME_PARTIAL,
     OTHER_VAT_IDS_ON_PAGE,
+    PARENT_ENTITY,
     PARENT_ENTITY_CANDIDATE,
     SECONDARY_SOURCE,
     SOURCE_CLASS,
@@ -86,7 +91,14 @@ from vat.entity_match import (
     parse_name,
     sort_issues,
 )
-from vat.normalize import MISSING, VatFormat
+from vat.normalize import (
+    FORMAT_OK,
+    MISSING,
+    NON_EU_PREFIX,
+    PREFIX_COUNTRY_MISMATCH,
+    VatFormat,
+    assess_format,
+)
 
 # ── Modes ────────────────────────────────────────────────────────────────────
 NONE = "none"
@@ -480,6 +492,90 @@ def vies_pending(r: FoundResult) -> FoundResult:
     status = FOUND_PENDING if r.status.startswith(f"{FOUND_UNVERIFIED}:VIES_") else r.status
     return replace(r, status=status, validation_status=VALIDATION_PENDING, validation_date=None,
                    entity_decision=None, entity_confidence=None)
+
+
+#: A number found on a page that cannot be the record's VAT ID: python-stdnum
+#: rejects its syntax or check digit, or it carries another country's prefix
+#: (a foreign parent's number). Status ``NOT_FOUND:INVALID_NUMBER``; the flag
+#: ``INVALID_NUMBER:<number>:<why>`` keeps it for the reviewer.
+INVALID_NUMBER = "INVALID_NUMBER"
+
+
+def reject_invalid_number(r: FoundResult, country: str | None) -> FoundResult:
+    """*r* unchanged unless its candidate fails the format check for the
+    record's *country*; then NOT_FOUND, so the agent pass looks again
+    (2026-11-10: 22 such proposals in the 7,358 DE rows, among them the
+    template number DE123456789, page typos and NL / FR / GB parents' IDs).
+    Applied by ``vat.validate.validate_rows`` and the agent pass, not by
+    :func:`run_lookups`: ``tools/vat_lookup_compare.py`` measures what an
+    engine proposes, malformed numbers included."""
+    if not _is_candidate(r):
+        return r
+    fmt = assess_format(r.value, country)
+    if fmt.status == FORMAT_OK and PREFIX_COUNTRY_MISMATCH not in fmt.flags:
+        return r
+    why = fmt.format_error or (PREFIX_COUNTRY_MISMATCH if PREFIX_COUNTRY_MISMATCH in fmt.flags else NON_EU_PREFIX)
+    return replace(r, status=f"{NOT_FOUND}:{INVALID_NUMBER}", value=None, validation_status=None,
+                   validation_date=None, entity_decision=None, entity_confidence=None,
+                   flags=(*r.flags, f"{INVALID_NUMBER}:{fmt.normalized or r.value}:{why}"))
+
+
+#: Step AL (2026-11-11): the only number found is another company's — a
+#: page in another town that names the entity only partly or not at all.
+#: Status ``NOT_FOUND:ONLY_OTHER_COMPANY_FOUND``; the number, the page's name
+#: and the source stay in the usage (``withdrawn``) for the reviewer.
+ONLY_OTHER_COMPANY_FOUND = "ONLY_OTHER_COMPANY_FOUND"
+WITHDRAWN = "WITHDRAWN"
+
+
+def other_name_other_town(r: FoundResult) -> bool:
+    """A candidate whose page is in another town and names another or a
+    similar company (Name_Check SIMILAR_NAME / DIFFERENT_NAME). Same name in
+    another town is not: a head office, reviewed as before. Nor is a page
+    naming exactly the record's name cut after its legal form ("Arrow Central
+    Europe GmbH" for "Arrow Central Europe GmbH Büro Hamb"): an office or site
+    of that legal entity (2026-11-12)."""
+    if not _is_candidate(r) or r.address_match != ADDRESS_DIFFERENT_TOWN:
+        return False
+    if r.name_match not in (NAME_PARTIAL, NAME_MISMATCH):
+        return False
+    if any(issue_code(i) == NAME_CONTAINED for i in r.issues):
+        return False
+    return not _same_entity_office(r)
+
+
+def _same_entity_office(r: FoundResult) -> bool:
+    """The page's name is the record's entity name up to its legal form."""
+    from vat.name_prep import name_up_to_form
+
+    def key(s: str | None) -> str:
+        return re.sub(r"[^a-z0-9]", "", fold(s or ""))
+
+    found = key(r.attributed_to)
+    usage = r.usage or {}
+    names = [usage.get("entity"), *(usage.get("acceptable_names") or [])]
+    return bool(found) and any(key(name_up_to_form(n)) == found for n in names if name_up_to_form(n))
+
+
+def withdraw(r: FoundResult, reason: str = ONLY_OTHER_COMPANY_FOUND) -> FoundResult:
+    """*r* as NOT_FOUND:<reason>, its number kept in ``usage["withdrawn"]``
+    (number, the page's name, source URL, whether it looked like a parent)."""
+    fmt = assess_format(r.value, r.value[:2] if r.value else None)
+    usage = dict(r.usage or {}, withdrawn={
+        "number": fmt.normalized or r.value, "found_name": r.attributed_to, "source_url": r.source_url,
+        "found_address": r.published_address, "address_text": r.address_text,
+        "parent": any(issue_code(i) in (PARENT_ENTITY_CANDIDATE, PARENT_ENTITY) for i in r.issues)})
+    return replace(r, status=f"{NOT_FOUND}:{reason}", value=None, validation_status=None, validation_date=None,
+                   entity_decision=None, entity_confidence=None,
+                   flags=(*r.flags, f"{WITHDRAWN}:{fmt.normalized or r.value}"), usage=usage)
+
+
+def reject_other_name_other_town(r: FoundResult) -> FoundResult:
+    """VAT_REJECT_OTHER_NAME_OTHER_TOWN: :func:`withdraw` a candidate that is
+    :func:`other_name_other_town`; *r* unchanged otherwise. On the first DE
+    run (7,358 rows) these were 689 Review / Conflict rows, mostly another
+    company's number (Step AL)."""
+    return withdraw(r) if other_name_other_town(r) else r
 
 
 def sap_update_eligible(decision: str | None, validation_status: str | None) -> bool:

@@ -235,12 +235,29 @@ class TestAddress:
     def test_street_folding(self, sap, page_text):
         assert street_on_page(page_text, sap, None)
 
+    @pytest.mark.parametrize("street, number, page_text, ok", [
+        # The SAP export's Street carries the number, House Number again (2026-11-08)
+        ("Im Altenschemel 49", "49", "Im Altenschemel 49 67435 Neustadt/Wstr.", True),
+        ("Alfred-Nobel-Str. 50", "50", "Alfred-Nobel-Straße 50 40789 Monheim am Rhein", True),
+        ("Marker Allee 76-78", "76-78", "Marker Allee 76-78 59063 Hamm", True),
+        ("Schaevenstraße 1 a-b", "1 a-b", "Schaevenstr. 1 a - b 50676 Köln", True),
+        ("Im Altenschemel 49", "49", "Im Altenschemel 4 67435 Neustadt", False),
+        ("Hauptstraße 5", "15", "Hauptstraße 15 70839 Gerlingen", False),  # a different number is not dropped
+        ("Hauptstraße", "15", "Hauptstraße 15 70839 Gerlingen", True),
+        ("Amalienbadstrasse 41 // Bau 53", "41", "Amalienbadstraße 41 76227 Karlsruhe", True),
+    ])
+    def test_the_number_in_street_and_house_number(self, street, number, page_text, ok):
+        assert street_on_page(page_text, street, number) is ok
+
     @pytest.mark.parametrize("page_text, level", [
         ("Hauptstraße 5, 70839 Gerlingen", ADDRESS_EXACT),
         ("Hauptstr. 5, 70839 Gerlingen", ADDRESS_EXACT),
         ("Hauptstraße 12, 70839 Gerlingen", ADDRESS_SAME_TOWN),
         ("Industriestraße 20, 70839 Gerlingen", ADDRESS_SAME_TOWN),
-        ("Hauptstraße 5, 70442 Gerlingen", ADDRESS_SAME_TOWN),
+        # street and number in the right town, another postcode: the same address (2026-11-08)
+        ("Hauptstraße 5, 70442 Gerlingen", ADDRESS_EXACT),
+        ("Hauptstraße 5, 70839 Gerlingen-Schillerhöhe", ADDRESS_EXACT),
+        ("Hauptstraße 5, 70839 Gerlngen", ADDRESS_EXACT),  # the town misspelt on one side
         ("Postfach 30 02 20, Gerlingen", ADDRESS_SAME_TOWN),
         ("Königstraße 1, 70173 Stuttgart", ADDRESS_DIFFERENT_TOWN),
         ("Impressum Müller Maschinenbau GmbH", ADDRESS_NO_ADDRESS),
@@ -248,6 +265,31 @@ class TestAddress:
     def test_four_values(self, page_text, level):
         got, _ = address_match(page_text, "Hauptstraße", "5", "70839", "Gerlingen")
         assert got == level
+
+    @pytest.mark.parametrize("street, number, postal_code, city, page_text", [
+        # The 100-row sample of the DE export (2026-11-08)
+        ("UniversitätStr 31", "31", "93053", "REGENSBURG", "Universitätsstraße 31 93053 Regensburg"),
+        ("WILHELM SCHICKARD str 10", "10", "78052", "VILLINGEN SCHWENNIGEN",
+         "Wilhelm-Schickard-Str. 10 78052 Villingen-Schwenningen Germany"),
+        ("Im Neuenheimer Feld 280, Stockwerk", None, "69120", "HEIDELBERG", "Im Neuenheimer Feld 280 69120 Heidelberg"),
+        ("Ratzeburger Allee 160", "160", "23562", "LÜBECK", "Campus Lübeck - Ratzeburger Allee 160 23538 Lübeck"),
+        ("Bauernallee 15", "15", "19288", "LUDWIGSLUST", "Bauernallee 15 19288 Ludwiglust"),
+        ("Industriestr. 7", "7", "69198", "SCHRIESHEIM", "Indus­trie­straße 7 D-69198 Schries­heim"),
+    ])
+    def test_sample_addresses_are_the_same(self, street, number, postal_code, city, page_text):
+        assert address_match(page_text, street, number, postal_code, city)[0] == ADDRESS_EXACT
+
+    def test_english_town_name(self):
+        got, _ = address_match("Geschwister-Scholl-Platz 1 D-80539 Munich", "Butenandtstr 5-13", "5-13",
+                               "81377", "MÜNCHEN")
+        assert got == ADDRESS_SAME_TOWN
+
+    @pytest.mark.parametrize("sap, page_text", [
+        ("Gaussstr 4", "Gaußstraße 4"),
+        ("Kurstr. 4", "Kurstraße 4"),  # an "s" that is not a linking one stays
+    ])
+    def test_linking_s(self, sap, page_text):
+        assert street_on_page(page_text, sap, None)
 
     def test_sap_without_street_is_same_town(self):
         got, _ = address_match("Hauptstraße 5, 70839 Gerlingen", None, None, "70839", "Gerlingen")
@@ -265,8 +307,7 @@ class TestAddress:
          ["ADDRESS_DIFFERS"]),
         ("Industriestraße 20, 70839 Gerlingen", ADDRESS_SAME_TOWN, AUTO_ACCEPT, CONF_VERIFIED,
          ["ADDRESS_DIFFERS"]),
-        ("Hauptstraße 5, 70442 Gerlingen", ADDRESS_SAME_TOWN, AUTO_ACCEPT, CONF_VERIFIED,
-         ["ADDRESS_DIFFERS"]),
+        ("Hauptstraße 5, 70442 Gerlingen", ADDRESS_EXACT, AUTO_ACCEPT, CONF_VERIFIED, []),
         ("Postfach 30 02 20, Gerlingen", ADDRESS_SAME_TOWN, AUTO_ACCEPT, CONF_VERIFIED,
          ["ADDRESS_DIFFERS"]),
         ("", ADDRESS_NO_ADDRESS, MANUAL_REVIEW, CONF_MEDIUM, ["ADDRESS_NOT_ON_PAGE"]),
@@ -291,6 +332,99 @@ class TestAddress:
 
 
 # ── 2. Name and legal form ───────────────────────────────────────────────────
+
+class TestNameSpelledDifferently:
+    """The same organisation written another way (Test50, 2026-11-08)."""
+
+    @pytest.mark.parametrize("names, page, match", [
+        (("Universitätsklinikum Bonn AöR",), "Universitätsklinikum Bonn Anstalt des öffentlichen Rechts", NAME_EXACT),
+        (("Muster KöR",), "Muster Körperschaft des öffentlichen Rechts", NAME_EXACT),
+        (("Inst für Nanophotonik Göttingen eV",), "Institut für Nanophotonik Göttingen e.V.", NAME_EXACT),
+        (("Uni Ulm",), "Universität Ulm", NAME_EXACT),
+        (("ZOEK gGmbH", "Zentrum für Organische Elektronik Köln"),
+         "Zentrum für organische Elektronik Köln gGmbh", NAME_EXACT),
+        # not an acronym of what follows: still compared as written
+        (("ABC gGmbH", "Zentrum für Organische Elektronik Köln"),
+         "Zentrum für organische Elektronik Köln gGmbh", NAME_MISMATCH),
+        (("Universitätsklinikum Greifswald AöR",), "Universitätsmedizin Greifswald KöR", NAME_PARTIAL),
+    ])
+    def test_name_match(self, names, page, match):
+        from vat.entity_match import name_match
+
+        assert name_match(page, names).match == match
+
+    @pytest.mark.parametrize("names, page", [
+        # The DE export's frequent abbreviations (27,442 records, 2026-11-08)
+        (("Max-Planck-Inst. f. Kohlenforschung",), "Max-Planck-Institut für Kohlenforschung"),
+        (("TU Dresden",), "Technische Universität Dresden"),
+        (("LMU München",), "Ludwig-Maximilians-Universität München"),
+        (("RWTH Aachen",), "Rheinisch-Westfälische Technische Hochschule Aachen"),
+        (("FMB Feinwerk- u. Messtechnik GmbH",), "FMB Feinwerk- und Messtechnik GmbH"),
+        (("Gebr. Dorfner GmbH & Co. KG",), "Gebrüder Dorfner GmbH & Co. KG"),
+        (("St. Josef Krankenhaus",), "Sankt Josef Krankenhaus"),
+        (("Muster Apotheke e.K.",), "Muster Apotheke e. K."),
+        (("Muster Apotheke e.Kfr.",), "Muster Apotheke e.K."),
+        (("BSH Bosch und Siemens Hausgeräte GmbH",), "Bosch und Siemens Hausgeräte GmbH"),
+    ])
+    def test_the_export_s_spellings(self, names, page):
+        from vat.entity_match import name_match
+
+        assert name_match(page, names).match == NAME_EXACT
+
+    def test_abbreviated_departments_are_departments(self):
+        from vat.entity_match import has_department, name_match
+
+        assert has_department("Abt. Spektroskopie") and has_department("Inst.f. Materialforschung")
+        assert has_department("Dez. Einkauf")
+        verdict = name_match("Bayer AG", ("Bayer AG", "Abt. BIS-SUA-PUA-II", None, None))
+        assert verdict.match == NAME_EXACT
+
+    def test_a_cut_word_is_not_a_cut_legal_form(self):
+        assert legal_form("Halbleiterlabor der Max-Planck-Ges", sap=True) is None
+        assert legal_form("Musterfirma Gesellschaft mit beschr", sap=True) == "gmbh"
+        assert legal_form("Musterfirma Deutschland Aktiengesel", sap=True) == "ag"
+
+    def test_a_leading_acronym(self):
+        from vat.entity_match import leading_acronym
+
+        assert leading_acronym(("zoek", "zentrum", "fuer", "organische", "elektronik", "koeln"))
+        assert not leading_acronym(("abc", "zentrum", "fuer", "organische", "elektronik"))
+        assert not leading_acronym(("ag", "x"))
+
+    @pytest.mark.parametrize("names, page", [
+        # Page text that is not plain text (the 100-row sample, 2026-11-08)
+        (("BWT Wassertechnik GmbH",), "BWT Wasser­technik GmbH"),  # soft hyphen
+        (("in.vent Diagnostica GmbH",), "in.vent Dia­gno­sti­ca GmbH"),
+        (("LMU München",), "Ludwig-Maximilians-UniversitÃ¤t MÃ¼nchen"),  # UTF-8 read as Windows-1252
+        (("Muster GmbH",), "Muster​ GmbH"),  # zero-width space
+        (("Universitätsklinikum Leipzig AöR",), "Universitätsklinikum Leipzig Anstalt öffentlichen Rechts"),
+    ])
+    def test_text_that_is_not_plain(self, names, page):
+        from vat.entity_match import name_match
+
+        assert name_match(page, names).match == NAME_EXACT
+
+    def test_clean_text_keeps_a_real_a_tilde(self):
+        from vat.entity_match import clean_text
+
+        assert clean_text("São Paulo Ltda") == "São Paulo Ltda"
+        assert clean_text("UniversitÃ¤t MÃ¼nchen") == "Universität München"
+
+    @pytest.mark.parametrize("page, flagged", [
+        ("Zentrum für Werkstoffanalytik Lauf GmbH i.L.", True),
+        ("Muster GmbH i. L.", True),
+        ("Muster GmbH in Liquidation", True),
+        ("Muster GmbH in Abwicklung", True),
+        ("Muster GmbH", False),
+        ("Muster GmbH i.A.", False),  # "im Auftrag", not liquidation
+    ])
+    def test_liquidation_is_blocking(self, page, flagged):
+        from vat.entity_match import IN_LIQUIDATION, name_match
+
+        issues = name_match(page, ("Muster GmbH",)).issues
+        assert (IN_LIQUIDATION in issues) is flagged
+        assert is_blocking(IN_LIQUIDATION)
+
 
 class TestLegalForm:
     @pytest.mark.parametrize("name, form", [

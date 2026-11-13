@@ -87,6 +87,14 @@ class TestAgent:
         assert "EVIDENCE_NOT_VERIFIED" in r.all_issues and AGENT_SOURCE_UNREADABLE in r.flags
 
     @pytest.mark.asyncio
+    async def test_an_unfetchable_page_still_shows_the_name_and_address_check(self, tmp_path):
+        # Helios Krefeld (2026-11-08): our fetch was blocked, the agent's answer is all there is.
+        answer = {**agent_answer(), "published_address": "Robert-Bosch-Platz 1, 70839 Gerlingen"}
+        r = await _engine(tmp_path, Agent(answer), {}).lookup(BOSCH)
+        assert (r.name_match, r.address_match, r.decision) == ("EXACT", "EXACT", MANUAL_REVIEW)
+        assert "EVIDENCE_NOT_VERIFIED" in r.all_issues
+
+    @pytest.mark.asyncio
     async def test_a_number_not_on_the_page_is_low(self, tmp_path):
         model = Agent(agent_answer(vat="DE129274235", quote="USt-IdNr. DE129274235"),
                       reads=[found(None, None, None, None)])
@@ -203,6 +211,44 @@ class TestAgentPass:
         out, _ = await validate_rows(_rows()[:1], vies, lookup=_Hybrid(), agent=agent)
         assert out[0]["VAT_Found_Status"] == "NOT_FOUND:NO_NUMBER_ON_OWN_SITE"
         assert AGENT_TRIED in out[0]["VAT_Found_Flags"]
+
+    @pytest.mark.asyncio
+    async def test_entities_run_in_parallel_with_the_same_result(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from vat import lookup_agent
+
+        class Slow(Agent):
+            in_flight = peak = 0
+
+            async def __call__(self, system, user, effort):
+                if system == AGENT_SYSTEM_PROMPT:
+                    Slow.in_flight += 1
+                    Slow.peak = max(Slow.peak, Slow.in_flight)
+                    await asyncio.sleep(0.05)
+                    Slow.in_flight -= 1
+                return await super().__call__(system, user, effort)
+
+        base = _rows()[0]
+        rows = [{**base, "Customer": str(100 + i), "Name": f"Muster {i} GmbH", "City": f"STADT{i}"}
+                for i in range(6)]
+
+        async def run(concurrency, where):
+            monkeypatch.setattr(lookup_agent, "AGENT_CONCURRENCY", concurrency)
+            Slow.peak = 0
+            agent = _engine(where, Slow(agent_answer(None, None, None, None, "not_found")), {})
+            vies = VIESClient(_settings(), cache=EvidenceCache(where / "v"),
+                              transport=ViesStub(vies_mock.echo_valid_undisclosed).transport)
+            out, _ = await validate_rows(rows, vies, lookup=_Hybrid(), agent=agent)
+            return out, Slow.peak
+
+        one, peak_one = await run(1, tmp_path / "a")
+        many, peak_many = await run(10, tmp_path / "b")
+        assert peak_one == 1 and peak_many == 6
+        drop = ("Seconds", "Date")
+        assert [{k: v for k, v in r.items() if not k.endswith(drop)} for r in one] == \
+               [{k: v for k, v in r.items() if not k.endswith(drop)} for r in many]
+        assert all(AGENT_TRIED in r["VAT_Found_Flags"] for r in many)
 
     @pytest.mark.asyncio
     async def test_the_agent_budget_stops_it(self, tmp_path):
